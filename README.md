@@ -77,11 +77,19 @@ selected:
 - In case of the /opt/fil glibc-based distribution
   (`optfil-0.679-linux-x86_64.tar.xz`), this sets up Fil-C in `/opt/fil`.
 
-If you downloaded Fil-C source, run:
+If you downloaded Fil-C source, first install the required tools using [mise](https://mise.jdx.dev):
+
+    mise trust
+    mise install
+    mise run install-deps
+
+Then build:
 
     ./build_all_fast.sh
 
-Then you'll be able to use Fil-C from within this directory.
+Or use the mise task:
+
+    mise run setup
 
 The binary distribution of Fil-C comes with musl as the libc. Using
 `./build_all_fast.sh` in the source distribution also builds Fil-C using musl.

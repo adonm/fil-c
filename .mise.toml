@@ -1,0 +1,96 @@
+# Fil-C development environment
+#
+# Quick start:
+#   mise trust               # trust this config (once)
+#   mise install             # install cmake, ninja, ruby
+#   mise run install-deps    # install system packages via Homebrew
+#   mise run setup           # build Fil-C core components
+#
+# See: https://mise.jdx.dev/bootstrap.html
+
+[settings]
+experimental = true
+
+[tools]
+# Versioned build tools managed by mise
+cmake = "latest"       # LLVM/Clang build system
+ninja = "latest"       # LLVM/Clang build executor
+ruby = "latest"        # Test runner (filc/run-tests)
+
+[tasks.install-deps]
+description = "Install system-level dependencies via Homebrew (Linux/x86_64)"
+run = """
+  echo "=== Installing Fil-C system dependencies ==="
+  echo ""
+
+  PACKAGES=(
+    # Host compiler (bootstraps the initial Fil-C clang)
+    gcc
+    # LLVM tools (optional host compiler alternative, provides lld)
+    llvm
+    # Build system essentials
+    pkg-config
+    make
+    autoconf
+    automake
+    libtool
+    patchelf
+    bison
+    flex
+    texinfo   # provides makeinfo
+    gettext
+    # Misc
+    curl
+    git
+  )
+
+  if command -v brew >/dev/null 2>&1; then
+    echo "Using Homebrew to install packages..."
+    brew install "${PACKAGES[@]}"
+  else
+    echo "Homebrew not found. Install it first:"
+    echo "  /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\""
+    echo ""
+    echo "Or install these packages manually with your system package manager:"
+    printf '  - %s\n' "${PACKAGES[@]}"
+  fi
+"""
+
+[tasks.bootstrap]
+description = "Verify Fil-C development environment is ready"
+run = """
+  echo "=== Fil-C Bootstrap ==="
+  echo ""
+
+  # Check critical tools
+  for tool in gcc g++ cmake ninja ruby patchelf git; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      printf '  %-12s %s\n' "$tool" "$(command -v "$tool")"
+    else
+      printf '  %-12s MISSING\n' "$tool"
+    fi
+  done
+
+  echo ""
+  echo "Next: run 'mise run setup' to build Fil-C"
+  echo ""
+
+  # Check kernel headers (required by build_os_include.sh)
+  if [ -d /usr/include/linux ] && [ -d /usr/include/asm ]; then
+    echo "  Kernel headers: OK"
+  else
+    echo "  Kernel headers: MISSING (install linux-headers package)"
+  fi
+"""
+
+[tasks.setup]
+description = "Build Fil-C core components (fast build)"
+run = "./build_all_fast.sh"
+
+[tasks.full-build]
+description = "Build Fil-C with all ported applications"
+run = "./build_all.sh"
+
+[tasks.test]
+description = "Run Fil-C test suite"
+run = "./filc/run-tests"

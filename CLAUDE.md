@@ -15,13 +15,29 @@ Key characteristics:
 
 ## Build System
 
+### Prerequisites (via mise)
+
+This project uses [mise](https://mise.jdx.dev) for tool version management. Install mise then:
+
+```bash
+mise trust               # Trust this project's config (once)
+mise install             # Install cmake, ninja, ruby
+mise run install-deps    # Install system packages (gcc, autotools, patchelf, etc.)
+```
+
+Or use the container-based setup (see `containers.md`).
+
 ### Initial Setup
 ```bash
 # For source builds (primary development workflow)
 ./setup_gits.sh     # Clone/setup all required repositories
 
-# Build options (choose one):
-./build_all.sh                    # Basic build with musl
+# Build options via mise:
+mise run setup        # Fast build with musl (build_all_fast.sh)
+mise run full-build   # Full build with all ported apps (build_all.sh)
+
+# Or build directly:
+./build_all.sh                    # Full build with musl
 ./build_all_glibc.sh              # Use glibc instead of musl
 
 # For binary releases

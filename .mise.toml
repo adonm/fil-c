@@ -121,3 +121,11 @@ run = """
   export LD_LIBRARY_PATH="$(pwd)/pizfix/lib_test:$(pwd)/pizfix/lib:$LD_LIBRARY_PATH"
   exec "${SHELL:-/bin/bash}"
 """
+
+[tasks.ports]
+description = "List available ports"
+run = "filc/bin/filc port list"
+
+[tasks.port-install]
+description = "Build a port and its dependencies (e.g. mise run port-install duckdb)"
+run = "filc/bin/filc port install $@"

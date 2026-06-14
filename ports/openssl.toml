@@ -1,0 +1,29 @@
+# Port: OpenSSL
+# TLS/SSL library needed by curl, duckdb (HTTPFS), and many others
+
+[port]
+name = "openssl"
+version = "3.5.7"
+description = "TLS/SSL and crypto library"
+homepage = "https://openssl.org"
+
+[source]
+dir = "projects/openssl-3.5.7"
+
+[dependencies]
+deps = ["zlib"]
+
+[build]
+script = """
+. libpas/common.sh
+set -e
+CC="$PWD/../../../build/bin/clang -g -O2" ./Configure \
+    zlib --prefix="$PREFIX" --libdir=lib
+make -j $NCPU
+make -j $NCPU install_sw
+make -j $NCPU install_ssldirs
+"""
+
+[pkgconfig]
+cflags = "-I${includedir}"
+libs = "-L${libdir} -lssl -lcrypto"

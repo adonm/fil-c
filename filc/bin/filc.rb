@@ -21,6 +21,14 @@ require "shellwords"
 require "etc"
 require "fileutils"
 require "optparse"
+require "yaml"
+
+TOML_AVAILABLE = begin
+  require "toml-rb"
+  true
+rescue LoadError
+  false
+end
 
 module FilC
   VERSION = "0.1.0"
@@ -371,6 +379,413 @@ module FilC
       puts "  Run 'filc build' to rebuild."
     end
   end
+
+  # Minimal TOML parser for our port definition subset
+  module SimpleTOML
+    def self.parse(text)
+      result = {}
+      current_section = result
+      section_path = []
+
+      text.each_line do |line|
+        line = line.sub(/#.*$/, "").strip
+        next if line.empty?
+
+        if line =~ /^\[([^\]]+)\]$/
+          section_path = $1.split(".")
+          current_section = result
+          section_path.each do |key|
+            current_section[key] ||= {}
+            current_section = current_section[key]
+          end
+        elsif line =~ /^(\w+(?:-\w+)*)\s*=\s*\[(.*)\]$/
+          key = $1
+          raw = $2.strip
+          values = raw.split(",").map { |v| parse_value(v.strip) }
+          current_section[key] = values
+        elsif line =~ /^(\w+(?:-\w+)*)\s*=\s*(.+)$/
+          key = $1
+          value = parse_value($2.strip)
+          current_section[key] = value
+        end
+      end
+      result
+    end
+
+    private
+
+    def self.parse_value(str)
+      if str =~ /^"(.*)"$/m
+        $1.gsub('\\"', '"')
+      elsif str =~ /^'(.*)'$/
+        $1
+      elsif str =~ /^true$/i
+        true
+      elsif str =~ /^false$/i
+        false
+      elsif str =~ /^(\d+)$/
+        $1.to_i
+      else
+        str
+      end
+    end
+  end
+
+  # Port system: build, install, and manage ported libraries
+  module PortSystem
+    PORTS_DIR = -> { Paths.root / "ports" }
+    PREFIX_DIR = -> { Paths.root / "ports" / "prefix" }
+
+    # Load all port definitions from ports/*.toml
+    def self.load_ports
+      dir = PORTS_DIR.call
+      return {} unless dir.exist?
+      ports = {}
+      Dir.glob("#{dir}/*.toml").each do |file|
+        next if File.basename(file) == "filc-ports.toml" # index file
+        text = File.read(file)
+        data = SimpleTOML.parse(text)
+        next unless data["port"] && data["port"]["name"]
+        name = data["port"]["name"]
+        ports[name] = {
+          name:        name,
+          version:     data["port"]["version"] || "unknown",
+          description: data["port"]["description"] || "",
+          homepage:    data["port"]["homepage"] || "",
+          source_dir:  data.dig("source", "dir"),
+          fetch:       data.dig("source", "fetch"),
+          deps:        data.dig("dependencies", "deps") || [],
+          build_script: data.dig("build", "script"),
+          pc_cflags:   data.dig("pkgconfig", "cflags"),
+          pc_libs:     data.dig("pkgconfig", "libs"),
+          source_file: file,
+        }
+      end
+      ports
+    end
+
+    def self.installed?(name)
+      (PREFIX_DIR.call / name / ".built").exist?
+    end
+
+    def self.install_prefix(name)
+      PREFIX_DIR.call / name
+    end
+
+    def self.deps_prefix(name)
+      deps = load_ports[name]&.dig(:deps) || []
+      deps.map { |d| (PREFIX_DIR.call / d).to_s }.join(":")
+    end
+
+    # Topological sort of ports by dependencies
+    def self.resolve_order(names, ports = nil)
+      ports ||= load_ports
+      resolved = []
+      visiting = Set.new
+
+      visit = ->(name) do
+        raise Error, "Circular dependency detected involving #{name}" if visiting.include?(name)
+        return if resolved.include?(name)
+        visiting.add(name)
+
+        port = ports[name]
+        raise Error, "Unknown port: #{name}" unless port
+
+        port[:deps].each { |dep| visit.call(dep) }
+        visiting.delete(name)
+        resolved << name
+      end
+
+      names.each { |n| visit.call(n) }
+      resolved
+    rescue Error => e
+      raise e
+    end
+
+    # List all ports
+    def self.list(filter: nil)
+      ports = load_ports
+      if ports.empty?
+        puts "No ports found in #{PORTS_DIR.call}/"
+        puts "Run 'filc port create <name>' to create one."
+        return
+      end
+
+      # Sort by name
+      sorted = ports.values.sort_by { |p| p[:name] }
+
+      if filter
+        re = Regexp.new(filter, Regexp::IGNORECASE)
+        sorted = sorted.select { |p| p[:name] =~ re || p[:description] =~ re }
+      end
+
+      if sorted.empty?
+        puts "No ports match '#{filter}'"
+        return
+      end
+
+      printf "%-20s %-12s %s\n", "PORT", "VERSION", "STATUS / DESCRIPTION"
+      puts "-" * 70
+      sorted.each do |p|
+        status = installed?(p[:name]) ? "✓ installed" : "○ not built"
+        printf "%-20s %-12s %s\n", p[:name], p[:version], status
+        if p[:deps].any?
+          printf "%-20s %-12s deps: %s\n", "", "", p[:deps].join(", ")
+        end
+        unless p[:description].empty?
+          printf "%-20s %-12s %s\n", "", "", p[:description][0..50]
+        end
+        puts
+      end
+
+      installed_count = ports.values.count { |p| installed?(p[:name]) }
+      puts "#{installed_count}/#{ports.size} ports installed"
+    end
+
+    # Show port info
+    def self.info(name)
+      ports = load_ports
+      port = ports[name]
+      raise Error, "Unknown port: #{name}" unless port
+
+      puts "#{port[:name]} #{port[:version]}"
+      puts "  #{port[:description]}"
+      puts "  Homepage: #{port[:homepage]}" unless port[:homepage].empty?
+      puts
+      puts "  Status:    #{installed?(name) ? '✓ installed' : '○ not built'}"
+      puts "  Source:    #{port[:source_dir] || 'external (fetch)'}"
+      puts "  Depends:   #{port[:deps].any? ? port[:deps].join(', ') : '(none)'}"
+      puts "  Installed: #{install_prefix(name)}" if installed?(name)
+      if port[:pc_cflags]
+        puts "  pkg-config:"
+        puts "    cflags: #{port[:pc_cflags]}"
+        puts "    libs:   #{port[:pc_libs]}"
+      end
+    end
+
+    # Show dependency tree
+    def self.tree(name, indent: 0, visited: Set.new, ports: nil)
+      ports ||= load_ports
+      port = ports[name]
+      raise Error, "Unknown port: #{name}" unless port
+
+      prefix = "  " * indent
+      marker = installed?(name) ? "✓" : "○"
+      puts "#{prefix}#{marker} #{name} #{port[:version]}"
+
+      return if visited.include?(name)
+      visited.add(name)
+
+      port[:deps].each do |dep|
+        tree(dep, indent: indent + 1, visited: visited, ports: ports)
+      end
+    end
+
+    # Build a single port
+    def self.build_port(name, ports = nil)
+      ports ||= load_ports
+      port = ports[name]
+      raise Error, "Unknown port: #{name}" unless port
+
+      return true if installed?(name)
+
+      # Build dependencies first
+      port[:deps].each do |dep|
+        build_port(dep, ports)
+      end
+
+      puts
+      puts "═══ Building #{name} #{port[:version]} ═══"
+      puts "  Description: #{port[:description]}"
+      puts "  Dependencies: #{port[:deps].join(', ')}" if port[:deps].any?
+
+      source_dir = port[:source_dir]
+      unless source_dir && (Paths.root / source_dir).exist?
+        if port[:fetch]
+          puts "  Source not found. Run 'filc port fetch #{name}' to download."
+          raise Error, "Source for #{name} not found at #{source_dir}. Run 'filc port fetch #{name}'."
+        else
+          raise Error, "Source directory not found: #{source_dir}"
+        end
+      end
+
+      prefix = install_prefix(name)
+      deps_prefix_val = port[:deps].map { |d| install_prefix(d) }.join(":")
+
+      # Create prefix directory
+      FileUtils.mkdir_p(prefix)
+      FileUtils.mkdir_p("#{prefix}/lib/pkgconfig")
+      FileUtils.mkdir_p("#{prefix}/include")
+
+      # Write build script
+      script_path = "#{prefix}/build.sh"
+      build_content = <<~SCRIPT
+        #!/bin/bash
+        set -e
+        export PREFIX="#{prefix}"
+        export DEPS_PREFIX="#{deps_prefix_val}"
+        export PATH="#{Paths.build_dir}/bin:$PATH"
+        #{port[:build_script]}
+      SCRIPT
+      File.write(script_path, build_content)
+      FileUtils.chmod(0755, script_path)
+
+      # Run the build
+      Dir.chdir(Paths.root / source_dir) do
+        success = system("bash", script_path)
+        unless success
+          FileUtils.rm_f("#{prefix}/.built")
+          raise Error, "Build failed for #{name}. Check #{script_path}"
+        end
+      end
+
+      # Generate pkg-config file
+      if port[:pc_cflags] || port[:pc_libs]
+        generate_pkgconfig(name, port, prefix)
+      end
+
+      # Mark as built
+      File.write("#{prefix}/.built", Time.now.to_s)
+      puts "  ✓ #{name} installed to #{prefix}"
+      true
+    end
+
+    def self.generate_pkgconfig(name, port, prefix)
+      pc_path = "#{prefix}/lib/pkgconfig/#{name}.pc"
+      libdir = "#{prefix}/lib"
+      includedir = "#{prefix}/include"
+      deps_str = port[:deps].map { |d| d }.join(" ")
+
+      pc_content = <<~PC
+        prefix=#{prefix}
+        libdir=#{libdir}
+        includedir=#{includedir}
+
+        Name: #{name}
+        Description: #{port[:description]}
+        Version: #{port[:version]}
+        #{port[:deps].any? ? "Requires: #{deps_str}" : ""}
+        Cflags: #{port[:pc_cflags]&.gsub('${includedir}', includedir)&.gsub('${prefix}', prefix) || "-I${includedir}"}
+        Libs: #{port[:pc_libs]&.gsub('${libdir}', libdir)&.gsub('${prefix}', prefix) || "-L${libdir}"}
+      PC
+
+      File.write(pc_path, pc_content.strip + "\n")
+      puts "  Generated #{pc_path}"
+    end
+
+    # Install one or more ports (with deps)
+    def self.install(names)
+      Paths.ensure_root!
+      raise Error, "Fil-C compiler not built. Run 'filc build' first." unless Paths.clang.exist?
+
+      ports = load_ports
+      raise Error, "No ports found. Run 'filc port list'." if ports.empty?
+
+      all_names = resolve_order(names, ports)
+
+      puts "filc: building #{all_names.size} port(s): #{all_names.join(', ')}"
+      puts "  Order: #{all_names.join(' → ')}"
+      puts
+
+      all_names.each do |name|
+        build_port(name, ports)
+      end
+
+      puts
+      puts "✓ All ports built."
+      puts "  Use pkg-config to compile against them:"
+      pc_paths = all_names.map { |n| "#{PREFIX_DIR.call}/#{n}/lib/pkgconfig" }
+      puts "  export PKG_CONFIG_PATH=#{pc_paths.join(':')}"
+      puts "  filc compile myapp.c $(pkg-config --cflags --libs #{all_names.join(' ')})"
+    end
+
+    # Search ports
+    def self.search(regex)
+      list(filter: regex)
+    end
+
+    # Fetch a port's source (clone/download)
+    def self.fetch(name)
+      ports = load_ports
+      port = ports[name]
+      raise Error, "Unknown port: #{name}" unless port
+
+      fetch_info = port[:fetch]
+      raise Error, "#{name} has no fetch URL. Source must be added manually." unless fetch_info
+
+      source_dir = Paths.root / port[:source_dir]
+
+      if source_dir.exist?
+        puts "Source already exists at #{port[:source_dir]}"
+        return
+      end
+
+      case fetch_info["type"]
+      when "git"
+        url = fetch_info["url"]
+        tag = fetch_info["tag"]
+        puts "Cloning #{name} from #{url} (tag: #{tag})..."
+        Dir.chdir(Paths.root / "projects") do
+          system("git", "clone", "--depth", "1", "--branch", tag, url, File.basename(port[:source_dir]))
+        end
+        puts "  ✓ Source fetched to #{port[:source_dir]}"
+        puts "  Next: commit the source to the repo with:"
+        puts "    git add #{port[:source_dir]}"
+        puts "    git commit -m 'add #{name} #{port[:version]} source'"
+      else
+        raise Error, "Unsupported fetch type: #{fetch_info['type']}"
+      end
+    end
+  end
+
+  # One-command setup: build everything needed for development
+  module Setup
+    def self.run(components: nil)
+      Paths.ensure_root!
+
+      puts "═══ Fil-C Setup ═══"
+      puts
+
+      # Step 1: Check environment
+      puts "[1/3] Checking environment..."
+      ok = Doctor.run
+      unless ok
+        puts
+        puts "Missing required tools. Run:"
+        puts "  mise install           # for cmake, ninja, ruby"
+        puts "  mise run install-deps   # for system packages"
+        raise Error, "Environment not ready."
+      end
+
+      # Step 2: Build Fil-C
+      puts
+      puts "[2/3] Building Fil-C compiler + runtime..."
+      if components
+        components.each { |c| Builder.run(component: c) }
+      else
+        Builder.run
+      end
+
+      # Step 3: Build core ports
+      puts
+      puts "[3/3] Building core ports (zlib, openssl)..."
+      if Paths.clang.exist?
+        PortSystem.install(["openssl"]) rescue puts "  (port build skipped — no ports or deps missing)"
+      end
+
+      puts
+      puts "═══ Fil-C is ready ═══"
+      puts "  Compile:  filc compile hello.c -o hello"
+      puts "  Run:      filc run hello.c"
+      puts "  Test:     filc test"
+      puts "  Ports:    filc port list"
+      puts
+      puts "  Quick test:"
+      puts "    echo '#include <stdfil.h>' > /tmp/test.c"
+      puts "    echo 'int main() { zprintf(\"Hello from Fil-C!\\\\n\"); return 0; }' >> /tmp/test.c"
+      puts "    filc run /tmp/test.c"
+    end
+  end
 end
 
 # CLI entry point
@@ -399,6 +814,15 @@ if __FILE__ == $PROGRAM_NAME
     printf "  %-35s %s\n", "info",                       "Project and environment info"
     printf "  %-35s %s\n", "shell",                      "Start shell with Fil-C on PATH"
     printf "  %-35s %s\n", "clean",                      "Clean all build artifacts"
+    printf "  %-35s %s\n", "setup",                      "One-command setup (doctor + build + ports)"
+    puts
+    puts "Port system:"
+    printf "  %-35s %s\n", "port list",                  "List available ports"
+    printf "  %-35s %s\n", "port install NAME...",       "Build port(s) + dependencies"
+    printf "  %-35s %s\n", "port info NAME",             "Detailed port info"
+    printf "  %-35s %s\n", "port tree NAME",             "Show dependency tree"
+    printf "  %-35s %s\n", "port search REGEX",          "Search ports"
+    printf "  %-35s %s\n", "port fetch NAME",            "Download port source"
     puts
     puts "Examples:"
     puts "  filc doctor"
@@ -503,6 +927,40 @@ if __FILE__ == $PROGRAM_NAME
 
     when "clean"
       FilC::Cleaner.clean
+
+    when "setup"
+      FilC::Setup.run
+
+    when "port"
+      subcmd = ARGV.shift
+      case subcmd
+      when "list"
+        FilC::PortSystem.list
+      when "install"
+        names = ARGV
+        raise FilC::Error, "Usage: filc port install <name> [<name>...]" if names.empty?
+        FilC::PortSystem.install(names)
+      when "info"
+        name = ARGV.shift
+        raise FilC::Error, "Usage: filc port info <name>" unless name
+        FilC::PortSystem.info(name)
+      when "tree"
+        name = ARGV.shift
+        raise FilC::Error, "Usage: filc port tree <name>" unless name
+        FilC::PortSystem.tree(name)
+      when "search"
+        regex = ARGV.shift
+        raise FilC::Error, "Usage: filc port search <regex>" unless regex
+        FilC::PortSystem.search(regex)
+      when "fetch"
+        name = ARGV.shift
+        raise FilC::Error, "Usage: filc port fetch <name>" unless name
+        FilC::PortSystem.fetch(name)
+      else
+        $stderr.puts "filc: unknown port subcommand '#{subcmd}'"
+        $stderr.puts "  Available: list, install, info, tree, search"
+        exit 1
+      end
 
     when "--version", "-V"
       puts "filc #{FilC::VERSION}"

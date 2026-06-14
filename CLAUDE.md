@@ -21,6 +21,7 @@ Use `filc/bin/filc` for common tasks:
 
 ```bash
 filc/bin/filc doctor           # Check environment
+filc/bin/filc setup            # One-command setup (doctor + build + core ports)
 filc/bin/filc build             # Build Fil-C
 filc/bin/filc build --component=clang  # Build just the compiler
 filc/bin/filc test              # Run tests
@@ -29,6 +30,12 @@ filc/bin/filc compile -o prog prog.c  # Compile user code
 filc/bin/filc run prog.c        # Compile + run
 filc/bin/filc info              # Project info
 filc/bin/filc clean             # Clean build artifacts
+
+# Port system — build libraries on-demand
+filc/bin/filc port list         # List available ports
+filc/bin/filc port install duckdb  # Build duckdb + deps (zlib, openssl)
+filc/bin/filc port tree duckdb  # Show dependency tree
+filc/bin/filc port search ssl   # Search ports
 ```
 
 The CLI auto-links `compile_commands.json` after building for editor LSP support (clangd, VS Code).

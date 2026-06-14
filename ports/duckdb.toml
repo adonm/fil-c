@@ -1,0 +1,57 @@
+# Port: DuckDB
+# In-process SQL OLAP database engine (C++)
+#
+# To add DuckDB source:
+#   1. Clone into projects/:  git clone https://github.com/duckdb/duckdb projects/duckdb
+#   2. Check out a release tag: cd projects/duckdb && git checkout v1.3.0
+#   3. Commit to this repo:    git add projects/duckdb && git commit -m "add DuckDB v1.3.0 source"
+#
+# Or use the helper:  filc port fetch duckdb
+
+[port]
+name = "duckdb"
+version = "1.3.0"
+description = "In-process SQL OLAP database engine"
+homepage = "https://duckdb.org"
+
+[source]
+dir = "projects/duckdb"
+# If source is not in the repo, run: filc port fetch duckdb
+fetch = { type = "git", url = "https://github.com/duckdb/duckdb", tag = "v1.3.0" }
+
+[dependencies]
+deps = ["openssl", "zlib"]
+
+[build]
+script = """
+. libpas/common.sh
+set -e
+
+# DuckDB uses CMake with custom toolchain
+mkdir -p build && cd build
+
+CC="../../../build/bin/clang" \
+CXX="../../../build/bin/clang++" \
+cmake .. \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DBUILD_EXTENSIONS="httpfs;parquet;json;icu" \
+  -DCMAKE_PREFIX_PATH="$DEPS_PREFIX" \
+  -DBUILD_SHELL=OFF \
+  -DBUILD_UNITTESTS=OFF \
+  -DBUILD_BENCHMARKS=OFF
+
+ninja -j $NCPU
+ninja install
+
+# Copy headers manually (DuckDB's cmake install doesn't always get them all)
+mkdir -p "$PREFIX/include/duckdb"
+cp -r ../src/include/duckdb/* "$PREFIX/include/duckdb/"
+cp ../src/include/duckdb.hpp "$PREFIX/include/" 2>/dev/null || true
+cp ../src/include/duckdb.h "$PREFIX/include/" 2>/dev/null || true
+"""
+
+[pkgconfig]
+cflags = "-I${includedir} -I${includedir}/duckdb"
+libs = "-L${libdir} -lduckdb"

@@ -1,0 +1,30 @@
+# Port: ICU (International Components for Unicode)
+# Unicode/i18n library needed by SpiderMonkey/MozJS
+
+[port]
+name = "icu"
+version = "76.1"
+description = "International Components for Unicode"
+homepage = "https://icu.unicode.org"
+
+[source]
+dir = "projects/icu-76.1"
+
+[dependencies]
+deps = []
+
+[build]
+script = """
+. libpas/common.sh
+set -e
+cd icu4c/source
+CC="../../../build/bin/clang" CXX="../../../build/bin/clang++" \
+  CFLAGS="-g -O2" CXXFLAGS="-g -O2 -std=c++20" \
+  ./configure --prefix="$PREFIX" --disable-tests --disable-samples
+make -j $NCPU
+make install
+"""
+
+[pkgconfig]
+cflags = "-I${includedir}"
+libs = "-L${libdir} -licuuc -licui18n -licudata"

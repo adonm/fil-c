@@ -13,6 +13,26 @@ Key characteristics:
 - **Platform**: Currently Linux/X86_64 only
 - **Performance**: 1.5x-5x slower than standard C (actively being optimized)
 
+For a detailed architecture guide, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Developer CLI
+
+Use `filc/bin/filc` for common tasks:
+
+```bash
+filc/bin/filc doctor           # Check environment
+filc/bin/filc build             # Build Fil-C
+filc/bin/filc build --component=clang  # Build just the compiler
+filc/bin/filc test              # Run tests
+filc/bin/filc test --filter=alloc  # Run matching tests
+filc/bin/filc compile -o prog prog.c  # Compile user code
+filc/bin/filc run prog.c        # Compile + run
+filc/bin/filc info              # Project info
+filc/bin/filc clean             # Clean build artifacts
+```
+
+The CLI auto-links `compile_commands.json` after building for editor LSP support (clangd, VS Code).
+
 ## Build System
 
 ### Prerequisites (via mise)
@@ -66,6 +86,10 @@ filc/run-tests --filter regex     # Run tests matching pattern
 filc/run-tests --test testname    # Run specific test
 filc/run-tests --verbose          # Verbose output
 filc/run-tests --no-run           # Compile only, don't run
+
+# Or via the CLI:
+filc/bin/filc test                # Run all tests
+filc/bin/filc test --filter=regex # Run matching tests
 ```
 
 ### Test Structure

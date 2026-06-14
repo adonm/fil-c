@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# filc — Fil-C developer CLI wrapper
+# Finds the right ruby and invokes filc.rb
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+FILC_RB="${SCRIPT_DIR}/filc.rb"
+
+# Find ruby: try mise shims, system, brew, or mise install dirs
+find_ruby() {
+    for candidate in \
+        "$HOME/.local/share/mise/shims/ruby" \
+        "$HOME/.local/share/mise/installs/ruby/latest/bin/ruby" \
+        "$(command -v ruby 2>/dev/null)" \
+        /home/linuxbrew/.linuxbrew/opt/ruby/bin/ruby \
+        /usr/bin/ruby; do
+        if [ -n "${candidate:-}" ] && [ -x "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    # Last resort: try mise exec
+    if command -v mise &>/dev/null; then
+        local rb
+        rb=$(mise exec --command="ruby -e 'puts RbConfig.ruby'" 2>/dev/null) || true
+        if [ -n "${rb:-}" ] && [ -x "$rb" ]; then
+            echo "$rb"
+            return 0
+        fi
+    fi
+    echo "filc: ruby not found. Run 'mise install' first." >&2
+    return 1
+}
+
+RUBY_BIN=$(find_ruby) || exit 1
+exec "$RUBY_BIN" "$FILC_RB" "$@"

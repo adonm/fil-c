@@ -6,6 +6,11 @@
 #   mise run install-deps    # install system packages via Homebrew
 #   mise run setup           # build Fil-C core components
 #
+# Daily workflow:
+#   filc doctor              # check environment
+#   filc build               # build Fil-C
+#   filc test                # run tests
+#
 # See: https://mise.jdx.dev/bootstrap.html
 
 [settings]
@@ -15,7 +20,11 @@ experimental = true
 # Versioned build tools managed by mise
 cmake = "latest"       # LLVM/Clang build system
 ninja = "latest"       # LLVM/Clang build executor
-ruby = "latest"        # Test runner (filc/run-tests)
+ruby = "latest"        # Test runner (filc/run-tests) and filc CLI
+
+[tasks.doctor]
+description = "Check development environment"
+run = "filc/bin/filc doctor"
 
 [tasks.install-deps]
 description = "Install system-level dependencies via Homebrew (Linux/x86_64)"
@@ -72,7 +81,7 @@ run = """
   done
 
   echo ""
-  echo "Next: run 'mise run setup' to build Fil-C"
+  echo "Next: run 'filc build' or 'mise run setup' to build Fil-C"
   echo ""
 
   # Check kernel headers (required by build_os_include.sh)
@@ -88,9 +97,27 @@ description = "Build Fil-C core components (fast build)"
 run = "./build_all_fast.sh"
 
 [tasks.full-build]
-description = "Build Fil-C with all ported applications"
+description = "Build Fil-C with all ported applications (slow)"
 run = "./build_all.sh"
+
+[tasks.build]
+description = "Build Fil-C (same as setup)"
+run = "./build_all_fast.sh"
 
 [tasks.test]
 description = "Run Fil-C test suite"
 run = "./filc/run-tests"
+
+[tasks.clean]
+description = "Clean all build artifacts"
+run = "filc/bin/filc clean"
+
+[tasks.shell]
+description = "Start a shell with Fil-C tools on PATH"
+run = """
+  echo "Starting Fil-C development shell..."
+  echo "  Try: clang --version, filcc hello.c, filc test"
+  export PATH="$(pwd)/build/bin:$PATH"
+  export LD_LIBRARY_PATH="$(pwd)/pizfix/lib_test:$(pwd)/pizfix/lib:$LD_LIBRARY_PATH"
+  exec "${SHELL:-/bin/bash}"
+"""

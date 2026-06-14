@@ -1,0 +1,93 @@
+name: Fil-C CI
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_COMPRESS: true
+      CCACHE_COMPRESSLEVEL: 6
+      CCACHE_MAXSIZE: 2G
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            autoconf \
+            automake \
+            libtool \
+            patchelf \
+            bison \
+            flex \
+            texinfo \
+            gettext \
+            curl \
+            pkg-config \
+            ccache \
+            linux-headers-generic
+
+      - name: Setup ccache cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref }}-
+            ccache-${{ runner.os }}-
+
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Trust mise config
+        run: mise trust
+
+      - name: Install mise tools
+        run: mise install
+
+      - name: Verify toolchain
+        run: |
+          echo "=== Toolchain ==="
+          gcc --version | head -1
+          g++ --version | head -1
+          cmake --version | head -1
+          ninja --version
+          ruby --version
+          ccache --version | head -1
+          ccache -s
+
+      - name: Build Fil-C
+        run: ./build_all_fast.sh
+
+      - name: Show ccache stats
+        if: always()
+        run: ccache -s
+
+      - name: Run tests
+        run: filc/run-tests

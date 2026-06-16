@@ -24,20 +24,27 @@ deps = ["openssl", "zlib"]
 
 [build]
 script = """
-. libpas/common.sh
+. ../../libpas/common.sh
 set -e
 
-# DuckDB uses CMake with custom toolchain
+# DuckDB uses CMake with Ninja
 mkdir -p build && cd build
 
-CC="../../../build/bin/clang" \
-CXX="../../../build/bin/clang++" \
+# Use Fil-C compilers from environment (CC/CXX set by port system)
+# strip flags from CC/CXX for cmake - cmake handles optimization itself
+CC_PATH="${CC%% *}"
+CXX_PATH="${CXX%% *}"
+
+CC="$CC_PATH" CXX="$CXX_PATH" \
 cmake .. \
   -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CXX_STANDARD=17 \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
-  -DBUILD_EXTENSIONS="httpfs;parquet;json;icu" \
+  -DINSTALL_LIB_DIR=lib \
   -DCMAKE_PREFIX_PATH="$DEPS_PREFIX" \
+  -DMUSL_ENABLED=ON \
+  -DBUILD_EXTENSIONS="parquet;json;icu" \
   -DBUILD_SHELL=OFF \
   -DBUILD_UNITTESTS=OFF \
   -DBUILD_BENCHMARKS=OFF

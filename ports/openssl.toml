@@ -15,10 +15,21 @@ deps = ["zlib"]
 
 [build]
 script = """
-. libpas/common.sh
+. ../../libpas/common.sh
 set -e
-CC="$PWD/../../../build/bin/clang -g -O2" ./Configure \
-    zlib --prefix="$PREFIX" --libdir=lib
+
+# Perl FindBin module may not be in default @INC
+export PERL5LIB="/home/linuxbrew/.linuxbrew/lib/perl5/5.42:$PERL5LIB"
+
+extract_source
+./Configure \
+    zlib \
+    --prefix="$PREFIX" \
+    --libdir=lib \
+    -I"$PREFIX/../zlib/include" \
+    -L"$PREFIX/../zlib/lib" \
+    CC="$CC" \
+    CXX="$CXX"
 make -j $NCPU
 make -j $NCPU install_sw
 make -j $NCPU install_ssldirs

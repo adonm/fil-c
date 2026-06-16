@@ -92,6 +92,7 @@
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/Transforms/Scalar/JumpThreading.h"
 #include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
+#include "llvm/Transforms/Scalar/MemCpyOptimizer.h"
 #include "llvm/Transforms/Scalar/SCCP.h"
 #include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/Transforms/Scalar/SimplifyCFG.h"
@@ -1054,6 +1055,11 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
             EarlyFPM.addPass(EarlyCSEPass());
             if (FilCDSE)
               EarlyFPM.addPass(DSEPass());
+            // Run MemCpyOpt early so that struct assignments and byte-copy
+            // patterns are lowered to llvm.memcpy intrinsics before the
+            // FilPizlonator runs. This enables type-directed field-by-field
+            // capability copying instead of the generic word-slot memmove.
+            EarlyFPM.addPass(MemCpyOptPass());
             MPM.addPass(createModuleToFunctionPassAdaptor(
                           std::move(EarlyFPM), /*EagerlyInvalidate =*/ true));
 

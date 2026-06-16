@@ -6724,6 +6724,51 @@ class Pizlonator {
       "", FailTerm);
   }
   
+  // Attempt to determine the struct type being memcpy'd by walking the pointer back through
+  // bitcasts and GEPs to find an alloca or known struct type. Returns the StructType if found
+  // and the alloc size matches the memcpy count, or nullptr otherwise.
+  StructType* getMemmoveStructType(Value* Ptr, FullMemoryAccessData& FMAD, size_t Count,
+                                   Instruction* I) {
+    // Check the alloca directly if available.
+    if (FMAD.MAD.MK == MemoryKind::LocalNaked && FMAD.MAD.OrigAI) {
+      Type* AllocT = FMAD.MAD.OrigAI->getAllocatedType();
+      if (StructType* ST = dyn_cast<StructType>(AllocT)) {
+        if (DL.getTypeAllocSize(ST) == Count && hasPtrs(ST))
+          return ST;
+      }
+    }
+    if (FMAD.POD.LAD.OrigAI) {
+      Type* AllocT = FMAD.POD.LAD.OrigAI->getAllocatedType();
+      if (StructType* ST = dyn_cast<StructType>(AllocT)) {
+        if (DL.getTypeAllocSize(ST) == Count && hasPtrs(ST))
+          return ST;
+      }
+    }
+    // Walk through bitcasts and GEPs to find the underlying struct type.
+    Value* Underlying = Ptr;
+    while (Underlying) {
+      if (auto* GEP = dyn_cast<GetElementPtrInst>(Underlying)) {
+        Type* SrcTy = GEP->getSourceElementType();
+        if (StructType* ST = dyn_cast<StructType>(SrcTy)) {
+          if (DL.getTypeAllocSize(ST) == Count && hasPtrs(ST))
+            return ST;
+        }
+        Underlying = GEP->getPointerOperand();
+      } else if (auto* BC = dyn_cast<BitCastInst>(Underlying)) {
+        Underlying = BC->getOperand(0);
+      } else if (auto* AI = dyn_cast<AllocaInst>(Underlying)) {
+        Type* AllocT = AI->getAllocatedType();
+        if (StructType* ST = dyn_cast<StructType>(AllocT)) {
+          if (DL.getTypeAllocSize(ST) == Count && hasPtrs(ST))
+            return ST;
+        }
+        break;
+      } else
+        break;
+    }
+    return nullptr;
+  }
+  
   static constexpr unsigned InlineMemmoveDstSizeLimit = 40;
   
   void emitOptMemmove(Value* Dst, Value* Src, size_t Count, Instruction* I) {
@@ -7289,6 +7334,36 @@ class Pizlonator {
     Value* Dst = CI->getArgOperand(0);
     Value* Src = CI->getArgOperand(1);
     Value* Count = CI->getArgOperand(2);
+
+    // Try type-directed field-by-field copy for known struct types.
+    // This eliminates the phase-mismatch capability-loss problem for struct copies
+    // where the compiler can determine the struct layout at compile time.
+    if (isa<ConstantInt>(Count)) {
+      size_t CountVal = cast<ConstantInt>(Count)->getZExtValue();
+      // Cap at 4096 bytes to avoid IR blowup from very large structs or arrays.
+      if (CountVal && CountVal <= 4096) {
+        FullMemoryAccessData DstFMAD = accessDataForOperand(Dst, I, 0, I);
+        FullMemoryAccessData SrcFMAD = accessDataForOperand(Src, I, 1, I);
+        
+        StructType* ST = getMemmoveStructType(Dst, DstFMAD, CountVal, I);
+        if (!ST)
+          ST = getMemmoveStructType(Src, SrcFMAD, CountVal, I);
+        
+        if (ST) {
+          // Emit field-by-field load+store. This correctly handles pointer fields
+          // (capability metadata is loaded from src aux and stored to dst aux)
+          // and eliminates the phase-mismatch nuke behavior.
+          Value* Loaded = loadValueRecurseAfterCheck(
+            ST, SrcFMAD.MAD, false, Align(1), AtomicOrdering::NotAtomic,
+            SyncScope::System, I);
+          storeValueRecurseAfterCheck(
+            ST, Loaded, DstFMAD.MAD, false, Align(1), AtomicOrdering::NotAtomic,
+            SyncScope::System, I);
+          return;
+        }
+      }
+    }
+
     if (isInlineableMemmoveCall(I)) {
       emitOptMemmove(Dst, Src, cast<ConstantInt>(Count)->getZExtValue(), I);
       return;

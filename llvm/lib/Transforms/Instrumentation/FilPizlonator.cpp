@@ -1783,6 +1783,8 @@ class Pizlonator {
       FunctionName = Scope->getSubprogram()->getLinkageName();
       if (FunctionName.size())
         FunctionName = demangle(FunctionName);
+      if (FunctionName.empty())
+        FunctionName = Scope->getSubprogram()->getName();
     }
     if (FunctionName.empty())
       FunctionName = Scope->getName();

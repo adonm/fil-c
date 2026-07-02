@@ -1669,10 +1669,13 @@ void filc_thread_stop_allocators(filc_thread* my_thread)
     stop_thread_allocators(my_thread);
 }
 
-void filc_thread_sweep_mark_stack(filc_thread* my_thread)
+void filc_thread_clean_up_after_marking(filc_thread* my_thread)
 {
     filc_thread_assert_participates_in_pollchecks(my_thread);
 
+    if (PAS_ENABLE_TESTING)
+        filc_thread_mark_roots(my_thread, FUGC_DONT_MARKER, NULL);
+        
     if (filc_mark_stack_num_objects(&my_thread->mark_stack)) {
         pas_log("Non-empty thread mark stack at start of sweep! Objects:\n");
         size_t index;
@@ -1683,15 +1686,10 @@ void filc_thread_sweep_mark_stack(filc_thread* my_thread)
     }
     PAS_ASSERT(!filc_mark_stack_num_objects(&my_thread->mark_stack));
     filc_mark_stack_reset(&my_thread->mark_stack);
-}
 
-void filc_thread_reset_grey_fibers(filc_thread* my_thread)
-{
 #if FILC_HAS_FIBER_CONTEXT
     filc_raw_ptr_array_reset(&my_thread->grey_fibers);
-#else /* FILC_HAS_FIBER_CONTEXT -> so !FILC_HAS_FIBER_CONTEXT */
-    PAS_UNUSED_PARAM(my_thread);
-#endif /* FILC_HAS_FIBER_CONTEXT -> so end of !FILC_HAS_FIBER_CONTEXT */
+#endif /* FILC_HAS_FIBER_CONTEXT */
 }
 
 void filc_thread_assert_no_grey_fibers(filc_thread* my_thread)

@@ -434,8 +434,7 @@ static void after_marking_pollcheck_callback(filc_thread* thread, void* arg)
     PAS_ASSERT(!arg);
     dump_handshake(thread, "after_marking");
     filc_thread_stop_allocators(thread);
-    filc_thread_sweep_mark_stack(thread);
-    filc_thread_reset_grey_fibers(thread);
+    filc_thread_clean_up_after_marking(thread);
 }
 
 static PAS_ALWAYS_INLINE bool donate_impl(filc_mark_stack* mark_stack, pas_lock_lock_mode mode,
@@ -1673,6 +1672,18 @@ void fugc_handshake(void (*callback)(void* arg), void* arg)
     PAS_ASSERT(!handshake_callback_arg);
     
     pas_system_mutex_unlock(&collector_thread_state_lock);
+}
+
+PAS_NO_RETURN void fugc_dont_mark_fail(void* mark_base, filc_object* object)
+{
+    pas_log("[%d] fugc: verify: attempted to mark %p ", pas_getpid(), mark_base);
+    if (object) {
+        pas_log("(");
+        filc_object_dump(object, pas_log_stream);
+        pas_log(")");
+    }
+    pas_log(" after marking finished.\n");
+    pas_panic("post-mark verification failed.");
 }
 
 void fugc_donate(filc_mark_stack* mark_stack)

@@ -2136,8 +2136,7 @@ PAS_API bool filc_thread_participates_in_pollchecks(filc_thread* thread);
 PAS_API void filc_thread_assert_participates_in_handshakes(filc_thread* my_thread);
 PAS_API void filc_thread_assert_participates_in_pollchecks(filc_thread* my_thread);
 
-PAS_API void filc_thread_sweep_mark_stack(filc_thread* my_thread);
-PAS_API void filc_thread_reset_grey_fibers(filc_thread* my_thread);
+PAS_API void filc_thread_clean_up_after_marking(filc_thread* my_thread);
 PAS_API void filc_thread_assert_no_grey_fibers(filc_thread* my_thread);
 PAS_API void filc_thread_donate(filc_thread* my_thread);
 

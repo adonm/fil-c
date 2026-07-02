@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2024-2025 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -225,6 +226,62 @@ static PAS_ALWAYS_INLINE bool fugc_set_is_marked(void* mark_base)
         .is_marked = verse_heap_is_marked, \
         .set_is_marked = fugc_set_is_marked, \
         .is_fugc = true \
+    })
+
+PAS_API PAS_NO_RETURN void fugc_dont_mark_fail(void* mark_base, filc_object* object);
+
+static PAS_ALWAYS_INLINE bool fugc_dont_mark(filc_mark_stack* mark_stack, filc_object* object)
+{
+    PAS_ASSERT(!mark_stack);
+    if (!object)
+        return false;
+    uintptr_t aux = object->aux;
+    filc_object_flags flags = filc_aux_get_flags(aux);
+    if ((flags & FILC_OBJECT_FLAG_GLOBAL))
+        return false;
+    void* mark_base = filc_object_mark_base_with_flags(object, flags);
+    if (verse_heap_is_marked(mark_base))
+        return false;
+    fugc_dont_mark_fail(mark_base, object);
+}
+
+static PAS_ALWAYS_INLINE void fugc_dont_mark_or_free_flight(filc_mark_stack* mark_stack,
+                                                            filc_ptr* ptr)
+{
+    fugc_dont_mark(mark_stack, filc_object_for_lower(filc_flight_ptr_load_lower(ptr)));
+}
+
+static PAS_ALWAYS_INLINE bool fugc_dont_set_is_marked(void* mark_base)
+{
+    if (verse_heap_is_marked(mark_base))
+        return false;
+    fugc_dont_mark_fail(mark_base, NULL);
+}
+
+static PAS_ALWAYS_INLINE void fugc_dont_mark_or_free_lower_or_box(filc_mark_stack* mark_stack,
+                                                                  filc_lower_or_box* lower_or_box_ptr)
+{
+    PAS_ASSERT(!mark_stack);
+    filc_lower_or_box lower_or_box = filc_lower_or_box_load_unfenced(lower_or_box_ptr);
+    if (filc_lower_or_box_is_null(lower_or_box))
+        return;
+    if (PAS_UNLIKELY(filc_lower_or_box_is_box(lower_or_box))) {
+        filc_atomic_box* box = filc_lower_or_box_get_box(lower_or_box);
+        fugc_dont_set_is_marked(box);
+        fugc_dont_mark_or_free_flight(mark_stack, &box->ptr);
+        return;
+    }
+    fugc_dont_mark(mark_stack, filc_object_for_lower(filc_lower_or_box_get_lower(lower_or_box)));
+}
+
+/* This is a verifying marker that checks that nothing gets marked. */
+#define FUGC_DONT_MARKER ((filc_marker){ \
+        .mark = fugc_dont_mark, \
+        .mark_or_free_flight = fugc_dont_mark_or_free_flight, \
+        .mark_or_free_lower_or_box = fugc_dont_mark_or_free_lower_or_box, \
+        .is_marked = verse_heap_is_marked, \
+        .set_is_marked = fugc_dont_set_is_marked, \
+        .is_fugc = false \
     })
 
 PAS_API void fugc_donate(filc_mark_stack* mark_stack);

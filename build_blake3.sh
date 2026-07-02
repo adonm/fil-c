@@ -30,8 +30,13 @@ set -x
 
 cd projects/BLAKE3-1.8.5
 extract_source
-CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DBLAKE3_SIMD_TYPE=x86-intrinsics
+CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DBLAKE3_SIMD_TYPE=x86-intrinsics -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build c/build --target install -j $NCPU
-../../../build/bin/clang -o example c/example.c -lblake3
+../../../build/bin/clang -o example c/example.c -lblake3 -O2 -g
 test `./example < README.md` = "a5fdca3e301ce0f1b4bf92e9532fdd731842715b244b26f393404796a1c15b06"
+test `./example < ../../../benchmarkData/Pizigani_1367_Chart_10MB.pnm` = "5eefbdaa7deb1c614f17d39f7f1d6274856f005a7d3e3543f17c5bac4fbb9d25"
+
+# I would need to build the onetbb thing to do this.
+# ../../../build/bin/clang -o example_tbb c/example_tbb.c -lblake3 -O2 -g
+# test `./example_tbb ../../../benchmarkData/Pizigani_1367_Chart_10MB.pnm` = "a5fdca3e301ce0f1b4bf92e9532fdd731842715b244b26f393404796a1c15b06"
 

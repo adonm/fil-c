@@ -26,7 +26,7 @@
 
 set -e
 
-VERSION="0.680"
+VERSION="0.681"
 
 usage() {
     echo "Usage: ./setup.sh [OPTIONS]"

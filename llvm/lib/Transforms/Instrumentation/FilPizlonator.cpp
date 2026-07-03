@@ -11755,8 +11755,12 @@ class Pizlonator {
       Type* NormalizedRetType = normalizeRetType(FT->getReturnType());
       uint64_t Signature = computeSignature(AIs, NormalizedRetType);
       Value* ArgSize = nullptr;
-      if (Signature == GenericSignature)
-        ArgSize = storeCC(AIs, Vs, CI, CI->getDebugLoc());
+      if (Signature == GenericSignature) {
+        if (AIs.empty())
+          ArgSize = ConstantInt::get(IntPtrTy, 0);
+        else
+          ArgSize = storeCC(AIs, Vs, CI, CI->getDebugLoc());
+      }
 
       bool CanCatch;
       LandingPadInst* LPI;

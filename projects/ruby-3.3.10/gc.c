@@ -991,8 +991,8 @@ rb_define_finalizer_no_check(VALUE obj, VALUE block)
 
     box = zweak_map_get(objspace->finalizer_table, obj);
     if (!box) {
-        struct finalizer_box* box = zgc_finq_alloc(objspace->finalizer_queue,
-                                                   sizeof(struct finalizer_box));
+        box = zgc_finq_alloc(objspace->finalizer_queue,
+                             sizeof(struct finalizer_box));
         box->object = obj;
         zweak_map_set(objspace->finalizer_table, obj, box);
     }

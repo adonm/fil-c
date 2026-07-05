@@ -509,9 +509,23 @@ typedef struct RVALUE {
 
 #define RANY(o) ((RVALUE*)(o))
 
+struct finalizer_payload {
+    VALUE table;
+    struct finalizer_payload* prev;
+    struct finalizer_payload* next;
+};
+
+struct finalizer_box {
+    VALUE object;
+    struct finalizer_payload* payload;
+    bool is_file;
+};
+
 struct rb_objspace {
     zweak_map *finalizer_table;
     zgc_finq *finalizer_queue;
+    struct finalizer_payload head;
+    struct finalizer_payload tail;
     rb_postponed_job_handle_t finalize_deferred_pjob;
     rb_atomic_t finalizing;
     zgc_cycle_number completed_cycle;
@@ -526,6 +540,8 @@ rb_objspace_alloc(void)
     struct rb_objspace *result = malloc(sizeof(struct rb_objspace));
     result->finalizer_table = zweak_map_new();
     result->finalizer_queue = zgc_finq_new();
+    result->head.next = &result->tail;
+    result->tail.prev = &result->head;
     result->finalize_deferred_pjob = rb_postponed_job_preregister(0, gc_finalize_deferred, result);
     if (result->finalize_deferred_pjob == POSTPONED_JOB_HANDLE_INVALID) {
         rb_bug("Could not preregister postponed job for GC");
@@ -557,12 +573,6 @@ rb_gc_size_allocatable_p(size_t size)
 {
     return size <= rb_size_pool_slot_size(SIZE_POOL_COUNT - 1);
 }
-
-struct finalizer_box {
-    VALUE object;
-    VALUE table;
-    bool is_file;
-};
 
 static inline VALUE newobj(VALUE klass, uintptr_t flags, VALUE v1, VALUE v2, VALUE v3, size_t size)
 {
@@ -997,20 +1007,25 @@ rb_define_finalizer_no_check(VALUE obj, VALUE block)
         zweak_map_set(objspace->finalizer_table, obj, box);
     }
 
-    if (box->table) {
-        long len = RARRAY_LEN(box->table);
+    if (box->payload) {
+        long len = RARRAY_LEN(box->payload->table);
         long i;
         for (i = 0; i < len; i++) {
-            VALUE recv = RARRAY_AREF(box->table, i);
+            VALUE recv = RARRAY_AREF(box->payload->table, i);
             if (rb_equal(recv, block)) {
                 block = recv;
                 goto end;
             }
         }
-        rb_ary_push(box->table, block);
+        rb_ary_push(box->payload->table, block);
     } else {
-        box->table = rb_ary_new3(1, block);
-        RBASIC_CLEAR_CLASS(box->table);
+        box->payload = malloc(sizeof(struct finalizer_payload));
+        box->payload->prev = &objspace->head;
+        box->payload->next = objspace->head.next;
+        objspace->head.next->prev = box->payload;
+        objspace->head.next = box->payload;
+        box->payload->table = rb_ary_new3(1, block);
+        RBASIC_CLEAR_CLASS(box->payload->table);
     }
   end:
     block = rb_ary_new3(2, INT2FIX(0), block);
@@ -1059,7 +1074,7 @@ rb_gc_copy_finalizer(VALUE dest, VALUE obj)
         struct finalizer_box *new_box = zgc_finq_alloc(objspace->finalizer_queue,
                                                        sizeof(struct finalizer_box));
         new_box->object = dest;
-        new_box->table = box->table;
+        new_box->payload = box->payload;
         zweak_map_set(objspace->finalizer_table, dest, new_box);
     }
 
@@ -1072,6 +1087,17 @@ rb_objspace_free_objects(struct rb_objspace *objspace)
 }
 
 static void
+finalize_box_payload(struct finalizer_box* box)
+{
+    if (box->payload && box->payload->table) {
+        run_finalizer(box->object, box->payload->table);
+        box->payload->next->prev = box->payload->prev;
+        box->payload->prev->next = box->payload->next;
+        box->payload->table = NULL;
+    }
+}
+
+static void
 finalize_box(struct finalizer_box* box, bool expect_valid)
 {
     if (expect_valid) {
@@ -1081,14 +1107,12 @@ finalize_box(struct finalizer_box* box, bool expect_valid)
             return;
         }
     }
-    if (box->table) {
-        run_finalizer(box->object, box->table);
-    }
+    finalize_box_payload(box);
     if (box->is_file) {
         rb_io_fptr_finalize_internal(RANY(box->object)->as.file.fptr);
     }
     box->object = NULL;
-    box->table = NULL;
+    box->payload = NULL;
     box->is_file = false;
 }
 
@@ -1114,9 +1138,16 @@ void
 rb_objspace_call_finalizer(struct rb_objspace *objspace)
 {
     if (ATOMIC_EXCHANGE(objspace->finalizing, 1)) return;
+
     finalize_deferred(objspace, true);
 
+    /* Make sure all user finalizers get called first. */
     zweak_map_iter *iter = zweak_map_get_iter(objspace->finalizer_table);
+    while (zweak_map_iter_next(iter)) {
+        finalize_box_payload(zweak_map_iter_value(iter));
+    }
+
+    iter = zweak_map_get_iter(objspace->finalizer_table);
     while (zweak_map_iter_next(iter)) {
         finalize_box(zweak_map_iter_value(iter), false);
     }

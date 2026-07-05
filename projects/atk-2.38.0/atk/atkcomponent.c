@@ -19,6 +19,8 @@
 
 #include "config.h"
 
+#include <stdfil.h>
+
 #include "atkcomponent.h"
 
 /**
@@ -117,7 +119,7 @@ atk_component_base_init (AtkComponentIface *class)
                       (GSignalAccumulator) NULL, NULL,
                       g_cclosure_marshal_VOID__BOXED,
                       G_TYPE_NONE, 1,
-                      ATK_TYPE_RECTANGLE | G_SIGNAL_TYPE_STATIC_SCOPE);
+                      zorptr (ATK_TYPE_RECTANGLE, (uintptr_t) G_SIGNAL_TYPE_STATIC_SCOPE));
 
       initialized = TRUE;
     }

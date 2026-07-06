@@ -2295,21 +2295,21 @@ settings_install_property_parser (GtkSettingsClass   *class,
 {
   GSList *node, *next;
 
-  switch (G_TYPE_FUNDAMENTAL (G_PARAM_SPEC_VALUE_TYPE (pspec)))
+  switch ((uintptr_t) G_TYPE_FUNDAMENTAL (G_PARAM_SPEC_VALUE_TYPE (pspec)))
     {
-    case G_TYPE_BOOLEAN:
-    case G_TYPE_UCHAR:
-    case G_TYPE_CHAR:
-    case G_TYPE_UINT:
-    case G_TYPE_INT:
-    case G_TYPE_ULONG:
-    case G_TYPE_LONG:
-    case G_TYPE_FLOAT:
-    case G_TYPE_DOUBLE:
-    case G_TYPE_STRING:
-    case G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_INT:
+    case (uintptr_t) G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_ENUM:
       break;
-    case G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_BOXED:
       if (strcmp (g_param_spec_get_name (pspec), "color-hash") == 0)
         {
           break;
@@ -3419,9 +3419,9 @@ gtk_settings_load_from_key_file (GtkSettings       *settings,
         continue;
 
       value_type = G_PARAM_SPEC_VALUE_TYPE (pspec);
-      switch (value_type)
+      switch ((uintptr_t) value_type)
         {
-        case G_TYPE_BOOLEAN:
+        case (uintptr_t) G_TYPE_BOOLEAN:
           {
             gboolean b_val;
 
@@ -3432,8 +3432,8 @@ gtk_settings_load_from_key_file (GtkSettings       *settings,
             break;
           }
 
-        case G_TYPE_INT:
-        case G_TYPE_UINT:
+        case (uintptr_t) G_TYPE_INT:
+        case (uintptr_t) G_TYPE_UINT:
           {
             gint i_val;
 
@@ -3444,8 +3444,8 @@ gtk_settings_load_from_key_file (GtkSettings       *settings,
             break;
           }
 
-        case G_TYPE_FLOAT:
-        case G_TYPE_DOUBLE:
+        case (uintptr_t) G_TYPE_FLOAT:
+        case (uintptr_t) G_TYPE_DOUBLE:
           {
             gdouble d_val;
 

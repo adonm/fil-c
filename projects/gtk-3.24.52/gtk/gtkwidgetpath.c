@@ -505,8 +505,8 @@ gtk_widget_path_iter_get_sibling_index (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  gtk_internal_return_val_if_fail (path != NULL, G_TYPE_INVALID);
-  gtk_internal_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path != NULL, 0);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;

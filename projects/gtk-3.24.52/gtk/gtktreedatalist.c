@@ -123,60 +123,60 @@ _gtk_tree_data_list_node_to_value (GtkTreeDataList *list,
 {
   g_value_init (value, type);
 
-  switch (get_fundamental_type (type))
+  switch ((uintptr_t) get_fundamental_type (type))
     {
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       g_value_set_boolean (value, (gboolean) list->data.v_int);
       break;
-    case G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_CHAR:
       g_value_set_schar (value, (gchar) list->data.v_char);
       break;
-    case G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_UCHAR:
       g_value_set_uchar (value, (guchar) list->data.v_uchar);
       break;
-    case G_TYPE_INT:
+    case (uintptr_t) G_TYPE_INT:
       g_value_set_int (value, (gint) list->data.v_int);
       break;
-    case G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_UINT:
       g_value_set_uint (value, (guint) list->data.v_uint);
       break;
-    case G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_LONG:
       g_value_set_long (value, list->data.v_long);
       break;
-    case G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_ULONG:
       g_value_set_ulong (value, list->data.v_ulong);
       break;
-    case G_TYPE_INT64:
+    case (uintptr_t) G_TYPE_INT64:
       g_value_set_int64 (value, list->data.v_int64);
       break;
-    case G_TYPE_UINT64:
+    case (uintptr_t) G_TYPE_UINT64:
       g_value_set_uint64 (value, list->data.v_uint64);
       break;
-    case G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_ENUM:
       g_value_set_enum (value, list->data.v_int);
       break;
-    case G_TYPE_FLAGS:
+    case (uintptr_t) G_TYPE_FLAGS:
       g_value_set_flags (value, list->data.v_uint);
       break;
-    case G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_FLOAT:
       g_value_set_float (value, (gfloat) list->data.v_float);
       break;
-    case G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_DOUBLE:
       g_value_set_double (value, (gdouble) list->data.v_double);
       break;
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       g_value_set_string (value, (gchar *) list->data.v_pointer);
       break;
-    case G_TYPE_POINTER:
+    case (uintptr_t) G_TYPE_POINTER:
       g_value_set_pointer (value, (gpointer) list->data.v_pointer);
       break;
-    case G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_BOXED:
       g_value_set_boxed (value, (gpointer) list->data.v_pointer);
       break;
-    case G_TYPE_VARIANT:
+    case (uintptr_t) G_TYPE_VARIANT:
       g_value_set_variant (value, (gpointer) list->data.v_pointer);
       break;
-    case G_TYPE_OBJECT:
+    case (uintptr_t) G_TYPE_OBJECT:
       g_value_set_object (value, (GObject *) list->data.v_pointer);
       break;
     default:
@@ -189,65 +189,65 @@ void
 _gtk_tree_data_list_value_to_node (GtkTreeDataList *list,
 				   GValue          *value)
 {
-  switch (get_fundamental_type (G_VALUE_TYPE (value)))
+  switch ((uintptr_t) get_fundamental_type (G_VALUE_TYPE (value)))
     {
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       list->data.v_int = g_value_get_boolean (value);
       break;
-    case G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_CHAR:
       list->data.v_char = g_value_get_schar (value);
       break;
-    case G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_UCHAR:
       list->data.v_uchar = g_value_get_uchar (value);
       break;
-    case G_TYPE_INT:
+    case (uintptr_t) G_TYPE_INT:
       list->data.v_int = g_value_get_int (value);
       break;
-    case G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_UINT:
       list->data.v_uint = g_value_get_uint (value);
       break;
-    case G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_LONG:
       list->data.v_long = g_value_get_long (value);
       break;
-    case G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_ULONG:
       list->data.v_ulong = g_value_get_ulong (value);
       break;
-    case G_TYPE_INT64:
+    case (uintptr_t) G_TYPE_INT64:
       list->data.v_int64 = g_value_get_int64 (value);
       break;
-    case G_TYPE_UINT64:
+    case (uintptr_t) G_TYPE_UINT64:
       list->data.v_uint64 = g_value_get_uint64 (value);
       break;
-    case G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_ENUM:
       list->data.v_int = g_value_get_enum (value);
       break;
-    case G_TYPE_FLAGS:
+    case (uintptr_t) G_TYPE_FLAGS:
       list->data.v_uint = g_value_get_flags (value);
       break;
-    case G_TYPE_POINTER:
+    case (uintptr_t) G_TYPE_POINTER:
       list->data.v_pointer = g_value_get_pointer (value);
       break;
-    case G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_FLOAT:
       list->data.v_float = g_value_get_float (value);
       break;
-    case G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_DOUBLE:
       list->data.v_double = g_value_get_double (value);
       break;
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       g_free (list->data.v_pointer);
       list->data.v_pointer = g_value_dup_string (value);
       break;
-    case G_TYPE_OBJECT:
+    case (uintptr_t) G_TYPE_OBJECT:
       if (list->data.v_pointer)
 	g_object_unref (list->data.v_pointer);
       list->data.v_pointer = g_value_dup_object (value);
       break;
-    case G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_BOXED:
       if (list->data.v_pointer)
 	g_boxed_free (G_VALUE_TYPE (value), list->data.v_pointer);
       list->data.v_pointer = g_value_dup_boxed (value);
       break;
-    case G_TYPE_VARIANT:
+    case (uintptr_t) G_TYPE_VARIANT:
       if (list->data.v_pointer)
 	g_variant_unref (list->data.v_pointer);
       list->data.v_pointer = g_value_dup_variant (value);
@@ -269,40 +269,40 @@ _gtk_tree_data_list_node_copy (GtkTreeDataList *list,
   new_list = _gtk_tree_data_list_alloc ();
   new_list->next = NULL;
 
-  switch (get_fundamental_type (type))
+  switch ((uintptr_t) get_fundamental_type (type))
     {
-    case G_TYPE_BOOLEAN:
-    case G_TYPE_CHAR:
-    case G_TYPE_UCHAR:
-    case G_TYPE_INT:
-    case G_TYPE_UINT:
-    case G_TYPE_LONG:
-    case G_TYPE_ULONG:
-    case G_TYPE_INT64:
-    case G_TYPE_UINT64:
-    case G_TYPE_ENUM:
-    case G_TYPE_FLAGS:
-    case G_TYPE_POINTER:
-    case G_TYPE_FLOAT:
-    case G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_INT:
+    case (uintptr_t) G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_INT64:
+    case (uintptr_t) G_TYPE_UINT64:
+    case (uintptr_t) G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_FLAGS:
+    case (uintptr_t) G_TYPE_POINTER:
+    case (uintptr_t) G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_DOUBLE:
       new_list->data = list->data;
       break;
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       new_list->data.v_pointer = g_strdup (list->data.v_pointer);
       break;
-    case G_TYPE_OBJECT:
-    case G_TYPE_INTERFACE:
+    case (uintptr_t) G_TYPE_OBJECT:
+    case (uintptr_t) G_TYPE_INTERFACE:
       new_list->data.v_pointer = list->data.v_pointer;
       if (new_list->data.v_pointer)
 	g_object_ref (new_list->data.v_pointer);
       break;
-    case G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_BOXED:
       if (list->data.v_pointer)
 	new_list->data.v_pointer = g_boxed_copy (type, list->data.v_pointer);
       else
 	new_list->data.v_pointer = NULL;
       break;
-    case G_TYPE_VARIANT:
+    case (uintptr_t) G_TYPE_VARIANT:
       if (list->data.v_pointer)
 	new_list->data.v_pointer = g_variant_ref (list->data.v_pointer);
       else
@@ -332,9 +332,9 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
   gtk_tree_model_get_value (model, a, column, &a_value);
   gtk_tree_model_get_value (model, b, column, &b_value);
 
-  switch (get_fundamental_type (type))
+  switch ((uintptr_t) get_fundamental_type (type))
     {
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       if (g_value_get_boolean (&a_value) < g_value_get_boolean (&b_value))
 	retval = -1;
       else if (g_value_get_boolean (&a_value) == g_value_get_boolean (&b_value))
@@ -342,7 +342,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_CHAR:
       if (g_value_get_schar (&a_value) < g_value_get_schar (&b_value))
 	retval = -1;
       else if (g_value_get_schar (&a_value) == g_value_get_schar (&b_value))
@@ -350,7 +350,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_UCHAR:
       if (g_value_get_uchar (&a_value) < g_value_get_uchar (&b_value))
 	retval = -1;
       else if (g_value_get_uchar (&a_value) == g_value_get_uchar (&b_value))
@@ -358,7 +358,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_INT:
+    case (uintptr_t) G_TYPE_INT:
       if (g_value_get_int (&a_value) < g_value_get_int (&b_value))
 	retval = -1;
       else if (g_value_get_int (&a_value) == g_value_get_int (&b_value))
@@ -366,7 +366,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_UINT:
       if (g_value_get_uint (&a_value) < g_value_get_uint (&b_value))
 	retval = -1;
       else if (g_value_get_uint (&a_value) == g_value_get_uint (&b_value))
@@ -374,7 +374,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_LONG:
       if (g_value_get_long (&a_value) < g_value_get_long (&b_value))
 	retval = -1;
       else if (g_value_get_long (&a_value) == g_value_get_long (&b_value))
@@ -382,7 +382,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_ULONG:
       if (g_value_get_ulong (&a_value) < g_value_get_ulong (&b_value))
 	retval = -1;
       else if (g_value_get_ulong (&a_value) == g_value_get_ulong (&b_value))
@@ -390,7 +390,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_INT64:
+    case (uintptr_t) G_TYPE_INT64:
       if (g_value_get_int64 (&a_value) < g_value_get_int64 (&b_value))
 	retval = -1;
       else if (g_value_get_int64 (&a_value) == g_value_get_int64 (&b_value))
@@ -398,7 +398,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_UINT64:
+    case (uintptr_t) G_TYPE_UINT64:
       if (g_value_get_uint64 (&a_value) < g_value_get_uint64 (&b_value))
 	retval = -1;
       else if (g_value_get_uint64 (&a_value) == g_value_get_uint64 (&b_value))
@@ -406,7 +406,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_ENUM:
       /* this is somewhat bogus. */
       if (g_value_get_enum (&a_value) < g_value_get_enum (&b_value))
 	retval = -1;
@@ -415,7 +415,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_FLAGS:
+    case (uintptr_t) G_TYPE_FLAGS:
       /* this is even more bogus. */
       if (g_value_get_flags (&a_value) < g_value_get_flags (&b_value))
 	retval = -1;
@@ -424,7 +424,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_FLOAT:
       if (g_value_get_float (&a_value) < g_value_get_float (&b_value))
 	retval = -1;
       else if (g_value_get_float (&a_value) == g_value_get_float (&b_value))
@@ -432,7 +432,7 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_DOUBLE:
       if (g_value_get_double (&a_value) < g_value_get_double (&b_value))
 	retval = -1;
       else if (g_value_get_double (&a_value) == g_value_get_double (&b_value))
@@ -440,17 +440,17 @@ _gtk_tree_data_list_compare_func (GtkTreeModel *model,
       else
 	retval = 1;
       break;
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       stra = g_value_get_string (&a_value);
       strb = g_value_get_string (&b_value);
       if (stra == NULL) stra = "";
       if (strb == NULL) strb = "";
       retval = g_utf8_collate (stra, strb);
       break;
-    case G_TYPE_VARIANT:
-    case G_TYPE_POINTER:
-    case G_TYPE_BOXED:
-    case G_TYPE_OBJECT:
+    case (uintptr_t) G_TYPE_VARIANT:
+    case (uintptr_t) G_TYPE_POINTER:
+    case (uintptr_t) G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_OBJECT:
     default:
       g_warning ("Attempting to sort on invalid type %s", g_type_name (type));
       retval = FALSE;

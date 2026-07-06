@@ -533,7 +533,7 @@ gtk_css_node_declaration_hash (gconstpointer elem)
   GtkRegion *regions;
   guint hash, i;
   
-  hash = (guint) decl->type;
+  hash = (guint) (uintptr_t) decl->type;
   hash ^= GPOINTER_TO_UINT (decl->name);
   hash <<= 5;
   hash ^= GPOINTER_TO_UINT (decl->id);

@@ -26,6 +26,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 
 #include <string.h>
 #include <stdlib.h>
@@ -551,7 +552,7 @@ gtk_status_icon_class_init (GtkStatusIconClass *class)
 		  g_signal_accumulator_true_handled, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkStatusIcon::button-release-event:
@@ -578,7 +579,7 @@ gtk_status_icon_class_init (GtkStatusIconClass *class)
 		  g_signal_accumulator_true_handled, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkStatusIcon::scroll-event:
@@ -605,7 +606,7 @@ gtk_status_icon_class_init (GtkStatusIconClass *class)
 		  g_signal_accumulator_true_handled, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkStatusIcon::query-tooltip:

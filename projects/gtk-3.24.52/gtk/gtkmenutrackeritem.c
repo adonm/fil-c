@@ -129,9 +129,9 @@ G_DEFINE_TYPE_WITH_CODE (GtkMenuTrackerItem, gtk_menu_tracker_item, G_TYPE_OBJEC
 GType
 gtk_menu_tracker_item_role_get_type (void)
 {
-  static gsize gtk_menu_tracker_item_role_type;
+  static gpointer gtk_menu_tracker_item_role_type;
 
-  if (g_once_init_enter (&gtk_menu_tracker_item_role_type))
+  if (g_once_init_enter_pointer (&gtk_menu_tracker_item_role_type))
     {
       static const GEnumValue values[] = {
         { GTK_MENU_TRACKER_ITEM_ROLE_NORMAL, "GTK_MENU_TRACKER_ITEM_ROLE_NORMAL", "normal" },
@@ -143,10 +143,10 @@ gtk_menu_tracker_item_role_get_type (void)
 
       type = g_enum_register_static ("GtkMenuTrackerItemRole", values);
 
-      g_once_init_leave (&gtk_menu_tracker_item_role_type, type);
+      g_once_init_leave_pointer (&gtk_menu_tracker_item_role_type, type);
     }
 
-  return gtk_menu_tracker_item_role_type;
+  return (GType) gtk_menu_tracker_item_role_type;
 }
 
 static void

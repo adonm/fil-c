@@ -134,7 +134,10 @@ pspec_select_value (GParamSpec *pspec,
   else if (G_IS_PARAM_SPEC_UNICHAR (pspec))
     g_value_set_uint (value, SELECT_VALUE (dvalue, ((GParamSpecUnichar*) pspec)->default_value, FALSE, TRUE));
   else if (G_IS_PARAM_SPEC_GTYPE (pspec))
-    g_value_set_gtype (value, SELECT_VALUE ((int) dvalue, ((GParamSpecGType*) pspec)->is_a_type, 0, GTK_TYPE_WIDGET));
+    g_value_set_gtype (value,
+                       (int) dvalue == 0 ? G_TYPE_INVALID :
+                       (int) dvalue == 1 ? GTK_TYPE_WIDGET :
+                       ((GParamSpecGType*) pspec)->is_a_type);
   else if (G_IS_PARAM_SPEC_STRING (pspec))
     {
       GParamSpecString *sspec = (GParamSpecString*) pspec;

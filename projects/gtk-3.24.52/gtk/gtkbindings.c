@@ -477,17 +477,17 @@ binding_compose_params (GObject         *object,
 
       g_value_init (params, *types);
 
-      switch (G_TYPE_FUNDAMENTAL (args->arg_type))
+      switch ((uintptr_t) G_TYPE_FUNDAMENTAL (args->arg_type))
         {
-        case G_TYPE_DOUBLE:
+        case (uintptr_t) G_TYPE_DOUBLE:
           g_value_init (&tmp_value, G_TYPE_DOUBLE);
           g_value_set_double (&tmp_value, args->d.double_data);
           break;
-        case G_TYPE_LONG:
+        case (uintptr_t) G_TYPE_LONG:
           g_value_init (&tmp_value, G_TYPE_LONG);
           g_value_set_long (&tmp_value, args->d.long_data);
           break;
-        case G_TYPE_STRING:
+        case (uintptr_t) G_TYPE_STRING:
           /* gtk_rc_parse_flags/enum() has fancier parsing for this; we can't call
            * that since we don't have a GParamSpec, so just do something simple
            */
@@ -939,17 +939,17 @@ _gtk_binding_entry_add_signall (GtkBindingSet  *binding_set,
           binding_signal_free (signal);
           return;
         }
-      switch (G_TYPE_FUNDAMENTAL (tmp_arg->arg_type))
+      switch ((uintptr_t) G_TYPE_FUNDAMENTAL (tmp_arg->arg_type))
         {
-        case  G_TYPE_LONG:
+        case  (uintptr_t) G_TYPE_LONG:
           arg->arg_type = G_TYPE_LONG;
           arg->d.long_data = tmp_arg->d.long_data;
           break;
-        case  G_TYPE_DOUBLE:
+        case  (uintptr_t) G_TYPE_DOUBLE:
           arg->arg_type = G_TYPE_DOUBLE;
           arg->d.double_data = tmp_arg->d.double_data;
           break;
-        case  G_TYPE_STRING:
+        case  (uintptr_t) G_TYPE_STRING:
           if (tmp_arg->arg_type != GTK_TYPE_IDENTIFIER)
             arg->arg_type = G_TYPE_STRING;
           else
@@ -1042,29 +1042,29 @@ gtk_binding_entry_add_signal (GtkBindingSet  *binding_set,
       slist = g_slist_prepend (slist, arg);
 
       arg->arg_type = va_arg (args, GType);
-      switch (G_TYPE_FUNDAMENTAL (arg->arg_type))
+      switch ((uintptr_t) G_TYPE_FUNDAMENTAL (arg->arg_type))
         {
-        case G_TYPE_CHAR:
-        case G_TYPE_UCHAR:
-        case G_TYPE_INT:
-        case G_TYPE_UINT:
-        case G_TYPE_BOOLEAN:
-        case G_TYPE_ENUM:
-        case G_TYPE_FLAGS:
+        case (uintptr_t) G_TYPE_CHAR:
+        case (uintptr_t) G_TYPE_UCHAR:
+        case (uintptr_t) G_TYPE_INT:
+        case (uintptr_t) G_TYPE_UINT:
+        case (uintptr_t) G_TYPE_BOOLEAN:
+        case (uintptr_t) G_TYPE_ENUM:
+        case (uintptr_t) G_TYPE_FLAGS:
           arg->arg_type = G_TYPE_LONG;
           arg->d.long_data = va_arg (args, gint);
           break;
-        case G_TYPE_LONG:
-        case G_TYPE_ULONG:
+        case (uintptr_t) G_TYPE_LONG:
+        case (uintptr_t) G_TYPE_ULONG:
           arg->arg_type = G_TYPE_LONG;
           arg->d.long_data = va_arg (args, glong);
           break;
-        case G_TYPE_FLOAT:
-        case G_TYPE_DOUBLE:
+        case (uintptr_t) G_TYPE_FLOAT:
+        case (uintptr_t) G_TYPE_DOUBLE:
           arg->arg_type = G_TYPE_DOUBLE;
           arg->d.double_data = va_arg (args, gdouble);
           break;
-        case G_TYPE_STRING:
+        case (uintptr_t) G_TYPE_STRING:
           if (arg->arg_type != GTK_TYPE_IDENTIFIER)
             arg->arg_type = G_TYPE_STRING;
           arg->d.string_data = va_arg (args, gchar*);

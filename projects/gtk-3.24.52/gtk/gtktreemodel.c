@@ -16,6 +16,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 #include <stdlib.h>
 #include <string.h>
 #include <glib.h>
@@ -338,12 +339,12 @@ gtk_tree_model_base_init (gpointer g_class)
       GType row_deleted_params[1];
       GType rows_reordered_params[3];
 
-      row_inserted_params[0] = GTK_TYPE_TREE_PATH | G_SIGNAL_TYPE_STATIC_SCOPE;
+      row_inserted_params[0] = zorptr(GTK_TYPE_TREE_PATH, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE);
       row_inserted_params[1] = GTK_TYPE_TREE_ITER;
 
-      row_deleted_params[0] = GTK_TYPE_TREE_PATH | G_SIGNAL_TYPE_STATIC_SCOPE;
+      row_deleted_params[0] = zorptr(GTK_TYPE_TREE_PATH, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE);
 
-      rows_reordered_params[0] = GTK_TYPE_TREE_PATH | G_SIGNAL_TYPE_STATIC_SCOPE;
+      rows_reordered_params[0] = zorptr(GTK_TYPE_TREE_PATH, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE);
       rows_reordered_params[1] = GTK_TYPE_TREE_ITER;
       rows_reordered_params[2] = G_TYPE_POINTER;
 
@@ -363,7 +364,7 @@ gtk_tree_model_base_init (gpointer g_class)
                       NULL, NULL,
                       _gtk_marshal_VOID__BOXED_BOXED,
                       G_TYPE_NONE, 2,
-                      GTK_TYPE_TREE_PATH | G_SIGNAL_TYPE_STATIC_SCOPE,
+                      zorptr(GTK_TYPE_TREE_PATH, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
                       GTK_TYPE_TREE_ITER);
       g_signal_set_va_marshaller (tree_model_signals[ROW_CHANGED],
                                   G_TYPE_FROM_CLASS (g_class),
@@ -427,7 +428,7 @@ gtk_tree_model_base_init (gpointer g_class)
                       NULL, NULL,
                       _gtk_marshal_VOID__BOXED_BOXED,
                       G_TYPE_NONE, 2,
-                      GTK_TYPE_TREE_PATH | G_SIGNAL_TYPE_STATIC_SCOPE,
+                      zorptr(GTK_TYPE_TREE_PATH, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
                       GTK_TYPE_TREE_ITER);
       g_signal_set_va_marshaller (tree_model_signals[ROW_HAS_CHILD_TOGGLED],
                                   G_TYPE_FROM_CLASS (g_class),

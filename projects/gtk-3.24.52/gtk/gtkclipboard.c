@@ -19,6 +19,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 #include <string.h>
 
 #include "gtkclipboard.h"
@@ -247,7 +248,7 @@ gtk_clipboard_class_init (GtkClipboardClass *class)
 		  NULL, NULL,
 		  NULL,
 		  G_TYPE_NONE, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 }
 
 static void

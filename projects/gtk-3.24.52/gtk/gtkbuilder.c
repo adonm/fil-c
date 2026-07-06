@@ -1901,15 +1901,15 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
 
   g_value_init (value, type);
 
-  switch (G_TYPE_FUNDAMENTAL (type))
+  switch ((uintptr_t) G_TYPE_FUNDAMENTAL (type))
     {
-    case G_TYPE_CHAR:
+    case (uintptr_t) G_TYPE_CHAR:
       g_value_set_schar (value, string[0]);
       break;
-    case G_TYPE_UCHAR:
+    case (uintptr_t) G_TYPE_UCHAR:
       g_value_set_uchar (value, (guchar)string[0]);
       break;
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       {
         gboolean b;
 
@@ -1921,9 +1921,9 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
         g_value_set_boolean (value, b);
         break;
       }
-    case G_TYPE_INT:
-    case G_TYPE_LONG:
-    case G_TYPE_INT64:
+    case (uintptr_t) G_TYPE_INT:
+    case (uintptr_t) G_TYPE_LONG:
+    case (uintptr_t) G_TYPE_INT64:
       {
         gint64 l;
         gchar *endptr = NULL;
@@ -1948,9 +1948,9 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
           g_value_set_int64 (value, l);
         break;
       }
-    case G_TYPE_UINT:
-    case G_TYPE_ULONG:
-    case G_TYPE_UINT64:
+    case (uintptr_t) G_TYPE_UINT:
+    case (uintptr_t) G_TYPE_ULONG:
+    case (uintptr_t) G_TYPE_UINT64:
       {
         guint64 ul;
         gchar *endptr = NULL;
@@ -1974,7 +1974,7 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
           g_value_set_uint64 (value, ul);
         break;
       }
-    case G_TYPE_ENUM:
+    case (uintptr_t) G_TYPE_ENUM:
       {
         gint enum_value;
         if (!_gtk_builder_enum_from_string (type, string, &enum_value, error))
@@ -1985,7 +1985,7 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
         g_value_set_enum (value, enum_value);
         break;
       }
-    case G_TYPE_FLAGS:
+    case (uintptr_t) G_TYPE_FLAGS:
       {
         guint flags_value;
 
@@ -1997,8 +1997,8 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
         g_value_set_flags (value, flags_value);
         break;
       }
-    case G_TYPE_FLOAT:
-    case G_TYPE_DOUBLE:
+    case (uintptr_t) G_TYPE_FLOAT:
+    case (uintptr_t) G_TYPE_DOUBLE:
       {
         gdouble d;
         gchar *endptr = NULL;
@@ -2020,10 +2020,10 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
           g_value_set_double (value, d);
         break;
       }
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       g_value_set_string (value, string);
       break;
-    case G_TYPE_VARIANT:
+    case (uintptr_t) G_TYPE_VARIANT:
       {
         GVariant *variant;
 
@@ -2034,7 +2034,7 @@ gtk_builder_value_from_string_type (GtkBuilder   *builder,
           ret = FALSE;
       }
       break;
-    case G_TYPE_BOXED:
+    case (uintptr_t) G_TYPE_BOXED:
       if (G_VALUE_HOLDS (value, g_type_from_name ("GdkColor")))
         {
           GdkColor color = { 0, };
@@ -2084,8 +2084,8 @@ G_GNUC_END_IGNORE_DEPRECATIONS
           ret = FALSE;
         }
       break;
-    case G_TYPE_OBJECT:
-    case G_TYPE_INTERFACE:
+    case (uintptr_t) G_TYPE_OBJECT:
+    case (uintptr_t) G_TYPE_INTERFACE:
       if (G_VALUE_HOLDS (value, GDK_TYPE_PIXBUF))
         {
           gchar *filename;

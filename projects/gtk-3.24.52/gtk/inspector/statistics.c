@@ -132,7 +132,7 @@ update_type_counts (gpointer data)
   GType type;
   gpointer class;
 
-  for (type = G_TYPE_INTERFACE; type <= G_TYPE_FUNDAMENTAL_MAX; type += (1 << G_TYPE_FUNDAMENTAL_SHIFT))
+  for (type = G_TYPE_INTERFACE; type <= (GType) G_TYPE_FUNDAMENTAL_MAX; type = (GType) ((uintptr_t) type + (1 << G_TYPE_FUNDAMENTAL_SHIFT)))
     {
       class = g_type_class_peek (type);
       if (class == NULL)

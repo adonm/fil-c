@@ -549,7 +549,7 @@ typesystem_recurse (GType        type,
   
   gtk_tree_store_append (store, &iter, parent_iter);
 
-  str = g_strdup_printf ("%ld", (glong)type);
+  str = g_strdup_printf ("%ld", (glong)(uintptr_t)type);
   gtk_tree_store_set (store, &iter, 0, str, 1, g_type_name (type),
                       2, our_pixbuf,
                       3, 7.0, 4, (guint) 9000,
@@ -596,7 +596,7 @@ create_tree_model (void)
   i = 0;
   while (i < G_TYPE_FUNDAMENTAL_MAX)
     {
-      typesystem_recurse (i, NULL, store);
+      typesystem_recurse ((GType) (uintptr_t) i, NULL, store);
       
       ++i;
     }
@@ -907,7 +907,7 @@ gtk_real_model_types_get_path (GtkTreeModel *tree_model,
   g_return_val_if_fail (GTK_IS_TREE_MODEL_TYPES (tree_model), NULL);
   g_return_val_if_fail (iter != NULL, NULL);
 
-  type = GPOINTER_TO_INT (iter->user_data);
+  type = (GType) iter->user_data;
   
   retval = gtk_tree_path_new ();
   
@@ -935,7 +935,7 @@ gtk_real_model_types_get_path (GtkTreeModel *tree_model,
     }
 
   /* The fundamental type itself is the index on the toplevel */
-  gtk_tree_path_prepend_index (retval, type);
+  gtk_tree_path_prepend_index (retval, (gint) (uintptr_t) type);
 
   return retval;
 }
@@ -948,7 +948,7 @@ gtk_real_model_types_get_value (GtkTreeModel *tree_model,
 {
   GType type;
 
-  type = GPOINTER_TO_INT (iter->user_data);
+  type = (GType) iter->user_data;
 
   switch (column)
     {
@@ -958,7 +958,7 @@ gtk_real_model_types_get_value (GtkTreeModel *tree_model,
         
         g_value_init (value, G_TYPE_STRING);
 
-        str = g_strdup_printf ("%ld", (long int) type);
+        str = g_strdup_printf ("%ld", (long int) (uintptr_t) type);
         g_value_set_string (value, str);
         g_free (str);
       }
@@ -982,7 +982,7 @@ gtk_real_model_types_iter_next (GtkTreeModel  *tree_model,
   GType parent;
   GType type;
 
-  type = GPOINTER_TO_INT (iter->user_data);
+  type = (GType) iter->user_data;
 
   parent = g_type_parent (type);
   
@@ -990,12 +990,12 @@ gtk_real_model_types_iter_next (GtkTreeModel  *tree_model,
     {
       /* find next _valid_ fundamental type */
       do
-	type++;
-      while (!g_type_name (type) && type <= G_TYPE_FUNDAMENTAL_MAX);
-      if (type <= G_TYPE_FUNDAMENTAL_MAX)
+	type = (GType) ((uintptr_t) type + 1);
+      while (!g_type_name (type) && (uintptr_t) type <= (uintptr_t) G_TYPE_FUNDAMENTAL_MAX);
+      if ((uintptr_t) type <= (uintptr_t) G_TYPE_FUNDAMENTAL_MAX)
 	{
 	  /* found one */
-          iter->user_data = GINT_TO_POINTER (type);
+          iter->user_data = (gpointer) type;
           return TRUE;
         }
       else
@@ -1016,7 +1016,7 @@ gtk_real_model_types_iter_next (GtkTreeModel  *tree_model,
       if (children[i] != G_TYPE_INVALID)
         {
           g_free (children);
-          iter->user_data = GINT_TO_POINTER (children[i]);
+          iter->user_data = (gpointer) children[i];
           return TRUE;
         }
       else
@@ -1035,7 +1035,7 @@ gtk_real_model_types_iter_children (GtkTreeModel *tree_model,
   GType type;
   GType* children;
   
-  type = GPOINTER_TO_INT (parent->user_data);
+  type = (GType) parent->user_data;
 
   children = g_type_children (type, NULL);
 
@@ -1046,7 +1046,7 @@ gtk_real_model_types_iter_children (GtkTreeModel *tree_model,
     }
   else
     {
-      iter->user_data = GINT_TO_POINTER (children[0]);
+      iter->user_data = (gpointer) children[0];
       g_free (children);
       return TRUE;
     }
@@ -1059,7 +1059,7 @@ gtk_real_model_types_iter_has_child (GtkTreeModel *tree_model,
   GType type;
   GType* children;
   
-  type = GPOINTER_TO_INT (iter->user_data);
+  type = (GType) iter->user_data;
   
   children = g_type_children (type, NULL);
 
@@ -1089,7 +1089,7 @@ gtk_real_model_types_iter_n_children (GtkTreeModel *tree_model,
       GType* children;
       guint n_children = 0;
 
-      type = GPOINTER_TO_INT (iter->user_data);
+      type = (GType) iter->user_data;
       
       children = g_type_children (type, &n_children);
       
@@ -1118,7 +1118,7 @@ gtk_real_model_types_iter_nth_child (GtkTreeModel *tree_model,
     }
   else
     {
-      GType type = GPOINTER_TO_INT (parent->user_data);      
+      GType type = (GType) parent->user_data;      
       guint n_children = 0;
       GType* children = g_type_children (type, &n_children);
 
@@ -1134,7 +1134,7 @@ gtk_real_model_types_iter_nth_child (GtkTreeModel *tree_model,
         }
       else
         {
-          iter->user_data = GINT_TO_POINTER (children[n]);
+          iter->user_data = (gpointer) children[n];
           g_free (children);
 
           return TRUE;
@@ -1150,21 +1150,21 @@ gtk_real_model_types_iter_parent (GtkTreeModel *tree_model,
   GType type;
   GType parent;
   
-  type = GPOINTER_TO_INT (child->user_data);
+  type = (GType) child->user_data;
   
   parent = g_type_parent (type);
   
   if (parent == G_TYPE_INVALID)
     {
-      if (type > G_TYPE_FUNDAMENTAL_MAX)
+      if ((uintptr_t) type > (uintptr_t) G_TYPE_FUNDAMENTAL_MAX)
         g_warning ("no parent for %ld %s\n",
-                   (long int) type,
+                   (long int) (uintptr_t) type,
                    g_type_name (type));
       return FALSE;
     }
   else
     {
-      iter->user_data = GINT_TO_POINTER (parent);
+      iter->user_data = (gpointer) parent;
       
       return TRUE;
     }

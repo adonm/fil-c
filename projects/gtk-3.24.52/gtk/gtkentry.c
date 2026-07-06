@@ -27,6 +27,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 
 #include <string.h>
 
@@ -1877,7 +1878,7 @@ gtk_entry_class_init (GtkEntryClass *class)
                   _gtk_marshal_VOID__ENUM_BOXED,
                   G_TYPE_NONE, 2,
                   GTK_TYPE_ENTRY_ICON_POSITION,
-                  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+                  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   
   /**
    * GtkEntry::icon-release:
@@ -1899,7 +1900,7 @@ gtk_entry_class_init (GtkEntryClass *class)
                   _gtk_marshal_VOID__ENUM_BOXED,
                   G_TYPE_NONE, 2,
                   GTK_TYPE_ENTRY_ICON_POSITION,
-                  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+                  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkEntry::preedit-changed:

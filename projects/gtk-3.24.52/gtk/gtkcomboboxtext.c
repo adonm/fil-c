@@ -494,7 +494,7 @@ gtk_combo_box_text_insert (GtkComboBoxText *combo_box,
   GtkListStore *store;
   GtkTreeIter iter;
   gint text_column;
-  gint column_type;
+  GType column_type;
 
   g_return_if_fail (GTK_IS_COMBO_BOX_TEXT (combo_box));
   g_return_if_fail (text != NULL);
@@ -612,7 +612,7 @@ gtk_combo_box_text_get_active_text (GtkComboBoxText *combo_box)
     {
       GtkTreeModel *model;
       gint text_column;
-      gint column_type;
+      GType column_type;
 
       model = gtk_combo_box_get_model (GTK_COMBO_BOX (combo_box));
       g_return_val_if_fail (GTK_IS_LIST_STORE (model), NULL);

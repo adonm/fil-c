@@ -29,6 +29,7 @@
 
 #include <sys/mman.h>
 #include <sys/syscall.h>
+#include <pizlonated_syscalls.h>
 
 #include <glib.h>
 #include "gdkwayland.h"
@@ -1303,16 +1304,11 @@ open_shared_memory (void)
   static gboolean force_shm_open = FALSE;
   int ret = -1;
 
-#if !defined (__NR_memfd_create)
-  force_shm_open = TRUE;
-#endif
-
   do
     {
-#if defined (__NR_memfd_create)
       if (!force_shm_open)
         {
-          ret = syscall (__NR_memfd_create, "gdk-wayland", MFD_CLOEXEC);
+          ret = zsys_memfd_create ("gdk-wayland", MFD_CLOEXEC);
 
           /* fall back to shm_open until debian stops shipping 3.16 kernel
            * See bug 766341
@@ -1320,7 +1316,6 @@ open_shared_memory (void)
           if (ret < 0 && errno == ENOSYS)
             force_shm_open = TRUE;
         }
-#endif
 
       if (force_shm_open)
         {

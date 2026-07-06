@@ -67,11 +67,11 @@ register_conversion_function (GType               type,
                               GtkStyleComputeFunc compute)
 {
   if (parse)
-    g_hash_table_insert (parse_funcs, GSIZE_TO_POINTER (type), parse);
+    g_hash_table_insert (parse_funcs, type, parse);
   if (print)
-    g_hash_table_insert (print_funcs, GSIZE_TO_POINTER (type), print);
+    g_hash_table_insert (print_funcs, type, print);
   if (compute)
-    g_hash_table_insert (compute_funcs, GSIZE_TO_POINTER (type), compute);
+    g_hash_table_insert (compute_funcs, type, compute);
 }
 
 static void
@@ -1082,10 +1082,10 @@ _gtk_css_style_funcs_parse_value (GValue       *value,
   gtk_css_style_funcs_init ();
 
   func = g_hash_table_lookup (parse_funcs,
-                              GSIZE_TO_POINTER (G_VALUE_TYPE (value)));
+                              G_VALUE_TYPE (value));
   if (func == NULL)
     func = g_hash_table_lookup (parse_funcs,
-                                GSIZE_TO_POINTER (g_type_fundamental (G_VALUE_TYPE (value))));
+                                g_type_fundamental (G_VALUE_TYPE (value)));
 
   if (func == NULL)
     {
@@ -1115,10 +1115,10 @@ _gtk_css_style_funcs_print_value (const GValue *value,
   gtk_css_style_funcs_init ();
 
   func = g_hash_table_lookup (print_funcs,
-                              GSIZE_TO_POINTER (G_VALUE_TYPE (value)));
+                              G_VALUE_TYPE (value));
   if (func == NULL)
     func = g_hash_table_lookup (print_funcs,
-                                GSIZE_TO_POINTER (g_type_fundamental (G_VALUE_TYPE (value))));
+                                g_type_fundamental (G_VALUE_TYPE (value)));
 
   if (func == NULL)
     {
@@ -1162,10 +1162,10 @@ _gtk_css_style_funcs_compute_value (GtkStyleProviderPrivate *provider,
   gtk_css_style_funcs_init ();
 
   func = g_hash_table_lookup (compute_funcs,
-                              GSIZE_TO_POINTER (target_type));
+                              target_type);
   if (func == NULL)
     func = g_hash_table_lookup (compute_funcs,
-                                GSIZE_TO_POINTER (g_type_fundamental (target_type)));
+                                g_type_fundamental (target_type));
 
   if (func)
     return func (provider, style, parent_style, specified);

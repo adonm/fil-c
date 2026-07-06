@@ -23,6 +23,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 
 #include <stdarg.h>
 #include <string.h>
@@ -1791,7 +1792,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  NULL, NULL,
 		  NULL,
 		  G_TYPE_NONE, 1,
-		  GDK_TYPE_RECTANGLE | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_RECTANGLE, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkWidget::state-changed:
@@ -2154,7 +2155,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2176,7 +2177,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  NULL, NULL,
 		  NULL,
 		  G_TYPE_NONE, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
 
   /**
    * GtkWidget::button-press-event:
@@ -2203,7 +2204,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[BUTTON_PRESS_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2232,7 +2233,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[BUTTON_RELEASE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2244,7 +2245,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
                   _gtk_boolean_handled_accumulator, NULL,
                   _gtk_marshal_BOOLEAN__BOXED,
                   G_TYPE_BOOLEAN, 1,
-                  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+                  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[TOUCH_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2274,7 +2275,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[SCROLL_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2303,7 +2304,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[MOTION_NOTIFY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2348,7 +2349,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[DELETE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2377,7 +2378,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[DESTROY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2405,7 +2406,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[KEY_PRESS_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2432,7 +2433,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[KEY_RELEASE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2461,7 +2462,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[ENTER_NOTIFY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2490,7 +2491,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[LEAVE_NOTIFY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2518,7 +2519,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[CONFIGURE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2545,7 +2546,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[FOCUS_IN_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2572,7 +2573,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[FOCUS_OUT_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2599,7 +2600,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[MAP_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2626,7 +2627,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[UNMAP_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2653,7 +2654,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[PROPERTY_NOTIFY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2677,7 +2678,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[SELECTION_CLEAR_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2702,7 +2703,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[SELECTION_REQUEST_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2721,7 +2722,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[SELECTION_NOTIFY_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2739,7 +2740,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  NULL, NULL,
 		  _gtk_marshal_VOID__BOXED_UINT,
 		  G_TYPE_NONE, 2,
-		  GTK_TYPE_SELECTION_DATA | G_SIGNAL_TYPE_STATIC_SCOPE,
+		  zorptr(GTK_TYPE_SELECTION_DATA, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
 		  G_TYPE_UINT);
   g_signal_set_va_marshaller (widget_signals[SELECTION_RECEIVED],
                               G_TYPE_FROM_CLASS (klass),
@@ -2760,7 +2761,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  NULL, NULL,
 		  _gtk_marshal_VOID__BOXED_UINT_UINT,
 		  G_TYPE_NONE, 3,
-		  GTK_TYPE_SELECTION_DATA | G_SIGNAL_TYPE_STATIC_SCOPE,
+		  zorptr(GTK_TYPE_SELECTION_DATA, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
 		  G_TYPE_UINT,
 		  G_TYPE_UINT);
   g_signal_set_va_marshaller (widget_signals[SELECTION_GET],
@@ -2789,7 +2790,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[PROXIMITY_IN_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -2815,7 +2816,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[PROXIMITY_OUT_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -3115,7 +3116,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_marshal_VOID__OBJECT_BOXED_UINT_UINT,
 		  G_TYPE_NONE, 4,
 		  GDK_TYPE_DRAG_CONTEXT,
-		  GTK_TYPE_SELECTION_DATA | G_SIGNAL_TYPE_STATIC_SCOPE,
+		  zorptr(GTK_TYPE_SELECTION_DATA, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
 		  G_TYPE_UINT,
 		  G_TYPE_UINT);
   g_signal_set_va_marshaller (widget_signals[DRAG_DATA_GET],
@@ -3205,7 +3206,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  GDK_TYPE_DRAG_CONTEXT,
 		  G_TYPE_INT,
 		  G_TYPE_INT,
-		  GTK_TYPE_SELECTION_DATA | G_SIGNAL_TYPE_STATIC_SCOPE,
+		  zorptr(GTK_TYPE_SELECTION_DATA, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
 		  G_TYPE_UINT,
 		  G_TYPE_UINT);
    g_signal_set_va_marshaller (widget_signals[DRAG_DATA_RECEIVED],
@@ -3240,7 +3241,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[VISIBILITY_NOTIFY_EVENT],
                               G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
@@ -3269,7 +3270,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[WINDOW_STATE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -3295,7 +3296,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[DAMAGE_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 
@@ -3324,7 +3325,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 		  _gtk_boolean_handled_accumulator, NULL,
 		  _gtk_marshal_BOOLEAN__BOXED,
 		  G_TYPE_BOOLEAN, 1,
-		  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE);
+		  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE));
   g_signal_set_va_marshaller (widget_signals[GRAB_BROKEN_EVENT], G_TYPE_FROM_CLASS (klass),
                               _gtk_marshal_BOOLEAN__BOXEDv);
 

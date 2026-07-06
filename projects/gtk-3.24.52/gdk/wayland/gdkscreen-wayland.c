@@ -640,18 +640,18 @@ apply_portal_setting (TranslationEntry *entry,
                       GVariant         *value,
                       GdkScreen        *screen)
 {
-  switch (entry->type)
+  switch ((uintptr_t) entry->type)
     {
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       entry->fallback.s = g_intern_string (g_variant_get_string (value, NULL));
       break;
-    case G_TYPE_INT:
+    case (uintptr_t) G_TYPE_INT:
       entry->fallback.i = g_variant_get_int32 (value);
       break;
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       entry->fallback.b = g_variant_get_boolean (value);
       break;
-    case G_TYPE_NONE:
+    case (uintptr_t) G_TYPE_NONE:
       if (strcmp (entry->key, "antialiasing") == 0 ||
           strcmp (entry->key, "font-antialiasing") == 0)
         entry->fallback.i = get_antialiasing (g_variant_get_string (value, NULL));
@@ -889,21 +889,21 @@ set_value_from_entry (GdkScreen        *screen,
 
   if (screen_wayland->settings_portal)
     {
-      switch (entry->type)
+      switch ((uintptr_t) entry->type)
         {
-        case G_TYPE_STRING:
+        case (uintptr_t) G_TYPE_STRING:
           g_value_set_string (value, entry->fallback.s);
           break;
-        case G_TYPE_INT:
+        case (uintptr_t) G_TYPE_INT:
           if (g_str_equal (entry->setting, "gtk-fontconfig-timestamp"))
             g_value_set_uint (value, (guint)entry->fallback.i);
           else
             g_value_set_int (value, entry->fallback.i);
           break;
-        case G_TYPE_BOOLEAN:
+        case (uintptr_t) G_TYPE_BOOLEAN:
           g_value_set_boolean (value, entry->fallback.b);
           break;
-        case G_TYPE_NONE:
+        case (uintptr_t) G_TYPE_NONE:
           if (g_str_equal (entry->setting, "gtk-xft-antialias"))
             g_value_set_int (value, screen_wayland->xft_settings.antialias);
           else if (g_str_equal (entry->setting, "gtk-xft-hinting"))
@@ -926,9 +926,9 @@ set_value_from_entry (GdkScreen        *screen,
     }
 
   settings = (GSettings *)g_hash_table_lookup (screen_wayland->settings, entry->schema);
-  switch (entry->type)
+  switch ((uintptr_t) entry->type)
     {
-    case G_TYPE_STRING:
+    case (uintptr_t) G_TYPE_STRING:
       if (settings && entry->valid)
         {
           gchar *s;
@@ -941,7 +941,7 @@ set_value_from_entry (GdkScreen        *screen,
           g_value_set_static_string (value, entry->fallback.s);
         }
       break;
-    case G_TYPE_INT:
+    case (uintptr_t) G_TYPE_INT:
       if (g_str_equal (entry->setting, "gtk-fontconfig-timestamp"))
         g_value_set_uint (value, screen_wayland->dbus_settings.fontconfig_timestamp);
       else
@@ -949,12 +949,12 @@ set_value_from_entry (GdkScreen        *screen,
                                 ? g_settings_get_int (settings, entry->key)
                                 : entry->fallback.i);
       break;
-    case G_TYPE_BOOLEAN:
+    case (uintptr_t) G_TYPE_BOOLEAN:
       g_value_set_boolean (value, settings && entry->valid
                                   ? g_settings_get_boolean (settings, entry->key)
                                   : entry->fallback.b);
       break;
-    case G_TYPE_NONE:
+    case (uintptr_t) G_TYPE_NONE:
       if (g_str_equal (entry->setting, "gtk-xft-antialias"))
         g_value_set_int (value, screen_wayland->xft_settings.antialias);
       else if (g_str_equal (entry->setting, "gtk-xft-hinting"))

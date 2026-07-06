@@ -70,6 +70,7 @@
  */
 
 #include "config.h"
+#include <stdfil.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -879,7 +880,7 @@ gtk_text_tag_class_init (GtkTextTagClass *klass)
                   G_TYPE_BOOLEAN,
                   3,
                   G_TYPE_OBJECT,
-                  GDK_TYPE_EVENT | G_SIGNAL_TYPE_STATIC_SCOPE,
+                  zorptr(GDK_TYPE_EVENT, (uintptr_t)G_SIGNAL_TYPE_STATIC_SCOPE),
                   GTK_TYPE_TEXT_ITER);
   g_signal_set_va_marshaller (signals[EVENT],
                               G_OBJECT_CLASS_TYPE (object_class),

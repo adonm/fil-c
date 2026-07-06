@@ -75,7 +75,7 @@ cd ../..
 rm -rf libepoxy-1.5.10
 hash -r
 
-./build_postlc4_chroot_project_atk.sh
+./build_postlc4_chroot_project_at-spi2-core.sh
 hash -r
 
 ./build_postlc4_chroot_project_pango.sh

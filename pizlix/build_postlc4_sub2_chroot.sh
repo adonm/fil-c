@@ -75,6 +75,9 @@ cd ../..
 rm -rf libepoxy-1.5.10
 hash -r
 
+./build_postlc4_chroot_project_atk.sh
+hash -r
+
 ./build_postlc4_chroot_project_pango.sh
 ./build_postlc4_chroot_project_gdk-pixbuf.sh
 hash -r
@@ -133,5 +136,8 @@ rm -rf pizlonated-gst-plugins-bad
 hash -r
 
 ./build_postlc4_chroot_project_gtk4.sh
+hash -r
+
+./build_postlc4_chroot_project_gtk3.sh
 hash -r
 

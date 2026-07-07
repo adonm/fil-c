@@ -55,6 +55,23 @@ index ff1b79e2d..9cd419ca5 100644
  #if defined(BOOST_USE_UCONTEXT)
  #include <boost/context/fiber_ucontext.hpp>
  #elif defined(BOOST_USE_WINFIB)
+diff --git a/boost/multi_index/detail/ord_index_node.hpp b/boost/multi_index/detail/ord_index_node.hpp
+index 72bffe33c..29719aedd 100644
+--- a/boost/multi_index/detail/ord_index_node.hpp
++++ b/boost/multi_index/detail/ord_index_node.hpp
+@@ -36,6 +36,12 @@
+ #ifndef BOOST_MULTI_INDEX_DETAIL_ORD_INDEX_NODE_HPP
+ #define BOOST_MULTI_INDEX_DETAIL_ORD_INDEX_NODE_HPP
+ 
++#ifdef __FILC__
++// Fil-C: Disable compressed ordered index nodes because they store
++// parent pointers as uintptr_type integers, losing Fil-C object capabilities.
++#define BOOST_MULTI_INDEX_DISABLE_COMPRESSED_ORDERED_INDEX_NODES
++#endif
++
+ #if defined(_MSC_VER)
+ #pragma once
+ #endif
 diff --git a/tools/build/src/engine/execunix.cpp b/tools/build/src/engine/execunix.cpp
 index fd8220e77..5b0e84889 100644
 --- a/tools/build/src/engine/execunix.cpp

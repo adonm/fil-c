@@ -38,11 +38,17 @@ sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 # Configure
 ./autogen.sh $(cat ../libreoffice-filc.autogen.flags | tr '\n' ' ')
 
+# Limit parallelism to 8 to avoid OOM on Fil-C
+sed -i 's/PARALLELISM *=.*/PARALLELISM = 8/' config_host.mk
+
 # Fetch external tarballs
 make fetch
 
-# Build (use -j16 to avoid OOM on Fil-C)
-make build -j16
+# Build (use -j8 to avoid OOM on Fil-C)
+make build -j8
+
+# Create empty nss.filelist before install (Fil-C: nss package list may be missing)
+mkdir -p workdir/Package && touch workdir/Package/nss.filelist
 
 # Install
 make distro-pack-install

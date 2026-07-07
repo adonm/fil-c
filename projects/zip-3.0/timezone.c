@@ -41,6 +41,7 @@
 #include "timezone.h"
 #include <ctype.h>
 #include <errno.h>
+#include <time.h>
 
 #ifdef IZTZ_DEFINESTDGLOBALS
 long timezone = 0;

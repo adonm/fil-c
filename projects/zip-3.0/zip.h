@@ -722,11 +722,11 @@ int bfcopy OF((uzoff_t));
 
 int fcopy OF((FILE *, FILE *, uzoff_t));
 
-#ifdef ZMEM
-   char *memset OF((char *, int, unsigned int));
-   char *memcpy OF((char *, char *, unsigned int));
-   int memcmp OF((char *, char *, unsigned int));
-#endif /* ZMEM */
+// #ifdef ZMEM
+//    char *memset OF((char *, int, unsigned int));
+//    char *memcpy OF((char *, char *, unsigned int));
+//    int memcmp OF((char *, char *, unsigned int));
+// #endif /* ZMEM */
 
         /* in system dependent fileio code (<system>.c) */
 #ifndef UTIL

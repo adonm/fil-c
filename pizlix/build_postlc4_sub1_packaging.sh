@@ -19,7 +19,6 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/mesa-24.1.5 pizlonated-mesa
 ./package-source.sh projects/pango-1.54.0 pizlonated-pango
 ./package-source.sh projects/gdk-pixbuf-2.42.12 pizlonated-gdk-pixbuf
-./package-source.sh projects/atk-2.38.0 pizlonated-atk
 ./package-source.sh projects/at-spi2-core-2.60.5 pizlonated-at-spi2-core
 ./package-source.sh projects/gtk-3.24.52 pizlonated-gtk3
 ./package-source.sh projects/gtk-4.14.5 pizlonated-gtk4

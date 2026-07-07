@@ -1,0 +1,916 @@
+diff -ruN a/Makefile.in b/Makefile.in
+--- a/Makefile.in	2024-08-08 13:59:54.000000000 -0700
++++ b/Makefile.in	2026-07-06 15:03:11.956000000 -0700
+@@ -457,7 +457,6 @@
+ 	WITH_LANG_LIST="$(WITH_LANG_LIST)" WITH_POOR_HELP_LOCALIZATIONS="$(WITH_POOR_HELP_LOCALIZATIONS)" $(SRCDIR)/bin/distro-install-clean-up
+ 	$(SRCDIR)/bin/distro-install-desktop-integration
+ 	$(SRCDIR)/bin/distro-install-sdk
+-	WITH_LANG_LIST="$(WITH_LANG_LIST)" $(SRCDIR)/bin/distro-install-file-lists
+ 
+ install-package-%:
+ 	$(MAKE) $(GMAKE_OPTIONS) -f $(SRCDIR)/Makefile.gbuild $@
+diff -ruN a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-integration
+--- a/bin/distro-install-desktop-integration	2024-08-08 13:59:54.000000000 -0700
++++ b/bin/distro-install-desktop-integration	2026-07-06 15:03:11.950000000 -0700
+@@ -38,22 +38,20 @@
+ 
+ create_man_link()
+ {
+-    echo "Install $MANDIR/man1/$1.1.gz"
++    echo "Install $MANDIR/man1/$1.1"
+ 
+     mkdir -p $DESTDIR$MANDIR/man1
+     echo ".so man1/$2.1" >| $DESTDIR$MANDIR/man1/$1.1
+-    gzip -f $DESTDIR$MANDIR/man1/$1.1
+-    test -f "$DESTDIR/$3" && echo "$MANDIR/man1/$1.1.gz" >>"$DESTDIR/$3"
++    test -f "$DESTDIR/$3" && echo "$MANDIR/man1/$1.1" >>"$DESTDIR/$3"
+ }
+ 
+ install_man()
+ {
+-    echo "Install $MANDIR/man1/$1.1.gz"
++    echo "Install $MANDIR/man1/$1.1"
+ 
+     mkdir -p $DESTDIR$MANDIR/man1
+     cp "${SRCDIR?}"/sysui/desktop/man/$1.1 $DESTDIR$MANDIR/man1 || exit 1;
+-    gzip -f $DESTDIR$MANDIR/man1/$1.1
+-    test -f "$DESTDIR/$2" && echo "$MANDIR/man1/$1.1.gz" >>"$DESTDIR/$2"
++    test -f "$DESTDIR/$2" && echo "$MANDIR/man1/$1.1" >>"$DESTDIR/$2"
+ }
+ 
+ 
+diff -ruN a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
+--- a/bridges/Library_cpp_uno.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/bridges/Library_cpp_uno.mk	2026-07-06 16:50:49.922000000 -0700
+@@ -177,9 +177,15 @@
+ 
+ ifneq ($(filter ANDROID DRAGONFLY FREEBSD LINUX NETBSD OPENBSD HAIKU,$(OS)),)
+ bridges_SELECTED_BRIDGE := gcc3_linux_x86-64
++ifneq ($(COM_IS_CLANG),TRUE)
+ bridge_asm_objects := call
+ bridge_noncallexception_noopt_objects := callvirtualmethod
+ bridge_exception_objects := abi cpp2uno except rtti uno2cpp
++else
++# Fil-C (clang) does not support assembly or inline asm; the bridge is
++# rewritten in C++ using zcall/zargs/zreturn primitives.
++bridge_exception_objects := abi callvirtualmethod cpp2uno except rtti uno2cpp
++endif
+ else ifneq ($(filter MACOSX iOS,$(OS)),)
+ bridges_SELECTED_BRIDGE := gcc3_macosx_x86-64
+ bridge_exception_objects := abi call cpp2uno except uno2cpp
+diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx
+--- a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2026-07-06 16:55:53.236000000 -0700
+@@ -27,13 +27,17 @@
+ #include "abi.hxx"
+ #include "callvirtualmethod.hxx"
+ 
++#ifdef __FILC__
++#include <stdfil.h>
++#include <string.h>
++#endif
++
+ #ifndef __has_feature
+ #  define __has_feature(x) 0
+ #endif
+ 
+ #if __has_feature(memory_sanitizer)
+ #  include <sanitizer/msan_interface.h>
+-   // In the absence of a better idea just unpoison this
+ #  define MSAN_UNPOISON_RETURN_REGISTER() __msan_unpoison(pRegisterReturn, pReturnTypeRef->pType->nSize)
+ #else
+ #  define MSAN_UNPOISON_RETURN_REGISTER()
+@@ -60,6 +64,14 @@
+     typelib_TypeDescriptionReference * pReturnTypeRef, bool bSimpleReturn,
+     sal_uInt64 *pStack, sal_uInt32 nStack, sal_uInt64 *pGPR, double * pFPR)
+ {
++#ifdef __FILC__
++    // Fil-C path: the actual zcall-based virtual method invocation is done
++    // directly in uno2cpp.cxx::cpp_call, which has the type information needed
++    // to build the CC args buffer.  This function is not called under Fil-C.
++    (void)pThis; (void)nVtableIndex; (void)pRegisterReturn;
++    (void)pReturnTypeRef; (void)bSimpleReturn;
++    (void)pStack; (void)nStack; (void)pGPR; (void)pFPR;
++#else
+     // Work around Clang -fsanitize=address "inline assembly requires more
+     // registers than available" error:
+     struct Data {
+@@ -191,6 +203,7 @@
+             break;
+         }
+     }
++#endif
+ }
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
+--- a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2026-07-06 16:53:35.428000000 -0700
+@@ -35,6 +35,10 @@
+ #include "call.hxx"
+ #include "share.hxx"
+ 
++#ifdef __FILC__
++#include <stdfil.h>
++#endif
++
+ #if !ENABLE_RUNTIME_OPTIMIZATIONS
+ #include "rtti.hxx"
+ #endif
+@@ -404,6 +408,382 @@
+     return eRet;
+ }
+ 
++#ifdef __FILC__
++
++// In Fil-C, the assembly privateSnippetExecutor and JIT code snippets are replaced
++// by a closure-based mechanism using zcall/zargs/zreturn primitives.
++//
++// The zargs() buffer contains all arguments laid out as a struct: each argument
++// is at max(8, alignment) offset and takes its normalized alloc size.  For the
++// UNO bridge every argument (hidden-return ptr, this, simple values, complex
++// ptrs) occupies exactly 8 bytes, so we simply walk the buffer in 8-byte steps.
++
++// Fil-C version of cpp2uno_call: takes a single argp pointer into the zargs
++// buffer instead of separate gpreg/fpreg/ovrflw arrays.
++static int cpp2uno_call_filc(
++    bridges::cpp_uno::shared::CppInterfaceProxy * pThis,
++    const typelib_TypeDescription * pMemberTypeDescr,
++    typelib_TypeDescriptionReference * pReturnTypeRef,
++    sal_Int32 nParams, typelib_MethodParameter * pParams,
++    char * argp,
++    sal_uInt64 * pRegisterReturn )
++{
++    // return
++    typelib_TypeDescription * pReturnTypeDescr = nullptr;
++    if (pReturnTypeRef)
++        TYPELIB_DANGER_GET( &pReturnTypeDescr, pReturnTypeRef );
++    x86_64::ReturnKind returnKind
++        = (pReturnTypeRef == nullptr || pReturnTypeRef->eTypeClass == typelib_TypeClass_VOID)
++        ? x86_64::ReturnKind::RegistersGeneral : x86_64::getReturnKind(pReturnTypeRef);
++
++    void * pUnoReturn = nullptr;
++    void * pCppReturn = nullptr;
++
++    if ( pReturnTypeDescr )
++    {
++        if ( returnKind == x86_64::ReturnKind::Memory )
++        {
++            pCppReturn = *reinterpret_cast<void **>(argp);
++            argp += 8;
++
++            pUnoReturn = ( bridges::cpp_uno::shared::relatesToInterfaceType( pReturnTypeDescr )
++                           ? alloca( pReturnTypeDescr->nSize )
++                           : pCppReturn );
++        }
++        else
++            pUnoReturn = pRegisterReturn;
++    }
++
++    // pop this
++    argp += 8;
++
++    // parameters
++    void ** pUnoArgs = static_cast<void **>(alloca( 4 * sizeof(void *) * nParams ));
++    void ** pCppArgs = pUnoArgs + nParams;
++    sal_Int32 * pTempIndices = reinterpret_cast<sal_Int32 *>(pUnoArgs + (2 * nParams));
++    typelib_TypeDescription ** ppTempParamTypeDescr = reinterpret_cast<typelib_TypeDescription **>(pUnoArgs + (3 * nParams));
++
++    sal_Int32 nTempIndices = 0;
++
++    for ( sal_Int32 nPos = 0; nPos < nParams; ++nPos )
++    {
++        const typelib_MethodParameter & rParam = pParams[nPos];
++
++        if ( !rParam.bOut && bridges::cpp_uno::shared::isSimpleType( rParam.pTypeRef ) )
++        {
++            // Simple type: value is in the zargs buffer at argp (8 bytes).
++            pCppArgs[nPos] = pUnoArgs[nPos] = argp;
++            argp += 8;
++        }
++        else // ref / complex
++        {
++            typelib_TypeDescription * pParamTypeDescr = nullptr;
++            TYPELIB_DANGER_GET( &pParamTypeDescr, rParam.pTypeRef );
++
++            void *pCppStack = *reinterpret_cast<void **>(argp);
++            argp += 8;
++            pCppArgs[nPos] = pCppStack;
++
++            if (! rParam.bIn) // pure out
++            {
++                pUnoArgs[nPos] = alloca( pParamTypeDescr->nSize );
++                pTempIndices[nTempIndices] = nPos;
++                ppTempParamTypeDescr[nTempIndices++] = pParamTypeDescr;
++            }
++            else if ( bridges::cpp_uno::shared::relatesToInterfaceType( pParamTypeDescr ) )
++            {
++                pUnoArgs[nPos] = alloca( pParamTypeDescr->nSize );
++                uno_copyAndConvertData( pUnoArgs[nPos],
++                                        pCppStack, pParamTypeDescr,
++                                        pThis->getBridge()->getCpp2Uno() );
++                pTempIndices[nTempIndices] = nPos;
++                ppTempParamTypeDescr[nTempIndices++] = pParamTypeDescr;
++            }
++            else
++            {
++                pUnoArgs[nPos] = pCppStack;
++                TYPELIB_DANGER_RELEASE( pParamTypeDescr );
++            }
++        }
++    }
++
++    // ExceptionHolder
++    uno_Any aUnoExc;
++    uno_Any * pUnoExc = &aUnoExc;
++
++    (*pThis->getUnoI()->pDispatcher)( pThis->getUnoI(), pMemberTypeDescr, pUnoReturn, pUnoArgs, &pUnoExc );
++
++    if ( pUnoExc )
++    {
++        for ( ; nTempIndices--; )
++        {
++            sal_Int32 nIndex = pTempIndices[nTempIndices];
++            if (pParams[nIndex].bIn)
++                uno_destructData( pUnoArgs[nIndex], ppTempParamTypeDescr[nTempIndices], nullptr );
++            TYPELIB_DANGER_RELEASE( ppTempParamTypeDescr[nTempIndices] );
++        }
++        if (pReturnTypeDescr)
++            TYPELIB_DANGER_RELEASE( pReturnTypeDescr );
++
++        CPPU_CURRENT_NAMESPACE::raiseException( &aUnoExc, pThis->getBridge()->getUno2Cpp() );
++        return 0;
++    }
++    else
++    {
++        for ( ; nTempIndices--; )
++        {
++            sal_Int32 nIndex = pTempIndices[nTempIndices];
++            typelib_TypeDescription * pParamTypeDescr = ppTempParamTypeDescr[nTempIndices];
++
++            if ( pParams[nIndex].bOut )
++            {
++                uno_destructData( pCppArgs[nIndex], pParamTypeDescr, cpp_release );
++                uno_copyAndConvertData( pCppArgs[nIndex], pUnoArgs[nIndex], pParamTypeDescr,
++                                        pThis->getBridge()->getUno2Cpp() );
++            }
++            uno_destructData( pUnoArgs[nIndex], pParamTypeDescr, nullptr );
++            TYPELIB_DANGER_RELEASE( pParamTypeDescr );
++        }
++        if ( pCppReturn )
++        {
++            if ( pUnoReturn != pCppReturn )
++            {
++                uno_copyAndConvertData( pCppReturn, pUnoReturn, pReturnTypeDescr,
++                                        pThis->getBridge()->getUno2Cpp() );
++                uno_destructData( pUnoReturn, pReturnTypeDescr, nullptr );
++            }
++            *reinterpret_cast<void **>(pRegisterReturn) = pCppReturn;
++        }
++        if ( pReturnTypeDescr )
++            TYPELIB_DANGER_RELEASE( pReturnTypeDescr );
++        switch (returnKind) {
++        case x86_64::ReturnKind::RegistersFpInt:
++            return 0;
++        case x86_64::ReturnKind::RegistersIntFp:
++            return 1;
++        default:
++            return -1;
++        }
++    }
++}
++
++// Fil-C version of cpp_vtable_call: takes argp into the zargs buffer.
++static int cpp_vtable_call_filc(
++    sal_Int32 nFunctionIndex, sal_Int32 nVtableOffset,
++    char * argp,
++    sal_uInt64 * pRegisterReturn )
++{
++    void * pThis;
++    if ( nFunctionIndex & 0x80000000 )
++    {
++        nFunctionIndex &= 0x7fffffff;
++        pThis = *reinterpret_cast<void**>(argp + 8); // second slot (after hidden return)
++    }
++    else
++    {
++        pThis = *reinterpret_cast<void**>(argp);
++    }
++    pThis = static_cast<char *>( pThis ) - nVtableOffset;
++
++    bridges::cpp_uno::shared::CppInterfaceProxy * pCppI =
++        bridges::cpp_uno::shared::CppInterfaceProxy::castInterfaceToProxy( pThis );
++
++    typelib_InterfaceTypeDescription * pTypeDescr = pCppI->getTypeDescr();
++
++    if ( nFunctionIndex >= pTypeDescr->nMapFunctionIndexToMemberIndex )
++    {
++        SAL_WARN(
++            "bridges",
++            "illegal " << OUString::unacquired(&pTypeDescr->aBase.pTypeName)
++                << " vtable index " << nFunctionIndex << "/"
++                << pTypeDescr->nMapFunctionIndexToMemberIndex);
++        throw RuntimeException(
++            ("illegal " + OUString::unacquired(&pTypeDescr->aBase.pTypeName)
++             + " vtable index " + OUString::number(nFunctionIndex) + "/"
++             + OUString::number(pTypeDescr->nMapFunctionIndexToMemberIndex)),
++            reinterpret_cast<XInterface *>( pCppI ) );
++    }
++
++    sal_Int32 nMemberPos = pTypeDescr->pMapFunctionIndexToMemberIndex[nFunctionIndex];
++    assert(nMemberPos < pTypeDescr->nAllMembers);
++
++    TypeDescription aMemberDescr( pTypeDescr->ppAllMembers[nMemberPos] );
++
++    int eRet;
++    switch ( aMemberDescr.get()->eTypeClass )
++    {
++        case typelib_TypeClass_INTERFACE_ATTRIBUTE:
++        {
++            typelib_TypeDescriptionReference *pAttrTypeRef =
++                reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>( aMemberDescr.get() )->pAttributeTypeRef;
++
++            if ( pTypeDescr->pMapMemberIndexToFunctionIndex[nMemberPos] == nFunctionIndex )
++            {
++                eRet = cpp2uno_call_filc( pCppI, aMemberDescr.get(), pAttrTypeRef,
++                        0, nullptr, argp, pRegisterReturn );
++            }
++            else
++            {
++                typelib_MethodParameter aParam;
++                aParam.pTypeRef = pAttrTypeRef;
++                aParam.bIn      = true;
++                aParam.bOut     = false;
++
++                eRet = cpp2uno_call_filc( pCppI, aMemberDescr.get(),
++                        nullptr, 1, &aParam, argp, pRegisterReturn );
++            }
++            break;
++        }
++        case typelib_TypeClass_INTERFACE_METHOD:
++        {
++            switch ( nFunctionIndex )
++            {
++                case 1: // acquire()
++                    pCppI->acquireProxy();
++                    eRet = 0;
++                    break;
++                case 2: // release()
++                    pCppI->releaseProxy();
++                    eRet = 0;
++                    break;
++                case 0: // queryInterface() opt
++                {
++                    // In the zargs buffer: [retAny*], this, Type*
++                    void ** slots = reinterpret_cast<void **>(argp);
++                    typelib_TypeDescription * pTD = nullptr;
++                    TYPELIB_DANGER_GET( &pTD, static_cast<Type *>( slots[2] )->getTypeLibType() );
++                    if ( pTD )
++                    {
++                        XInterface * pInterface = nullptr;
++                        (*pCppI->getBridge()->getCppEnv()->getRegisteredInterface)
++                            ( pCppI->getBridge()->getCppEnv(),
++                              reinterpret_cast<void **>(&pInterface),
++                              pCppI->getOid().pData,
++                              reinterpret_cast<typelib_InterfaceTypeDescription *>( pTD ) );
++
++                        if ( pInterface )
++                        {
++                            ::uno_any_construct( static_cast<uno_Any *>( slots[0] ),
++                                                 &pInterface, pTD, cpp_acquire );
++                            pInterface->release();
++                            TYPELIB_DANGER_RELEASE( pTD );
++                            reinterpret_cast<void **>( pRegisterReturn )[0] = slots[0];
++                            eRet = 0;
++                            break;
++                        }
++                        TYPELIB_DANGER_RELEASE( pTD );
++                    }
++                    [[fallthrough]];
++                }
++                default:
++                {
++                    typelib_InterfaceMethodTypeDescription *pMethodTD =
++                        reinterpret_cast<typelib_InterfaceMethodTypeDescription *>( aMemberDescr.get() );
++
++                    eRet = cpp2uno_call_filc( pCppI, aMemberDescr.get(),
++                                         pMethodTD->pReturnTypeRef,
++                                         pMethodTD->nParams,
++                                         pMethodTD->pParams,
++                                         argp, pRegisterReturn );
++                }
++            }
++            break;
++        }
++        default:
++        {
++            throw RuntimeException(u"no member description found!"_ustr,
++                                    reinterpret_cast<XInterface *>( pCppI ) );
++        }
++    }
++
++    return eRet;
++}
++
++// Closure data carried by each vtable slot closure.
++struct SnippetData {
++    sal_Int32 nFunctionIndex;
++    sal_Int32 nVtableOffset;
++};
++
++// Fil-C replacement for the assembly privateSnippetExecutor.
++// This function is called as a Fil-C closure (via zclosure_new).  It retrieves
++// the function index / vtable offset from zcallee_closure_data(), the actual
++// arguments from zargs(), dispatches through cpp_vtable_call_filc, and returns
++// the result via zreturn().
++static void privateSnippetExecutorFilc( void )
++{
++    SnippetData * data = static_cast<SnippetData *>( zcallee_closure_data() );
++    char * argp = static_cast<char *>( zargs() );
++
++    sal_uInt64 pRegisterReturn[2] = { 0, 0 };
++
++    int eRet = cpp_vtable_call_filc( data->nFunctionIndex, data->nVtableOffset,
++                                     argp, pRegisterReturn );
++
++    // Determine whether we have a register return value to pass back.
++    // For void and hidden-pointer (Memory) returns, zreturn is not called.
++    // For all register returns, we pass the 16-byte pRegisterReturn buffer.
++    bool bHasReturn = false;
++    {
++        sal_Int32 nFunctionIndex = data->nFunctionIndex;
++        bool bHasHiddenParam = (nFunctionIndex & 0x80000000) != 0;
++        nFunctionIndex &= 0x7fffffff;
++
++        void * pThis;
++        if ( bHasHiddenParam )
++            pThis = *reinterpret_cast<void**>(argp + 8);
++        else
++            pThis = *reinterpret_cast<void**>(argp);
++        pThis = static_cast<char *>( pThis ) - data->nVtableOffset;
++
++        bridges::cpp_uno::shared::CppInterfaceProxy * pCppI =
++            bridges::cpp_uno::shared::CppInterfaceProxy::castInterfaceToProxy( pThis );
++        typelib_InterfaceTypeDescription * pTypeDescr = pCppI->getTypeDescr();
++
++        if ( nFunctionIndex < pTypeDescr->nMapFunctionIndexToMemberIndex )
++        {
++            sal_Int32 nMemberPos = pTypeDescr->pMapFunctionIndexToMemberIndex[nFunctionIndex];
++            TypeDescription aMemberDescr( pTypeDescr->ppAllMembers[nMemberPos] );
++            typelib_TypeDescriptionReference * pReturnTypeRef = nullptr;
++            if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_ATTRIBUTE )
++            {
++                pReturnTypeRef =
++                    reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>(
++                        aMemberDescr.get() )->pAttributeTypeRef;
++                // SET method has void return
++                if ( pTypeDescr->pMapMemberIndexToFunctionIndex[nMemberPos] != nFunctionIndex )
++                    pReturnTypeRef = nullptr;
++            }
++            else if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_METHOD )
++            {
++                if ( nFunctionIndex >= 3 ) // not acquire/release/queryInterface
++                    pReturnTypeRef =
++                        reinterpret_cast<typelib_InterfaceMethodTypeDescription *>(
++                            aMemberDescr.get() )->pReturnTypeRef;
++            }
++
++            if ( pReturnTypeRef
++                 && pReturnTypeRef->eTypeClass != typelib_TypeClass_VOID
++                 && !x86_64::return_in_hidden_param( pReturnTypeRef ) )
++            {
++                bHasReturn = true;
++            }
++            else if ( nFunctionIndex == 0 )
++            {
++                // queryInterface always returns a pointer (in registers)
++                bHasReturn = true;
++            }
++        }
++    }
++
++    if ( bHasReturn )
++        zreturn( pRegisterReturn );
++    (void)eRet;
++}
++
++#endif // __FILC__
++
++#ifndef __FILC__
+ const int codeSnippetSize = 24;
+ 
+ // Generate a trampoline that redirects method calls to
+@@ -443,6 +823,7 @@
+ 
+     return code + codeSnippetSize;
+ }
++#endif // !__FILC__
+ 
+ struct bridges::cpp_uno::shared::VtableFactory::Slot { void const * fn; };
+ 
+@@ -455,7 +836,13 @@
+ std::size_t bridges::cpp_uno::shared::VtableFactory::getBlockSize(
+     sal_Int32 slotCount)
+ {
++#ifdef __FILC__
++    // No code snippets needed: closures are created via zclosure_new and
++    // stored directly in the vtable slots.
++    return (slotCount + 2) * sizeof (Slot);
++#else
+     return (slotCount + 2) * sizeof (Slot) + slotCount * codeSnippetSize;
++#endif
+ }
+ 
+ #if ENABLE_RUNTIME_OPTIMIZATIONS
+@@ -505,15 +892,42 @@
+                 reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>( pTD );
+ 
+             // get method
++#ifdef __FILC__
++            {
++                SnippetData * data = static_cast<SnippetData *>(
++                    zgc_alloc( sizeof(SnippetData) ) );
++                sal_Int32 nIdx = nFunctionOffset++;
++                if ( x86_64::return_in_hidden_param( pAttrTD->pAttributeTypeRef ) )
++                    nIdx |= 0x80000000;
++                data->nFunctionIndex = nIdx;
++                data->nVtableOffset = nVtableOffset;
++                (s++)->fn = zclosure_new(
++                    reinterpret_cast<void *>( privateSnippetExecutorFilc ), data );
++            }
++#else
+             (s++)->fn = code + writetoexecdiff;
+             code = codeSnippet( code, nFunctionOffset++, nVtableOffset,
+                                 x86_64::return_in_hidden_param( pAttrTD->pAttributeTypeRef ) );
++#endif
+ 
+             if ( ! pAttrTD->bReadOnly )
+             {
+                 // set method
++#ifdef __FILC__
++                {
++                    SnippetData * data = static_cast<SnippetData *>(
++                        zgc_alloc( sizeof(SnippetData) ) );
++                    data->nFunctionIndex = nFunctionOffset++;
++                    data->nVtableOffset = nVtableOffset;
++                    // SET method: mark as having hidden param is not needed
++                    // (void return), but we must encode it correctly.
++                    (s++)->fn = zclosure_new(
++                        reinterpret_cast<void *>( privateSnippetExecutorFilc ), data );
++                }
++#else
+                 (s++)->fn = code + writetoexecdiff;
+                 code = codeSnippet( code, nFunctionOffset++, nVtableOffset, false );
++#endif
+             }
+         }
+         else if ( pTD->eTypeClass == typelib_TypeClass_INTERFACE_METHOD )
+@@ -521,9 +935,23 @@
+             typelib_InterfaceMethodTypeDescription *pMethodTD =
+                 reinterpret_cast<typelib_InterfaceMethodTypeDescription *>( pTD );
+ 
++#ifdef __FILC__
++            {
++                SnippetData * data = static_cast<SnippetData *>(
++                    zgc_alloc( sizeof(SnippetData) ) );
++                sal_Int32 nIdx = nFunctionOffset++;
++                if ( x86_64::return_in_hidden_param( pMethodTD->pReturnTypeRef ) )
++                    nIdx |= 0x80000000;
++                data->nFunctionIndex = nIdx;
++                data->nVtableOffset = nVtableOffset;
++                (s++)->fn = zclosure_new(
++                    reinterpret_cast<void *>( privateSnippetExecutorFilc ), data );
++            }
++#else
+             (s++)->fn = code + writetoexecdiff;
+             code = codeSnippet( code, nFunctionOffset++, nVtableOffset,
+                                 x86_64::return_in_hidden_param( pMethodTD->pReturnTypeRef ) );
++#endif
+         }
+         else
+             assert(false);
+diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx
+--- a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2026-07-06 16:57:07.872000000 -0700
+@@ -34,6 +34,11 @@
+ #include "callvirtualmethod.hxx"
+ #include "share.hxx"
+ 
++#ifdef __FILC__
++#include <stdfil.h>
++#include <string.h>
++#endif
++
+ using namespace ::com::sun::star::uno;
+ 
+ namespace {
+@@ -226,11 +231,64 @@
+     try
+     {
+         try {
++#ifdef __FILC__
++            // Fil-C path: build a CC args buffer and call via zcall.
++            // Each argument occupies 8 bytes in the CC buffer (all types are
++            // normalized to i64/double/ptr; float takes 4 bytes but is padded
++            // to 8 by alignment).
++            {
++                sal_uInt32 ccCount = 1; // this
++                if (!bSimpleReturn) ccCount++; // hidden return ptr
++                ccCount += nParams;
++                sal_uInt64 *ccBuf = static_cast<sal_uInt64 *>(
++                    __builtin_alloca(ccCount * sizeof(sal_uInt64)));
++                sal_uInt32 ccIdx = 0;
++
++                if (!bSimpleReturn)
++                    ccBuf[ccIdx++] = reinterpret_cast<sal_uInt64>(pCppReturn);
++                ccBuf[ccIdx++] = reinterpret_cast<sal_uInt64>(pAdjustedThisPtr);
++
++                for (sal_Int32 nPos = 0; nPos < nParams; ++nPos)
++                {
++                    const typelib_MethodParameter & rParam = pParams[nPos];
++                    typelib_TypeDescription * pParamTypeDescr = nullptr;
++                    TYPELIB_DANGER_GET(&pParamTypeDescr, rParam.pTypeRef);
++                    if (!rParam.bOut
++                        && bridges::cpp_uno::shared::isSimpleType(pParamTypeDescr))
++                    {
++                        ccBuf[ccIdx++] = *static_cast<sal_uInt64 *>(pCppArgs[nPos]);
++                    }
++                    else
++                    {
++                        ccBuf[ccIdx++] = reinterpret_cast<sal_uInt64>(pCppArgs[nPos]);
++                    }
++                    TYPELIB_DANGER_RELEASE(pParamTypeDescr);
++                }
++
++                // Get method pointer from vtable
++                void ** vtable = *static_cast<void ** *>(pAdjustedThisPtr);
++                void * method = vtable[aVtableSlot.index];
++
++                void * rets = zcall(method, ccBuf);
++
++                // Copy return value for simple (register) returns.
++                if (bSimpleReturn && rets && pReturnTypeDescr)
++                {
++                    sal_Int32 nRetSize = pReturnTypeDescr->nSize;
++                    if (nRetSize > 16) nRetSize = 16;
++                    if (nRetSize > 0)
++                        memcpy(pCppReturn, rets, nRetSize);
++                }
++                // For hidden returns, the C++ method wrote through the hidden
++                // pointer; nothing to copy.
++            }
++#else
+             CPPU_CURRENT_NAMESPACE::callVirtualMethod(
+                 pAdjustedThisPtr, aVtableSlot.index,
+                 pCppReturn, pReturnTypeRef, bSimpleReturn,
+                 pStackStart, ( pStack - pStackStart ),
+                 pGPR, pFPR );
++#endif
+         } catch (const Exception &) {
+             throw;
+         } catch (const std::exception & e) {
+diff -ruN a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp_uno/shared/vtablefactory.cxx
+--- a/bridges/source/cpp_uno/shared/vtablefactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/bridges/source/cpp_uno/shared/vtablefactory.cxx	2026-07-06 16:57:48.725000000 -0700
+@@ -104,11 +104,20 @@
+     if (p == MAP_FAILED) {
+         p = nullptr;
+     }
++#ifdef __FILC__
++    // Fil-C: no executable code is generated (closures are used instead of
++    // JIT trampolines), so we don't need PROT_EXEC.  In fact, mprotect with
++    // PROT_EXEC may fail under Fil-C.
++    else if (false)
++    {
++    }
++#else
+     else if (mprotect (p, n, PROT_READ | PROT_WRITE | PROT_EXEC) == -1)
+     {
+         munmap (p, n);
+         p = nullptr;
+     }
++#endif
+ #if defined MACOSX
+ done:
+ #endif
+diff -ruN a/configure.ac b/configure.ac
+--- a/configure.ac	2024-08-08 13:59:54.000000000 -0700
++++ b/configure.ac	2026-07-06 15:23:39.181000000 -0700
+@@ -14434,21 +14434,22 @@
+ #
+ SHA256SUM=
+ 
+-for i in shasum /usr/local/bin/shasum /usr/sfw/bin/shasum /opt/sfw/bin/shasum /opt/local/bin/shasum; do
+-    eval "$i -a 256 --version" > /dev/null 2>&1
++# Check sha256sum first (shasum crashes on Fil-C due to SHA.so bug)
++for i in sha256sum /usr/local/bin/sha256sum /usr/sfw/bin/sha256sum /opt/sfw/bin/sha256sum /opt/local/bin/sha256sum; do
++    eval "$i --version" > /dev/null 2>&1
+     ret=$?
+     if test $ret -eq 0; then
+-        SHA256SUM="$i -a 256"
++        SHA256SUM=$i
+         break
+     fi
+ done
+ 
+ if test -z "$SHA256SUM"; then
+-    for i in sha256sum /usr/local/bin/sha256sum /usr/sfw/bin/sha256sum /opt/sfw/bin/sha256sum /opt/local/bin/sha256sum; do
+-        eval "$i --version" > /dev/null 2>&1
++    for i in shasum /usr/local/bin/shasum /usr/sfw/bin/shasum /opt/sfw/bin/shasum /opt/local/bin/shasum; do
++        eval "$i -a 256 --version" > /dev/null 2>&1
+         ret=$?
+         if test $ret -eq 0; then
+-            SHA256SUM=$i
++            SHA256SUM="$i -a 256"
+             break
+         fi
+     done
+diff -ruN a/cppu/util/cppu.map b/cppu/util/cppu.map
+--- a/cppu/util/cppu.map	2024-08-08 13:59:54.000000000 -0700
++++ b/cppu/util/cppu.map	2026-07-06 16:11:46.664000000 -0700
+@@ -17,6 +17,7 @@
+ #
+ UDK_3_0_0 {
+     global:
++        pizlonated_*;
+         _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
+ 
+         typelib_typedescription_new;
+diff -ruN a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc3.map
+--- a/cppu/util/uno_purpenvhelpergcc3.map	2024-08-08 13:59:54.000000000 -0700
++++ b/cppu/util/uno_purpenvhelpergcc3.map	2026-07-06 16:11:46.648000000 -0700
+@@ -17,6 +17,7 @@
+ #
+ UDK_3_0_0 {
+     global:
++        pizlonated_*;
+         _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
+ 
+         _ZN4cppu6helper7purpenv13createMappingEPP12_uno_MappingP16_uno_EnvironmentS6_PFvbPvS7_P33_typelib_TypeDescriptionReferenceP24_typelib_MethodParameter?PK24_typelib_TypeDescriptionS7_PS7_PP8_uno_AnyES7_;
+diff -ruN a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
+--- a/cppuhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
++++ b/cppuhelper/source/gcc3.map	2026-07-06 16:11:46.680000000 -0700
+@@ -17,6 +17,7 @@
+ #
+ UDK_3_0_0 {
+     global:
++        pizlonated_*;
+     _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
+ 
+ _ZN3com3sun4star3uno19WeakReferenceHelperC1ERKNS2_9ReferenceINS2_10XInterfaceEEE;
+diff -ruN a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
+--- a/external/libcmis/UnpackedTarball_libcmis.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/libcmis/UnpackedTarball_libcmis.mk	2026-07-06 15:02:53.998000000 -0700
+@@ -18,6 +18,7 @@
+ $(eval $(call gb_UnpackedTarball_add_patches,libcmis,\
+ 	external/libcmis/0001-cid-1545775-COPY_INSTEAD_OF_MOVE.patch \
+ 	external/libcmis/0001-Fix-warning-C4589-when-building-with-MSVC.patch \
++	external/libcmis/boost_1.86.0_build_failure.patch.1 \
+ 	external/libcmis/http-session-cleanup.patch.1 \
+ 	external/libcmis/factory-no-retry-ssl.patch.1 \
+ 	external/libcmis/sharepoint-auth.patch.1 \
+diff -ruN a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
+--- a/external/libcmis/boost_1.86.0_build_failure.patch.1	1969-12-31 16:00:00.000000000 -0800
++++ b/external/libcmis/boost_1.86.0_build_failure.patch.1	2026-07-06 15:02:53.998000000 -0700
+@@ -0,0 +1,23 @@
++diff -ur libcmis.org/src/libcmis/xml-utils.cxx libcmis/src/libcmis/xml-utils.cxx
++--- libcmis.org/src/libcmis/xml-utils.cxx       2024-08-15 15:56:04.039673015 -0400
+++++ libcmis/src/libcmis/xml-utils.cxx   2024-08-15 15:57:42.787321115 -0400
++@@ -535,7 +535,7 @@
++         boost::uuids::detail::sha1 sha1;
++         sha1.process_bytes( str.c_str(), str.size() );
++ 
++-        unsigned int digest[5];
+++        unsigned char digest[20];
++         sha1.get_digest( digest );
++ 
++         stringstream out;
++@@ -543,8 +543,9 @@
++         // hexadecimal digits, including possible leading 0s, or we get
++         // less than 40 digits as result.
++         out << hex << setfill('0') << right;
+++       unsigned int * idigest = reinterpret_cast<unsigned int *>(&digest[0]);
++         for ( int i = 0; i < 5; ++i )
++-            out << setw(8) << digest[i];
+++            out << setw(8) << idigest[i];
++         return out.str();
++     }
++ 
+diff -ruN a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
+--- a/external/poppler/UnpackedTarball_poppler.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/poppler/UnpackedTarball_poppler.mk	2026-07-06 16:06:18.632000000 -0700
+@@ -18,6 +18,7 @@
+ 	external/poppler/disable-nss-and-gpgmepp.patch.1 \
+ 	external/poppler/poppler-config.patch.1 \
+ 	external/poppler/pch.patch.0 \
++	external/poppler/disable-annotate.patch.1 \
+ ))
+ 
+ ifneq ($(filter -fsanitize=%,$(CC)),)
+diff -ruN a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable-annotate.patch.1
+--- a/external/poppler/disable-annotate.patch.1	1969-12-31 16:00:00.000000000 -0800
++++ b/external/poppler/disable-annotate.patch.1	2026-07-06 16:05:39.396000000 -0700
+@@ -0,0 +1,14 @@
++Disable __annotate__ attribute that creates llvm.global.annotations
++which Fil-C's FilPizlonatorPass doesn't handle.
++
++--- poppler/goo/GooString.h.orig	2024-07-06 16:10:00.000000000 -0700
+++++ poppler/goo/GooString.h	2024-07-06 16:10:00.000000000 -0700
++@@ -46,7 +46,7 @@
++ #include <memory>
++ #include <string>
++ 
++-#ifdef __clang__
+++#if 0
++ #    define GOOSTRING_FORMAT __attribute__((__annotate__("gooformat")))
++ #else
++ #    define GOOSTRING_FORMAT
+diff -ruN a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
+--- a/external/redland/ExternalProject_raptor.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/redland/ExternalProject_raptor.mk	2026-07-06 15:53:06.109000000 -0700
+@@ -30,7 +30,7 @@
+ 		CPPFLAGS="$(if $(SYSBASE),-I$(SYSBASE)/usr/include) $(gb_EMSCRIPTEN_CPPFLAGS)" \
+ 		$(gb_RUN_CONFIGURE) ./configure --disable-gtk-doc \
+ 			 --enable-parsers="rdfxml ntriples turtle trig guess rss-tag-soup" \
+-			--with-www=xml \
++			--with-www=none \
+ 			--without-xslt-config \
+ 			$(gb_CONFIGURE_PLATFORMS) \
+ 			$(if $(CROSS_COMPILING),$(if $(filter INTEL ARM,$(CPUNAME)),ac_cv_c_bigendian=no)) \
+diff -ruN a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/UnpackedTarball_xmlsec.mk
+--- a/external/xmlsec/UnpackedTarball_xmlsec.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/xmlsec/UnpackedTarball_xmlsec.mk	2026-07-06 15:51:59.030000000 -0700
+@@ -12,6 +12,7 @@
+ xmlsec_patches += old-nss.patch.1
+ # Remove this when Windows 7 is no longer supported
+ xmlsec_patches += BCryptKeyDerivation.patch.1
++xmlsec_patches += fix-attribute-unused.patch.1
+ 
+ $(eval $(call gb_UnpackedTarball_UnpackedTarball,xmlsec))
+ 
+diff -ruN a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-attribute-unused.patch.1
+--- a/external/xmlsec/fix-attribute-unused.patch.1	1969-12-31 16:00:00.000000000 -0800
++++ b/external/xmlsec/fix-attribute-unused.patch.1	2026-07-06 15:52:24.078000000 -0700
+@@ -0,0 +1,17 @@
++--- a/src/openssl/private.h	2026-07-06 15:52:17.162000000 -0700
+++++ b/src/openssl/private.h	2026-07-06 15:52:17.167000000 -0700
++@@ -16,6 +16,14 @@
++ #error "openssl/private.h file contains private xmlsec definitions and should not be used outside xmlsec or xmlsec-$crypto libraries"
++ #endif /* XMLSEC_PRIVATE */
++ 
+++#ifndef ATTRIBUTE_UNUSED
+++#ifdef __GNUC__
+++#define ATTRIBUTE_UNUSED
+++#else
+++#define ATTRIBUTE_UNUSED
+++#endif
+++#endif
+++
++ 
++ #include <xmlsec/exports.h>
++ #include <xmlsec/xmlsec.h>
+diff -ruN a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary_zxing.mk
+--- a/external/zxing/StaticLibrary_zxing.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/zxing/StaticLibrary_zxing.mk	2026-07-06 15:57:53.901000000 -0700
+@@ -19,6 +19,8 @@
+ 
+ $(eval $(call gb_StaticLibrary_set_warnings_disabled,zxing))
+ 
++$(eval $(call gb_StaticLibrary_add_cxxflags,zxing,-U__cpp_impl_coroutine))
++
+ $(eval $(call gb_StaticLibrary_set_include,zxing,\
+ 	-I$(gb_UnpackedTarball_workdir)/zxing/core/src/ \
+ 	$$(INCLUDE) \
+diff -ruN a/sal/util/sal.map b/sal/util/sal.map
+--- a/sal/util/sal.map	2024-08-08 13:59:54.000000000 -0700
++++ b/sal/util/sal.map	2026-07-06 16:11:46.613000000 -0700
+@@ -18,6 +18,7 @@
+ 
+ UDK_3_0_0 {
+     global:
++        pizlonated_*;
+         _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
+ 
+         osl_acceptConnectionOnSocket;
+diff -ruN a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
+--- a/salhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
++++ b/salhelper/source/gcc3.map	2026-07-06 16:11:46.631000000 -0700
+@@ -17,6 +17,7 @@
+ #
+ UDK_3_0_0 { # should have been UDK_3.0
+     global:
++        pizlonated_*;
+     _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
+ 
+     _ZN9salhelper18ORealDynamicLoader11newInstanceEPPS0_RKN3rtl8OUStringES6_;
+diff -ruN a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
+--- a/writerperfect/Library_wpftdraw.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/writerperfect/Library_wpftdraw.mk	2026-07-06 15:03:11.569000000 -0700
+@@ -65,6 +65,7 @@
+ 	icu_headers \
+ 	icui18n \
+ 	icuuc \
++zlib\
+ ))
+ 
+ $(eval $(call gb_Library_add_exception_objects,wpftdraw,\

@@ -105,7 +105,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bri
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
 diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2024-08-08 13:59:54.000000000 -0700
-+++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2026-07-06 16:53:35.428000000 -0700
++++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2026-07-06 21:13:31.126000000 -0700
 @@ -35,6 +35,10 @@
  #include "call.hxx"
  #include "share.hxx"
@@ -117,7 +117,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
  #if !ENABLE_RUNTIME_OPTIMIZATIONS
  #include "rtti.hxx"
  #endif
-@@ -404,6 +408,382 @@
+@@ -404,6 +408,389 @@
      return eRet;
  }
  
@@ -442,49 +442,56 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
 +        bool bHasHiddenParam = (nFunctionIndex & 0x80000000) != 0;
 +        nFunctionIndex &= 0x7fffffff;
 +
-+        void * pThis;
-+        if ( bHasHiddenParam )
-+            pThis = *reinterpret_cast<void**>(argp + 8);
-+        else
-+            pThis = *reinterpret_cast<void**>(argp);
-+        pThis = static_cast<char *>( pThis ) - data->nVtableOffset;
-+
-+        bridges::cpp_uno::shared::CppInterfaceProxy * pCppI =
-+            bridges::cpp_uno::shared::CppInterfaceProxy::castInterfaceToProxy( pThis );
-+        typelib_InterfaceTypeDescription * pTypeDescr = pCppI->getTypeDescr();
-+
-+        if ( nFunctionIndex < pTypeDescr->nMapFunctionIndexToMemberIndex )
++        // For acquire() (index 1) and release() (index 2) the return type
++        // is void, and release() may have already destroyed the proxy in
++        // cpp_vtable_call_filc() above, so don't access the proxy to
++        // determine the return type.
++        if (nFunctionIndex != 1 && nFunctionIndex != 2)
 +        {
-+            sal_Int32 nMemberPos = pTypeDescr->pMapFunctionIndexToMemberIndex[nFunctionIndex];
-+            TypeDescription aMemberDescr( pTypeDescr->ppAllMembers[nMemberPos] );
-+            typelib_TypeDescriptionReference * pReturnTypeRef = nullptr;
-+            if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_ATTRIBUTE )
-+            {
-+                pReturnTypeRef =
-+                    reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>(
-+                        aMemberDescr.get() )->pAttributeTypeRef;
-+                // SET method has void return
-+                if ( pTypeDescr->pMapMemberIndexToFunctionIndex[nMemberPos] != nFunctionIndex )
-+                    pReturnTypeRef = nullptr;
-+            }
-+            else if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_METHOD )
-+            {
-+                if ( nFunctionIndex >= 3 ) // not acquire/release/queryInterface
-+                    pReturnTypeRef =
-+                        reinterpret_cast<typelib_InterfaceMethodTypeDescription *>(
-+                            aMemberDescr.get() )->pReturnTypeRef;
-+            }
++            void * pThis;
++            if ( bHasHiddenParam )
++                pThis = *reinterpret_cast<void**>(argp + 8);
++            else
++                pThis = *reinterpret_cast<void**>(argp);
++            pThis = static_cast<char *>( pThis ) - data->nVtableOffset;
 +
-+            if ( pReturnTypeRef
-+                 && pReturnTypeRef->eTypeClass != typelib_TypeClass_VOID
-+                 && !x86_64::return_in_hidden_param( pReturnTypeRef ) )
++            bridges::cpp_uno::shared::CppInterfaceProxy * pCppI =
++                bridges::cpp_uno::shared::CppInterfaceProxy::castInterfaceToProxy( pThis );
++            typelib_InterfaceTypeDescription * pTypeDescr = pCppI->getTypeDescr();
++
++            if ( nFunctionIndex < pTypeDescr->nMapFunctionIndexToMemberIndex )
 +            {
-+                bHasReturn = true;
-+            }
-+            else if ( nFunctionIndex == 0 )
-+            {
-+                // queryInterface always returns a pointer (in registers)
-+                bHasReturn = true;
++                sal_Int32 nMemberPos = pTypeDescr->pMapFunctionIndexToMemberIndex[nFunctionIndex];
++                TypeDescription aMemberDescr( pTypeDescr->ppAllMembers[nMemberPos] );
++                typelib_TypeDescriptionReference * pReturnTypeRef = nullptr;
++                if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_ATTRIBUTE )
++                {
++                    pReturnTypeRef =
++                        reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>(
++                            aMemberDescr.get() )->pAttributeTypeRef;
++                    // SET method has void return
++                    if ( pTypeDescr->pMapMemberIndexToFunctionIndex[nMemberPos] != nFunctionIndex )
++                        pReturnTypeRef = nullptr;
++                }
++                else if ( aMemberDescr.get()->eTypeClass == typelib_TypeClass_INTERFACE_METHOD )
++                {
++                    if ( nFunctionIndex >= 3 ) // not acquire/release/queryInterface
++                        pReturnTypeRef =
++                            reinterpret_cast<typelib_InterfaceMethodTypeDescription *>(
++                                aMemberDescr.get() )->pReturnTypeRef;
++                }
++
++                if ( pReturnTypeRef
++                     && pReturnTypeRef->eTypeClass != typelib_TypeClass_VOID
++                     && !x86_64::return_in_hidden_param( pReturnTypeRef ) )
++                {
++                    bHasReturn = true;
++                }
++                else if ( nFunctionIndex == 0 )
++                {
++                    // queryInterface always returns a pointer (in registers)
++                    bHasReturn = true;
++                }
 +            }
 +        }
 +    }
@@ -500,7 +507,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
  const int codeSnippetSize = 24;
  
  // Generate a trampoline that redirects method calls to
-@@ -443,6 +823,7 @@
+@@ -443,6 +830,7 @@
  
      return code + codeSnippetSize;
  }
@@ -508,7 +515,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
  
  struct bridges::cpp_uno::shared::VtableFactory::Slot { void const * fn; };
  
-@@ -455,7 +836,13 @@
+@@ -455,7 +843,13 @@
  std::size_t bridges::cpp_uno::shared::VtableFactory::getBlockSize(
      sal_Int32 slotCount)
  {
@@ -522,7 +529,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
  }
  
  #if ENABLE_RUNTIME_OPTIMIZATIONS
-@@ -505,15 +892,42 @@
+@@ -505,15 +899,42 @@
                  reinterpret_cast<typelib_InterfaceAttributeTypeDescription *>( pTD );
  
              // get method
@@ -565,7 +572,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
              }
          }
          else if ( pTD->eTypeClass == typelib_TypeClass_INTERFACE_METHOD )
-@@ -521,9 +935,23 @@
+@@ -521,9 +942,23 @@
              typelib_InterfaceMethodTypeDescription *pMethodTD =
                  reinterpret_cast<typelib_InterfaceMethodTypeDescription *>( pTD );
  
@@ -693,6 +700,43 @@ diff -ruN a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp
  #if defined MACOSX
  done:
  #endif
+diff -ruN a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
+--- a/comphelper/Library_comphelper.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/comphelper/Library_comphelper.mk	2026-07-06 22:22:12.501000000 -0700
+@@ -123,6 +123,7 @@
+     comphelper/source/misc/proxyaggregation \
+     comphelper/source/misc/random \
+     comphelper/source/misc/SelectionMultiplex \
++    comphelper/source/misc/servicehelper \
+     comphelper/source/misc/sequenceashashmap \
+     comphelper/source/misc/sharedmutex \
+     comphelper/source/misc/simplefileaccessinteraction \
+diff -ruN a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/servicehelper.cxx
+--- a/comphelper/source/misc/servicehelper.cxx	1969-12-31 16:00:00.000000000 -0800
++++ b/comphelper/source/misc/servicehelper.cxx	2026-07-06 22:21:52.692000000 -0700
+@@ -0,0 +1,22 @@
++/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
++/*
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ */
++
++#include <comphelper/servicehelper.hxx>
++
++namespace comphelper {
++
++zexact_ptrtable* getUnoTunnelPtrTable()
++{
++    static zexact_ptrtable* table = zexact_ptrtable_new();
++    return table;
++}
++
++} // namespace comphelper
++
++/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
 diff -ruN a/configure.ac b/configure.ac
 --- a/configure.ac	2024-08-08 13:59:54.000000000 -0700
 +++ b/configure.ac	2026-07-06 15:23:39.181000000 -0700
@@ -881,6 +925,179 @@ diff -ruN a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary
  $(eval $(call gb_StaticLibrary_set_include,zxing,\
  	-I$(gb_UnpackedTarball_workdir)/zxing/core/src/ \
  	$$(INCLUDE) \
+diff -ruN a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehelper.hxx
+--- a/include/comphelper/servicehelper.hxx	2024-08-08 13:59:54.000000000 -0700
++++ b/include/comphelper/servicehelper.hxx	2026-07-06 22:22:45.680000000 -0700
+@@ -23,9 +23,22 @@
+ #include <rtl/uuid.h>
+ #include <com/sun/star/lang/XUnoTunnel.hpp>
+ #include <com/sun/star/uno/Sequence.hxx>
++#include <stdfil.h>
++#include <comphelper/comphelperdllapi.h>
+ 
+ namespace comphelper {
+ 
++    // Fil-C (Pizlix): The XUnoTunnel pattern encodes C++ pointers as sal_Int64
++    // integers and decodes them later.  On Fil-C, casting a pointer to an
++    // integer and back loses the object capability, producing a pointer with a
++    // null object.  We use zexact_ptrtable to register the pointer's capability
++    // at encode time and restore it at decode time, while keeping the same
++    // integer value (the raw pointer address) for compatibility with code that
++    // bypasses getSomething_cast.
++    // Defined in comphelper/source/misc/servicehelper.cxx so that all shared
++    // libraries share a single zexact_ptrtable instance.
++    zexact_ptrtable* COMPHELPER_DLLPUBLIC getUnoTunnelPtrTable();
++
+     // Class incapsulating UIDs used as e.g. tunnel IDs for css::lang::XUnoTunnel,
+     // or implementation IDs for css::lang::XTypeProvider
+     class UnoIdInit
+@@ -42,11 +55,23 @@
+ 
+     inline sal_Int64 getSomething_cast(void* p)
+     {
++        if (!p)
++            return 0;
++        // Register the pointer so its Fil-C capability can be restored later.
++        zexact_ptrtable_encode(getUnoTunnelPtrTable(), p);
+         return sal::static_int_cast<sal_Int64>(reinterpret_cast<sal_IntPtr>(p));
+     }
+ 
+     template<class T> inline T* getSomething_cast(sal_Int64 n)
+     {
++        if (!n)
++            return nullptr;
++        // Restore the Fil-C capability from the zexact_ptrtable.
++        void* ptr = zexact_ptrtable_decode(getUnoTunnelPtrTable(),
++            sal::static_int_cast<__SIZE_TYPE__>(n));
++        if (ptr)
++            return static_cast<T*>(ptr);
++        // Fallback for pointers encoded by code not yet recompiled.
+         return reinterpret_cast<T*>(sal::static_int_cast<sal_IntPtr>(n));
+     }
+ 
+diff -ruN a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
+--- a/pyuno/Library_pyuno.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/pyuno/Library_pyuno.mk	2026-07-06 22:27:03.545000000 -0700
+@@ -24,6 +24,7 @@
+ ))
+ 
+ $(eval $(call gb_Library_use_libraries,pyuno,\
++    comphelper \
+     cppu \
+     cppuhelper \
+     sal \
+diff -ruN a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
+--- a/sal/rtl/alloc_arena.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sal/rtl/alloc_arena.cxx	2026-07-06 21:03:24.960000000 -0700
+@@ -116,6 +116,7 @@
+         QUEUE_INSERT_TAIL_NAMED(&(arena->m_segment_reserve_span_head), span, s);
+         QUEUE_START_NAMED(span, f);
+         span->m_addr = reinterpret_cast<sal_uIntPtr>(span);
++        span->m_ptr = reinterpret_cast<char*>(span);
+         span->m_size = size;
+         span->m_type = RTL_ARENA_SEGMENT_TYPE_SPAN;
+ 
+@@ -126,6 +127,7 @@
+             QUEUE_INSERT_TAIL_NAMED(head, first, s);
+             QUEUE_START_NAMED(first, f);
+             first->m_addr = 0;
++            first->m_ptr = nullptr;
+             first->m_size = 0;
+             first->m_type = 0;
+         }
+@@ -169,6 +171,7 @@
+     assert(QUEUE_STARTED_NAMED(*ppSegment, f));
+ 
+     (*ppSegment)->m_addr = 0;
++    (*ppSegment)->m_ptr = nullptr;
+     (*ppSegment)->m_size = 0;
+ 
+     assert((*ppSegment)->m_type != RTL_ARENA_SEGMENT_TYPE_HEAD);
+@@ -450,9 +453,10 @@
+                 RTL_MEMORY_LOCK_RELEASE(&(arena->m_lock));
+ 
+                 span->m_size = size;
+-                span->m_addr = reinterpret_cast<sal_uIntPtr>(
+-                    (arena->m_source_alloc)(
+-                        arena->m_source_arena, &(span->m_size)));
++                void * source_ptr = (arena->m_source_alloc)(
++                    arena->m_source_arena, &(span->m_size));
++                span->m_addr = reinterpret_cast<sal_uIntPtr>(source_ptr);
++                span->m_ptr = static_cast<char*>(source_ptr);
+ 
+                 RTL_MEMORY_LOCK_ACQUIRE(&(arena->m_lock));
+                 if (span->m_addr != 0)
+@@ -463,6 +467,7 @@
+                     arena->m_stats.m_mem_total += span->m_size;
+ 
+                     (*ppSegment)->m_addr = span->m_addr;
++                    (*ppSegment)->m_ptr = span->m_ptr;
+                     (*ppSegment)->m_size = span->m_size;
+                     (*ppSegment)->m_type = RTL_ARENA_SEGMENT_TYPE_FREE;
+                     QUEUE_INSERT_HEAD_NAMED(span, (*ppSegment), s);
+@@ -518,6 +523,7 @@
+     {
+         assert(prev->m_addr + prev->m_size == segment->m_addr);
+         segment->m_addr  = prev->m_addr;
++        segment->m_ptr  = prev->m_ptr;
+         segment->m_size += prev->m_size;
+ 
+         /* remove from freelist */
+@@ -727,7 +733,7 @@
+         QUEUE_REMOVE_NAMED(segment, s);
+ 
+         /* return span to g_machdep_arena */
+-        rtl_machdep_free (gp_machdep_arena, reinterpret_cast<void*>(segment->m_addr), segment->m_size);
++        rtl_machdep_free (gp_machdep_arena, static_cast<void*>(segment->m_ptr), segment->m_size);
+     }
+ }
+ 
+@@ -837,6 +843,7 @@
+                         segment->m_size = size;
+ 
+                         remainder->m_addr = segment->m_addr + segment->m_size;
++                        remainder->m_ptr = segment->m_ptr + segment->m_size;
+                         remainder->m_size = oversize;
+                         remainder->m_type = RTL_ARENA_SEGMENT_TYPE_FREE;
+                         QUEUE_INSERT_HEAD_NAMED(segment, remainder, s);
+@@ -848,7 +855,7 @@
+                 rtl_arena_hash_insert (arena, segment);
+ 
+                 (*pSize) = segment->m_size;
+-                addr = reinterpret_cast<void*>(segment->m_addr);
++                addr = static_cast<void*>(segment->m_ptr);
+             }
+             RTL_MEMORY_LOCK_RELEASE(&(arena->m_lock));
+         }
+@@ -895,7 +902,7 @@
+ 
+                     if (arena->m_source_free)
+                     {
+-                        addr = reinterpret_cast<void*>(prev->m_addr);
++                        addr = static_cast<void*>(prev->m_ptr);
+                         size = prev->m_size;
+ 
+                         /* remove from segment list */
+@@ -936,7 +943,7 @@
+         for (rtl_arena_segment_type *segment = arena->m_hash_table[i];
+              segment != nullptr; segment = segment->m_fnext)
+         {
+-            foreachFn(reinterpret_cast<void *>(segment->m_addr),
++            foreachFn(static_cast<void *>(segment->m_ptr),
+                       segment->m_size);
+         }
+     }
+diff -ruN a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
+--- a/sal/rtl/alloc_arena.hxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sal/rtl/alloc_arena.hxx	2026-07-06 21:02:28.255000000 -0700
+@@ -56,6 +56,7 @@
+ 
+     /* segment description */
+     sal_uIntPtr         m_addr;
++    char *              m_ptr; /* Fil-C: tracked pointer equivalent of m_addr */
+     sal_Size            m_size;
+     sal_Size            m_type;
+ };
 diff -ruN a/sal/util/sal.map b/sal/util/sal.map
 --- a/sal/util/sal.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/util/sal.map	2026-07-06 16:11:46.613000000 -0700
@@ -903,6 +1120,45 @@ diff -ruN a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
      _ZN9salhelper18ORealDynamicLoader11newInstanceEPPS0_RKN3rtl8OUStringES6_;
+diff -ruN a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
+--- a/svx/source/gallery2/galmisc.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/svx/source/gallery2/galmisc.cxx	2026-07-06 21:07:20.828000000 -0700
+@@ -19,6 +19,7 @@
+ 
+ #include <sal/config.h>
+ 
++#include <osl/file.hxx>
+ #include <sot/storage.hxx>
+ #include <unotools/streamwrap.hxx>
+ #include <comphelper/processfactory.hxx>
+@@ -204,23 +205,10 @@
+ 
+     if( rURL.GetProtocol() != INetProtocol::NotValid )
+     {
+-        try
+-        {
+-            ::ucbhelper::Content        aCnt( rURL.GetMainURL( INetURLObject::DecodeMechanism::NONE ), uno::Reference< ucb::XCommandEnvironment >(), comphelper::getProcessComponentContext() );
+-            OUString    aTitle;
+-
+-            aCnt.getPropertyValue(u"Title"_ustr) >>= aTitle;
+-            bRet = ( !aTitle.isEmpty() );
+-        }
+-        catch( const ucb::ContentCreationException& )
+-        {
+-        }
+-        catch( const uno::RuntimeException& )
+-        {
+-        }
+-        catch( const uno::Exception& )
+-        {
+-        }
++        // Use osl::DirectoryItem instead of UCB to avoid UNO exception
++        // handling paths that crash under Fil-C.
++        osl::DirectoryItem aDirItem;
++        bRet = (osl::DirectoryItem::get( rURL.GetMainURL( INetURLObject::DecodeMechanism::NONE ), aDirItem ) == osl::FileBase::E_None);
+     }
+ 
+     return bRet;
 diff -ruN a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
 --- a/writerperfect/Library_wpftdraw.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/writerperfect/Library_wpftdraw.mk	2026-07-06 15:03:11.569000000 -0700
@@ -914,3 +1170,130 @@ diff -ruN a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.m
  ))
  
  $(eval $(call gb_Library_add_exception_objects,wpftdraw,\
+diff -ruN a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
+--- a/xmloff/source/core/xmltoken.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/xmloff/source/core/xmltoken.cxx	2026-07-06 20:33:50.351000000 -0700
+@@ -24,6 +24,7 @@
+ #include <sal/log.hxx>
+ #include <optional>
+ #include <set>
++#include <cstring>
+ 
+ 
+ namespace xmloff::token {
+@@ -45,6 +46,7 @@
+ #else
+             XMLTokenEntry(sal_Int32 nLen, const char* p, std::optional<OUString> xStr)
+                 : pChar(p), xOUString(std::move(xStr)), nLength(nLen) {}
++            XMLTokenEntry() : pChar(nullptr), xOUString(std::nullopt), nLength(0) {}
+ #endif
+         };
+     }
+@@ -53,18 +55,20 @@
+ #if OSL_DEBUG_LEVEL > 0
+     #define TOKEN( s, e ) { sizeof(s)-1, s, std::nullopt, e }
+ #else
+-    #define TOKEN( s, e ) { sizeof(s)-1, s, std::nullopt }
++    #define TOKEN( s, e ) s
+ #endif
+ 
+     // IMPORTANT! aTokenList order MUST be in synch with XMLTokenEnum in include/xmloff/xmltoken.hxx
+     // and with xmloff/source/token/tokens.txt.
+ 
++#if OSL_DEBUG_LEVEL > 0
+     struct XMLTokenEntry aTokenList[] =
+     {
+-#if OSL_DEBUG_LEVEL > 0
+         { 0, nullptr, std::nullopt, XML_TOKEN_START },
+ #else
+-        { 0, nullptr, std::nullopt },                            // XML_TOKEN_START
++    static const char* const aTokenStrings[] =
++    {
++        "", // XML_TOKEN_START
+ #endif
+ 
+         // common XML
+@@ -3564,11 +3568,35 @@
+ 
+ #if OSL_DEBUG_LEVEL > 0
+         { 0, nullptr, std::nullopt,               XML_TOKEN_END }
++    };
+ #else
+-        { 0, nullptr, std::nullopt             /* XML_TOKEN_END */ }
+-#endif
++        "", // XML_TOKEN_END
++        nullptr
++    };
++
++    static XMLTokenEntry* aTokenList = nullptr;
++
++    struct TokenListInit
++    {
++        TokenListInit()
++        {
++            sal_Int32 count = 0;
++            while (aTokenStrings[count] != nullptr)
++                ++count;
++            aTokenList = new XMLTokenEntry[ count ];
++            for (sal_Int32 i = 0; i < count; ++i)
++            {
++                const char* pStr = aTokenStrings[i];
++                aTokenList[i].pChar = pStr;
++                aTokenList[i].nLength = static_cast<sal_Int32>(strlen(pStr));
++                aTokenList[i].xOUString = std::nullopt;
++            }
++        }
+     };
+ 
++    TokenListInit tokenListInit;
++#endif
++
+     // get OUString representation of token
+     const OUString& GetXMLToken( enum XMLTokenEnum eToken )
+     {
+diff -ruN a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity.mk
+--- a/xmlsecurity/Library_xmlsecurity.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/xmlsecurity/Library_xmlsecurity.mk	2026-07-06 20:45:26.320000000 -0700
+@@ -71,13 +71,13 @@
+ 	xmlsecurity/source/helper/xsecctl \
+ 	xmlsecurity/source/helper/xsecparser \
+ 	xmlsecurity/source/helper/xsecsign \
++	xmlsecurity/source/helper/xmlsignaturehelper \
++	xmlsecurity/source/helper/xsecverify \
+ ))
+ 
+ ifneq (,$(or $(ENABLE_NSS),$(filter WNT,$(OS))))
+ $(eval $(call gb_Library_add_exception_objects,xmlsecurity,\
+     xmlsecurity/source/component/documentdigitalsignatures \
+-    xmlsecurity/source/helper/xmlsignaturehelper \
+-    xmlsecurity/source/helper/xsecverify \
+ ))
+ 
+ $(eval $(call gb_Library_add_componentimpl,xmlsecurity,dds))
+diff -ruN a/xmlsecurity/source/xmlsec/biginteger.cxx b/xmlsecurity/source/xmlsec/biginteger.cxx
+--- a/xmlsecurity/source/xmlsec/biginteger.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/xmlsecurity/source/xmlsec/biginteger.cxx	2026-07-06 20:48:37.807000000 -0700
+@@ -102,6 +102,23 @@
+ 
+     return aRet ;
+ }
++
++#if !defined(XMLSEC_CRYPTO_NSS) && !defined(XMLSEC_CRYPTO_MSCRYPTO)
++// Fallback implementation for builds without NSS or MSCrypto (e.g. OpenSSL-only):
++// compare distinguished names as simple strings, since no crypto backend is
++// available to parse them into a structured form.
++bool EqualDistinguishedNames(
++        std::u16string_view const rName1, std::u16string_view const rName2,
++        EqualMode const eMode)
++{
++    if (eMode == COMPAT_BOTH && !rName1.empty() && rName1 == rName2)
++    {
++        return true;
++    }
++    return rName1 == rName2;
++}
++#endif
++
+ }
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab: */

@@ -35,4 +35,4 @@
 --with-system-openssl
 --with-system-zlib
 --enable-gstreamer-1-0
---disable-gtk3
+--enable-gtk3

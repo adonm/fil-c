@@ -1,4 +1,4 @@
-diff -ruN a/Makefile.in b/Makefile.in
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/Makefile.in b/Makefile.in
 --- a/Makefile.in	2024-08-08 13:59:54.000000000 -0700
 +++ b/Makefile.in	2026-07-06 15:03:11.956000000 -0700
 @@ -457,7 +457,6 @@
@@ -9,7 +9,14 @@ diff -ruN a/Makefile.in b/Makefile.in
  
  install-package-%:
  	$(MAKE) $(GMAKE_OPTIONS) -f $(SRCDIR)/Makefile.gbuild $@
-diff -ruN a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-integration
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/bffvalidator.sh b/bin/bffvalidator.sh
+--- a/bin/bffvalidator.sh	1969-12-31 16:00:00.000000000 -0800
++++ b/bin/bffvalidator.sh	2026-07-06 15:18:50.953000000 -0700
+@@ -0,0 +1,3 @@
++#!/bin/sh
++
++wine  `winepath -w $1`
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-integration
 --- a/bin/distro-install-desktop-integration	2024-08-08 13:59:54.000000000 -0700
 +++ b/bin/distro-install-desktop-integration	2026-07-06 15:03:11.950000000 -0700
 @@ -38,22 +38,20 @@
@@ -39,7 +46,19 @@ diff -ruN a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-
  }
  
  
-diff -ruN a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/odfvalidator.sh b/bin/odfvalidator.sh
+--- a/bin/odfvalidator.sh	1969-12-31 16:00:00.000000000 -0800
++++ b/bin/odfvalidator.sh	2026-07-06 15:18:51.008000000 -0700
+@@ -0,0 +1,2 @@
++#!/usr/bin/env bash
++java -Djavax.xml.validation.SchemaFactory:http://relaxng.org/ns/structure/1.0=org.iso_relax.verifier.jaxp.validation.RELAXNGSchemaFactoryImpl -Dorg.iso_relax.verifier.VerifierFactoryLoader=com.sun.msv.verifier.jarv.FactoryLoaderImpl -jar /data/pizlo/libreoffice-24.8.0.3/external/tarballs/ "$@"
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/officeotron.sh b/bin/officeotron.sh
+--- a/bin/officeotron.sh	1969-12-31 16:00:00.000000000 -0800
++++ b/bin/officeotron.sh	2026-07-06 15:18:51.066000000 -0700
+@@ -0,0 +1,2 @@
++#!/usr/bin/env bash
++java -jar /data/pizlo/libreoffice-24.8.0.3/external/tarballs/ "$@"
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
 --- a/bridges/Library_cpp_uno.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/Library_cpp_uno.mk	2026-07-06 16:50:49.922000000 -0700
 @@ -177,9 +177,15 @@
@@ -58,7 +77,7 @@ diff -ruN a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
  else ifneq ($(filter MACOSX iOS,$(OS)),)
  bridges_SELECTED_BRIDGE := gcc3_macosx_x86-64
  bridge_exception_objects := abi call cpp2uno except uno2cpp
-diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2026-07-06 16:55:53.236000000 -0700
 @@ -27,13 +27,17 @@
@@ -103,7 +122,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bri
  }
  
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
-diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2026-07-06 21:13:31.126000000 -0700
 @@ -35,6 +35,10 @@
@@ -596,7 +615,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/sourc
          }
          else
              assert(false);
-diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2026-07-06 16:57:07.872000000 -0700
 @@ -34,6 +34,11 @@
@@ -676,7 +695,7 @@ diff -ruN a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/sourc
          } catch (const Exception &) {
              throw;
          } catch (const std::exception & e) {
-diff -ruN a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp_uno/shared/vtablefactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp_uno/shared/vtablefactory.cxx
 --- a/bridges/source/cpp_uno/shared/vtablefactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/shared/vtablefactory.cxx	2026-07-06 16:57:48.725000000 -0700
 @@ -104,11 +104,20 @@
@@ -700,7 +719,7 @@ diff -ruN a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp
  #if defined MACOSX
  done:
  #endif
-diff -ruN a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
 --- a/comphelper/Library_comphelper.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/comphelper/Library_comphelper.mk	2026-07-06 22:22:12.501000000 -0700
 @@ -123,6 +123,7 @@
@@ -711,7 +730,7 @@ diff -ruN a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
      comphelper/source/misc/sequenceashashmap \
      comphelper/source/misc/sharedmutex \
      comphelper/source/misc/simplefileaccessinteraction \
-diff -ruN a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/servicehelper.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/servicehelper.cxx
 --- a/comphelper/source/misc/servicehelper.cxx	1969-12-31 16:00:00.000000000 -0800
 +++ b/comphelper/source/misc/servicehelper.cxx	2026-07-06 22:21:52.692000000 -0700
 @@ -0,0 +1,22 @@
@@ -737,7 +756,7 @@ diff -ruN a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/se
 +} // namespace comphelper
 +
 +/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
-diff -ruN a/configure.ac b/configure.ac
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/configure.ac b/configure.ac
 --- a/configure.ac	2024-08-08 13:59:54.000000000 -0700
 +++ b/configure.ac	2026-07-06 15:23:39.181000000 -0700
 @@ -14434,21 +14434,22 @@
@@ -769,7 +788,7 @@ diff -ruN a/configure.ac b/configure.ac
              break
          fi
      done
-diff -ruN a/cppu/util/cppu.map b/cppu/util/cppu.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppu/util/cppu.map b/cppu/util/cppu.map
 --- a/cppu/util/cppu.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppu/util/cppu.map	2026-07-06 16:11:46.664000000 -0700
 @@ -17,6 +17,7 @@
@@ -780,7 +799,7 @@ diff -ruN a/cppu/util/cppu.map b/cppu/util/cppu.map
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          typelib_typedescription_new;
-diff -ruN a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc3.map
 --- a/cppu/util/uno_purpenvhelpergcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppu/util/uno_purpenvhelpergcc3.map	2026-07-06 16:11:46.648000000 -0700
 @@ -17,6 +17,7 @@
@@ -791,7 +810,7 @@ diff -ruN a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          _ZN4cppu6helper7purpenv13createMappingEPP12_uno_MappingP16_uno_EnvironmentS6_PFvbPvS7_P33_typelib_TypeDescriptionReferenceP24_typelib_MethodParameter?PK24_typelib_TypeDescriptionS7_PS7_PP8_uno_AnyES7_;
-diff -ruN a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
 --- a/cppuhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppuhelper/source/gcc3.map	2026-07-06 16:11:46.680000000 -0700
 @@ -17,6 +17,7 @@
@@ -802,7 +821,7 @@ diff -ruN a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
  _ZN3com3sun4star3uno19WeakReferenceHelperC1ERKNS2_9ReferenceINS2_10XInterfaceEEE;
-diff -ruN a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
 --- a/external/libcmis/UnpackedTarball_libcmis.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/libcmis/UnpackedTarball_libcmis.mk	2026-07-06 15:02:53.998000000 -0700
 @@ -18,6 +18,7 @@
@@ -813,7 +832,7 @@ diff -ruN a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/Unpac
  	external/libcmis/http-session-cleanup.patch.1 \
  	external/libcmis/factory-no-retry-ssl.patch.1 \
  	external/libcmis/sharepoint-auth.patch.1 \
-diff -ruN a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
 --- a/external/libcmis/boost_1.86.0_build_failure.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/libcmis/boost_1.86.0_build_failure.patch.1	2026-07-06 15:02:53.998000000 -0700
 @@ -0,0 +1,23 @@
@@ -840,7 +859,7 @@ diff -ruN a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcm
 +         return out.str();
 +     }
 + 
-diff -ruN a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
 --- a/external/poppler/UnpackedTarball_poppler.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/poppler/UnpackedTarball_poppler.mk	2026-07-06 16:06:18.632000000 -0700
 @@ -18,6 +18,7 @@
@@ -851,7 +870,7 @@ diff -ruN a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/Unpac
  ))
  
  ifneq ($(filter -fsanitize=%,$(CC)),)
-diff -ruN a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable-annotate.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable-annotate.patch.1
 --- a/external/poppler/disable-annotate.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/poppler/disable-annotate.patch.1	2026-07-06 16:05:39.396000000 -0700
 @@ -0,0 +1,14 @@
@@ -869,7 +888,7 @@ diff -ruN a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable
 + #    define GOOSTRING_FORMAT __attribute__((__annotate__("gooformat")))
 + #else
 + #    define GOOSTRING_FORMAT
-diff -ruN a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
 --- a/external/redland/ExternalProject_raptor.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/redland/ExternalProject_raptor.mk	2026-07-06 15:53:06.109000000 -0700
 @@ -30,7 +30,7 @@
@@ -881,7 +900,7 @@ diff -ruN a/external/redland/ExternalProject_raptor.mk b/external/redland/Extern
  			--without-xslt-config \
  			$(gb_CONFIGURE_PLATFORMS) \
  			$(if $(CROSS_COMPILING),$(if $(filter INTEL ARM,$(CPUNAME)),ac_cv_c_bigendian=no)) \
-diff -ruN a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/UnpackedTarball_xmlsec.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/UnpackedTarball_xmlsec.mk
 --- a/external/xmlsec/UnpackedTarball_xmlsec.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/xmlsec/UnpackedTarball_xmlsec.mk	2026-07-06 15:51:59.030000000 -0700
 @@ -12,6 +12,7 @@
@@ -892,7 +911,7 @@ diff -ruN a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/Unpacked
  
  $(eval $(call gb_UnpackedTarball_UnpackedTarball,xmlsec))
  
-diff -ruN a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-attribute-unused.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-attribute-unused.patch.1
 --- a/external/xmlsec/fix-attribute-unused.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/xmlsec/fix-attribute-unused.patch.1	2026-07-06 15:52:24.078000000 -0700
 @@ -0,0 +1,17 @@
@@ -913,7 +932,7 @@ diff -ruN a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-a
 + 
 + #include <xmlsec/exports.h>
 + #include <xmlsec/xmlsec.h>
-diff -ruN a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary_zxing.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary_zxing.mk
 --- a/external/zxing/StaticLibrary_zxing.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/zxing/StaticLibrary_zxing.mk	2026-07-06 15:57:53.901000000 -0700
 @@ -19,6 +19,8 @@
@@ -925,7 +944,34 @@ diff -ruN a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary
  $(eval $(call gb_StaticLibrary_set_include,zxing,\
  	-I$(gb_UnpackedTarball_workdir)/zxing/core/src/ \
  	$$(INCLUDE) \
-diff -ruN a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehelper.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/hardened_runtime.xcent b/hardened_runtime.xcent
+--- a/hardened_runtime.xcent	1969-12-31 16:00:00.000000000 -0800
++++ b/hardened_runtime.xcent	2026-07-06 15:18:51.232000000 -0700
+@@ -0,0 +1,23 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++    <dict>
++        <!-- AppleScript support -->
++        <key>com.apple.security.automation.apple-events</key>
++        <true/>
++        <!-- Needed for our C++/binary UNO bridge runtime machine code generation: -->
++        <key>com.apple.security.cs.allow-jit</key>
++        <true/>
++        <!-- Needed for our C++/binary UNO bridge runtime machine code generation on old macOS that
++             reject mmap MAP_JIT (macOS <= 10.13?); and for in-process JVM: -->
++        <key>com.apple.security.cs.disable-executable-page-protection</key>
++        <true/>
++        <!-- allow use of third-party plugins/frameworks (aka Java) -->
++        <key>com.apple.security.cs.disable-library-validation</key>
++        <true/>
++        <!-- Allow Base to import data from Address Book -->
++        <key>com.apple.security.personal-information.addressbook</key>
++        <true/>
++        
++    </dict>
++</plist>
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehelper.hxx
 --- a/include/comphelper/servicehelper.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/include/comphelper/servicehelper.hxx	2026-07-06 22:22:45.680000000 -0700
 @@ -23,9 +23,22 @@
@@ -975,7 +1021,239 @@ diff -ruN a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehel
          return reinterpret_cast<T*>(sal::static_int_cast<sal_IntPtr>(n));
      }
  
-diff -ruN a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/instsetoo_native/util/openoffice.lst b/instsetoo_native/util/openoffice.lst
+--- a/instsetoo_native/util/openoffice.lst	1969-12-31 16:00:00.000000000 -0800
++++ b/instsetoo_native/util/openoffice.lst	2026-07-06 15:18:51.124000000 -0700
+@@ -0,0 +1,195 @@
++Globals
++{
++    Settings
++    {
++        variables
++        {
++            LIBO_VERSION_MAJOR 24
++            UREPACKAGEVERSION 24.8.0.3
++            URELAYERVERSION 1
++            REFERENCEOOOMAJORMINOR 4.1
++            WINDOWSBASISROOTNAME LibreOffice
++            UNIXBASISROOTNAME libreoffice24.8
++            HIDELICENSEDIALOG 1
++            PACKAGEPREFIX
++            BASISPACKAGEPREFIX libobasis
++            UREPACKAGEPREFIX libreoffice
++            SOLSUREPACKAGEPREFIX libreoffice
++            PROGRESSBARCOLOR 0,0,0
++            PROGRESSFRAMECOLOR 102,102,102
++            PROGRESSPOSITION 30,145
++            PROGRESSSIZE 385,8
++            PROGRESSPOSITIONHIGH 30,200
++            PROGRESSSIZEHIGH 650,12
++            PROGRESSTEXTBASELINE 170
++            PROGRESSTEXTCOLOR 0,0,0
++            NATIVEPROGRESS false
++            REGISTRYLAYERNAME Layers
++            SERVICEPACK 1
++            UPDATE_DATABASE 1
++            UPDATE_DATABASE_LISTNAME finals_instsetoo.txt
++            PACKAGEMAP package_names.txt,package_names_ext.txt
++            WINDOWSPATCHLEVEL 8
++            64BITPRODUCT 
++            WINDOWSSDKVERSION 
++            CRASHDUMPENABLE true
++        }
++    }
++}
++
++LibreOffice
++{
++    Settings
++    {
++        variables
++        {
++            PRODUCTNAME LibreOffice
++            PRODUCTVERSION 24.8
++            PRODUCTEXTENSION .0.3
++            POSTVERSIONEXTENSION
++            BUNDLEIDENTIFIER 
++            BRANDPACKAGEVERSION 24.8
++            USERDIRPRODUCTVERSION 4
++            BASEPRODUCTVERSION 24.8
++            PCPFILENAME libreoffice.pcp
++            UPDATEURL https://update.libreoffice.org/check.php
++            ADD_INCLUDE_FILES cli_ure/version/version.txt,unoil/climaker/version.txt
++            ADDSYSTEMINTEGRATION 1
++            PACKAGEVERSION 24.8.0.3
++            PACKAGEREVISION {buildid}
++            LICENSENAME LGPL
++            ROOTMODULEGID gid_Module_Root
++            GLOBALPATCHFILEGID gid_File_Txt_Patchfiles
++            SPELLCHECKERFILE spellchecker_selection.txt
++            CHANGETARGETDIR 1
++            PATCHCODEFILE ooo_patchcodes.txt
++        }
++        active          1
++        compression     5
++        script          setup_osl
++        downloadname    LibreOffice_{productversion}_{os}_install_{languages}
++        langpackdownloadname    LibreOffice_{productversion}_languagepack_{os}_install_{languages}
++        helppackdownloadname    LibreOffice_{productversion}_helppack_{os}_install_{languages}
++        include         {installscriptdir},{customtargetpath}/readlicense_oo/readme,{customtargetpath}/sysui/{pkgtype},{customtargetpath}/setup_native,{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{filelistpath}/ExtensionPackage,{filelistpath}/CustomTarget/helpcontent2/help3xsl/filelists,{extensionsdir},{licensepath},{packinfopath}
++    }
++}
++
++LibreOfficeDev
++{
++    Settings
++    {
++        variables
++        {
++            PRODUCTNAME LibreOfficeDev
++            PRODUCTVERSION 24.8
++            PRODUCTEXTENSION .0.3
++            WINDOWSBASISROOTNAME LibreOfficeDev 24
++            UNIXBASISROOTNAME libreofficedev24.8
++            POSTVERSIONEXTENSION
++            BUNDLEIDENTIFIER 
++            BRANDPACKAGEVERSION 24.8
++            USERDIRPRODUCTVERSION 4
++            BASEPRODUCTVERSION 24.8
++            DEVELOPMENTPRODUCT 1
++            BASISPACKAGEPREFIX lodevbasis
++            UREPACKAGEPREFIX libreofficedev
++            SOLSUREPACKAGEPREFIX libreofficedev
++            REGISTRYLAYERNAME LayerDev
++            UPDATEURL https://update.libreoffice.org/check.php
++            ADD_INCLUDE_FILES cli_ure/version/version.txt,unoil/climaker/version.txt
++            ADDSYSTEMINTEGRATION 1
++            PACKAGEVERSION 24.8.0.3
++            PACKAGEREVISION {buildid}
++            LICENSENAME LGPL
++            ROOTMODULEGID gid_Module_Root
++            GLOBALPATCHFILEGID gid_File_Txt_Patchfiles
++            SPELLCHECKERFILE spellchecker_selection.txt
++            CHANGETARGETDIR 1
++            PATCHCODEFILE ooodev_patchcodes.txt
++            CODEFILENAME codes_ooodev.txt
++            LOCALUSERDIR $ORIGIN/..
++        }
++        active          1
++        compression     5
++        script          setup_osl
++        downloadname    LibreOfficeDev_{productversion}_{os}_install_{languages}
++        langpackdownloadname    LibreOfficeDev_{productversion}_languagepack_{os}_install_{languages}
++        helppackdownloadname    LibreOfficeDev_{productversion}_helppack_{os}_install_{languages}
++        include         {installscriptdir},{customtargetpath}/readlicense_oo/readme,{customtargetpath}/sysui/{pkgtype},{customtargetpath}/setup_native,{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{filelistpath}/ExtensionPackage,{filelistpath}/CustomTarget/helpcontent2/help3xsl/filelists,{extensionsdir},{licensepath},{packinfopath}
++    }
++}
++
++LibreOffice_SDK
++{
++    Settings
++    {
++        downloadname LibreOffice-SDK_{packageversion}_{os}_install_{languages}
++        variables
++        {
++            PRODUCTNAME LibreOffice
++            PRODUCTVERSION 24.8
++            PRODUCTEXTENSION .0.3
++            POSTVERSIONEXTENSION SDK
++            BUNDLEIDENTIFIER .SDK
++            BRANDPACKAGEVERSION 24.8
++            PACKAGEVERSION 24.8.0.3
++            PACKAGEREVISION {buildid}
++            PACK_INSTALLED 1
++            DMG_VOLUMEEXTENSION SDK
++            DATABASENAME libreoffice40sdk
++            NO_README_IN_ROOTDIR 1
++            LICENSENAME LGPL
++            IGNOREDIRECTORYLAYER 1
++            NOVERSIONINDIRNAME 0
++            NOSPACEINDIRECTORYNAME 1
++            NOSHORTDIRECTORYNAMES 1
++            CHANGETARGETDIR 1
++            DONTUSESTARTMENUFOLDER 1
++        }
++        active 1
++        compression 5
++        script sdkoo
++        include {installscriptdir},{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{licensepath},{packinfopath}
++    }
++}
++
++LibreOfficeDev_SDK
++{
++    Settings
++    {
++        downloadname LibreOfficeDev-SDK_{packageversion}_{os}_install_{languages}
++        variables
++        {
++            PRODUCTNAME LibreOfficeDev
++            PRODUCTVERSION 24.8
++            PRODUCTEXTENSION .0.3
++            WINDOWSBASISROOTNAME LibreOfficeDev 24
++            UNIXBASISROOTNAME libreofficedev24.8
++            POSTVERSIONEXTENSION SDK
++            BUNDLEIDENTIFIER .SDK
++            BRANDPACKAGEVERSION 24.8
++            PACKAGEVERSION 24.8.0.3
++            PACKAGEREVISION {buildid}
++            BASISPACKAGEPREFIX lodevbasis
++            UREPACKAGEPREFIX libreofficedev
++            SOLSUREPACKAGEPREFIX libreofficedev
++            REGISTRYLAYERNAME LayerDev
++            DEVELOPMENTPRODUCT 1
++            PACK_INSTALLED 1
++            DMG_VOLUMEEXTENSION SDK
++            DATABASENAME libreoffice40devsdk
++            NO_README_IN_ROOTDIR 1
++            LICENSENAME LGPL
++            IGNOREDIRECTORYLAYER 1
++            NOVERSIONINDIRNAME 0
++            NOSPACEINDIRECTORYNAME 1
++            NOSHORTDIRECTORYNAMES 1
++            CHANGETARGETDIR 1
++            DONTUSESTARTMENUFOLDER 1
++        }
++        active 1
++        compression 5
++        script sdkoo
++        include {installscriptdir},{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{licensepath},{packinfopath}
++    }
++}
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/lo.xcent b/lo.xcent
+--- a/lo.xcent	1969-12-31 16:00:00.000000000 -0800
++++ b/lo.xcent	2026-07-06 15:18:51.277000000 -0700
+@@ -0,0 +1,29 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>com.apple.security.app-sandbox</key>
++	<true/>
++	<key>com.apple.security.files.bookmarks.app-scope</key>
++	<true/>
++	<key>com.apple.security.files.bookmarks.document-scope</key>
++	<true/>
++	<key>com.apple.security.files.bookmarks.collection-scope</key>
++	<true/>
++	<key>com.apple.security.files.user-selected.read-write</key>
++	<true/>
++	<key>com.apple.security.network.client</key>
++	<true/>
++	<key>com.apple.security.print</key>
++	<true/>
++        <key>com.apple.security.cs.disable-executable-page-protection</key>
++        <true/>
++        <!-- Allow Base to import data from Address Book -->
++        <key>com.apple.security.personal-information.addressbook</key>
++        <true/>
++	<key>com.apple.security.network.server</key>
++	<true/>
++
++
++</dict>
++</plist>
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
 --- a/pyuno/Library_pyuno.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/pyuno/Library_pyuno.mk	2026-07-06 22:27:03.545000000 -0700
 @@ -24,6 +24,7 @@
@@ -986,7 +1264,7 @@ diff -ruN a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
      cppu \
      cppuhelper \
      sal \
-diff -ruN a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
 --- a/sal/rtl/alloc_arena.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/rtl/alloc_arena.cxx	2026-07-06 21:03:24.960000000 -0700
 @@ -116,6 +116,7 @@
@@ -1087,7 +1365,7 @@ diff -ruN a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
                        segment->m_size);
          }
      }
-diff -ruN a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
 --- a/sal/rtl/alloc_arena.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/rtl/alloc_arena.hxx	2026-07-06 21:02:28.255000000 -0700
 @@ -56,6 +56,7 @@
@@ -1098,7 +1376,7 @@ diff -ruN a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
      sal_Size            m_size;
      sal_Size            m_type;
  };
-diff -ruN a/sal/util/sal.map b/sal/util/sal.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/util/sal.map b/sal/util/sal.map
 --- a/sal/util/sal.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/util/sal.map	2026-07-06 16:11:46.613000000 -0700
 @@ -18,6 +18,7 @@
@@ -1109,7 +1387,7 @@ diff -ruN a/sal/util/sal.map b/sal/util/sal.map
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          osl_acceptConnectionOnSocket;
-diff -ruN a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
 --- a/salhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/salhelper/source/gcc3.map	2026-07-06 16:11:46.631000000 -0700
 @@ -17,6 +17,7 @@
@@ -1120,7 +1398,42 @@ diff -ruN a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
      _ZN9salhelper18ORealDynamicLoader11newInstanceEPPS0_RKN3rtl8OUStringES6_;
-diff -ruN a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/lockfile/autoconf.h b/solenv/lockfile/autoconf.h
+--- a/solenv/lockfile/autoconf.h	1969-12-31 16:00:00.000000000 -0800
++++ b/solenv/lockfile/autoconf.h	2026-07-06 15:18:53.467000000 -0700
+@@ -0,0 +1,31 @@
++/* solenv/lockfile/autoconf.h.  Generated from autoconf.h.in by configure.  */
++/* autoconf.h.in.  Generated automatically from configure.in by autoheader.  */
++/*
++
++acconfig.h - template used by autoheader to create config.h.in
++config.h.in - used by autoconf to create config.h
++config.h - created by autoconf; contains defines generated by autoconf
++
++*/
++
++
++/* Define if you have the ANSI C header files.  */
++#define STDC_HEADERS 1
++
++/* Is the mailspool group writable */
++/* #undef MAILGROUP */
++
++/* Define if you have the utime function.  */
++#define HAVE_UTIME 1
++
++/* Define if you have the utimes function.  */
++#define HAVE_UTIMES 1
++
++/* Define if you have the <getopt.h> header file.  */
++#define HAVE_GETOPT_H 1
++
++/* Define if you have the <paths.h> header file.  */
++#define HAVE_PATHS_H 1
++
++/* Define if you have the <sys/param.h> header file.  */
++#define HAVE_SYS_PARAM_H 1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
 --- a/svx/source/gallery2/galmisc.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/svx/source/gallery2/galmisc.cxx	2026-07-06 21:07:20.828000000 -0700
 @@ -19,6 +19,7 @@
@@ -1159,7 +1472,2383 @@ diff -ruN a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
      }
  
      return bRet;
-diff -ruN a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sysui/desktop/macosx/Info.plist b/sysui/desktop/macosx/Info.plist
+--- a/sysui/desktop/macosx/Info.plist	1969-12-31 16:00:00.000000000 -0800
++++ b/sysui/desktop/macosx/Info.plist	2026-07-06 15:18:51.186000000 -0700
+@@ -0,0 +1,1970 @@
++<?xml version="1.0" encoding="UTF-8"?> <!-- -*- Mode: nXML; tab-width: 4; indent-tabs-mode: nil; nxml-child-indent:4 -*- -->
++<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<!--
++ * This file is part of the LibreOffice project.
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
++ *
++ * This file incorporates work covered by the following license notice:
++ *
++ *   Licensed to the Apache Software Foundation (ASF) under one or more
++ *   contributor license agreements. See the NOTICE file distributed
++ *   with this work for additional information regarding copyright
++ *   ownership. The ASF licenses this file to you under the Apache
++ *   License, Version 2.0 (the "License"); you may not use this file
++ *   except in compliance with the License. You may obtain a copy of
++ *   the License at http://www.apache.org/licenses/LICENSE-2.0 .
++-->
++<plist version="1.0">
++<dict>
++    <key>CFBundleDevelopmentRegion</key>
++    <string>English</string>
++    <key>UTExportedTypeDeclarations</key>
++    <array>
++        <!-- Writer documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.text</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Text</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxw</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.writer</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.text</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Text</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odt</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.text</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>vnd.oasis.opendocument.text-flat-xml</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Text (Flat XML)</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>fodt</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.text-flat-xml</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-text.icns</string>
++        </dict>
++
++        <!-- Calc documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.spreadsheet</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Spreadsheet</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxc</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.calc</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.spreadsheet</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Spreadsheet</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>ods</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.spreadsheet</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>vnd.oasis.opendocument.spreadsheet-flat-xml</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Spreadsheet (Flat XML)</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>fods</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.spreadsheet-flat-xml</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-spreadsheet.icns</string>
++        </dict>
++
++        <!-- Impress documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.presentation</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Presentation</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxi</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.impress</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.presentation</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Presentation</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odp</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.presentation</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-presentation.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>vnd.oasis.opendocument.presentation-flat-xml</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Presentation</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>fodp</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.presentation-flat-xml</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-presentation.icns</string>
++        </dict>
++
++        <!-- Draw documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.graphics</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Drawing</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxd</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.draw</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.graphics</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Drawing</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odg</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.graphics</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>vnd.oasis.opendocument.graphics-flat-xml</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Drawing (Flat XML)</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>fodg</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.graphics-flat-xml</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-drawing.icns</string>
++        </dict>
++
++        <!-- Chart documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.chart</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Chart</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odc</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.chart</string>
++                </array>
++            </dict>
++        </dict>
++
++        <!-- Text master documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.text-master</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Master</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxg</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.writer.global</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-master-document.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.text-master</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Master</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.text-master</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-master-document.icns</string>
++        </dict>
++
++        <!-- Math documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.formula</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Formula</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sxm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.math</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-formula.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.formula</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Formula</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odf</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.formula</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-formula.icns</string>
++        </dict>
++
++        <!-- Text template documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.text-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Text Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>stw</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.writer.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.text-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Text Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>ott</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.text-template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-text-template.icns</string>
++        </dict>
++
++        <!-- Writer master document templates -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.text-master-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Text Master Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>otm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.text-master-template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-master-document-template.icns</string>
++        </dict>
++
++        <!-- Spreadsheet template documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.spreadsheet-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Spreadsheet Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>stc</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.calc.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.spreadsheet-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Spreadsheet Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>ots</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.spreadsheet-template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-spreadsheet-template.icns</string>
++        </dict>
++
++        <!-- Presentation template documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.presentation-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Presentation Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>sti</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.impress.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.presentation-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Presentation Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>otp</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.presentation-template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-presentation-template.icns</string>
++        </dict>
++
++        <!-- Drawing template documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.graphics-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenOffice.org 1.0 Drawing Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>std</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.sun.xml.draw.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.graphics-template</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Drawing Template</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>otg</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.graphics-template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-drawing-template.icns</string>
++        </dict>
++
++        <!-- Base documents -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.oasis-open.opendocument.database</string>
++            <key>UTTypeDescription</key>
++            <string>OpenDocument Database</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>odb</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.oasis.opendocument.base</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>oasis-database.icns</string>
++        </dict>
++
++        <!-- Extensions -->
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>org.openoffice.extension</string>
++            <key>UTTypeDescription</key>
++            <string>LibreOffice Extension</string>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>oxt</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openofficeorg.extension</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-extension.icns</string>
++        </dict>
++    </array>
++
++    <key>UTImportedTypeDeclarations</key>
++    <array>
++        <!-- Microsoft Word Template -->
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.composite-content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Word Template</string>
++            <key>UTTypeIdentifier</key>
++            <string>com.microsoft.word.dot</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dot</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/msword</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text-template.icns</string>
++        </dict>
++        <!-- OOXML wordprocessing -->
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML word processing document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.wordprocessingml.document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>docx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.wordprocessingml.document</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML word processing document (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.wordprocessingml.document.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>docm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-word.document.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML word processing template</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.wordprocessingml.template</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dotx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.wordprocessingml.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML word processing template (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.wordprocessingml.template.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dotm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-word.template.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text-template.icns</string>
++        </dict>
++
++        <!-- OOXML spreadsheet -->
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML spreadsheet template</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.spreadsheetml.template</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>xltx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.spreadsheetml.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML spreadsheet template (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.spreadsheetml.template.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>xltm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-excel.template.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML spreadsheet</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.spreadsheetml.sheet</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>xlsx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.spreadsheetml.sheet</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.zip-archive</string>
++                <string>public.composite-content</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Excel 2007 spreadsheet (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>com.microsoft.excel.sheet.binary.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>xlsb</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-excel.sheet.binary.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.composite-content</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML spreadsheet (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.spreadsheetml.sheet.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>xlsm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-excel.sheet.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++
++        <!-- OOXML presentation -->
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.presentation</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML presentation</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.presentationml.presentation</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>pptx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.presentationml.presentation</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.presentation</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML presentation (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.presentationml.presentation.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>pptm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-powerpoint.presentation.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.presentation</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML presentation template</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.presentationml.template</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>potx</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.openxmlformats-officedocument.presentationml.template</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation-template.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>org.openxmlformats.openxml</string>
++                <string>public.presentation</string>
++                <string>public.executable</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Office Open XML presentation template (macros enabled)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.openxmlformats.presentationml.template.macroEnabled</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>potm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-powerpoint.template.macroEnabled.12</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-presentation-template.icns</string>
++        </dict>
++
++        <!-- Others -->
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>WordPerfect Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.wpd-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>wpd</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.wordperfect</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>PalmDoc eBook </string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.pdb-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>pdb</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-aportisdoc</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Hangul WP 97 Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.hwp-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>hwp</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-hwp</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Works for Mac Document (v1 - v4)</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.wks-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>wps</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.ms-works</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Write</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.wri-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>wri</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-mswrite</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-text.icns</string>
++        </dict>
++
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Data Interchange Format</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.dif-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dif</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-dif-document</string> <!-- ??? -->
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.text</string>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>SYLK Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.slk-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>slk</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>text/spreadsheet</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.text</string>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Comma-Separated Value Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.csv-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>csv</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>text/csv</string> <!-- ??? -->
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>dBASE Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.dbf-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dbf</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-dbase</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-database.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Lotus 1-2-3 Spreadsheet</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.123-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>wk1</string>
++                    <string>wks</string>
++                    <string>123</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.lotus-1-2-3</string>
++                    <string>application/vnd.lotus-1-2-3</string>
++                    <string>application/vnd.lotus-1-2-3</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-spreadsheet.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++                <string>public.image</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Computer Graphics Metafile</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.cgm-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>cgm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>image/cgm</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++                <string>public.image</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>AutoCAD Interchange Format</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.dxf-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>dxf</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>image/vnd.dxf</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++                <string>public.image</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Windows Enhanced Metafile</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.emf-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>emf</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>image/x-emf</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++                <string>public.image</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Windows Metafile</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.wmf-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>wmf</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>image/x-wmf</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++                <string>public.image</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>CorelDRAW Image</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.cdr-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>cdr</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/cdr</string>
++                    <string>application/coreldraw</string>
++                    <string>application/vnd.corel-draw</string>
++                    <string>application/x-cdr</string>
++                    <string>application/x-coreldraw</string>
++                    <string>image/cdr</string>
++                    <string>image/x-cdr</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Visio Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.visio-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>vsd</string>
++                    <string>vss</string>
++                    <string>vst</string>
++                    <string>vdx</string>
++                    <string>vsx</string>
++                    <string>vtx</string>
++                    <string>vsdx</string>
++                    <string>vsdm</string>
++                    <string>vssx</string>
++                    <string>vssm</string>
++                    <string>vstx</string>
++                    <string>vstm</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/vnd.visio2013</string>
++                    <string>application/vnd.visio</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++        <dict>
++            <key>UTTypeConformsTo</key>
++            <array>
++                <string>public.data</string>
++                <string>public.content</string>
++            </array>
++            <key>UTTypeDescription</key>
++            <string>Microsoft Publisher Document</string>
++            <key>UTTypeIdentifier</key>
++            <string>org.libreoffice.mspub-document</string>
++            <key>UTTypeTagSpecification</key>
++            <dict>
++                <key>public.filename-extension</key>
++                <array>
++                    <string>pub</string>
++                </array>
++                <key>public.mime-type</key>
++                <array>
++                    <string>application/x-mspublisher</string>
++                </array>
++            </dict>
++            <key>UTTypeIconFile</key>
++            <string>generic-drawing.icns</string>
++        </dict>
++    </array>
++
++    <key>CFBundleURLTypes</key>
++    <array>
++        <dict>
++            <key>CFBundleURLName</key>
++            <string>LibreOffice CMIS</string>
++            <key>CFBundleURLSchemes</key>
++            <array>
++                <string>vnd.libreoffice.cmis</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleURLName</key>
++            <string>LibreOffice</string>
++            <key>CFBundleURLSchemes</key>
++            <array>
++                <string>vnd.libreoffice.command</string>
++                <string>ms-word</string>
++                <string>ms-powerpoint</string>
++                <string>ms-excel</string>
++                <string>ms-visio</string>
++                <string>ms-access</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleURLName</key>
++            <string>LibreOffice WebDav</string>
++            <key>CFBundleURLSchemes</key>
++            <array>
++                <string>vnd.sun.star.webdav</string>
++                <string>vnd.sun.star.webdavs</string>
++            </array>
++        </dict>
++    </array>
++
++    <key>CFBundleDocumentTypes</key>
++    <array>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Text</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.text</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Text</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.text</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Spreadsheet</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.spreadsheet</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Spreadsheet</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.spreadsheet</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Presentation</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.presentation</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Presentation</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.presentation</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Drawing</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.graphics</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Drawing</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.graphics</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Chart</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.chart</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Master</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.text-master</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Master</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.text-master</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Formula</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.formula</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Formula</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.formula</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Text Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.text-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Text Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.text-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Master Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.text-master-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Spreadsheet Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.spreadsheet-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Spreadsheet Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.spreadsheet-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Presentation Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.presentation-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Presentation Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.presentation-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenOffice.org 1.0 Drawing Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.graphics-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Drawing Template</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.graphics-template</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>OpenDocument Database</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.oasis-open.opendocument.database</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>LibreOffice Extension</string>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>org.openoffice.extension</string>
++            </array>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>Flat ODF</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>vnd.oasis.opendocument.text-flat-xml</string>
++                <string>vnd.oasis.opendocument.spreadsheet-flat-xml</string>
++                <string>vnd.oasis.opendocument.presentation-flat-xml</string>
++                <string>vnd.oasis.opendocument.graphics-flat-xml</string>
++            </array>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Owner</string>
++        </dict>
++        <dict>
++            <key>CFBundleTypeName</key>
++            <string>3rd party formats</string>
++            <key>LSItemContentTypes</key>
++            <array>
++                <string>public.plain-text</string>
++                <string>public.rtf</string>
++                <string>public.html</string>
++                <string>public.jpeg</string>
++                <string>public.tiff</string>
++                <string>public.png</string>
++                <string>public.xbitmap-image</string>
++                <string>com.adobe.encapsulated-postscript</string>
++                <string>com.microsoft.bmp</string>
++                <string>com.microsoft.word.doc</string>
++                <string>com.microsoft.word.dot</string>
++                <string>com.microsoft.excel.xls</string>
++                <string>com.microsoft.powerpoint.ppt</string>
++                <string>org.openxmlformats.wordprocessingml.document</string>
++                <string>org.openxmlformats.wordprocessingml.document.macroEnabled</string>
++                <string>org.openxmlformats.wordprocessingml.template</string>
++                <string>org.openxmlformats.wordprocessingml.template.macroEnabled</string>
++                <string>org.openxmlformats.spreadsheetml.sheet</string>
++                <string>org.openxmlformats.spreadsheetml.sheet.macroEnabled</string>
++                <string>com.microsoft.excel.sheet.binary.macroEnabled</string>
++                <string>org.openxmlformats.spreadsheetml.template</string>
++                <string>org.openxmlformats.spreadsheetml.template.macroEnabled</string>
++                <string>org.openxmlformats.presentationml.presentation</string>
++                <string>org.openxmlformats.presentationml.presentation.macroEnabled</string>
++                <string>org.openxmlformats.presentationml.template</string>
++                <string>org.openxmlformats.presentationml.template.macroEnabled</string>
++                <string>org.libreoffice.pdb-document</string>
++                <string>org.libreoffice.wpd-document</string>
++                <string>org.libreoffice.hwp-document</string>
++                <string>org.libreoffice.wks-document</string>
++                <string>org.libreoffice.wri-document</string>
++                <string>org.libreoffice.dif-document</string>
++                <string>org.libreoffice.slk-document</string>
++                <string>org.libreoffice.csv-document</string>
++                <string>org.libreoffice.dbf-document</string>
++                <string>org.libreoffice.123-document</string>
++                <string>org.libreoffice.cgm-document</string>
++                <string>org.libreoffice.dxf-document</string>
++                <string>org.libreoffice.emf-document</string>
++                <string>org.libreoffice.wmf-document</string>
++                <string>org.libreoffice.cdr-document</string>
++                <string>org.libreoffice.visio-document</string>
++                <string>org.libreoffice.mspub-document</string>
++            </array>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Alternate</string>
++        </dict>
++        <dict>
++            <key>CFBundleTypeExtensions</key>
++            <array>
++                <string>cwk</string>
++                <string>*</string>
++            </array>
++            <key>CFBundleTypeName</key>
++            <string>AppleWorks Document</string>
++            <key>CFBundleTypeOSTypes</key>
++            <array>
++                <string>CWWP</string>
++                <string>CWSS</string>
++                <string>CWDB</string>
++                <string>CWGR</string>
++                <string>CWPT</string>
++                <string>CWPR</string>
++            </array>
++            <key>CFBundleTypeRole</key>
++            <string>Editor</string>
++            <key>LSHandlerRank</key>
++            <string>Alternate</string>
++        </dict>
++    </array>
++    <key>CFBundleExecutable</key>
++    <string>soffice</string>
++    <key>CFBundleIconFile</key>
++    <string>main.icns</string>
++    <key>CFBundleShortVersionString</key>
++    <string>24.8.0.3</string>
++    <key>CFBundleVersion</key>
++    <string>24.8.0.3</string>
++    <key>CFBundleIdentifier</key>
++    <string></string>
++    <key>CFBundleInfoDictionaryVersion</key>
++    <string>6.0</string>
++    <key>CFBundleName</key>
++    <string>LibreOffice</string>
++    <key>CFBundlePackageType</key>
++    <string>APPL</string>
++    <key>CFBundleSignature</key>
++    <string>LibO</string>
++    <key>LSRequiresCarbon</key>
++    <string>1</string>
++    <key>NSPrincipalClass</key>
++    <string>VCL_NSApplication</string>
++    <key>LSApplicationCategoryType</key>
++    <string>public.app-category.productivity</string>
++    <key>LSMinimumSystemVersion</key>
++    <string>.0</string>
++    <key>NSHighResolutionCapable</key>
++    <true/>
++    <key>NSContactsUsageDescription</key>
++    <string>You can add your contacts as a data source for mail merge or similar operations.</string>
++    <key>DTXcodeBuild</key>
++    <string></string>
++    <key>DTSDKBuild</key>
++    <string></string>
++</dict>
++</plist>
++<!-- vim:set shiftwidth=4 softtabstop=4 expandtab: -->
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/inc/unx/gtk/gtkbackend.hxx b/vcl/inc/unx/gtk/gtkbackend.hxx
+--- a/vcl/inc/unx/gtk/gtkbackend.hxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/inc/unx/gtk/gtkbackend.hxx	2026-07-07 22:12:04.408000000 -0700
+@@ -16,15 +16,18 @@
+ #else
+ #include <gdk/gdkx.h>
+ #endif
+-bool DLSYM_GDK_IS_X11_DISPLAY(GdkDisplay* pDisplay);
+ #endif
++// These dlsym-based runtime checks don't require X11/Wayland headers,
++// so declare them unconditionally for use in code that needs runtime
++// backend detection regardless of build-time GDK backend availability.
++bool DLSYM_GDK_IS_X11_DISPLAY(GdkDisplay* pDisplay);
+ #if defined(GDK_WINDOWING_WAYLAND)
+ #if GTK_CHECK_VERSION(4, 0, 0)
+ #include <gdk/wayland/gdkwayland.h>
+ #else
+ #include <gdk/gdkwayland.h>
+ #endif
+-bool DLSYM_GDK_IS_WAYLAND_DISPLAY(GdkDisplay* pDisplay);
+ #endif
++bool DLSYM_GDK_IS_WAYLAND_DISPLAY(GdkDisplay* pDisplay);
+ 
+ /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/inc/unx/gtk/gtkdata.hxx b/vcl/inc/unx/gtk/gtkdata.hxx
+--- a/vcl/inc/unx/gtk/gtkdata.hxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/inc/unx/gtk/gtkdata.hxx	2026-07-07 22:07:59.775000000 -0700
+@@ -22,11 +22,13 @@
+ #define GLIB_DISABLE_DEPRECATION_WARNINGS
+ #include <gtk/gtk.h>
+ #include <gdk/gdk.h>
++#if defined(GDK_WINDOWING_X11)
+ #if GTK_CHECK_VERSION(4,0,0)
+ #include <gdk/x11/gdkx.h>
+ #else
+ #include <gdk/gdkx.h>
+ #endif
++#endif
+ 
+ #include <com/sun/star/accessibility/XAccessibleContext.hpp>
+ #include <com/sun/star/accessibility/XAccessibleEventListener.hpp>
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtkframe.cxx b/vcl/unx/gtk3/gtkframe.cxx
+--- a/vcl/unx/gtk3/gtkframe.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/unx/gtk3/gtkframe.cxx	2026-07-07 22:15:53.001000000 -0700
+@@ -1243,8 +1243,8 @@
+     m_aSystemData.nScreen       = m_nXScreen.getXScreen();
+     m_aSystemData.toolkit       = SystemEnvData::Toolkit::Gtk;
+ 
+-#if defined(GDK_WINDOWING_X11)
+     GdkDisplay *pDisplay = getGdkDisplay();
++#if defined(GDK_WINDOWING_X11)
+     if (DLSYM_GDK_IS_X11_DISPLAY(pDisplay))
+     {
+         m_aSystemData.pDisplay = gdk_x11_display_get_xdisplay(pDisplay);
+@@ -1812,15 +1812,23 @@
+     m_aForeignParentWindow = pSysData->aWindow;
+     m_pForeignParent = nullptr;
+     m_aForeignTopLevelWindow = findTopLevelSystemWindow(pSysData->aWindow);
++#if defined(GDK_WINDOWING_X11)
+     m_pForeignTopLevel = gdk_x11_window_foreign_new_for_display( getGdkDisplay(), m_aForeignTopLevelWindow );
+     gdk_window_set_events( m_pForeignTopLevel, GDK_STRUCTURE_MASK );
++#else
++    m_pForeignTopLevel = nullptr;
++#endif
+ 
+     if( pSysData->nSize > sizeof(pSysData->nSize)+sizeof(pSysData->aWindow) && pSysData->bXEmbedSupport )
+     {
++#if defined(GDK_WINDOWING_X11)
+         m_pWindow = gtk_plug_new_for_display( getGdkDisplay(), pSysData->aWindow );
+         gtk_widget_set_can_default(m_pWindow, true);
+         gtk_widget_set_can_focus(m_pWindow, true);
+         gtk_widget_set_sensitive(m_pWindow, true);
++#else
++        m_pWindow = gtk_window_new( GTK_WINDOW_POPUP );
++#endif
+     }
+     else
+     {
+@@ -1831,8 +1839,10 @@
+     InitCommon();
+ 
+ #if !GTK_CHECK_VERSION(4,0,0)
++#if defined(GDK_WINDOWING_X11)
+     m_pForeignParent = gdk_x11_window_foreign_new_for_display( getGdkDisplay(), m_aForeignParentWindow );
+     gdk_window_set_events( m_pForeignParent, GDK_STRUCTURE_MASK );
++#endif
+ #else
+     (void)pSysData;
+ #endif
+@@ -2605,6 +2615,7 @@
+     if (!DLSYM_GDK_IS_X11_DISPLAY(getGdkDisplay()))
+         return;
+ 
++#if defined(GDK_WINDOWING_X11)
+     if (!gtk_widget_get_realized(m_pWindow))
+         return;
+ 
+@@ -2620,6 +2631,7 @@
+                    GtkSalFrame::GetNativeWindowHandle(m_pWindow),
+                    pClass );
+     XFree( pClass );
++#endif
+ }
+ 
+ void GtkSalFrame::SetApplicationID( const OUString &rWMClass )
+@@ -2662,7 +2674,9 @@
+     if (DLSYM_GDK_IS_X11_DISPLAY(getGdkDisplay()))
+     {
+         nWindow = GtkSalFrame::GetNativeWindowHandle(m_pWindow);
++#if defined(GDK_WINDOWING_X11)
+         aDisplay = gdk_x11_display_get_xdisplay(getGdkDisplay());
++#endif
+     }
+ 
+     m_SessionManagerInhibitor.inhibit(bStart, sReason, eType,
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtkobject.cxx b/vcl/unx/gtk3/gtkobject.cxx
+--- a/vcl/unx/gtk3/gtkobject.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/unx/gtk3/gtkobject.cxx	2026-07-07 22:15:52.999000000 -0700
+@@ -69,8 +69,8 @@
+     GdkScreen* pScreen = gtk_widget_get_screen(m_pParent->getWindow());
+     GdkVisual* pVisual = gdk_screen_get_system_visual(pScreen);
+ 
+-#if defined(GDK_WINDOWING_X11)
+     GdkDisplay *pDisplay = GtkSalFrame::getGdkDisplay();
++#if defined(GDK_WINDOWING_X11)
+     if (DLSYM_GDK_IS_X11_DISPLAY(pDisplay))
+     {
+         m_aSystemData.pDisplay = gdk_x11_display_get_xdisplay(pDisplay);
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtksys.cxx b/vcl/unx/gtk3/gtksys.cxx
+--- a/vcl/unx/gtk3/gtksys.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/unx/gtk3/gtksys.cxx	2026-07-07 22:04:39.134000000 -0700
+@@ -124,6 +124,7 @@
+     if (!DLSYM_GDK_IS_X11_DISPLAY(mpDisplay))
+         return SalX11Screen (0);
+ 
++#if defined(GDK_WINDOWING_X11)
+ #if GTK_CHECK_VERSION(4, 0, 0)
+     GdkX11Screen *pScreen = gdk_x11_display_get_screen(mpDisplay);
+     (void)nScreen;
+@@ -134,6 +135,8 @@
+         return SalX11Screen (0);
+ #endif
+     return SalX11Screen(gdk_x11_screen_get_screen_number(pScreen));
++#endif
++    return SalX11Screen(0);
+ }
+ 
+ #if !GTK_CHECK_VERSION(4, 0, 0)
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vs-code.code-workspace.template b/vs-code.code-workspace.template
+--- a/vs-code.code-workspace.template	1969-12-31 16:00:00.000000000 -0800
++++ b/vs-code.code-workspace.template	2026-07-06 15:18:51.328000000 -0700
+@@ -0,0 +1,250 @@
++// *** vs-code.code-workspace.template is an autogenerated file created by configure.ac ***
++// any changes to the vs-code.code-workspace.template file WILL BE OVERRIDDEN
++// use the vs-code.code-workspace file (make vscode-ide-integration) for your own edits
++{
++	"extensions": {
++		"recommendations": [
++			"ms-vscode.cpptools"
++		]
++	},
++	"folders": [
++		{
++			"name": "srcdir",
++			"path": "/data/pizlo/libreoffice-24.8.0.3"
++		},
++		{
++			// BUILDDIR may be configured separate from SRCDIR
++			"name": "builddir",
++			"path": "/data/pizlo/libreoffice-24.8.0.3"
++		},
++	],
++	"settings": {
++		"search.exclude": {
++			"/compile_commands.json": true,
++			"/dictionaries/": true,
++			"/helpcontent2/": true,
++			"/icon-themes/": true,
++			"/translations/": true
++		},
++		"files.watcherExclude": {
++			"/dictionaries/": true,
++			"/helpcontent2/": true,
++			"/icon-themes/": true,
++			"/translations/": true
++		},
++		"files.associations": {
++			"*.patch.[0-9]": "diff"
++		},
++		"C_Cpp.default.compileCommands": "/data/pizlo/libreoffice-24.8.0.3/compile_commands.json",
++		// only used if the file doesn't match anything in the compile_commands.json - aka externals
++		// libxml includes just added as example/for reference
++		"C_Cpp.default.includePath": [
++			"/data/pizlo/libreoffice-24.8.0.3/workdir/UnpackedTarball/**",
++			"/usr/include/libxml2/"
++		],
++		"C_Cpp.default.browse.limitSymbolsToIncludedHeaders": true,
++		"C_Cpp.default.cppStandard": "c++20",
++		// point this to LibreOffice's version of clang-format 5.0.0,
++		// otherwise clang-format from the plugin is used, and that
++		// gives slightly different results
++		"C_Cpp.clang_format_path": "/opt/lo/bin/clang-format",
++		"editor.rulers": [
++			100
++		],
++		// files in the repo should in general have a newline at end-of-file
++		"files.insertFinalNewline": true,
++		"editor.renderFinalNewline": "off",
++		"gitlens.autolinks": [
++			{
++				"prefix": "tdf#",
++				"url": "https://bugs.documentfoundation.org/show_bug.cgi?id=<num>"
++			}
++		],
++		"terminal.integrated.profiles.windows": {
++			"Cygwin": {
++				"path": "C:/cygwin64/bin/bash.exe",
++				"args": [
++					"--login"
++				],
++				// prevent changing to $(HOME)
++				"env": {
++					"CHERE_INVOKING": "1"
++				}
++			}
++		},
++		"terminal.integrated.defaultProfile.windows": "Cygwin"
++	},
++	"tasks": {
++		"version": "2.0.0",
++		"tasks": [
++			{
++				"label": "full make",
++				"detail": "runs make in builddir to update everything",
++				"type": "shell",
++				"command": "make",
++				"group": {
++					"kind": "build",
++					"isDefault": true
++				},
++				"options": {
++					"cwd": "/data/pizlo/libreoffice-24.8.0.3"
++				}
++			},
++			{
++				"label": "create compile-commands.json",
++				"detail": "runs make vim-ide-integration to create the compile-commands.json file",
++				"type": "shell",
++				"command": "make",
++				"args": [
++					"vim-ide-integration"
++				],
++				"group": "build",
++				// doesn't really depend on full make, but doesn't hurt
++				// updating the compile-commands is not needed all the time and also demonstrate
++				// how to use dependencies in tasks…
++				"dependsOn": [
++					"full make"
++				],
++				"options": {
++					"cwd": "/data/pizlo/libreoffice-24.8.0.3"
++				},
++				"problemMatcher": [] // don't ask when manually running the task
++			},
++			{
++				"label": "remove profile-dir",
++				"detail": "removes the temporary user-profile directory",
++				"type": "shell",
++				"command": "rm",
++				"args": [
++					"-rf",
++					"/data/pizlo/libreoffice-24.8.0.3/workdir/vs-code-temporary-user-profile"
++				],
++				"group": "none",
++				"dependsOn": [
++					"full make"
++				],
++				"options": {
++					"cwd": "/data/pizlo/libreoffice-24.8.0.3"
++				},
++				"problemMatcher": []
++			}
++		]
++	},
++	"launch": {
++		"configurations": [
++			{
++				"name": "run in debugger after make",
++				"type": "cppdbg",
++				"request": "launch",
++				"program": "/data/pizlo/libreoffice-24.8.0.3/instdir/program/soffice.bin",
++				"args": [],
++				"stopAtEntry": false,
++				"cwd": "/data/pizlo/libreoffice-24.8.0.3",
++				"environment": [
++					{
++						// added in disabled form for convenience/as an example
++						// (proper name is just SAL_LOG),
++						// see https://docs.libreoffice.org/sal/html/sal_log.html
++						"name": "SAL_LOG_DISABLED",
++						"value": "+INFO.ucb+WARN"
++					}
++				],
++				"externalConsole": false,
++				"linux": {
++					"MIMode": "gdb",
++					"miDebuggerPath": "gdb",
++					"setupCommands": [
++						{
++							"description": "Enable pretty-printing for gdb",
++							"text": "-enable-pretty-printing",
++							"ignoreFailures": true
++						},
++						{
++							"description": "Mark pretty-printers (in solenv/gdb) safe",
++							"text": "add-auto-load-safe-path /data/pizlo/libreoffice-24.8.0.3/solenv/gdb",
++							"ignoreFailures": true
++						},
++						{
++							"description": "Mark pretty-printers bootstrap (in instdir/program) safe",
++							"text": "add-auto-load-safe-path /data/pizlo/libreoffice-24.8.0.3/instdir",
++							"ignoreFailures": true
++						},
++					]
++				},
++				"osx": {
++					"program": "/data/pizlo/libreoffice-24.8.0.3/instdir/MacOS/soffice",
++					"MIMode": "lldb",
++					"setupCommands": [
++						{
++							"description": "load helpers for lldb",
++							"text": "command script import ${workspaceFolder:srcdir}/solenv/lldb/libreoffice/LO.py",
++							"ignoreFailures": false
++						}
++					]
++				},
++				"windows": {
++					"type": "cppvsdbg"
++				},
++				"preLaunchTask": "full make"
++			},
++			{
++				// FIXME: not happy here when creating the profile while running in debugger
++				// no problem passing the profile dir once it was launched outside debugger once,
++				// but clearing out the user-profile dir needs to be triggered manually
++				"name": "run in gdb with clear userprofile",
++				//	"preLaunchTask": "remove profile-dir",
++				"type": "cppdbg",
++				"request": "launch",
++				"program": "/data/pizlo/libreoffice-24.8.0.3/instdir/program/soffice.bin",
++				"args": [
++					"-env:UserInstallation=file:////data/pizlo/libreoffice-24.8.0.3/workdir/vs-code-temporary-user-profile"
++				],
++				"stopAtEntry": false,
++				"cwd": "/data/pizlo/libreoffice-24.8.0.3",
++				"environment": [
++					{
++						"name": "SAL_LOG_DISABLED",
++						"value": "+INFO.ucb+WARN"
++					}
++				],
++				"externalConsole": false,
++				"linux": {
++					"MIMode": "gdb",
++					"miDebuggerPath": "gdb",
++					"setupCommands": [
++						{
++							"description": "Enable pretty-printing for gdb",
++							"text": "-enable-pretty-printing",
++							"ignoreFailures": true
++						},
++						{
++							"description": "Mark pretty-printers (in solenv/gdb) safe",
++							"text": "add-auto-load-safe-path /data/pizlo/libreoffice-24.8.0.3/solenv/gdb",
++							"ignoreFailures": true
++						},
++						{
++							"description": "Mark pretty-printers bootstrap (in instdir/program) safe",
++							"text": "add-auto-load-safe-path /data/pizlo/libreoffice-24.8.0.3/instdir",
++							"ignoreFailures": true
++						},
++					]
++				},
++				"osx": {
++					"program": "/data/pizlo/libreoffice-24.8.0.3/instdir/MacOS/soffice",
++					"MIMode": "lldb",
++					"setupCommands": [
++						{
++							"description": "load helpers for for lldb",
++							"text": "command script import ${workspaceFolder:srcdir}/solenv/lldb/libreoffice/LO.py",
++							"ignoreFailures": false
++						}
++					]
++				},
++				"windows": {
++					"type": "cppvsdbg"
++				}
++			}
++		],
++		"compounds": []
++	}
++}
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
 --- a/writerperfect/Library_wpftdraw.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/writerperfect/Library_wpftdraw.mk	2026-07-06 15:03:11.569000000 -0700
 @@ -65,6 +65,7 @@
@@ -1170,7 +3859,7 @@ diff -ruN a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.m
  ))
  
  $(eval $(call gb_Library_add_exception_objects,wpftdraw,\
-diff -ruN a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
 --- a/xmloff/source/core/xmltoken.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmloff/source/core/xmltoken.cxx	2026-07-06 20:33:50.351000000 -0700
 @@ -24,6 +24,7 @@
@@ -1251,7 +3940,7 @@ diff -ruN a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
      // get OUString representation of token
      const OUString& GetXMLToken( enum XMLTokenEnum eToken )
      {
-diff -ruN a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity.mk
 --- a/xmlsecurity/Library_xmlsecurity.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmlsecurity/Library_xmlsecurity.mk	2026-07-06 20:45:26.320000000 -0700
 @@ -71,13 +71,13 @@
@@ -1270,7 +3959,7 @@ diff -ruN a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity
  ))
  
  $(eval $(call gb_Library_add_componentimpl,xmlsecurity,dds))
-diff -ruN a/xmlsecurity/source/xmlsec/biginteger.cxx b/xmlsecurity/source/xmlsec/biginteger.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmlsecurity/source/xmlsec/biginteger.cxx b/xmlsecurity/source/xmlsec/biginteger.cxx
 --- a/xmlsecurity/source/xmlsec/biginteger.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmlsecurity/source/xmlsec/biginteger.cxx	2026-07-06 20:48:37.807000000 -0700
 @@ -102,6 +102,23 @@

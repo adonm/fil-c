@@ -46,3 +46,6 @@ hash -r
 
 ./build_postlc6_chroot_project_unzip.sh
 hash -r
+
+./build_postlc6_chroot_project_libreoffice.sh
+hash -r

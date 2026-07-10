@@ -70,3 +70,10 @@ download_tarball "https://download.documentfoundation.org/libreoffice/src/24.8.0
 download_tarball "https://download.documentfoundation.org/libreoffice/src/24.8.0/libreoffice-translations-24.8.0.3.tar.xz" \
     "libreoffice-translations-24.8.0.3.tar.xz" \
     "5e2706a6b0339b3424a3fb75c83b73817603722baf8fa11a9b84dc9a65ece55c"
+
+# Download LibreOffice external dependency tarballs.
+# The chroot has no network access, so `make fetch` cannot download these
+# ~136 tarballs inside the chroot.  Download them here (outside the chroot);
+# they are copied into the chroot and symlinked into external/tarballs/ by
+# the LO build script.
+./pizlix/download_libreoffice_external_tarballs.sh

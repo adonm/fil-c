@@ -32,6 +32,13 @@ ln -sv ../libreoffice-dictionaries-24.8.0.3.tar.xz external/tarballs/
 ln -sv ../libreoffice-help-24.8.0.3.tar.xz external/tarballs/
 ln -sv ../libreoffice-translations-24.8.0.3.tar.xz external/tarballs/
 
+# Symlink pre-downloaded external dependency tarballs.
+# The chroot has no network access, so `make fetch` cannot download them.
+# They were downloaded outside the chroot and copied to /sources/.
+for f in /sources/libreoffice-external-tarballs/*; do
+    ln -sv "$f" external/tarballs/
+done
+
 # Fix sha256sum (Fil-C's shasum crashes)
 sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 
@@ -40,9 +47,6 @@ sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 
 # Limit parallelism to 8 to avoid OOM on Fil-C
 sed -i 's/PARALLELISM *=.*/PARALLELISM = 8/' config_host.mk
-
-# Fetch external tarballs
-make fetch
 
 # Build (use -j8 to avoid OOM on Fil-C)
 make build -j8

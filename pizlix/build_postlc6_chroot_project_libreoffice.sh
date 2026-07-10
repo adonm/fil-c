@@ -28,9 +28,13 @@ sed -e "/distro-install-file-lists/d" -i Makefile.in
 
 # Set up external tarballs
 install -dm755 external/tarballs
-ln -sv ../libreoffice-dictionaries-24.8.0.3.tar.xz external/tarballs/
-ln -sv ../libreoffice-help-24.8.0.3.tar.xz external/tarballs/
-ln -sv ../libreoffice-translations-24.8.0.3.tar.xz external/tarballs/
+# The dictionaries/help/translations "submodule" tarballs live in /sources/
+# (copied there by build_postlc6.sh).  Use absolute paths because the symlinks
+# are created in external/tarballs/ — a relative "../" would only reach
+# external/, not /sources/.
+ln -sv /sources/libreoffice-dictionaries-24.8.0.3.tar.xz external/tarballs/
+ln -sv /sources/libreoffice-help-24.8.0.3.tar.xz external/tarballs/
+ln -sv /sources/libreoffice-translations-24.8.0.3.tar.xz external/tarballs/
 
 # Symlink pre-downloaded external dependency tarballs.
 # The chroot has no network access, so `make fetch` cannot download them.

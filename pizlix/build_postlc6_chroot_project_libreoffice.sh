@@ -43,6 +43,12 @@ for f in /sources/libreoffice-external-tarballs/*; do
     ln -sv "$f" external/tarballs/
 done
 
+# Create symlinks for submodule directories (dictionaries, help, translations)
+# These will be broken until unpack-sources runs during make build, but that's OK
+ln -sv src/libreoffice-dictionaries-24.8.0.3/dictionaries/ dictionaries
+ln -sv src/libreoffice-help-24.8.0.3/helpcontent2/ helpcontent2
+ln -sv src/libreoffice-translations-24.8.0.3/translations/ translations
+
 # Fix sha256sum (Fil-C's shasum crashes)
 sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 

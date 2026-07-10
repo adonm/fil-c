@@ -18,6 +18,7 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/cairo-1.18.0 pizlonated-cairo
 ./package-source.sh projects/libxslt-1.1.42 pizlonated-libxslt
 ./package-source.sh projects/zip-3.0 pizlonated-zip
+./package-source.sh projects/unzip-6.0 pizlonated-unzip
 
 # Download large tarballs that are too big to commit to git.
 # Each tarball is verified with SHA256 (using sha256sum from coreutils).

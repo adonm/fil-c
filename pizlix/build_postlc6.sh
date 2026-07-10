@@ -35,7 +35,6 @@ cp -v build_postlc6_sub2_chroot.sh $LFS/sources
 cp -v boost_1_86_0.tar.bz2 $LFS/sources
 cp -v boost-filc.patch $LFS/sources
 cp -v zip30.tar.gz $LFS/sources
-cp -v unzip60.tar.gz $LFS/sources
 cp -v util-macros-*.tar.xz $LFS/sources
 cp -v xorgproto-*.tar.xz $LFS/sources
 cp -v xtrans-*.tar.xz $LFS/sources

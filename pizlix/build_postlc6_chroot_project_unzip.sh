@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 set -x
-rm -rf unzip60
-tar -xf unzip60.tar.gz
-cd unzip60
+rm -rf pizlonated-unzip
+tar -xf pizlonated-unzip.tar.gz
+cd pizlonated-unzip
 make -f unix/Makefile generic CC=cc
 make -f unix/Makefile install PREFIX=/usr
 cd ..
-rm -rf unzip60
+rm -rf pizlonated-unzip

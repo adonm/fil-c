@@ -821,44 +821,6 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
  _ZN3com3sun4star3uno19WeakReferenceHelperC1ERKNS2_9ReferenceINS2_10XInterfaceEEE;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
---- a/external/libcmis/UnpackedTarball_libcmis.mk	2024-08-08 13:59:54.000000000 -0700
-+++ b/external/libcmis/UnpackedTarball_libcmis.mk	2026-07-06 15:02:53.998000000 -0700
-@@ -18,6 +18,7 @@
- $(eval $(call gb_UnpackedTarball_add_patches,libcmis,\
- 	external/libcmis/0001-cid-1545775-COPY_INSTEAD_OF_MOVE.patch \
- 	external/libcmis/0001-Fix-warning-C4589-when-building-with-MSVC.patch \
-+	external/libcmis/boost_1.86.0_build_failure.patch.1 \
- 	external/libcmis/http-session-cleanup.patch.1 \
- 	external/libcmis/factory-no-retry-ssl.patch.1 \
- 	external/libcmis/sharepoint-auth.patch.1 \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
---- a/external/libcmis/boost_1.86.0_build_failure.patch.1	1969-12-31 16:00:00.000000000 -0800
-+++ b/external/libcmis/boost_1.86.0_build_failure.patch.1	2026-07-06 15:02:53.998000000 -0700
-@@ -0,0 +1,23 @@
-+diff -ur libcmis.org/src/libcmis/xml-utils.cxx libcmis/src/libcmis/xml-utils.cxx
-+--- libcmis.org/src/libcmis/xml-utils.cxx       2024-08-15 15:56:04.039673015 -0400
-++++ libcmis/src/libcmis/xml-utils.cxx   2024-08-15 15:57:42.787321115 -0400
-+@@ -535,7 +535,7 @@
-+         boost::uuids::detail::sha1 sha1;
-+         sha1.process_bytes( str.c_str(), str.size() );
-+ 
-+-        unsigned int digest[5];
-++        unsigned char digest[20];
-+         sha1.get_digest( digest );
-+ 
-+         stringstream out;
-+@@ -543,8 +543,9 @@
-+         // hexadecimal digits, including possible leading 0s, or we get
-+         // less than 40 digits as result.
-+         out << hex << setfill('0') << right;
-++       unsigned int * idigest = reinterpret_cast<unsigned int *>(&digest[0]);
-+         for ( int i = 0; i < 5; ++i )
-+-            out << setw(8) << digest[i];
-++            out << setw(8) << idigest[i];
-+         return out.str();
-+     }
-+ 
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
 --- a/external/poppler/UnpackedTarball_poppler.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/poppler/UnpackedTarball_poppler.mk	2026-07-06 16:06:18.632000000 -0700

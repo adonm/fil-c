@@ -8,10 +8,3 @@ make -f unix/Makefile generic CC=gcc
 make -f unix/Makefile install PREFIX=/usr
 cd ..
 rm -rf pizlonated-zip
-# Install zip wrapper for Fil-C concurrency workaround
-mv /usr/bin/zip /usr/bin/zip.real
-cat > /usr/bin/zip << 'WRAPPER'
-#!/bin/bash
-exec flock /tmp/zip_serial.lock /usr/bin/zip.real "$@"
-WRAPPER
-chmod +x /usr/bin/zip

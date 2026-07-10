@@ -3,7 +3,6 @@ set -e
 set -x
 
 # LibreOffice build script for Pizlix (Fil-C)
-# This script is NOT linked into the main build chain - run manually
 # It assumes all dependencies (abseil, boost, libxslt, X11 libs, etc.) are already installed
 
 rm -rf libreoffice-24.8.0.3

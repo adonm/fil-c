@@ -48,6 +48,16 @@ sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 # Limit parallelism to 8 to avoid OOM on Fil-C
 sed -i 's/PARALLELISM *=.*/PARALLELISM = 8/' config_host.mk
 
+# Skip the root check - the pizlix chroot runs everything as root, but
+# LibreOffice refuses to build as root (check-if-root target). Remove the
+# check-if-root prerequisite from the bootstrap target so the build proceeds.
+# Note: the pattern must include a trailing space ("check-if-root ") so it
+# matches the prerequisite on the "bootstrap: check-if-root compilerplugins"
+# line (where the word is followed by a space), NOT the target definition
+# "check-if-root:" (followed by a colon). This leaves the check-if-root target
+# intact but simply unreferenced.
+sed -i 's/check-if-root //' Makefile
+
 # Build (use -j8 to avoid OOM on Fil-C)
 make build -j8
 

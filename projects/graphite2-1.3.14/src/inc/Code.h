@@ -104,7 +104,7 @@ public:
     bool          immutable() const throw()         { return !(_delete || _modify); }
     bool          deletes() const throw()           { return _delete; }
     size_t        maxRef() const throw()            { return _max_ref; }
-    void          externalProgramMoved(ptrdiff_t) throw();
+    void          externalProgramMoved(byte * oldBase, byte * newBase) throw();
 
     int32 run(Machine &m, slotref * & map) const;
 
@@ -158,12 +158,19 @@ inline Machine::Code & Machine::Code::operator=(const Machine::Code &rhs) throw(
     return *this;
 }
 
-inline void Machine::Code::externalProgramMoved(ptrdiff_t dist) throw()
+inline void Machine::Code::externalProgramMoved(byte * oldBase, byte * newBase) throw()
 {
     if (_code && !_own)
     {
-        _code += dist / signed(sizeof(instr));
-        _data += dist;
+        // Fil-C (Pizlix): re-derive the relocated pointers from newBase so the
+        // result carries newBase's (valid) capability.  The old form
+        //   _code += dist / signed(sizeof(instr));
+        //   _data += dist;
+        // preserved the pointers' original capability, which still referred to
+        // the freed old pool after realloc moved the memory.  Computing
+        // newBase + (ptr - oldBase) yields a pointer with newBase's capability.
+        _code = reinterpret_cast<instr *>(newBase + (reinterpret_cast<byte *>(_code) - oldBase));
+        _data = newBase + (_data - oldBase);
     }
 }
 

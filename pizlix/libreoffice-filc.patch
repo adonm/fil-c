@@ -630,7 +630,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  using namespace ::com::sun::star::uno;
  
  namespace {
-@@ -226,11 +231,64 @@
+@@ -226,11 +231,82 @@
      try
      {
          try {
@@ -644,7 +644,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +            // pointer arguments retain their Fil-C object capability.
 +            // Storing a pointer via reinterpret_cast<sal_uInt64>(ptr) strips
 +            // the capability, producing a pointer with a null object when
-+            // zcall passes it to the callee — which then panics on the first
++            // zcall passes it to the callee - which then panics on the first
 +            // dereference.  Integer/float values are stored via
 +            // reinterpret_cast<void*>(integer); the null capability is
 +            // harmless for non-pointer types.

@@ -4434,3 +4434,107 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sfx2/source/dialog/filedlghelper.cxx b/sfx2/source/dialog/filedlghelper.cxx
+--- a/sfx2/source/dialog/filedlghelper.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sfx2/source/dialog/filedlghelper.cxx	2026-07-11 11:06:00.000000000 -0700
+@@ -1357,7 +1357,16 @@
+         TOOLS_WARN_EXCEPTION( "sfx.dialog", "FileDialogHelper_Impl::implDoExecute" );
+         }
+     }
+-
+-    postExecute( nRet );
++    // Fil-C (Pizlix): postExecute calls saveConfig() which can throw if
++    // the configuration backend has issues.  Wrap in try/catch so that
++    // a config-save failure never prevents the file dialog from returning.
++    try
++    {
++        postExecute( nRet );
++    }
++    catch( const Exception& )
++    {
++        TOOLS_WARN_EXCEPTION( "sfx.dialog", "FileDialogHelper_Impl::implDoExecute postExecute" );
++    }
+ 
+     return nRet;
+ }
+@@ -2019,39 +2028,51 @@
+     if (sContext.isEmpty())
+         return;
+ 
+-    std::shared_ptr<comphelper::ConfigurationChanges> batch(
+-        comphelper::ConfigurationChanges::create());
+-    Reference<container::XNameContainer> set(
+-        officecfg::Office::Common::Misc::FilePickerLastDirectory::get(batch));
+-
+-    bool found;
+-    Any v;
+-    try
+-    {
+-        v = set->getByName(sContext);
+-        found = true;
+-    }
+-    catch (container::NoSuchElementException&)
+-    {
+-        found = false;
+-    }
+-    if (found)
+-    {
+-        Reference<XPropertySet> el(v.get<Reference<XPropertySet>>(), UNO_SET_THROW);
+-        el->setPropertyValue(u"LastPath"_ustr, Any(sDirectory));
+-    }
+-    else
+-    {
+-        Reference<XPropertySet> el(
+-            (Reference<lang::XSingleServiceFactory>(set, UNO_QUERY_THROW)->createInstance()),
+-            UNO_QUERY_THROW);
+-        el->setPropertyValue(u"LastPath"_ustr, Any(sDirectory));
+-        Any v2(el);
+-        set->insertByName(sContext, v2);
+-    }
+-    batch->commit();
++    // Fil-C (Pizlix): Wrap the entire configuration save in a try/catch.
++    // On Fil-C, configmgr::Access::getFreeSetMember can throw
++    // IllegalArgumentException because dynamic_cast<ChildAccess*> fails
++    // (a Fil-C pointer-capability issue in the UNO Any round-trip).
++    // SaveLastDirectory is a fire-and-forget config preference save that
++    // must never prevent the actual document save from proceeding.
++    try
++    {
++        std::shared_ptr<comphelper::ConfigurationChanges> batch(
++            comphelper::ConfigurationChanges::create());
++        Reference<container::XNameContainer> set(
++            officecfg::Office::Common::Misc::FilePickerLastDirectory::get(batch));
++
++        bool found;
++        Any v;
++        try
++        {
++            v = set->getByName(sContext);
++            found = true;
++        }
++        catch (container::NoSuchElementException&)
++        {
++            found = false;
++        }
++        if (found)
++        {
++            Reference<XPropertySet> el(v.get<Reference<XPropertySet>>(), UNO_SET_THROW);
++            el->setPropertyValue(u"LastPath"_ustr, Any(sDirectory));
++        }
++        else
++        {
++            Reference<XPropertySet> el(
++                (Reference<lang::XSingleServiceFactory>(set, UNO_QUERY_THROW)->createInstance()),
++                UNO_QUERY_THROW);
++            el->setPropertyValue(u"LastPath"_ustr, Any(sDirectory));
++            Any v2(el);
++            set->insertByName(sContext, v2);
++        }
++        batch->commit();
++    }
++    catch (const css::uno::Exception&)
++    {
++        TOOLS_WARN_EXCEPTION("sfx.dialog", "SaveLastDirectory: failed to save last directory");
++    }
+ }
+ }

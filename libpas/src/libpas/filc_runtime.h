@@ -1446,6 +1446,7 @@ PAS_API extern filc_ptr filc_pizlonated_dlerror_handler;
 PAS_API extern bool filc_exit_on_panic;
 PAS_API extern bool filc_quiet_panic;
 PAS_API extern bool filc_dump_errnos;
+PAS_API extern bool filc_dump_exceptions;
 PAS_API extern bool filc_run_global_ctors;
 PAS_API extern bool filc_run_global_dtors;
 PAS_API extern bool filc_verbose_stop_the_world;

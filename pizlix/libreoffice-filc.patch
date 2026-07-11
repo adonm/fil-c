@@ -4314,3 +4314,64 @@ diff -ruN a/extensions/source/propctrlr/formcomponenthandler.cxx b/extensions/so
                      // the same again
  
                  aNewDesc.pSupplier = pSupplier;
+
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sfx2/source/sidebar/SidebarController.cxx b/sfx2/source/sidebar/SidebarController.cxx
+--- a/sfx2/source/sidebar/SidebarController.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sfx2/source/sidebar/SidebarController.cxx	2026-07-10 18:52:38.060000000 -0700
+@@ -44,6 +44,7 @@
+ #include <vcl/svapp.hxx>
+ #include <splitwin.hxx>
+ #include <comphelper/diagnose_ex.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <tools/json_writer.hxx>
+ #include <tools/link.hxx>
+ #include <toolkit/helper/vclunohelper.hxx>
+@@ -1017,7 +1018,15 @@
+         aCreationArguments.put(u"ParentWindow"_ustr, Any(rxWindow));
+         SidebarDockingWindow* pSfxDockingWindow = mpParentWindow.get();
+         if (pSfxDockingWindow != nullptr)
+-            aCreationArguments.put(u"SfxBindings"_ustr, Any(reinterpret_cast<sal_uInt64>(&pSfxDockingWindow->GetBindings())));
++        {
++            // Fil-C (Pizlix): register the SfxBindings pointer's object
++            // capability so it can be restored after the pointer ->
++            // sal_uInt64 (uno::Any) round trip through the UNO bridge.
++            SfxBindings* pBindings = &pSfxDockingWindow->GetBindings();
++            zexact_ptrtable_encode(comphelper::getUnoTunnelPtrTable(),
++                                   static_cast<void*>(pBindings));
++            aCreationArguments.put(u"SfxBindings"_ustr, Any(reinterpret_cast<sal_uInt64>(pBindings)));
++        }
+         aCreationArguments.put(u"Theme"_ustr, Theme::GetPropertySet());
+         aCreationArguments.put(u"Sidebar"_ustr, Any(Reference<ui::XSidebar>(static_cast<ui::XSidebar*>(this))));
+         if (bWantsCanvas)
+
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/svx/source/sidebar/PanelFactory.cxx b/svx/source/sidebar/PanelFactory.cxx
+--- a/svx/source/sidebar/PanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/svx/source/sidebar/PanelFactory.cxx	2026-07-10 18:53:13.311000000 -0700
+@@ -42,6 +42,7 @@
+ #include <vcl/weldutils.hxx>
+ #include <comphelper/namedvaluecollection.hxx>
+ #include <comphelper/compbase.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <cppuhelper/supportsservice.hxx>
+ #include <com/sun/star/lang/XServiceInfo.hpp>
+ #include <com/sun/star/ui/XSidebar.hpp>
+@@ -99,7 +100,18 @@
+     Reference<awt::XWindow> xParentWindow (aArguments.getOrDefault(u"ParentWindow"_ustr, Reference<awt::XWindow>()));
+     Reference<ui::XSidebar> xSidebar (aArguments.getOrDefault(u"Sidebar"_ustr, Reference<ui::XSidebar>()));
+     const sal_uInt64 nBindingsValue (aArguments.getOrDefault(u"SfxBindings"_ustr, sal_uInt64(0)));
+-    SfxBindings* pBindings = reinterpret_cast<SfxBindings*>(nBindingsValue);
++    // Fil-C (Pizlix): restore the object capability stripped by the
++    // pointer -> sal_uInt64 (uno::Any) round trip through the UNO bridge.
++    // A raw reinterpret_cast yields a pointer with a null object, panicking
++    // on the first dereference (SfxBindings::GetSlotPos).
++    SfxBindings* pBindings = nullptr;
++    if (nBindingsValue)
++    {
++        void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                                static_cast<__SIZE_TYPE__>(nBindingsValue));
++        pBindings = pDecoded ? static_cast<SfxBindings*>(pDecoded)
++                             : reinterpret_cast<SfxBindings*>(nBindingsValue);
++    }
+ 
+     weld::Widget* pParent(nullptr);
+     if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))

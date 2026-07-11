@@ -51,7 +51,6 @@ cp -v libreoffice-help-24.8.0.3.tar.xz $LFS/sources
 cp -v libreoffice-translations-24.8.0.3.tar.xz $LFS/sources
 mkdir -p $LFS/sources/libreoffice-external-tarballs
 cp -v libreoffice-external-tarballs/* $LFS/sources/libreoffice-external-tarballs/
-cp -v libreoffice-24.8.0.3-boost_fixes-1.patch $LFS/sources
 cp -v libreoffice-filc.patch $LFS/sources
 cp -v libreoffice-filc.autogen.flags $LFS/sources
 cp -v build_postlc6_chroot_project_*.sh $LFS/sources

@@ -9,10 +9,7 @@ rm -rf libreoffice-24.8.0.3
 tar -xf libreoffice-24.8.0.3.tar.xz
 cd libreoffice-24.8.0.3
 
-# Apply BLFS boost fix patch
-patch -Np1 -i ../libreoffice-24.8.0.3-boost_fixes-1.patch
-
-# Apply Fil-C patch
+# Apply Fil-C patch (which includes BLFS changes)
 patch -Np1 -i ../libreoffice-filc.patch
 
 # Fix zlib linking bug (from BLFS)

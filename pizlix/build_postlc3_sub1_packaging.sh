@@ -32,3 +32,4 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/freetype-2.13.3 pizlonated-freetype
 ./package-source.sh projects/fontconfig-2.15.0 pizlonated-fontconfig
 ./package-source.sh projects/harfbuzz-9.0.0 pizlonated-harfbuzz
+./package-source.sh projects/graphite2-1.3.14 pizlonated-graphite2

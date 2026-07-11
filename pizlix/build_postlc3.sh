@@ -49,8 +49,6 @@ cp -v etc/project2030.jpg $LFS/sources/etc
 cp -v etc/profile $LFS/sources/etc
 cp -v etc/profile-xdg-runtime-dir.sh $LFS/sources/etc
 cp -v etc/seatd $LFS/sources/etc
-cp -v graphite2-1.3.14.tgz $LFS/sources
-cp -v graphite2-filc.patch $LFS/sources
 cp -v build_postlc3_chroot_project_freetype.sh $LFS/sources
 cp -v build_postlc3_chroot_project_graphite.sh $LFS/sources
 cp -v build_postlc3_chroot_project_fontconfig.sh $LFS/sources

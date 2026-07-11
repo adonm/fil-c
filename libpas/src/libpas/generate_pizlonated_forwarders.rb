@@ -169,7 +169,7 @@ addSig "size_t", "zstrlen", "filc_ptr"
 addSig "int", "zisdigit", "int"
 addSig "void", "zerror", "filc_ptr"
 addSig "void", "zsafety_error", "filc_ptr"
-addSig "filc_ptr", "zcall", "filc_ptr", "filc_ptr"
+addSig "exception/filc_ptr", "zcall", "filc_ptr", "filc_ptr"
 addSig "filc_ptr", "zget_jmp_buf_impl_frame", "filc_ptr"
 addSig "filc_ptr", "zclosure_new", "filc_ptr", "filc_ptr"
 addSig "filc_ptr", "zclosure_get_data", "filc_ptr"
@@ -655,7 +655,11 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "    filc_thread* my_thread, void* callee_lower, size_t argument_size)"
             outp.puts "{"
             outp.puts "    PAS_UNUSED_PARAM(callee_lower);"
-            outp.puts "    FILC_DEFINE_FRAME(\"#{signature.name}\");"
+            if signature.throwsException
+                outp.puts "    FILC_DEFINE_CATCHING_FRAME(\"#{signature.name}\");"
+            else
+                outp.puts "    FILC_DEFINE_FRAME(\"#{signature.name}\");"
+            end
             outp.puts "    filc_native_frame native_frame;"
             outp.puts "    filc_push_frame(my_thread, frame);"
             outp.puts "    filc_push_native_frame(my_thread, &native_frame);"
@@ -756,13 +760,11 @@ when "src/libpas/filc_native_forwarders.c"
             end
             outp.puts ")"
             outp.puts "{"
-            outp.puts "    PAS_TESTING_ASSERT("
-            outp.print "        "
-            unless signature.throwsException
-                outp.print "!"
+            if signature.throwsException
+                outp.puts "    PAS_TESTING_ASSERT("
+                outp.puts "        filc_origin_get_function_origin("
+                outp.puts "            my_thread->top_frame->origin)->can_catch);"
             end
-            outp.puts "filc_origin_get_function_origin("
-            outp.puts "            my_thread->top_frame->origin)->can_catch);"
             outp.puts "    filc_check_function_call(target);"
             outp.puts "    filc_cc_sizer args_sizer = filc_cc_sizer_create();"
             signature.args.each {
@@ -786,7 +788,8 @@ when "src/libpas/filc_native_forwarders.c"
             outp.puts "        my_thread, filc_ptr_lower(target),"
             outp.puts "        filc_cc_sizer_total_size(&args_sizer));"
             unless signature.throwsException
-                outp.puts "    PAS_ASSERT(!return_value.has_exception);"
+                outp.puts "    FILC_CHECK(!return_value.has_exception, NULL,"
+                outp.puts "               \"unexpected exception throw.\");"
             end
             outp.puts "    filc_unlock_top_native_frame(my_thread);"
             if signature.throwsException

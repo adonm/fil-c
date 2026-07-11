@@ -6227,7 +6227,7 @@ size_t filc_prepare_to_return_with_data(filc_thread* my_thread, filc_ptr rets,
     return demote_cc_from_heap(my_thread, rets, origin, do_tracking);
 }
 
-filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
+filc_exception_and_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr args_ptr)
 {
     bool do_tracking = true;
     size_t arg_size = demote_cc_from_heap(my_thread, args_ptr, NULL, do_tracking);
@@ -6238,11 +6238,14 @@ filc_ptr filc_native_zcall(filc_thread* my_thread, filc_ptr callee_ptr, filc_ptr
     pizlonated_return_value result =
         ((pizlonated_function)((filc_function*)filc_ptr_ptr(callee_ptr))->generic_entrypoint)(
             my_thread, filc_ptr_lower(callee_ptr), arg_size);
-    PAS_ASSERT(!result.has_exception);
     filc_unlock_top_native_frame(my_thread);
 
+    if (result.has_exception)
+        return filc_exception_and_ptr_with_exception();
+    
     do_tracking = true;
-    return promote_cc_to_heap(my_thread, result.return_size, do_tracking);
+    return filc_exception_and_ptr_with_ptr(
+        promote_cc_to_heap(my_thread, result.return_size, do_tracking));
 }
 
 void filc_native_zmemset(filc_thread* my_thread, filc_ptr dst_ptr, unsigned value, size_t count)

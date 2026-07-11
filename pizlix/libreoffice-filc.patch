@@ -3948,3 +3948,351 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
+diff -ruN a/accessibility/source/helper/acc_factory.cxx b/accessibility/source/helper/acc_factory.cxx
+--- a/accessibility/source/helper/acc_factory.cxx	2026-07-10 17:07:37.238000000 -0700
++++ b/accessibility/source/helper/acc_factory.cxx	2026-07-10 17:07:37.243000000 -0700
+@@ -21,6 +21,7 @@
+ #include <config_feature_desktop.h>
+ 
+ #include <cppuhelper/supportsservice.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <toolkit/awt/vclxwindows.hxx>
+ #include <toolkit/helper/accessiblefactory.hxx>
+ #include <vcl/accessiblefactory.hxx>
+@@ -495,7 +496,11 @@
+     {
+         ::toolkit::IAccessibleFactory* pFactory = new AccessibleFactory;
+         pFactory->acquire();
+-        return reinterpret_cast<sal_Int64>(pFactory);
++        // Fil-C (Pizlix): use getSomething_cast so the C++ pointer's object
++        // capability is preserved across the sal_Int64 XUnoTunnel round-trip.
++        // A raw reinterpret_cast<sal_Int64> would drop the capability, and the
++        // caller would later dereference a pointer with a null object.
++        return comphelper::getSomething_cast(pFactory);
+     }
+ };
+ 
+diff -ruN a/toolkit/source/helper/accessibilityclient.cxx b/toolkit/source/helper/accessibilityclient.cxx
+--- a/toolkit/source/helper/accessibilityclient.cxx	2026-07-10 17:07:37.248000000 -0700
++++ b/toolkit/source/helper/accessibilityclient.cxx	2026-07-10 17:07:37.252000000 -0700
+@@ -24,6 +24,7 @@
+ 
+ #include <toolkit/helper/accessiblefactory.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <osl/diagnose.h>
+ #include <osl/mutex.hxx>
+ #include <rtl/ref.hxx>
+@@ -65,7 +66,11 @@
+             auto xService = css::accessibility::GetStandardAccessibleFactoryService::create(comphelper::getProcessComponentContext());
+             assert(xService);
+             // get a factory instance
+-            IAccessibleFactory* pFactory = reinterpret_cast<IAccessibleFactory*>(xService->getSomething({}));
++            // Fil-C (Pizlix): decode via getSomething_cast to restore the
++            // object capability that the XUnoTunnel sal_Int64 round-trip would
++            // otherwise strip (a raw reinterpret_cast yields a pointer with a
++            // null object, panicking on the following dereference).
++            IAccessibleFactory* pFactory = comphelper::getSomething_cast<IAccessibleFactory>(xService->getSomething({}));
+             assert(pFactory);
+             s_pFactory = pFactory;
+             pFactory->release();
+
+diff -ruN a/vcl/unx/gtk3/gtkframe.cxx b/vcl/unx/gtk3/gtkframe.cxx
+--- a/vcl/unx/gtk3/gtkframe.cxx
++++ b/vcl/unx/gtk3/gtkframe.cxx
+@@ -32,6 +32,7 @@
+ #include <headless/svpgdi.hxx>
+ #include <sal/log.hxx>
+ #include <comphelper/diagnose_ex.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <vcl/toolkit/floatwin.hxx>
+ #include <vcl/toolkit/unowrap.hxx>
+ #include <vcl/svapp.hxx>
+@@ -1237,6 +1238,12 @@
+ 
+     //system data
+     m_aSystemData.SetWindowHandle(GetNativeWindowHandle(m_pWindow));
++    // Fil-C (Pizlix): register the GtkSalFrame pointer's object capability so
++    // it can be restored after the sal_IntPtr -> sal_uInt64 (uno::Any) round
++    // trip performed by vcl::X11DnDHelper when initializing the DnD drag/drop
++    // source.  Without this the decoded pointer has a null object and
++    // dereferencing it (registerDropSource/registerDropTarget) panics.
++    zexact_ptrtable_encode(comphelper::getUnoTunnelPtrTable(), static_cast<void*>(this));
+     m_aSystemData.aShellWindow  = reinterpret_cast<sal_IntPtr>(this);
+     m_aSystemData.pSalFrame     = this;
+     m_aSystemData.pWidget       = m_pWindow;
+
+diff -ruN a/vcl/unx/gtk3/gtkinst.cxx b/vcl/unx/gtk3/gtkinst.cxx
+--- a/vcl/unx/gtk3/gtkinst.cxx
++++ b/vcl/unx/gtk3/gtkinst.cxx
+@@ -66,6 +66,7 @@
+ #include <com/sun/star/lang/XInitialization.hpp>
+ #include <comphelper/lok.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <comphelper/propertyvalue.hxx>
+ #include <comphelper/sequence.hxx>
+ #include <comphelper/string.hxx>
+@@ -1655,7 +1656,14 @@
+                                getXWeak());
+     }
+ 
+-    m_pFrame = reinterpret_cast<GtkSalFrame*>(nFrame);
++    // Fil-C (Pizlix): restore the object capability stripped by the
++    // sal_IntPtr -> sal_uInt64 (uno::Any) -> sal_IntPtr round trip in
++    // vcl::X11DnDHelper.  A raw reinterpret_cast yields a pointer with a null
++    // object, panicking on the following dereference.
++    void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                            static_cast<__SIZE_TYPE__>(nFrame));
++    m_pFrame = pDecoded ? static_cast<GtkSalFrame*>(pDecoded)
++                        : reinterpret_cast<GtkSalFrame*>(nFrame);
+     m_pFrame->registerDropTarget(this);
+     m_bActive = true;
+ }
+@@ -1791,7 +1799,14 @@
+                                getXWeak());
+     }
+ 
+-    m_pFrame = reinterpret_cast<GtkSalFrame*>(nFrame);
++    // Fil-C (Pizlix): restore the object capability stripped by the
++    // sal_IntPtr -> sal_uInt64 (uno::Any) -> sal_IntPtr round trip in
++    // vcl::X11DnDHelper.  A raw reinterpret_cast yields a pointer with a null
++    // object, panicking on the following dereference.
++    void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                            static_cast<__SIZE_TYPE__>(nFrame));
++    m_pFrame = pDecoded ? static_cast<GtkSalFrame*>(pDecoded)
++                        : reinterpret_cast<GtkSalFrame*>(nFrame);
+     m_pFrame->registerDragSource(this);
+ }
+ 
+
+diff -ruN a/cui/source/factory/cuiexp.cxx b/cui/source/factory/cuiexp.cxx
+--- a/cui/source/factory/cuiexp.cxx
++++ b/cui/source/factory/cuiexp.cxx
+@@ -20,6 +20,7 @@
+ #include "dlgfact.hxx"
+ #include <sal/types.h>
+ #include <cppuhelper/supportsservice.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/lang/XUnoTunnel.hpp>
+ 
+ /// anonymous implementation namespace
+@@ -50,7 +51,7 @@
+         // Noting that we have to return a pointer to **VclAbstractDialogFactory** otherwise
+         // the dynamic_casting on the other end will fail on Windows (possibly because of the virtual base involved).
+         static VclAbstractDialogFactory* pFactory = new AbstractDialogFactory_Impl;
+-        return reinterpret_cast<sal_Int64>(pFactory);
++        return comphelper::getSomething_cast(pFactory);
+     }
+ };
+ 
+
+diff -ruN a/sw/source/ui/dialog/swuiexp.cxx b/sw/source/ui/dialog/swuiexp.cxx
+--- a/sw/source/ui/dialog/swuiexp.cxx
++++ b/sw/source/ui/dialog/swuiexp.cxx
+@@ -20,6 +20,7 @@
+ #include "swdlgfact.hxx"
+ #include <swuiexp.hxx>
+ #include <cppuhelper/supportsservice.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/lang/XUnoTunnel.hpp>
+ 
+ namespace swui
+@@ -57,7 +58,7 @@
+     getSomething(const ::css::uno::Sequence<::sal_Int8>& /*aIdentifier*/) override
+     {
+         SwAbstractDialogFactory* pFactory = &::swui::GetFactory();
+-        return reinterpret_cast<sal_Int64>(pFactory);
++        return comphelper::getSomething_cast(pFactory);
+     }
+ };
+ 
+
+diff -ruN a/sc/source/ui/attrdlg/scuiexp.cxx b/sc/source/ui/attrdlg/scuiexp.cxx
+--- a/sc/source/ui/attrdlg/scuiexp.cxx
++++ b/sc/source/ui/attrdlg/scuiexp.cxx
+@@ -22,6 +22,7 @@
+ #include "scdlgfact.hxx"
+ #include <sal/types.h>
+ #include <cppuhelper/supportsservice.hxx>
++#include <comphelper/servicehelper.hxx>
+ 
+ /// anonymous implementation namespace
+ namespace
+@@ -49,7 +50,7 @@
+     getSomething(const ::css::uno::Sequence<::sal_Int8>& /*aIdentifier*/) override
+     {
+         static ScAbstractDialogFactory_Impl aFactory;
+-        return reinterpret_cast<sal_Int64>(static_cast<ScAbstractDialogFactory*>(&aFactory));
++        return comphelper::getSomething_cast(static_cast<ScAbstractDialogFactory*>(&aFactory));
+     }
+ };
+ 
+
+diff -ruN a/sd/source/ui/dlg/sduiexp.cxx b/sd/source/ui/dlg/sduiexp.cxx
+--- a/sd/source/ui/dlg/sduiexp.cxx
++++ b/sd/source/ui/dlg/sduiexp.cxx
+@@ -20,6 +20,7 @@
+ #include "sddlgfact.hxx"
+ #include <sal/types.h>
+ #include <cppuhelper/supportsservice.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/lang/XUnoTunnel.hpp>
+ 
+ class SdAbstractDialogFactory;
+@@ -50,7 +51,7 @@
+     getSomething(const ::css::uno::Sequence<::sal_Int8>& /*aIdentifier*/) override
+     {
+         static SdAbstractDialogFactory_Impl aFactory;
+-        return reinterpret_cast<sal_Int64>(static_cast<SdAbstractDialogFactory*>(&aFactory));
++        return comphelper::getSomething_cast(static_cast<SdAbstractDialogFactory*>(&aFactory));
+     }
+ };
+ 
+
+diff -ruN a/vcl/source/window/abstdlg.cxx b/vcl/source/window/abstdlg.cxx
+--- a/vcl/source/window/abstdlg.cxx
++++ b/vcl/source/window/abstdlg.cxx
+@@ -21,6 +21,7 @@
+ #include <vcl/bitmapex.hxx>
+ #include <com/sun/star/cui/GetCreateDialogFactoryService.hpp>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ 
+ typedef VclAbstractDialogFactory*(SAL_CALL* FuncPtrCreateDialogFactory)();
+ 
+@@ -28,7 +29,7 @@
+ {
+     auto xService
+         = css::cui::GetCreateDialogFactoryService::create(comphelper::getProcessComponentContext());
+-    return reinterpret_cast<VclAbstractDialogFactory*>(xService->getSomething({}));
++    return comphelper::getSomething_cast<VclAbstractDialogFactory>(xService->getSomething({}));
+ }
+ 
+ VclAbstractDialog::~VclAbstractDialog() {}
+
+diff -ruN a/sd/source/ui/dlg/sdabstdlg.cxx b/sd/source/ui/dlg/sdabstdlg.cxx
+--- a/sd/source/ui/dlg/sdabstdlg.cxx
++++ b/sd/source/ui/dlg/sdabstdlg.cxx
+@@ -19,6 +19,7 @@
+ 
+ #include <sdabstdlg.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/presentation/CreateDialogFactoryService.hpp>
+ 
+ SdAbstractDialogFactory* SdAbstractDialogFactory::Create()
+@@ -28,7 +29,7 @@
+     assert(xService);
+     // get a factory instance
+     SdAbstractDialogFactory* pFactory
+-        = reinterpret_cast<SdAbstractDialogFactory*>(xService->getSomething({}));
++        = comphelper::getSomething_cast<SdAbstractDialogFactory>(xService->getSomething({}));
+     assert(pFactory);
+     return pFactory;
+ }
+
+diff -ruN a/sw/source/uibase/dialog/swabstdlg.cxx b/sw/source/uibase/dialog/swabstdlg.cxx
+--- a/sw/source/uibase/dialog/swabstdlg.cxx
++++ b/sw/source/uibase/dialog/swabstdlg.cxx
+@@ -19,6 +19,7 @@
+ 
+ #include <swabstdlg.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/text/DialogFactoryService.hpp>
+ 
+ SwAbstractDialogFactory* SwAbstractDialogFactory::Create()
+@@ -26,7 +27,7 @@
+     auto xService = css::text::DialogFactoryService::create(comphelper::getProcessComponentContext());
+     assert(xService);
+     // get a factory instance
+-    SwAbstractDialogFactory* pFactory = reinterpret_cast<SwAbstractDialogFactory*>(xService->getSomething({}));
++    SwAbstractDialogFactory* pFactory = comphelper::getSomething_cast<SwAbstractDialogFactory>(xService->getSomething({}));
+     assert(pFactory);
+     return pFactory;
+ }
+
+diff -ruN a/sc/source/ui/attrdlg/scabstdlg.cxx b/sc/source/ui/attrdlg/scabstdlg.cxx
+--- a/sc/source/ui/attrdlg/scabstdlg.cxx
++++ b/sc/source/ui/attrdlg/scabstdlg.cxx
+@@ -22,6 +22,7 @@
+ #include <osl/module.hxx>
+ #include <tools/svlibrary.h>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/sheet/CreateDialogFactoryService.hpp>
+ 
+ ScAbstractDialogFactory* ScAbstractDialogFactory::Create()
+@@ -29,7 +30,7 @@
+     auto xService = css::sheet::CreateDialogFactoryService::create(comphelper::getProcessComponentContext());
+     assert(xService);
+     // get a factory instance
+-    ScAbstractDialogFactory* pFactory = reinterpret_cast<ScAbstractDialogFactory*>(xService->getSomething({}));
++    ScAbstractDialogFactory* pFactory = comphelper::getSomething_cast<ScAbstractDialogFactory>(xService->getSomething({}));
+     assert(pFactory);
+     return pFactory;
+ }
+
+diff -ruN a/sw/qa/unit/sw-dialogs-test.cxx b/sw/qa/unit/sw-dialogs-test.cxx
+--- a/sw/qa/unit/sw-dialogs-test.cxx
++++ b/sw/qa/unit/sw-dialogs-test.cxx
+@@ -13,6 +13,7 @@
+ #include <tools/svlibrary.h>
+ #include <vcl/abstdlg.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/text/DialogFactoryService.hpp>
+ 
+ class SwAbstractDialogFactory;
+@@ -65,7 +66,7 @@
+     auto xService = css::text::DialogFactoryService::create(comphelper::getProcessComponentContext());
+     CPPUNIT_ASSERT(xService.is());
+     // get a factory instance
+-    SwAbstractDialogFactory* pFactory = reinterpret_cast<SwAbstractDialogFactory*>(xService->getSomething({}));
++    SwAbstractDialogFactory* pFactory = comphelper::getSomething_cast<SwAbstractDialogFactory>(xService->getSomething({}));
+     CPPUNIT_ASSERT(pFactory != nullptr);
+ }
+ 
+
+diff -ruN a/sw/qa/unit/sw-dialogs-test_2.cxx b/sw/qa/unit/sw-dialogs-test_2.cxx
+--- a/sw/qa/unit/sw-dialogs-test_2.cxx
++++ b/sw/qa/unit/sw-dialogs-test_2.cxx
+@@ -13,6 +13,7 @@
+ #include <tools/svlibrary.h>
+ #include <vcl/abstdlg.hxx>
+ #include <comphelper/processfactory.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <com/sun/star/text/DialogFactoryService.hpp>
+ #include <swdll.hxx>
+ 
+@@ -60,7 +61,7 @@
+     auto xService = css::text::DialogFactoryService::create(comphelper::getProcessComponentContext());
+     CPPUNIT_ASSERT(xService.is());
+     // get a factory instance
+-    SwAbstractDialogFactory* pFactory = reinterpret_cast<SwAbstractDialogFactory*>(xService->getSomething({}));
++    SwAbstractDialogFactory* pFactory = comphelper::getSomething_cast<SwAbstractDialogFactory>(xService->getSomething({}));
+     CPPUNIT_ASSERT(pFactory != nullptr);
+ }
+ 
+
+diff -ruN a/extensions/source/propctrlr/formcomponenthandler.cxx b/extensions/source/propctrlr/formcomponenthandler.cxx
+--- a/extensions/source/propctrlr/formcomponenthandler.cxx
++++ b/extensions/source/propctrlr/formcomponenthandler.cxx
+@@ -77,6 +77,7 @@
+ #include <com/sun/star/text/WritingMode2.hpp>
+ 
+ #include <comphelper/extract.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <comphelper/types.hxx>
+ #include <connectivity/dbconversion.hxx>
+ #include <connectivity/dbexception.hxx>
+@@ -1730,7 +1731,7 @@
+             DBG_ASSERT(xTunnel.is(), "FormComponentPropertyHandler::actuatingPropertyChanged: xTunnel is invalid!");
+             if ( xTunnel.is() )
+             {
+-                SvNumberFormatsSupplierObj* pSupplier = reinterpret_cast<SvNumberFormatsSupplierObj*>(xTunnel->getSomething(SvNumberFormatsSupplierObj::getUnoTunnelId()));
++                SvNumberFormatsSupplierObj* pSupplier = comphelper::getSomething_cast<SvNumberFormatsSupplierObj>(xTunnel->getSomething(SvNumberFormatsSupplierObj::getUnoTunnelId()));
+                     // the same again
+ 
+                 aNewDesc.pSupplier = pSupplier;

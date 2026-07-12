@@ -1531,6 +1531,37 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sc/source/ui/sidebar/ScPanelFactory.cxx b/sc/source/ui/sidebar/ScPanelFactory.cxx
+--- a/sc/source/ui/sidebar/ScPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sc/source/ui/sidebar/ScPanelFactory.cxx	2026-07-12 09:44:44.539000000 -0700
+@@ -29,6 +29,7 @@
+ #include <vcl/weldutils.hxx>
+ #include <com/sun/star/lang/WrappedTargetRuntimeException.hpp>
+ #include <comphelper/namedvaluecollection.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <cppuhelper/exc_hlp.hxx>
+ #include <cppuhelper/supportsservice.hxx>
+ 
+@@ -57,7 +58,18 @@
+         Reference<frame::XFrame> xFrame (aArguments.getOrDefault(u"Frame"_ustr, Reference<frame::XFrame>()));
+         Reference<awt::XWindow> xParentWindow (aArguments.getOrDefault(u"ParentWindow"_ustr, Reference<awt::XWindow>()));
+         const sal_uInt64 nBindingsValue (aArguments.getOrDefault(u"SfxBindings"_ustr, sal_uInt64(0)));
+-        SfxBindings* pBindings = reinterpret_cast<SfxBindings*>(nBindingsValue);
++        // Fil-C (Pizlix): restore the object capability stripped by the
++        // pointer -> sal_uInt64 (uno::Any) round trip through the UNO bridge.
++        // A raw reinterpret_cast yields a pointer with a null object, panicking
++        // on the first dereference (SfxBindings::GetSlotPos).
++        SfxBindings* pBindings = nullptr;
++        if (nBindingsValue)
++        {
++            void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                                    static_cast<__SIZE_TYPE__>(nBindingsValue));
++            pBindings = pDecoded ? static_cast<SfxBindings*>(pDecoded)
++                                 : reinterpret_cast<SfxBindings*>(nBindingsValue);
++        }
+ 
+         weld::Widget* pParent(nullptr);
+         if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sd/source/ui/dlg/sdabstdlg.cxx b/sd/source/ui/dlg/sdabstdlg.cxx
 --- a/sd/source/ui/dlg/sdabstdlg.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sd/source/ui/dlg/sdabstdlg.cxx	2026-07-10 17:35:26.580000000 -0700
@@ -1571,6 +1602,29 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sd/source/ui/sidebar/PanelFactory.cxx b/sd/source/ui/sidebar/PanelFactory.cxx
+--- a/sd/source/ui/sidebar/PanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sd/source/ui/sidebar/PanelFactory.cxx	2026-07-12 09:41:57.046000000 -0700
+@@ -87,7 +87,18 @@
+ 
+     // Get bindings from given arguments.
+     const sal_uInt64 nBindingsValue (aArguments.getOrDefault(u"SfxBindings"_ustr, sal_uInt64(0)));
+-    SfxBindings* pBindings = reinterpret_cast<SfxBindings*>(nBindingsValue);
++    // Fil-C (Pizlix): restore the object capability stripped by the
++    // pointer -> sal_uInt64 (uno::Any) round trip through the UNO bridge.
++    // A raw reinterpret_cast yields a pointer with a null object, panicking
++    // on the first dereference (SfxBindings::GetSlotPos).
++    SfxBindings* pBindings = nullptr;
++    if (nBindingsValue)
++    {
++        void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                                static_cast<__SIZE_TYPE__>(nBindingsValue));
++        pBindings = pDecoded ? static_cast<SfxBindings*>(pDecoded)
++                             : reinterpret_cast<SfxBindings*>(nBindingsValue);
++    }
+ 
+     // Create a framework view.
+     std::unique_ptr<PanelLayout> xControl;
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sfx2/source/sidebar/SidebarController.cxx b/sfx2/source/sidebar/SidebarController.cxx
 --- a/sfx2/source/sidebar/SidebarController.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sfx2/source/sidebar/SidebarController.cxx	2026-07-10 18:52:38.060000000 -0700
@@ -1671,6 +1725,37 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +
 +/* Define if you have the <sys/param.h> header file.  */
 +#define HAVE_SYS_PARAM_H 1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/starmath/source/SmPanelFactory.cxx b/starmath/source/SmPanelFactory.cxx
+--- a/starmath/source/SmPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/starmath/source/SmPanelFactory.cxx	2026-07-12 09:44:45.147000000 -0700
+@@ -26,6 +26,7 @@
+ #include <cppuhelper/exc_hlp.hxx>
+ #include <cppuhelper/supportsservice.hxx>
+ #include <comphelper/namedvaluecollection.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <sfx2/sidebar/SidebarPanelBase.hxx>
+ #include <vcl/weldutils.hxx>
+ 
+@@ -68,7 +69,18 @@
+                                                    css::uno::Reference<css::awt::XWindow>()));
+         const sal_uInt64 nBindingsValue(
+             aArguments.getOrDefault(u"SfxBindings"_ustr, sal_uInt64(0)));
+-        SfxBindings* pBindings = reinterpret_cast<SfxBindings*>(nBindingsValue);
++        // Fil-C (Pizlix): restore the object capability stripped by the
++        // pointer -> sal_uInt64 (uno::Any) round trip through the UNO bridge.
++        // A raw reinterpret_cast yields a pointer with a null object, panicking
++        // on the first dereference (SfxBindings::GetSlotPos).
++        SfxBindings* pBindings = nullptr;
++        if (nBindingsValue)
++        {
++            void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                                    static_cast<__SIZE_TYPE__>(nBindingsValue));
++            pBindings = pDecoded ? static_cast<SfxBindings*>(pDecoded)
++                                 : reinterpret_cast<SfxBindings*>(nBindingsValue);
++        }
+ 
+         weld::Widget* pParent(nullptr);
+         if (auto pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
 --- a/svx/source/gallery2/galmisc.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/svx/source/gallery2/galmisc.cxx	2026-07-06 21:07:20.828000000 -0700
@@ -1821,6 +1906,37 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      assert(pFactory);
      return pFactory;
  }
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/source/uibase/sidebar/SwPanelFactory.cxx b/sw/source/uibase/sidebar/SwPanelFactory.cxx
+--- a/sw/source/uibase/sidebar/SwPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/sw/source/uibase/sidebar/SwPanelFactory.cxx	2026-07-12 09:44:44.851000000 -0700
+@@ -38,6 +38,7 @@
+ #include <com/sun/star/lang/XServiceInfo.hpp>
+ #include <com/sun/star/uno/XComponentContext.hpp>
+ #include <comphelper/namedvaluecollection.hxx>
++#include <comphelper/servicehelper.hxx>
+ #include <comphelper/compbase.hxx>
+ #include <cppuhelper/supportsservice.hxx>
+ 
+@@ -89,7 +90,18 @@
+     Reference<frame::XFrame> xFrame (aArguments.getOrDefault(u"Frame"_ustr, Reference<frame::XFrame>()));
+     Reference<awt::XWindow> xParentWindow (aArguments.getOrDefault(u"ParentWindow"_ustr, Reference<awt::XWindow>()));
+     const sal_uInt64 nBindingsValue (aArguments.getOrDefault(u"SfxBindings"_ustr, sal_uInt64(0)));
+-    SfxBindings* pBindings = reinterpret_cast<SfxBindings*>(nBindingsValue);
++    // Fil-C (Pizlix): restore the object capability stripped by the
++    // pointer -> sal_uInt64 (uno::Any) round trip through the UNO bridge.
++    // A raw reinterpret_cast yields a pointer with a null object, panicking
++    // on the first dereference (SfxBindings::GetSlotPos).
++    SfxBindings* pBindings = nullptr;
++    if (nBindingsValue)
++    {
++        void* pDecoded = zexact_ptrtable_decode(comphelper::getUnoTunnelPtrTable(),
++                                                static_cast<__SIZE_TYPE__>(nBindingsValue));
++        pBindings = pDecoded ? static_cast<SfxBindings*>(pDecoded)
++                             : reinterpret_cast<SfxBindings*>(nBindingsValue);
++    }
+ 
+     weld::Widget* pParent(nullptr);
+     if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sysui/desktop/macosx/Info.plist b/sysui/desktop/macosx/Info.plist
 --- a/sysui/desktop/macosx/Info.plist	1969-12-31 16:00:00.000000000 -0800
 +++ b/sysui/desktop/macosx/Info.plist	2026-07-06 15:18:51.186000000 -0700

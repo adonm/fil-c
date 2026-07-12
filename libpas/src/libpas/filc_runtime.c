@@ -358,6 +358,7 @@ bool filc_exit_on_panic = false;
 bool filc_quiet_panic = false;
 bool filc_dump_errnos = false;
 bool filc_dump_exceptions = false;
+bool filc_dump_dlopens = false;
 bool filc_run_global_ctors = true;
 bool filc_run_global_dtors = true;
 bool filc_verbose_stop_the_world = false;
@@ -562,6 +563,7 @@ void filc_initialize(filc_stack_limit stack_limit)
     filc_get_bool_env("FILC_QUIET_PANIC", &filc_quiet_panic);
     filc_get_bool_env("FILC_DUMP_ERRNOS", &filc_dump_errnos);
     filc_get_bool_env("FILC_DUMP_EXCEPTIONS", &filc_dump_exceptions);
+    filc_get_bool_env("FILC_DUMP_DLOPENS", &filc_dump_dlopens);
     if (PAS_ENABLE_TESTING) {
         filc_get_bool_env("FILC_RUN_GLOBAL_CTORS", &filc_run_global_ctors);
         filc_get_bool_env("FILC_RUN_GLOBAL_DTORS", &filc_run_global_dtors);

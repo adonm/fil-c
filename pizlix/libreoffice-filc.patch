@@ -1,4 +1,4 @@
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/Makefile.in b/Makefile.in
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/Makefile.in b/Makefile.in
 --- a/Makefile.in	2024-08-08 13:59:54.000000000 -0700
 +++ b/Makefile.in	2026-07-06 15:03:11.956000000 -0700
 @@ -457,7 +457,6 @@
@@ -9,7 +9,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
  install-package-%:
  	$(MAKE) $(GMAKE_OPTIONS) -f $(SRCDIR)/Makefile.gbuild $@
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/accessibility/source/helper/acc_factory.cxx b/accessibility/source/helper/acc_factory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/accessibility/source/helper/acc_factory.cxx b/accessibility/source/helper/acc_factory.cxx
 --- a/accessibility/source/helper/acc_factory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/accessibility/source/helper/acc_factory.cxx	2026-07-10 17:31:09.315000000 -0700
 @@ -21,6 +21,7 @@
@@ -33,14 +33,14 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/bffvalidator.sh b/bin/bffvalidator.sh
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bin/bffvalidator.sh b/bin/bffvalidator.sh
 --- a/bin/bffvalidator.sh	1969-12-31 16:00:00.000000000 -0800
-+++ b/bin/bffvalidator.sh	2026-07-06 15:18:50.953000000 -0700
++++ b/bin/bffvalidator.sh	2026-07-12 10:20:37.615000000 -0700
 @@ -0,0 +1,3 @@
 +#!/bin/sh
 +
 +wine  `winepath -w $1`
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-integration
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bin/distro-install-desktop-integration b/bin/distro-install-desktop-integration
 --- a/bin/distro-install-desktop-integration	2024-08-08 13:59:54.000000000 -0700
 +++ b/bin/distro-install-desktop-integration	2026-07-06 15:03:11.950000000 -0700
 @@ -38,22 +38,20 @@
@@ -70,19 +70,19 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/odfvalidator.sh b/bin/odfvalidator.sh
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bin/odfvalidator.sh b/bin/odfvalidator.sh
 --- a/bin/odfvalidator.sh	1969-12-31 16:00:00.000000000 -0800
-+++ b/bin/odfvalidator.sh	2026-07-06 15:18:51.008000000 -0700
++++ b/bin/odfvalidator.sh	2026-07-12 10:20:37.670000000 -0700
 @@ -0,0 +1,2 @@
 +#!/usr/bin/env bash
 +java -Djavax.xml.validation.SchemaFactory:http://relaxng.org/ns/structure/1.0=org.iso_relax.verifier.jaxp.validation.RELAXNGSchemaFactoryImpl -Dorg.iso_relax.verifier.VerifierFactoryLoader=com.sun.msv.verifier.jarv.FactoryLoaderImpl -jar /data/pizlo/libreoffice-24.8.0.3/external/tarballs/ "$@"
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bin/officeotron.sh b/bin/officeotron.sh
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bin/officeotron.sh b/bin/officeotron.sh
 --- a/bin/officeotron.sh	1969-12-31 16:00:00.000000000 -0800
-+++ b/bin/officeotron.sh	2026-07-06 15:18:51.066000000 -0700
++++ b/bin/officeotron.sh	2026-07-12 10:20:37.728000000 -0700
 @@ -0,0 +1,2 @@
 +#!/usr/bin/env bash
 +java -jar /data/pizlo/libreoffice-24.8.0.3/external/tarballs/ "$@"
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
 --- a/bridges/Library_cpp_uno.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/Library_cpp_uno.mk	2026-07-06 16:50:49.922000000 -0700
 @@ -177,9 +177,15 @@
@@ -101,7 +101,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  else ifneq ($(filter MACOSX iOS,$(OS)),)
  bridges_SELECTED_BRIDGE := gcc3_macosx_x86-64
  bridge_exception_objects := abi call cpp2uno except uno2cpp
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/callvirtualmethod.cxx	2026-07-06 16:55:53.236000000 -0700
 @@ -27,13 +27,17 @@
@@ -146,7 +146,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/cpp2uno.cxx	2026-07-06 21:13:31.126000000 -0700
 @@ -35,6 +35,10 @@
@@ -639,7 +639,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          }
          else
              assert(false);
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx
 --- a/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/gcc3_linux_x86-64/uno2cpp.cxx	2026-07-10 18:07:47.567000000 -0700
 @@ -34,6 +34,11 @@
@@ -737,7 +737,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          } catch (const Exception &) {
              throw;
          } catch (const std::exception & e) {
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp_uno/shared/vtablefactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/bridges/source/cpp_uno/shared/vtablefactory.cxx b/bridges/source/cpp_uno/shared/vtablefactory.cxx
 --- a/bridges/source/cpp_uno/shared/vtablefactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/bridges/source/cpp_uno/shared/vtablefactory.cxx	2026-07-06 16:57:48.725000000 -0700
 @@ -104,11 +104,20 @@
@@ -761,7 +761,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  #if defined MACOSX
  done:
  #endif
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/comphelper/Library_comphelper.mk b/comphelper/Library_comphelper.mk
 --- a/comphelper/Library_comphelper.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/comphelper/Library_comphelper.mk	2026-07-06 22:22:12.501000000 -0700
 @@ -123,6 +123,7 @@
@@ -772,7 +772,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      comphelper/source/misc/sequenceashashmap \
      comphelper/source/misc/sharedmutex \
      comphelper/source/misc/simplefileaccessinteraction \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/servicehelper.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/comphelper/source/misc/servicehelper.cxx b/comphelper/source/misc/servicehelper.cxx
 --- a/comphelper/source/misc/servicehelper.cxx	1969-12-31 16:00:00.000000000 -0800
 +++ b/comphelper/source/misc/servicehelper.cxx	2026-07-06 22:21:52.692000000 -0700
 @@ -0,0 +1,22 @@
@@ -798,7 +798,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +} // namespace comphelper
 +
 +/* vim:set shiftwidth=4 softtabstop=4 expandtab: */
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/configure.ac b/configure.ac
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/configure.ac b/configure.ac
 --- a/configure.ac	2024-08-08 13:59:54.000000000 -0700
 +++ b/configure.ac	2026-07-06 15:23:39.181000000 -0700
 @@ -14434,21 +14434,22 @@
@@ -830,7 +830,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
              break
          fi
      done
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppu/util/cppu.map b/cppu/util/cppu.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/cppu/util/cppu.map b/cppu/util/cppu.map
 --- a/cppu/util/cppu.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppu/util/cppu.map	2026-07-06 16:11:46.664000000 -0700
 @@ -17,6 +17,7 @@
@@ -841,7 +841,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          typelib_typedescription_new;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/cppu/util/uno_purpenvhelpergcc3.map b/cppu/util/uno_purpenvhelpergcc3.map
 --- a/cppu/util/uno_purpenvhelpergcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppu/util/uno_purpenvhelpergcc3.map	2026-07-06 16:11:46.648000000 -0700
 @@ -17,6 +17,7 @@
@@ -852,7 +852,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          _ZN4cppu6helper7purpenv13createMappingEPP12_uno_MappingP16_uno_EnvironmentS6_PFvbPvS7_P33_typelib_TypeDescriptionReferenceP24_typelib_MethodParameter?PK24_typelib_TypeDescriptionS7_PS7_PP8_uno_AnyES7_;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/cppuhelper/source/gcc3.map b/cppuhelper/source/gcc3.map
 --- a/cppuhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/cppuhelper/source/gcc3.map	2026-07-06 16:11:46.680000000 -0700
 @@ -17,6 +17,7 @@
@@ -863,7 +863,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
  _ZN3com3sun4star3uno19WeakReferenceHelperC1ERKNS2_9ReferenceINS2_10XInterfaceEEE;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/cui/source/factory/cuiexp.cxx b/cui/source/factory/cuiexp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/cui/source/factory/cuiexp.cxx b/cui/source/factory/cuiexp.cxx
 --- a/cui/source/factory/cuiexp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/cui/source/factory/cuiexp.cxx	2026-07-10 17:34:56.307000000 -0700
 @@ -20,6 +20,7 @@
@@ -883,7 +883,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/extensions/source/propctrlr/formcomponenthandler.cxx b/extensions/source/propctrlr/formcomponenthandler.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/extensions/source/propctrlr/formcomponenthandler.cxx b/extensions/source/propctrlr/formcomponenthandler.cxx
 --- a/extensions/source/propctrlr/formcomponenthandler.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/extensions/source/propctrlr/formcomponenthandler.cxx	2026-07-10 17:44:16.378000000 -0700
 @@ -77,6 +77,7 @@
@@ -903,7 +903,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
                      // the same again
  
                  aNewDesc.pSupplier = pSupplier;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/icu/ExternalProject_icu.mk b/external/icu/ExternalProject_icu.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/icu/ExternalProject_icu.mk b/external/icu/ExternalProject_icu.mk
 --- a/external/icu/ExternalProject_icu.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/icu/ExternalProject_icu.mk	2026-07-11 21:48:58.680000000 -0700
 @@ -57,7 +57,6 @@
@@ -914,7 +914,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      $(if $(filter ANDROID,$(OS)),$(gb_STDLIBS))"
  
  # DATASUBDIR=data in cross-compiling case, because --disable-tools completely skips the
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
 --- a/external/libcmis/UnpackedTarball_libcmis.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/libcmis/UnpackedTarball_libcmis.mk	2026-07-06 15:02:53.998000000 -0700
 @@ -18,6 +18,7 @@
@@ -925,7 +925,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  	external/libcmis/http-session-cleanup.patch.1 \
  	external/libcmis/factory-no-retry-ssl.patch.1 \
  	external/libcmis/sharepoint-auth.patch.1 \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/libcmis/boost_1.86.0_build_failure.patch.1 b/external/libcmis/boost_1.86.0_build_failure.patch.1
 --- a/external/libcmis/boost_1.86.0_build_failure.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/libcmis/boost_1.86.0_build_failure.patch.1	2026-07-06 15:02:53.998000000 -0700
 @@ -0,0 +1,23 @@
@@ -952,7 +952,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +         return out.str();
 +     }
 + 
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/poppler/UnpackedTarball_poppler.mk b/external/poppler/UnpackedTarball_poppler.mk
 --- a/external/poppler/UnpackedTarball_poppler.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/poppler/UnpackedTarball_poppler.mk	2026-07-06 16:06:18.632000000 -0700
 @@ -18,6 +18,7 @@
@@ -963,7 +963,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  ))
  
  ifneq ($(filter -fsanitize=%,$(CC)),)
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable-annotate.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/poppler/disable-annotate.patch.1 b/external/poppler/disable-annotate.patch.1
 --- a/external/poppler/disable-annotate.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/poppler/disable-annotate.patch.1	2026-07-06 16:05:39.396000000 -0700
 @@ -0,0 +1,14 @@
@@ -981,7 +981,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 + #    define GOOSTRING_FORMAT __attribute__((__annotate__("gooformat")))
 + #else
 + #    define GOOSTRING_FORMAT
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
 --- a/external/redland/ExternalProject_raptor.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/redland/ExternalProject_raptor.mk	2026-07-06 15:53:06.109000000 -0700
 @@ -30,7 +30,7 @@
@@ -993,7 +993,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  			--without-xslt-config \
  			$(gb_CONFIGURE_PLATFORMS) \
  			$(if $(CROSS_COMPILING),$(if $(filter INTEL ARM,$(CPUNAME)),ac_cv_c_bigendian=no)) \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/UnpackedTarball_xmlsec.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/xmlsec/UnpackedTarball_xmlsec.mk b/external/xmlsec/UnpackedTarball_xmlsec.mk
 --- a/external/xmlsec/UnpackedTarball_xmlsec.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/xmlsec/UnpackedTarball_xmlsec.mk	2026-07-06 15:51:59.030000000 -0700
 @@ -12,6 +12,7 @@
@@ -1004,7 +1004,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
  $(eval $(call gb_UnpackedTarball_UnpackedTarball,xmlsec))
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-attribute-unused.patch.1
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/xmlsec/fix-attribute-unused.patch.1 b/external/xmlsec/fix-attribute-unused.patch.1
 --- a/external/xmlsec/fix-attribute-unused.patch.1	1969-12-31 16:00:00.000000000 -0800
 +++ b/external/xmlsec/fix-attribute-unused.patch.1	2026-07-06 15:52:24.078000000 -0700
 @@ -0,0 +1,17 @@
@@ -1025,7 +1025,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 + 
 + #include <xmlsec/exports.h>
 + #include <xmlsec/xmlsec.h>
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary_zxing.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/external/zxing/StaticLibrary_zxing.mk b/external/zxing/StaticLibrary_zxing.mk
 --- a/external/zxing/StaticLibrary_zxing.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/zxing/StaticLibrary_zxing.mk	2026-07-06 15:57:53.901000000 -0700
 @@ -19,6 +19,8 @@
@@ -1037,9 +1037,9 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  $(eval $(call gb_StaticLibrary_set_include,zxing,\
  	-I$(gb_UnpackedTarball_workdir)/zxing/core/src/ \
  	$$(INCLUDE) \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/hardened_runtime.xcent b/hardened_runtime.xcent
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/hardened_runtime.xcent b/hardened_runtime.xcent
 --- a/hardened_runtime.xcent	1969-12-31 16:00:00.000000000 -0800
-+++ b/hardened_runtime.xcent	2026-07-06 15:18:51.232000000 -0700
++++ b/hardened_runtime.xcent	2026-07-12 10:20:37.895000000 -0700
 @@ -0,0 +1,23 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1064,7 +1064,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +        
 +    </dict>
 +</plist>
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehelper.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/include/comphelper/servicehelper.hxx b/include/comphelper/servicehelper.hxx
 --- a/include/comphelper/servicehelper.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/include/comphelper/servicehelper.hxx	2026-07-06 22:22:45.680000000 -0700
 @@ -23,9 +23,22 @@
@@ -1114,9 +1114,52 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          return reinterpret_cast<T*>(sal::static_int_cast<sal_IntPtr>(n));
      }
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/instsetoo_native/util/openoffice.lst b/instsetoo_native/util/openoffice.lst
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/include/vcl/weld.hxx b/include/vcl/weld.hxx
+--- a/include/vcl/weld.hxx	2024-08-08 13:59:54.000000000 -0700
++++ b/include/vcl/weld.hxx	2026-07-12 13:25:57.494000000 -0700
+@@ -19,6 +19,7 @@
+ #include <tools/link.hxx>
+ #include <vcl/dllapi.h>
+ #include <utility>
++#include <stdfil.h>
+ #include <vcl/vclenum.hxx>
+ #include <vcl/font.hxx>
+ #include <vcl/vclptr.hxx>
+@@ -667,14 +668,29 @@
+     void connect_jump_page(const Link<const OUString&, bool>& rLink) { m_aJumpPageHdl = rLink; }
+ };
+ 
++// Fil-C (Pizlix): toId/fromId convert pointers to string IDs and back.
++// On Fil-C, reinterpret_cast<sal_uIntPtr>(ptr) strips the object capability,
++// so fromId returns a pointer with a null object that panics on dereference.
++// We use zexact_ptrtable to register the capability at encode time and restore
++// it at decode time.  zexact_ptrtable_encode returns the pointer's raw integer
++// value, so the string ID is identical to what the old code produced.
++VCL_DLLPUBLIC zexact_ptrtable* getWeldPtrTable();
++
+ inline OUString toId(const void* pValue)
+ {
+-    return OUString::number(reinterpret_cast<sal_uIntPtr>(pValue));
++    if (!pValue)
++        return OUString::number(static_cast<sal_uIntPtr>(0));
++    return OUString::number(static_cast<sal_uIntPtr>(
++        zexact_ptrtable_encode(getWeldPtrTable(), const_cast<void*>(pValue))));
+ }
+ 
+ template <typename T> T fromId(const OUString& rValue)
+ {
+-    return reinterpret_cast<T>(rValue.toUInt64());
++    sal_uIntPtr n = rValue.toUInt64();
++    if (!n)
++        return nullptr;
++    void* p = zexact_ptrtable_decode(getWeldPtrTable(), static_cast<__SIZE_TYPE__>(n));
++    return reinterpret_cast<T>(p);
+ }
+ 
+ struct VCL_DLLPUBLIC ComboBoxEntry
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/instsetoo_native/util/openoffice.lst b/instsetoo_native/util/openoffice.lst
 --- a/instsetoo_native/util/openoffice.lst	1969-12-31 16:00:00.000000000 -0800
-+++ b/instsetoo_native/util/openoffice.lst	2026-07-06 15:18:51.124000000 -0700
++++ b/instsetoo_native/util/openoffice.lst	2026-07-12 10:20:37.788000000 -0700
 @@ -0,0 +1,195 @@
 +Globals
 +{
@@ -1313,9 +1356,9 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +        include {installscriptdir},{filelistpath}/PackageSet,{filelistpath}/GeneratedPackage,{filelistpath}/Package,{licensepath},{packinfopath}
 +    }
 +}
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/lo.xcent b/lo.xcent
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/lo.xcent b/lo.xcent
 --- a/lo.xcent	1969-12-31 16:00:00.000000000 -0800
-+++ b/lo.xcent	2026-07-06 15:18:51.277000000 -0700
++++ b/lo.xcent	2026-07-12 10:20:37.936000000 -0700
 @@ -0,0 +1,29 @@
 +<?xml version="1.0" encoding="UTF-8"?>
 +<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1346,7 +1389,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +
 +</dict>
 +</plist>
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/pyuno/Library_pyuno.mk b/pyuno/Library_pyuno.mk
 --- a/pyuno/Library_pyuno.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/pyuno/Library_pyuno.mk	2026-07-06 22:27:03.545000000 -0700
 @@ -24,6 +24,7 @@
@@ -1357,7 +1400,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      cppu \
      cppuhelper \
      sal \
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sal/rtl/alloc_arena.cxx b/sal/rtl/alloc_arena.cxx
 --- a/sal/rtl/alloc_arena.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/rtl/alloc_arena.cxx	2026-07-06 21:03:24.960000000 -0700
 @@ -116,6 +116,7 @@
@@ -1458,7 +1501,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
                        segment->m_size);
          }
      }
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sal/rtl/alloc_arena.hxx b/sal/rtl/alloc_arena.hxx
 --- a/sal/rtl/alloc_arena.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/rtl/alloc_arena.hxx	2026-07-06 21:02:28.255000000 -0700
 @@ -56,6 +56,7 @@
@@ -1469,7 +1512,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      sal_Size            m_size;
      sal_Size            m_type;
  };
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sal/util/sal.map b/sal/util/sal.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sal/util/sal.map b/sal/util/sal.map
 --- a/sal/util/sal.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/sal/util/sal.map	2026-07-06 16:11:46.613000000 -0700
 @@ -18,6 +18,7 @@
@@ -1480,7 +1523,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
          osl_acceptConnectionOnSocket;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/salhelper/source/gcc3.map b/salhelper/source/gcc3.map
 --- a/salhelper/source/gcc3.map	2024-08-08 13:59:54.000000000 -0700
 +++ b/salhelper/source/gcc3.map	2026-07-06 16:11:46.631000000 -0700
 @@ -17,6 +17,7 @@
@@ -1491,7 +1534,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      _ZTI*; _ZTS*; # weak RTTI symbols for C++ exceptions
  
      _ZN9salhelper18ORealDynamicLoader11newInstanceEPPS0_RKN3rtl8OUStringES6_;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sc/source/ui/attrdlg/scabstdlg.cxx b/sc/source/ui/attrdlg/scabstdlg.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sc/source/ui/attrdlg/scabstdlg.cxx b/sc/source/ui/attrdlg/scabstdlg.cxx
 --- a/sc/source/ui/attrdlg/scabstdlg.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sc/source/ui/attrdlg/scabstdlg.cxx	2026-07-10 17:35:27.497000000 -0700
 @@ -22,6 +22,7 @@
@@ -1511,7 +1554,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      assert(pFactory);
      return pFactory;
  }
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sc/source/ui/attrdlg/scuiexp.cxx b/sc/source/ui/attrdlg/scuiexp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sc/source/ui/attrdlg/scuiexp.cxx b/sc/source/ui/attrdlg/scuiexp.cxx
 --- a/sc/source/ui/attrdlg/scuiexp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sc/source/ui/attrdlg/scuiexp.cxx	2026-07-10 17:35:08.179000000 -0700
 @@ -22,6 +22,7 @@
@@ -1531,7 +1574,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sc/source/ui/sidebar/ScPanelFactory.cxx b/sc/source/ui/sidebar/ScPanelFactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sc/source/ui/sidebar/ScPanelFactory.cxx b/sc/source/ui/sidebar/ScPanelFactory.cxx
 --- a/sc/source/ui/sidebar/ScPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sc/source/ui/sidebar/ScPanelFactory.cxx	2026-07-12 09:44:44.539000000 -0700
 @@ -29,6 +29,7 @@
@@ -1562,7 +1605,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
          weld::Widget* pParent(nullptr);
          if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sd/source/ui/dlg/sdabstdlg.cxx b/sd/source/ui/dlg/sdabstdlg.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sd/source/ui/dlg/sdabstdlg.cxx b/sd/source/ui/dlg/sdabstdlg.cxx
 --- a/sd/source/ui/dlg/sdabstdlg.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sd/source/ui/dlg/sdabstdlg.cxx	2026-07-10 17:35:26.580000000 -0700
 @@ -19,6 +19,7 @@
@@ -1582,7 +1625,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      assert(pFactory);
      return pFactory;
  }
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sd/source/ui/dlg/sduiexp.cxx b/sd/source/ui/dlg/sduiexp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sd/source/ui/dlg/sduiexp.cxx b/sd/source/ui/dlg/sduiexp.cxx
 --- a/sd/source/ui/dlg/sduiexp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sd/source/ui/dlg/sduiexp.cxx	2026-07-10 17:35:16.172000000 -0700
 @@ -20,6 +20,7 @@
@@ -1602,7 +1645,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sd/source/ui/sidebar/PanelFactory.cxx b/sd/source/ui/sidebar/PanelFactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sd/source/ui/sidebar/PanelFactory.cxx b/sd/source/ui/sidebar/PanelFactory.cxx
 --- a/sd/source/ui/sidebar/PanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sd/source/ui/sidebar/PanelFactory.cxx	2026-07-12 09:41:57.046000000 -0700
 @@ -87,7 +87,18 @@
@@ -1625,7 +1668,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
      // Create a framework view.
      std::unique_ptr<PanelLayout> xControl;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sfx2/source/sidebar/SidebarController.cxx b/sfx2/source/sidebar/SidebarController.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sfx2/source/sidebar/SidebarController.cxx b/sfx2/source/sidebar/SidebarController.cxx
 --- a/sfx2/source/sidebar/SidebarController.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sfx2/source/sidebar/SidebarController.cxx	2026-07-10 18:52:38.060000000 -0700
 @@ -44,6 +44,7 @@
@@ -1653,7 +1696,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          aCreationArguments.put(u"Theme"_ustr, Theme::GetPropertySet());
          aCreationArguments.put(u"Sidebar"_ustr, Any(Reference<ui::XSidebar>(static_cast<ui::XSidebar*>(this))));
          if (bWantsCanvas)
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/gbuild/platform/solaris.mk b/solenv/gbuild/platform/solaris.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/solenv/gbuild/platform/solaris.mk b/solenv/gbuild/platform/solaris.mk
 --- a/solenv/gbuild/platform/solaris.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/solenv/gbuild/platform/solaris.mk	2026-07-11 21:49:23.196000000 -0700
 @@ -72,9 +72,10 @@
@@ -1670,7 +1713,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
  # sun ld doesn't understand -O1 optimize flag
  gb_LINKEROPTFLAGS :=
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/gbuild/platform/unxgcc.mk b/solenv/gbuild/platform/unxgcc.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/solenv/gbuild/platform/unxgcc.mk b/solenv/gbuild/platform/unxgcc.mk
 --- a/solenv/gbuild/platform/unxgcc.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/solenv/gbuild/platform/unxgcc.mk	2026-07-11 21:48:48.760000000 -0700
 @@ -81,9 +81,13 @@
@@ -1690,7 +1733,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
  gb_LINKEROPTFLAGS := -Wl,-O1
  gb_LINKERSTRIPDEBUGFLAGS := -Wl,-S
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/lockfile/autoconf.h b/solenv/lockfile/autoconf.h
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/solenv/lockfile/autoconf.h b/solenv/lockfile/autoconf.h
 --- a/solenv/lockfile/autoconf.h	1969-12-31 16:00:00.000000000 -0800
 +++ b/solenv/lockfile/autoconf.h	2026-07-06 15:18:53.467000000 -0700
 @@ -0,0 +1,31 @@
@@ -1725,7 +1768,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +
 +/* Define if you have the <sys/param.h> header file.  */
 +#define HAVE_SYS_PARAM_H 1
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/starmath/source/SmPanelFactory.cxx b/starmath/source/SmPanelFactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/starmath/source/SmPanelFactory.cxx b/starmath/source/SmPanelFactory.cxx
 --- a/starmath/source/SmPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/starmath/source/SmPanelFactory.cxx	2026-07-12 09:44:45.147000000 -0700
 @@ -26,6 +26,7 @@
@@ -1756,7 +1799,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
          weld::Widget* pParent(nullptr);
          if (auto pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/svx/source/gallery2/galmisc.cxx b/svx/source/gallery2/galmisc.cxx
 --- a/svx/source/gallery2/galmisc.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/svx/source/gallery2/galmisc.cxx	2026-07-06 21:07:20.828000000 -0700
 @@ -19,6 +19,7 @@
@@ -1795,7 +1838,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  
      return bRet;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/svx/source/sidebar/PanelFactory.cxx b/svx/source/sidebar/PanelFactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/svx/source/sidebar/PanelFactory.cxx b/svx/source/sidebar/PanelFactory.cxx
 --- a/svx/source/sidebar/PanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/svx/source/sidebar/PanelFactory.cxx	2026-07-10 18:53:13.311000000 -0700
 @@ -42,6 +42,7 @@
@@ -1826,7 +1869,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
      weld::Widget* pParent(nullptr);
      if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/qa/unit/sw-dialogs-test.cxx b/sw/qa/unit/sw-dialogs-test.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sw/qa/unit/sw-dialogs-test.cxx b/sw/qa/unit/sw-dialogs-test.cxx
 --- a/sw/qa/unit/sw-dialogs-test.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sw/qa/unit/sw-dialogs-test.cxx	2026-07-10 17:38:57.926000000 -0700
 @@ -13,6 +13,7 @@
@@ -1846,7 +1889,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      CPPUNIT_ASSERT(pFactory != nullptr);
  }
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/qa/unit/sw-dialogs-test_2.cxx b/sw/qa/unit/sw-dialogs-test_2.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sw/qa/unit/sw-dialogs-test_2.cxx b/sw/qa/unit/sw-dialogs-test_2.cxx
 --- a/sw/qa/unit/sw-dialogs-test_2.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sw/qa/unit/sw-dialogs-test_2.cxx	2026-07-10 17:38:58.484000000 -0700
 @@ -13,6 +13,7 @@
@@ -1866,7 +1909,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      CPPUNIT_ASSERT(pFactory != nullptr);
  }
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/source/ui/dialog/swuiexp.cxx b/sw/source/ui/dialog/swuiexp.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sw/source/ui/dialog/swuiexp.cxx b/sw/source/ui/dialog/swuiexp.cxx
 --- a/sw/source/ui/dialog/swuiexp.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sw/source/ui/dialog/swuiexp.cxx	2026-07-10 17:34:56.864000000 -0700
 @@ -20,6 +20,7 @@
@@ -1886,7 +1929,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  };
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/source/uibase/dialog/swabstdlg.cxx b/sw/source/uibase/dialog/swabstdlg.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sw/source/uibase/dialog/swabstdlg.cxx b/sw/source/uibase/dialog/swabstdlg.cxx
 --- a/sw/source/uibase/dialog/swabstdlg.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sw/source/uibase/dialog/swabstdlg.cxx	2026-07-10 17:35:27.078000000 -0700
 @@ -19,6 +19,7 @@
@@ -1906,7 +1949,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      assert(pFactory);
      return pFactory;
  }
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sw/source/uibase/sidebar/SwPanelFactory.cxx b/sw/source/uibase/sidebar/SwPanelFactory.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sw/source/uibase/sidebar/SwPanelFactory.cxx b/sw/source/uibase/sidebar/SwPanelFactory.cxx
 --- a/sw/source/uibase/sidebar/SwPanelFactory.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/sw/source/uibase/sidebar/SwPanelFactory.cxx	2026-07-12 09:44:44.851000000 -0700
 @@ -38,6 +38,7 @@
@@ -1937,9 +1980,9 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
      weld::Widget* pParent(nullptr);
      if (weld::TransportAsXWindow* pTunnel = dynamic_cast<weld::TransportAsXWindow*>(xParentWindow.get()))
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/sysui/desktop/macosx/Info.plist b/sysui/desktop/macosx/Info.plist
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/sysui/desktop/macosx/Info.plist b/sysui/desktop/macosx/Info.plist
 --- a/sysui/desktop/macosx/Info.plist	1969-12-31 16:00:00.000000000 -0800
-+++ b/sysui/desktop/macosx/Info.plist	2026-07-06 15:18:51.186000000 -0700
++++ b/sysui/desktop/macosx/Info.plist	2026-07-12 10:20:37.850000000 -0700
 @@ -0,0 +1,1970 @@
 +<?xml version="1.0" encoding="UTF-8"?> <!-- -*- Mode: nXML; tab-width: 4; indent-tabs-mode: nil; nxml-child-indent:4 -*- -->
 +<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -3911,7 +3954,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +</dict>
 +</plist>
 +<!-- vim:set shiftwidth=4 softtabstop=4 expandtab: -->
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/toolkit/source/helper/accessibilityclient.cxx b/toolkit/source/helper/accessibilityclient.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/toolkit/source/helper/accessibilityclient.cxx b/toolkit/source/helper/accessibilityclient.cxx
 --- a/toolkit/source/helper/accessibilityclient.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/toolkit/source/helper/accessibilityclient.cxx	2026-07-10 17:31:09.320000000 -0700
 @@ -24,6 +24,7 @@
@@ -3935,7 +3978,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
              assert(pFactory);
              s_pFactory = pFactory;
              pFactory->release();
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/inc/unx/gtk/gtkbackend.hxx b/vcl/inc/unx/gtk/gtkbackend.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/inc/unx/gtk/gtkbackend.hxx b/vcl/inc/unx/gtk/gtkbackend.hxx
 --- a/vcl/inc/unx/gtk/gtkbackend.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/inc/unx/gtk/gtkbackend.hxx	2026-07-07 22:12:04.408000000 -0700
 @@ -16,15 +16,18 @@
@@ -3959,7 +4002,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +bool DLSYM_GDK_IS_WAYLAND_DISPLAY(GdkDisplay* pDisplay);
  
  /* vim:set shiftwidth=4 softtabstop=4 expandtab: */
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/inc/unx/gtk/gtkdata.hxx b/vcl/inc/unx/gtk/gtkdata.hxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/inc/unx/gtk/gtkdata.hxx b/vcl/inc/unx/gtk/gtkdata.hxx
 --- a/vcl/inc/unx/gtk/gtkdata.hxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/inc/unx/gtk/gtkdata.hxx	2026-07-07 22:07:59.775000000 -0700
 @@ -22,11 +22,13 @@
@@ -3976,7 +4019,26 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
  #include <com/sun/star/accessibility/XAccessibleContext.hpp>
  #include <com/sun/star/accessibility/XAccessibleEventListener.hpp>
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/source/window/abstdlg.cxx b/vcl/source/window/abstdlg.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/source/app/salvtables.cxx b/vcl/source/app/salvtables.cxx
+--- a/vcl/source/app/salvtables.cxx	2024-08-08 13:59:54.000000000 -0700
++++ b/vcl/source/app/salvtables.cxx	2026-07-12 14:07:56.831000000 -0700
+@@ -82,6 +82,15 @@
+ #include <salvtables.hxx>
+ #include <comphelper/lok.hxx>
+ 
++// Fil-C (Pizlix): shared zexact_ptrtable for weld::toId/fromId.
++namespace weld {
++zexact_ptrtable* getWeldPtrTable()
++{
++    static zexact_ptrtable* table = zexact_ptrtable_new();
++    return table;
++}
++} // namespace weld
++
+ SalFrame::SalFrame()
+     : m_pWindow(nullptr)
+     , m_pProc(nullptr)
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/source/window/abstdlg.cxx b/vcl/source/window/abstdlg.cxx
 --- a/vcl/source/window/abstdlg.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/source/window/abstdlg.cxx	2026-07-10 17:35:25.999000000 -0700
 @@ -21,6 +21,7 @@
@@ -3996,7 +4058,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  VclAbstractDialog::~VclAbstractDialog() {}
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtkframe.cxx b/vcl/unx/gtk3/gtkframe.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/unx/gtk3/gtkframe.cxx b/vcl/unx/gtk3/gtkframe.cxx
 --- a/vcl/unx/gtk3/gtkframe.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/unx/gtk3/gtkframe.cxx	2026-07-10 17:20:44.632000000 -0700
 @@ -32,6 +32,7 @@
@@ -4090,7 +4152,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      }
  
      m_SessionManagerInhibitor.inhibit(bStart, sReason, eType,
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtkinst.cxx b/vcl/unx/gtk3/gtkinst.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/unx/gtk3/gtkinst.cxx b/vcl/unx/gtk3/gtkinst.cxx
 --- a/vcl/unx/gtk3/gtkinst.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/unx/gtk3/gtkinst.cxx	2026-07-10 17:20:54.624000000 -0700
 @@ -66,6 +66,7 @@
@@ -4133,7 +4195,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      m_pFrame->registerDragSource(this);
  }
  
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtkobject.cxx b/vcl/unx/gtk3/gtkobject.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/unx/gtk3/gtkobject.cxx b/vcl/unx/gtk3/gtkobject.cxx
 --- a/vcl/unx/gtk3/gtkobject.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/unx/gtk3/gtkobject.cxx	2026-07-07 22:15:52.999000000 -0700
 @@ -69,8 +69,8 @@
@@ -4146,7 +4208,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      if (DLSYM_GDK_IS_X11_DISPLAY(pDisplay))
      {
          m_aSystemData.pDisplay = gdk_x11_display_get_xdisplay(pDisplay);
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtksalmenu.cxx b/vcl/unx/gtk3/gtksalmenu.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/unx/gtk3/gtksalmenu.cxx b/vcl/unx/gtk3/gtksalmenu.cxx
 --- a/vcl/unx/gtk3/gtksalmenu.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/unx/gtk3/gtksalmenu.cxx	2026-07-11 09:50:33.865000000 -0700
 @@ -22,6 +22,7 @@
@@ -4186,7 +4248,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  
          assert(sWindow == "window" && pSalSubMenu);
          (void) sWindow;
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vcl/unx/gtk3/gtksys.cxx b/vcl/unx/gtk3/gtksys.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vcl/unx/gtk3/gtksys.cxx b/vcl/unx/gtk3/gtksys.cxx
 --- a/vcl/unx/gtk3/gtksys.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/vcl/unx/gtk3/gtksys.cxx	2026-07-07 22:04:39.134000000 -0700
 @@ -124,6 +124,7 @@
@@ -4206,9 +4268,9 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  }
  
  #if !GTK_CHECK_VERSION(4, 0, 0)
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/vs-code.code-workspace.template b/vs-code.code-workspace.template
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/vs-code.code-workspace.template b/vs-code.code-workspace.template
 --- a/vs-code.code-workspace.template	1969-12-31 16:00:00.000000000 -0800
-+++ b/vs-code.code-workspace.template	2026-07-06 15:18:51.328000000 -0700
++++ b/vs-code.code-workspace.template	2026-07-12 10:20:37.984000000 -0700
 @@ -0,0 +1,250 @@
 +// *** vs-code.code-workspace.template is an autogenerated file created by configure.ac ***
 +// any changes to the vs-code.code-workspace.template file WILL BE OVERRIDDEN
@@ -4460,7 +4522,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
 +		"compounds": []
 +	}
 +}
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/writerperfect/Library_wpftdraw.mk b/writerperfect/Library_wpftdraw.mk
 --- a/writerperfect/Library_wpftdraw.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/writerperfect/Library_wpftdraw.mk	2026-07-06 15:03:11.569000000 -0700
 @@ -65,6 +65,7 @@
@@ -4471,7 +4533,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  ))
  
  $(eval $(call gb_Library_add_exception_objects,wpftdraw,\
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/xmloff/source/core/xmltoken.cxx b/xmloff/source/core/xmltoken.cxx
 --- a/xmloff/source/core/xmltoken.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmloff/source/core/xmltoken.cxx	2026-07-06 20:33:50.351000000 -0700
 @@ -24,6 +24,7 @@
@@ -4552,7 +4614,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
      // get OUString representation of token
      const OUString& GetXMLToken( enum XMLTokenEnum eToken )
      {
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity.mk
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/xmlsecurity/Library_xmlsecurity.mk b/xmlsecurity/Library_xmlsecurity.mk
 --- a/xmlsecurity/Library_xmlsecurity.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmlsecurity/Library_xmlsecurity.mk	2026-07-06 20:45:26.320000000 -0700
 @@ -71,13 +71,13 @@
@@ -4571,7 +4633,7 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
  ))
  
  $(eval $(call gb_Library_add_componentimpl,xmlsecurity,dds))
-diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/xmlsecurity/source/xmlsec/biginteger.cxx b/xmlsecurity/source/xmlsec/biginteger.cxx
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' '--exclude=dictionaries' '--exclude=helpcontent2' '--exclude=translations' a/xmlsecurity/source/xmlsec/biginteger.cxx b/xmlsecurity/source/xmlsec/biginteger.cxx
 --- a/xmlsecurity/source/xmlsec/biginteger.cxx	2024-08-08 13:59:54.000000000 -0700
 +++ b/xmlsecurity/source/xmlsec/biginteger.cxx	2026-07-06 20:48:37.807000000 -0700
 @@ -102,6 +102,23 @@

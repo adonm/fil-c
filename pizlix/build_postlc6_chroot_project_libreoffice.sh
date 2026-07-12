@@ -51,9 +51,6 @@ sed -i 's/shasum -a 256/sha256sum/g' configure.ac || true
 # Configure
 ./autogen.sh $(cat ../libreoffice-filc.autogen.flags | tr '\n' ' ')
 
-# Limit parallelism to 8 to avoid OOM on Fil-C
-sed -i 's/PARALLELISM *=.*/PARALLELISM = 8/' config_host.mk
-
 # Skip the root check - the pizlix chroot runs everything as root, but
 # LibreOffice refuses to build as root (check-if-root target). Remove the
 # check-if-root prerequisite from the bootstrap target so the build proceeds.
@@ -64,8 +61,8 @@ sed -i 's/PARALLELISM *=.*/PARALLELISM = 8/' config_host.mk
 # intact but simply unreferenced.
 sed -i 's/check-if-root //' Makefile
 
-# Build (use -j8 to avoid OOM on Fil-C)
-make build -j8
+# Build
+make build -j$(nproc)
 
 # Create empty nss.filelist before install (Fil-C: nss package list may be missing)
 mkdir -p workdir/Package && touch workdir/Package/nss.filelist

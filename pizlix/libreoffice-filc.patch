@@ -903,6 +903,17 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
                      // the same again
  
                  aNewDesc.pSupplier = pSupplier;
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/icu/ExternalProject_icu.mk b/external/icu/ExternalProject_icu.mk
+--- a/external/icu/ExternalProject_icu.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/external/icu/ExternalProject_icu.mk	2026-07-11 21:48:58.680000000 -0700
+@@ -57,7 +57,6 @@
+ 	$(call gb_ExternalProject_get_link_flags,icu) \
+ 	$(if $(filter TRUE,$(HAVE_LD_HASH_STYLE)),-Wl$(COMMA)--hash-style=$(WITH_LINKER_HASH_STYLE)) \
+     $(if $(SYSBASE),-L../lib -L../../lib -L../stubdata -L../../stubdata -L$(SYSBASE)/usr/lib) \
+-    $(if $(filter TRUE,$(HAVE_LD_BSYMBOLIC_FUNCTIONS)), -Wl$(COMMA)-Bsymbolic-functions) \
+     $(if $(filter ANDROID,$(OS)),$(gb_STDLIBS))"
+ 
+ # DATASUBDIR=data in cross-compiling case, because --disable-tools completely skips the
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/external/libcmis/UnpackedTarball_libcmis.mk b/external/libcmis/UnpackedTarball_libcmis.mk
 --- a/external/libcmis/UnpackedTarball_libcmis.mk	2024-08-08 13:59:54.000000000 -0700
 +++ b/external/libcmis/UnpackedTarball_libcmis.mk	2026-07-06 15:02:53.998000000 -0700
@@ -1588,6 +1599,43 @@ diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_h
          aCreationArguments.put(u"Theme"_ustr, Theme::GetPropertySet());
          aCreationArguments.put(u"Sidebar"_ustr, Any(Reference<ui::XSidebar>(static_cast<ui::XSidebar*>(this))));
          if (bWantsCanvas)
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/gbuild/platform/solaris.mk b/solenv/gbuild/platform/solaris.mk
+--- a/solenv/gbuild/platform/solaris.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/solenv/gbuild/platform/solaris.mk	2026-07-11 21:49:23.196000000 -0700
+@@ -72,9 +72,10 @@
+ 
+ endif
+ 
+-ifneq ($(HAVE_LD_BSYMBOLIC_FUNCTIONS),)
+-gb_LinkTarget_LDFLAGS += -Wl,-Bsymbolic-functions
+-endif
++# Disabled for Fil-C: -Bsymbolic-functions prevents weak symbol interposition.
++#ifneq ($(HAVE_LD_BSYMBOLIC_FUNCTIONS),)
++#gb_LinkTarget_LDFLAGS += -Wl,-Bsymbolic-functions
++#endif
+ 
+ # sun ld doesn't understand -O1 optimize flag
+ gb_LINKEROPTFLAGS :=
+diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/gbuild/platform/unxgcc.mk b/solenv/gbuild/platform/unxgcc.mk
+--- a/solenv/gbuild/platform/unxgcc.mk	2024-08-08 13:59:54.000000000 -0700
++++ b/solenv/gbuild/platform/unxgcc.mk	2026-07-11 21:48:48.760000000 -0700
+@@ -81,9 +81,13 @@
+ 
+ endif
+ 
+-ifneq ($(HAVE_LD_BSYMBOLIC_FUNCTIONS),)
+-gb_LinkTarget_LDFLAGS += -Wl,-Bsymbolic-functions
+-endif
++# Disabled for Fil-C: -Bsymbolic-functions prevents weak symbol interposition,
++# which means RTTI type_info objects are not merged across DSOs. This breaks
++# exception catch handlers when the thrown and catch type_info are in different
++# DSOs (e.g. UNO bridge exceptions).
++#ifneq ($(HAVE_LD_BSYMBOLIC_FUNCTIONS),)
++#gb_LinkTarget_LDFLAGS += -Wl,-Bsymbolic-functions
++#endif
+ 
+ gb_LINKEROPTFLAGS := -Wl,-O1
+ gb_LINKERSTRIPDEBUGFLAGS := -Wl,-S
 diff -ruN '--exclude=config_host.mk' '--exclude=config_host' '--exclude=config_host_lang.mk' '--exclude=autogen.lastrun' '--exclude=autogen.lastrun.bak' '--exclude=Makefile' '--exclude=workdir' '--exclude=instdir' '--exclude=.vscode' '--exclude=*.o' '--exclude=*.a' '--exclude=*.so' '--exclude=*.d' '--exclude=*.stamp' '--exclude=config.log' '--exclude=config.status' '--exclude=config.warn' '--exclude=autom4te.cache' '--exclude=tarballs' '--exclude=src' '--exclude=test.cpp' '--exclude=test.cpp~' '--exclude=thetest' '--exclude=validator' '--exclude=officeotron' '--exclude=odfvalidator' '--exclude=fetch.log' '--exclude=configure' '--exclude=aclocal.m4' a/solenv/lockfile/autoconf.h b/solenv/lockfile/autoconf.h
 --- a/solenv/lockfile/autoconf.h	1969-12-31 16:00:00.000000000 -0800
 +++ b/solenv/lockfile/autoconf.h	2026-07-06 15:18:53.467000000 -0700

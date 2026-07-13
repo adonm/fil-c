@@ -1,0 +1,15 @@
+/dev/sda4 / ext4 defaults,noatime 1 1
+/dev/sda3 swap swap pri=1 0 0
+proc /proc proc nosuid,noexec,nodev 0 0
+sysfs /sys sysfs nosuid,noexec,nodev 0 0
+devpts /dev/pts devpts gid=5,mode=620 0 0
+tmpfs /run tmpfs defaults 0 0
+devtmpfs /dev devtmpfs mode=0755,nosuid 0 0
+tmpfs /dev/shm tmpfs nosuid,nodev 0 0
+cgroup2 /sys/fs/cgroup cgroup2 nosuid,noexec,nodev 0 0
+
+# Internal NVMe on this machine (patriarkh) -- uncomment if you want
+# access to the host Ubuntu install. Leave commented so the stick still
+# boots cleanly on a different machine.
+# /dev/nvme0n1p1 /mnt/host-efi   vfat noauto,users,uid=0,gid=0,fmask=0177,dmask=0077 0 0
+# /dev/nvme0n1p3 /mnt/host-root  ext4 noauto,users                                   0 0

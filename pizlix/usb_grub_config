@@ -1,0 +1,12 @@
+set timeout=5
+set default=0
+
+menuentry "Pizlix" {
+   set root=(hd0,4)
+   linux /boot/vmlinuz-6.10.5-lfs-12.2 root=/dev/sda4 ro rootwait console=tty0 net.ifnames=0 i915.enable_psr=0
+}
+
+menuentry "Pizlix (with serial console)" {
+   set root=(hd0,4)
+   linux /boot/vmlinuz-6.10.5-lfs-12.2 root=/dev/sda4 ro rootwait console=ttyS0,115200 console=tty0 net.ifnames=0 i915.enable_psr=0
+}

@@ -1,0 +1,231 @@
+================================================================================
+Pizlix USB-stick install: notes and required changes
+================================================================================
+
+Target hardware (this machine, patriarkh):
+  CPU:      Intel Core Ultra 5 135U  (Meteor Lake, x86_64)
+  iGPU:     Intel Meteor Lake integrated graphics (Arc / Xe-LPG)  [PCI 8086:7d45]
+  Wi-Fi:    Intel Wi-Fi 7 BE20x                                    [PCI 8086:272b]
+  Internal SSD: SK hynix NVMe on nvme0n1  (contains Ubuntu)
+  USB stick:    /dev/sda in this host, 231 GB, currently has an Ubuntu 24.04 installer
+
+Under Linux today the USB stick is enumerated as /dev/sda (not /dev/sda1 --
+that's the ISO9660 partition on it). This is because the internal disk is
+NVMe (nvme0n1), so it doesn't consume any /dev/sd* letters. When we boot the
+USB stick on this same machine the same enumeration order will happen: USB
+mass storage is the only sd-class device, so it comes up as /dev/sda. The
+partitions parted lays out (BIOS-boot, grub, swap, root) map 1:1 to
+/dev/sda1..4, so /dev/sda4 will be the Pizlix root and /dev/sda3 the swap.
+
+CAVEAT: USB storage takes noticeably longer to enumerate than internal disks,
+so the kernel commandline needs 'rootwait' -- otherwise the kernel will try to
+mount /dev/sda4 before udev has probed the USB and panic. (When booting off a
+disk image in qemu this doesn't matter, which is why the current cmdline works
+there.)
+
+
+--------------------------------------------------------------------------------
+1. Writing the OS to the USB stick
+--------------------------------------------------------------------------------
+
+The pizlix/make_disk_image.sh script builds a disk image file. To put it on
+the USB stick directly (rather than into a disk.img file), the cleanest path
+is: run make_disk_image.sh as-is (produces disk.img and disk.vmdk), then
+'dd if=disk.img of=/dev/sda bs=64M conv=fsync status=progress'. Because the
+image is a raw disk with a GPT and grub is installed into /dev/sda's MBR/BIOS-
+boot area, dd'ing it onto the physical device is the whole install.
+
+Alternative: adapt make_disk_image.sh to take a block device instead of a file
+-- everything it does (parted, losetup -Pf, mkfs.ext4, tar -x, grub-install)
+already works on any block device; the losetup line and the 'truncate'/'rm'
+would just be skipped, and $LOOP replaced with /dev/sda. That avoids the
+100 GiB round-trip through a file.
+
+WARNING: writing to /dev/sda destroys everything on the USB stick, including
+the Ubuntu 24.04 installer image currently on it. Confirm the device
+identifier before running dd. lsblk will show a 231 GB usb disk as sda.
+
+
+--------------------------------------------------------------------------------
+2. BIOS vs UEFI: this is the biggest risk
+--------------------------------------------------------------------------------
+
+pizlix/make_disk_image.sh installs grub with '--target=i386-pc' and uses a
+bios_boot GPT partition. That is a *legacy BIOS* install. Modern Meteor Lake
+laptops often ship with CSM/Legacy boot disabled or removed entirely from the
+firmware. If this machine boots UEFI-only, the current image is unbootable
+regardless of any grub.cfg / fstab tweaks below.
+
+Before writing the stick, check the firmware setup screen for "CSM support",
+"Legacy boot", or "UEFI/Legacy". If only UEFI is available, we need a
+UEFI-capable image. The minimum change to make_disk_image.sh for that would
+be roughly:
+
+  # replace grub-mount partition 2 with an ESP:
+  parted disk.img mkpart ESP fat32 2MiB 512MiB
+  parted disk.img set 2 esp on
+  mkfs.vfat -F32 -n PIZLIX_ESP ${LOOP}p2
+  mount ${LOOP}p2 grub-mount
+  mkdir -p grub-mount/EFI/BOOT grub-mount/boot/grub
+  cp etc/grub.cfg grub-mount/boot/grub/grub.cfg
+  grub-install --target=x86_64-efi --efi-directory=grub-mount \
+      --boot-directory=grub-mount/boot --removable --no-nvram \
+      --modules="part_gpt fat ext2"
+
+'--removable' writes /EFI/BOOT/BOOTX64.EFI, which UEFI firmware boots
+unconditionally from removable media without needing NVRAM entries. That is
+what you want for a USB stick.
+
+The kernel already has CONFIG_EFI=y and CONFIG_EFI_STUB=y, so no kernel-side
+changes are needed for UEFI boot.
+
+
+--------------------------------------------------------------------------------
+3. grub.cfg (see usb_grub_config for the full file)
+--------------------------------------------------------------------------------
+
+The existing grub.cfg is:
+
+    set timeout=5
+    set default=0
+    menuentry "Pizlix" {
+       set root=(hd0,4)
+       linux /boot/vmlinuz-6.10.5-lfs-12.2 root=/dev/sda4 ro console=ttyS0,115200 console=tty0 net.ifnames=0
+    }
+
+Changes for the USB stick:
+
+  - 'set root=(hd0,4)' is fine as-is: when firmware boots the USB stick, that
+    stick is BIOS drive 0, i.e. hd0 to grub. Its 4th partition is the Pizlix
+    root, matching the parted layout.
+  - Add 'rootwait' to the kernel command line so the kernel waits for USB
+    enumeration before trying to mount root.
+  - Optional: drop 'console=ttyS0,115200' -- that's for the qemu serial
+    console and is harmless on real hardware but has no benefit either.
+  - Consider adding 'i915.enable_psr=0' as a defensive workaround; PSR on
+    early Meteor Lake i915 has caused display hangs. Remove if display works
+    without it.
+
+
+--------------------------------------------------------------------------------
+4. fstab (see usb_fstab for the full file)
+--------------------------------------------------------------------------------
+
+Existing fstab uses /dev/sda4 for / and /dev/sda3 for swap. When this stick
+is the boot device on this machine, that continues to be correct: the USB
+stick is the only sd* device (internal disk is NVMe). No changes strictly
+required for booting.
+
+Recommended tweak: mount / with 'defaults,noatime' rather than plain
+'defaults'. USB flash memory has finite write endurance and atime updates
+generate a lot of pointless writes. noatime is a straight upgrade for a
+USB-stick install.
+
+Optional (added to usb_fstab as commented lines): mountpoints for the
+internal NVMe, so you can inspect the host Ubuntu install from Pizlix. The
+Ubuntu install on this machine lives on nvme0n1p3 (root, ext4) with an EFI
+system partition on nvme0n1p1 (vfat) and a swap on nvme0n1p2. These are
+commented out so nothing fails to mount if the Pizlix stick is booted on
+a different machine.
+
+
+--------------------------------------------------------------------------------
+5. Kernel config (see usb_linux_config for the full file)
+--------------------------------------------------------------------------------
+
+The existing linux-config-6.10.5 is tuned for qemu. It is missing several
+drivers that real Meteor Lake hardware needs. Every driver we care about is
+switched from a module to =y, because this kernel has an empty
+CONFIG_INITRAMFS_SOURCE and CONFIG_CMDLINE_BOOL is off -- there is no
+initramfs to load modules from before root is mounted. Anything needed to
+reach /dev/sda4 (USB storage, xhci) or to be useful before userspace
+(NVMe, i915, iwlwifi, igc) must be built in.
+
+Required additions / changes (all as =y unless noted):
+
+  NVMe support -- needed to mount the internal SK hynix SSD
+  ------------------------------------------------------------
+    CONFIG_NVME_CORE=y
+    CONFIG_BLK_DEV_NVME=y
+    CONFIG_NVME_MULTIPATH=y          (optional, harmless)
+    CONFIG_NVME_HWMON=y              (optional, drive temperature)
+
+  USB storage -- the boot device is USB, and modern USB3 devices default
+  to UAS. Without UAS the drive will still work but slower; with UAS
+  wrong-firmware sticks work more reliably.
+  ------------------------------------------------------------
+    CONFIG_USB_UAS=y
+
+  Intel WiFi (BE20x on PCI 8086:272b)
+  ------------------------------------------------------------
+    CONFIG_IWLWIFI=y
+    CONFIG_IWLWIFI_LEDS=y
+    CONFIG_IWLMVM=y                  (BE20x uses the MVM opmode)
+    CONFIG_IWLWIFI_OPMODE_MODULAR=y  (harmless; lets opmode be split)
+  NOTE: iwlwifi is firmware-driven. The BE20x needs
+  iwlwifi-gl-c0-fm-c0-*.ucode from linux-firmware installed in
+  /lib/firmware/ on the Pizlix root. Same story for the Meteor Lake i915
+  GuC/HuC (i915/mtl_guc_*.bin, i915/mtl_huc_*.bin). Without the firmware
+  files, the drivers load but the devices don't come up. Copy the current
+  Ubuntu /lib/firmware into the Pizlix root before dd'ing, or ship it as
+  part of the tarball.
+
+  Intel 2.5G Ethernet (I225/I226)
+  ------------------------------------------------------------
+    CONFIG_IGC=y
+  This machine's PCI list doesn't show a wired NIC (it's likely
+  USB-C/dock-only), but the request said "ethernet" and IGC covers the
+  Intel wired chips most likely to show up over a dock. E1000E is already
+  =y and covers older I219 variants.
+
+  Intel platform plumbing (GPIO/pinctrl/LPSS)
+  ------------------------------------------------------------
+  Meteor Lake exposes touchpad, keyboard controller, sensors, etc. behind
+  GPIO/pinctrl and the LPSS (Low Power SubSystem). Without these the
+  drivers for onboard peripherals silently fail to probe.
+    CONFIG_GPIOLIB=y
+    CONFIG_PINCTRL=y
+    CONFIG_PINCTRL_INTEL=y
+    CONFIG_PINCTRL_METEORLAKE=y
+    CONFIG_X86_INTEL_LPSS=y
+    CONFIG_MFD_INTEL_LPSS=y
+    CONFIG_MFD_INTEL_LPSS_PCI=y
+    CONFIG_MFD_INTEL_LPSS_ACPI=y
+    CONFIG_COMMON_CLK=y              (dependency of the above)
+    CONFIG_I2C_DESIGNWARE_PLATFORM=y (LPSS I2C controllers)
+    CONFIG_I2C_DESIGNWARE_PCI=y
+
+  Intel graphics -- already =y (CONFIG_DRM_I915=y). Meteor Lake is
+  supported by i915 in 6.10, so no config change needed. Reminder: needs
+  GuC/HuC firmware in /lib/firmware/i915/.
+  Optional: also enable the newer Xe driver, which can drive Meteor Lake
+  as an alternative and is where Intel is doing new work:
+    CONFIG_DRM_XE=y                  (optional, i915 works fine on MTL)
+
+The full patched config is in usb_linux_config. It is a superset of the
+current linux-config-6.10.5, adding only the lines listed above (and
+leaving the CONFIG_CMDLINE stuff untouched).
+
+
+--------------------------------------------------------------------------------
+6. Order of operations
+--------------------------------------------------------------------------------
+
+  a) Confirm firmware is UEFI+Legacy or Legacy-capable. If UEFI-only,
+     first modify make_disk_image.sh per section 2.
+  b) Replace pizlix/linux-config-6.10.5 with usb_linux_config.
+  c) Rebuild the kernel:  cd projects/linux-6.10.5 && make oldconfig && make
+     (or however the pizlix build wires it -- usually build_postlc*.sh will
+     re-pick up the new config on the next iteration).
+  d) Replace pizlix/etc/grub.cfg with usb_grub_config and pizlix/etc/fstab
+     with usb_fstab.
+  e) Copy /lib/firmware (or at least i915/, iwlwifi-gl-c0-fm-c0-*, and any
+     needed regulatory.db) into the Pizlix root before packaging the
+     tarball.
+  f) Run pizlix/make_disk_image.sh to build disk.img.
+  g) sudo umount /dev/sda1 /dev/sda4  (unmount the current Ubuntu ISO/writable)
+  h) sudo dd if=pizlix/disk.img of=/dev/sda bs=64M conv=fsync status=progress
+  i) sync ; eject.
+  j) Boot the machine from the USB stick.
+
+--------------------------------------------------------------------------------

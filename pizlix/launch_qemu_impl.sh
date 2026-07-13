@@ -49,6 +49,6 @@ qemu-system-x86_64 -drive file=disk.img,format=raw \
                    -smp $NCPU \
                    -net nic -net user,hostfwd=tcp::2222-:22 \
                    -device virtio-vga,xres=1024,yres=768 \
-                   -display gtk,zoom-to-fit=off \
+                   -display gtk,zoom-to-fit=on \
                    -enable-kvm
 

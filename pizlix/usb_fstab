@@ -1,5 +1,5 @@
-/dev/sda4 / ext4 defaults,noatime 1 1
-/dev/sda3 swap swap pri=1 0 0
+/dev/sda3 / ext4 defaults,noatime 1 1
+/dev/sda2 swap swap pri=1 0 0
 proc /proc proc nosuid,noexec,nodev 0 0
 sysfs /sys sysfs nosuid,noexec,nodev 0 0
 devpts /dev/pts devpts gid=5,mode=620 0 0

@@ -14,12 +14,12 @@ that's the ISO9660 partition on it). This is because the internal disk is
 NVMe (nvme0n1), so it doesn't consume any /dev/sd* letters. When we boot the
 USB stick on this same machine the same enumeration order will happen: USB
 mass storage is the only sd-class device, so it comes up as /dev/sda. The
-partitions parted lays out (BIOS-boot, grub, swap, root) map 1:1 to
-/dev/sda1..4, so /dev/sda4 will be the Pizlix root and /dev/sda3 the swap.
+partitions parted lays out (ESP, swap, root) map 1:1 to
+/dev/sda1..3, so /dev/sda3 will be the Pizlix root and /dev/sda2 the swap.
 
 CAVEAT: USB storage takes noticeably longer to enumerate than internal disks,
 so the kernel commandline needs 'rootwait' -- otherwise the kernel will try to
-mount /dev/sda4 before udev has probed the USB and panic. (When booting off a
+mount /dev/sda3 before udev has probed the USB and panic. (When booting off a
 disk image in qemu this doesn't matter, which is why the current cmdline works
 there.)
 
@@ -58,16 +58,18 @@ regardless of any grub.cfg / fstab tweaks below.
 
 Before writing the stick, check the firmware setup screen for "CSM support",
 "Legacy boot", or "UEFI/Legacy". If only UEFI is available, we need a
-UEFI-capable image. The minimum change to make_disk_image.sh for that would
-be roughly:
+UEFI-capable image. The clean UEFI layout (as implemented by make_bootable_usb.sh) drops the
+legacy bios_boot partition entirely and uses a 3-partition scheme:
 
-  # replace grub-mount partition 2 with an ESP:
-  parted disk.img mkpart ESP fat32 2MiB 512MiB
-  parted disk.img set 2 esp on
-  mkfs.vfat -F32 -n PIZLIX_ESP ${LOOP}p2
-  mount ${LOOP}p2 grub-mount
+  parted mklabel gpt
+  parted mkpart ESP fat32 1MiB 512MiB
+  parted set 1 esp on
+  parted mkpart swap 512MiB 30GiB
+  parted mkpart root 30GiB 100%
+  mkfs.vfat -F32 -n PIZLIX_ESP ${DEV}1
+  mount ${DEV}1 grub-mount
   mkdir -p grub-mount/EFI/BOOT grub-mount/boot/grub
-  cp etc/grub.cfg grub-mount/boot/grub/grub.cfg
+  cp usb_grub_config grub-mount/boot/grub/grub.cfg
   grub-install --target=x86_64-efi --efi-directory=grub-mount \
       --boot-directory=grub-mount/boot --removable --no-nvram \
       --modules="part_gpt fat ext2"
@@ -95,9 +97,9 @@ The existing grub.cfg is:
 
 Changes for the USB stick:
 
-  - 'set root=(hd0,4)' is fine as-is: when firmware boots the USB stick, that
-    stick is BIOS drive 0, i.e. hd0 to grub. Its 4th partition is the Pizlix
-    root, matching the parted layout.
+  - 'set root=(hd0,3)' targets the root partition (partition 3 in the clean
+    UEFI layout): when firmware boots the USB stick, that stick is BIOS drive
+    0, i.e. hd0 to grub.
   - Add 'rootwait' to the kernel command line so the kernel waits for USB
     enumeration before trying to mount root.
   - Optional: drop 'console=ttyS0,115200' -- that's for the qemu serial
@@ -111,10 +113,10 @@ Changes for the USB stick:
 4. fstab (see usb_fstab for the full file)
 --------------------------------------------------------------------------------
 
-Existing fstab uses /dev/sda4 for / and /dev/sda3 for swap. When this stick
-is the boot device on this machine, that continues to be correct: the USB
-stick is the only sd* device (internal disk is NVMe). No changes strictly
-required for booting.
+Existing fstab uses /dev/sda4 for / and /dev/sda3 for swap. With the clean
+UEFI layout (no bios_boot partition), root moves to /dev/sda3 and swap to
+/dev/sda2. When this stick is the boot device on this machine, that is
+correct: the USB stick is the only sd* device (internal disk is NVMe).
 
 Recommended tweak: mount / with 'defaults,noatime' rather than plain
 'defaults'. USB flash memory has finite write endurance and atime updates
@@ -138,7 +140,7 @@ drivers that real Meteor Lake hardware needs. Every driver we care about is
 switched from a module to =y, because this kernel has an empty
 CONFIG_INITRAMFS_SOURCE and CONFIG_CMDLINE_BOOL is off -- there is no
 initramfs to load modules from before root is mounted. Anything needed to
-reach /dev/sda4 (USB storage, xhci) or to be useful before userspace
+reach /dev/sda3 (USB storage, xhci) or to be useful before userspace
 (NVMe, i915, iwlwifi, igc) must be built in.
 
 Required additions / changes (all as =y unless noted):

@@ -5984,6 +5984,23 @@ class Pizlonator {
       return Result;
     }
 
+    if (auto* AT = dyn_cast<ArrayType>(T)) {
+      Type* InnerT = AT->getElementType();
+      Type* InnerFlightT = toFlightType(InnerT);
+      for (unsigned Index = AT->getNumElements(); Index--;) {
+        Instruction* InnerV = ExtractValueInst::Create(
+          InnerFlightT, V, { Index }, "filc_insert_and_normalize_return_extract",
+          Before);
+        InnerV->setDebugLoc(Before->getDebugLoc());
+        Instruction* Insert = InsertValueInst::Create(
+          Result, convertToNormalizedArgType(InnerT, InnerV, Before), Index + 1,
+          "filc_insert_and_normalize_return_insert", Before);
+        Insert->setDebugLoc(Before->getDebugLoc());
+        Result = Insert;
+      }
+      return Result;
+    }
+
     Instruction* Insert = InsertValueInst::Create(
       Result, convertToNormalizedArgType(T, V, Before), 1,
       "filc_insert_and_normalize_return_insert_one", Before);
@@ -6026,6 +6043,24 @@ class Pizlonator {
         Type* InnerT = ST->getElementType(Index);
         Instruction* InnerV = ExtractValueInst::Create(
           toFlightType(normalizeArgType(InnerT)), V, { Index + 1 },
+          "filc_extract_and_denormalize_return_extract", Before);
+        InnerV->setDebugLoc(Before->getDebugLoc());
+        Instruction* Insert = InsertValueInst::Create(
+          Result, convertFromNormalizedArgType(InnerT, InnerV, Before), { Index },
+          "filc_extract_and_denormalize_return_insert", Before);
+        Insert->setDebugLoc(Before->getDebugLoc());
+        Result = Insert;
+      }
+      return Result;
+    }
+
+    if (auto* AT = dyn_cast<ArrayType>(T)) {
+      Value* Result = UndefValue::get(toFlightType(T));
+      Type* InnerT = AT->getElementType();
+      Type* InnerFlightT = toFlightType(normalizeArgType(InnerT));
+      for (unsigned Index = AT->getNumElements(); Index--;) {
+        Instruction* InnerV = ExtractValueInst::Create(
+          InnerFlightT, V, { Index + 1 },
           "filc_extract_and_denormalize_return_extract", Before);
         InnerV->setDebugLoc(Before->getDebugLoc());
         Instruction* Insert = InsertValueInst::Create(
@@ -6104,6 +6139,11 @@ class Pizlonator {
           func(ST->getElementType(Index));
         return;
       }
+    }
+    if (auto* AT = dyn_cast<ArrayType>(T)) {
+      for (unsigned Index = 0; Index != AT->getNumElements(); ++Index)
+        func(AT->getElementType());
+      return;
     }
     func(T);
   }

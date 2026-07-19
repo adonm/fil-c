@@ -83,15 +83,10 @@ private:
 
   RValue EmitVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
                    AggValueSlot Slot) const override {
-    llvm::Type *BaseTy = CGF.ConvertType(Ty);
-    if (isa<llvm::ScalableVectorType>(BaseTy))
-      llvm::report_fatal_error("Passing SVE types to variadic functions is "
-                               "currently not supported");
-
-    return Kind == AArch64ABIKind::Win64
-               ? EmitMSVAArg(CGF, VAListAddr, Ty, Slot)
-           : isDarwinPCS() ? EmitDarwinVAArg(VAListAddr, Ty, CGF, Slot)
-                           : EmitAAPCSVAArg(VAListAddr, Ty, CGF, Kind, Slot);
+    return CGF.EmitLoadOfAnyValue(
+        CGF.MakeAddrLValue(
+            EmitVAArgInstr(CGF, VAListAddr, Ty, ABIArgInfo::getDirect()), Ty),
+        Slot);
   }
 
   RValue EmitMSVAArg(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
@@ -466,25 +461,9 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadicFn,
   }
 
   // Aggregates <= 16 bytes are passed directly in registers or on the stack.
-  if (Size <= 128) {
-    unsigned Alignment;
-    if (Kind == AArch64ABIKind::AAPCS) {
-      Alignment = getContext().getTypeUnadjustedAlign(Ty);
-      Alignment = Alignment < 128 ? 64 : 128;
-    } else {
-      Alignment =
-          std::max(getContext().getTypeAlign(Ty),
-                   (unsigned)getTarget().getPointerWidth(LangAS::Default));
-    }
-    Size = llvm::alignTo(Size, Alignment);
-
-    // We use a pair of i64 for 16-byte aggregate with 8-byte alignment.
-    // For aggregates with 16-byte alignment, we use i128.
-    llvm::Type *BaseTy = llvm::Type::getIntNTy(getVMContext(), Alignment);
+  if (Size <= 128)
     return ABIArgInfo::getDirect(
-        Size == Alignment ? BaseTy
-                          : llvm::ArrayType::get(BaseTy, Size / Alignment));
-  }
+        llvm::ArrayType::get(llvm::PointerType::get(getVMContext(), 0), 2));
 
   return getNaturalAlignIndirect(Ty, /*ByVal=*/false);
 }
@@ -548,29 +527,9 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy,
   }
 
   // Aggregates <= 16 bytes are returned directly in registers or on the stack.
-  if (Size <= 128) {
-    if (Size <= 64 && getDataLayout().isLittleEndian()) {
-      // Composite types are returned in lower bits of a 64-bit register for LE,
-      // and in higher bits for BE. However, integer types are always returned
-      // in lower bits for both LE and BE, and they are not rounded up to
-      // 64-bits. We can skip rounding up of composite types for LE, but not for
-      // BE, otherwise composite types will be indistinguishable from integer
-      // types.
-      return ABIArgInfo::getDirect(
-          llvm::IntegerType::get(getVMContext(), Size));
-    }
-
-    unsigned Alignment = getContext().getTypeAlign(RetTy);
-    Size = llvm::alignTo(Size, 64); // round up to multiple of 8 bytes
-
-    // We use a pair of i64 for 16-byte aggregate with 8-byte alignment.
-    // For aggregates with 16-byte alignment, we use i128.
-    if (Alignment < 128 && Size == 128) {
-      llvm::Type *BaseTy = llvm::Type::getInt64Ty(getVMContext());
-      return ABIArgInfo::getDirect(llvm::ArrayType::get(BaseTy, Size / 64));
-    }
-    return ABIArgInfo::getDirect(llvm::IntegerType::get(getVMContext(), Size));
-  }
+  if (Size <= 128)
+    return ABIArgInfo::getDirect(
+        llvm::ArrayType::get(llvm::PointerType::get(getVMContext(), 0), 2));
 
   return getNaturalAlignIndirect(RetTy);
 }

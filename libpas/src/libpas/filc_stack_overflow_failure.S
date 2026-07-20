@@ -35,20 +35,46 @@ filc_stack_overflow_failure:
         # spinlock. It has to be a spinlock because we're not on a valid stack right now, so we cannot
         # do anything complicated. Maybe we could do syscalls, but even that's sketchy. It can be a
         # spinlock because the whole point is we'll panic anyway, so perf doesn't matter.
+#if defined(__aarch64__)
+	mov x1, #1
+	adrp x16, lock
+	add x16, x16, #:lo12:lock
+.Lretry_lock:
+#ifdef __ARM_FEATURE_ATOMICS
+	mov x0, #0
+	casalb w0, w1, [x16]
+	cbnz x0, .Lretry_lock
+#else
+	clrex
+	ldaxrb w17, [x16]
+	cbnz w17, .Lretry_lock
+	stlxrb w17, w1, [x16]
+	cbnz w17, .Lretry_lock
+#endif
+#elif defined(__x86_64__)
 	movb $1, %cl
 .Lretry_lock:
 	xorl %eax, %eax
 	lock cmpxchgb %cl, lock(%rip)
 	jne .Lretry_lock
+#else
+#error "Unsupported architecture"
+#endif
         
         # Set up the failure_stack as our stack, just so we can call into the runtime to create a
-        # Fil-C panic. Note that the $8192 constant has to match the failure_stack's size, below.
-	leaq failure_stack(%rip), %rax
-        addq $8192, %rax
-        movq %rax, %rsp
-        
-        # Now create the Fil-C panic.
+        # Fil-C panic. Note that the 8192 constant has to match the failure_stack's size, below.
+        # Then create the Fil-C panic.
+#if defined(__aarch64__)
+	adrp x0, failure_stack+8192
+	add x0, x0, :lo12:failure_stack+8192
+	mov sp, x0
+	b filc_stack_overflow_failure_impl
+#elif defined(__x86_64__)
+	leaq failure_stack+8192(%rip), %rsp
 	call filc_stack_overflow_failure_impl@PLT
+#else
+#error "Unsupported architecture"
+#endif
 
         # This is the simple spinlock we use to protect the failure_stack.
 	.type lock,@object

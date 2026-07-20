@@ -201,5 +201,5 @@ PASSRCS = \
 	src/libpas/verse_heap_type.c \
 	src/libpas/verse_local_allocator.c
 
-PASASMSRCS = $(sort $(wildcard src/libpas/*.s))
+PASASMSRCS = $(sort $(wildcard src/libpas/*.S))
 

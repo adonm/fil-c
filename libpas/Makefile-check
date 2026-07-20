@@ -23,8 +23,16 @@
 
 all: build/libpas.so build/test_pas
 
-PASCC = clang -march=x86-64-v2 -fPIC -pthread
-PASCXX = clang++ -march=x86-64-v2 -fPIC -pthread
+ARCH ?= $(shell uname -m)
+
+ifeq ($(ARCH),x86_64)
+ARCH_CFLAGS = -march=x86-64-v2
+else
+ARCH_CFLAGS =
+endif
+
+PASCC = clang $(ARCH_CFLAGS) -fPIC -pthread
+PASCXX = clang++ $(ARCH_CFLAGS) -fPIC -pthread
 
 PASCXXFLAGS = -g -O3 -W -Werror -std=c++17 -Wno-unused-parameter -Wno-sign-compare \
 	-Wno-missing-field-initializers -Wno-vla-cxx-extension -Wno-unknown-warning-option \

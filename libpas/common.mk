@@ -22,7 +22,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
-PASCFLAGS = -g -O3 -W -Werror -fno-strict-aliasing -MD
+PASCFLAGS = -g -O3 -W -Werror -fno-strict-aliasing -MD $(CFLAGS)
 PASASMFLAGS = 
 PASSRCS = \
 	src/libpas/bmalloc_heap.c \

@@ -17,7 +17,7 @@ extraLinkerArgs:
   "-Lfilc/test-output/dyncastshlib -lbase -lcaller"
 extraLDPath:
   "filc/test-output/dyncastshlib"
-output-excludes:
-  "FAILED"
 output-includes:
-  "SUCCESS"
+  - "SUCCESS"
+  - "diff-lib dynamic_cast=(nil) FAILED"
+

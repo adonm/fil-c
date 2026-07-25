@@ -17,6 +17,6 @@ __attribute__((visibility("default"))) extern "C" void* test_cast_diff_lib(void*
     fprintf(stderr, "diff-lib typeid(*xi)=%s\n", typeid(*xi).name());
     fprintf(stderr, "diff-lib typeid(XInterface)@%p\n", (void*)&typeid(XInterface));
     ChildAccess* r = dynamic_cast<ChildAccess*>(xi);
-    fprintf(stderr, "diff-lib dynamic_cast=%p %s\n", (void*)r, r ? "SUCCESS" : "FAILED");
+    fprintf(stderr, "diff-lib %s\n", r ? "SUCCESS" : "FAILED");
     return r;
 }

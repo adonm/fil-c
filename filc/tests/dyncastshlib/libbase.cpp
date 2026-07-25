@@ -15,6 +15,6 @@ __attribute__((visibility("default"))) extern "C" void* test_cast_same_lib(void*
     XInterface* xi = static_cast<XInterface*>(ptr);
     fprintf(stderr, "same-lib typeid(*xi)=%s\n", typeid(*xi).name());
     ChildAccess* r = dynamic_cast<ChildAccess*>(xi);
-    fprintf(stderr, "same-lib dynamic_cast=%p %s\n", (void*)r, r ? "SUCCESS" : "FAILED");
+    fprintf(stderr, "same-lib %s\n", r ? "SUCCESS" : "FAILED");
     return r;
 }

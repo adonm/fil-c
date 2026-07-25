@@ -18,6 +18,6 @@ extraLinkerArgs:
 extraLDPath:
   "filc/test-output/dyncastshlib"
 output-includes:
-  - "SUCCESS"
-  - "diff-lib dynamic_cast=(nil) FAILED"
+  - "same-lib SUCCESS"
+  - "diff-lib FAILED"
 

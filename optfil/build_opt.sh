@@ -180,6 +180,7 @@ cp -v $FILCSRC/pizfix/lib/libc++.so.1.0 lib
 cp -v $FILCSRC/pizfix/lib/libc++abi.so.1.0 lib
 cp -v $FILCSRC/pizfix/lib/libc++.a lib
 cp -v $FILCSRC/pizfix/lib/libc++abi.a lib
+cp -v $FILCSRC/pizfix/lib/libc++experimental.a lib
 ln -s libc++.so.1.0 lib/libc++.so.1
 ln -s libc++abi.so.1.0 lib/libc++abi.so.1
 ln -s libc++abi.so.1 lib/libc++abi.so

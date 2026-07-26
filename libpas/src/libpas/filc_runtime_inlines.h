@@ -552,7 +552,7 @@ static PAS_ALWAYS_INLINE void filc_mark_global_roots(const filc_marker marker, f
        stack. */
     filc_mark_stack_push_all_from_object_array(stack, &filc_global_variable_roots);
     for (index = filc_object_array_num_objects(&filc_global_variable_root_ptrs); index--;)
-        marker.mark(stack, filc_object_array_at(&filc_global_variable_roots, index));
+        marker.mark(stack, filc_object_array_at(&filc_global_variable_root_ptrs, index));
     filc_global_variable_roots_lock_unlock();
 
     filc_thread** threads;

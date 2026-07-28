@@ -46,11 +46,13 @@ static PAS_ALWAYS_INLINE void filc_thread_mark_outgoing_ptrs(filc_thread* thread
     marker.mark_or_free_flight(stack, &thread->result_ptr);
     marker.mark_or_free_flight(stack, &thread->zthread_ptr);
     marker.mark_or_free_flight(stack, &thread->tid_ptr);
+    marker.mark_or_free_flight(stack, &thread->thread_main);
 
     /* These need to be marked because phase2 of unwinding calls the personality function multiple
        times before finishing using them. */
     marker.mark_or_free_flight(stack, &thread->unwind_context_ptr);
     marker.mark_or_free_flight(stack, &thread->exception_object_ptr);
+    marker.mark_or_free_flight(stack, &thread->force_stop_callback);
     marker.mark_or_free_flight(stack, &thread->force_stop_arg_ptr);
 }
 

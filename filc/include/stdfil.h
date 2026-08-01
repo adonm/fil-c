@@ -669,7 +669,13 @@ static inline __SIZE_TYPE__ zchecked_mul(__SIZE_TYPE__ a, __SIZE_TYPE__ b)
 /* Tells you if a va_list has another argument. */
 static inline filc_bool zcan_va_arg(__builtin_va_list list)
 {
+#ifdef __x86_64__
     return zvalinbounds(*(void**)list, 8);
+#elif defined(__aarch64__)
+    return zvalinbounds(list, 8);
+#else
+#error "Bad architecture"
+#endif
 }
 
 /* This is also defined in pizlonated_runtime. */

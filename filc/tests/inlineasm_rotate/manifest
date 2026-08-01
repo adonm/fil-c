@@ -7,3 +7,5 @@ output-includes:
   - "rcl = 2"
   - "rcr = 0"
   - "rol one = 2"
+only-on-platform:
+  x86_64

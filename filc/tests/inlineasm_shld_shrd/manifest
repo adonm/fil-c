@@ -2,3 +2,5 @@ return:
   success
 output-includes:
   - "shld/shrd ok"
+only-on-platform:
+  x86_64

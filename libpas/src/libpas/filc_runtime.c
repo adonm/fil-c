@@ -97,7 +97,6 @@
 #include <sys/io.h>
 #include <sys/personality.h>
 #include <sys/fsuid.h>
-#include <asm/prctl.h>
 #include <sys/prctl.h>
 #include <sys/inotify.h>
 #include <sys/mount.h>
@@ -114,6 +113,10 @@
 #if PAS_GLIBC
 #include <sys/pidfd.h>
 #include <sys/fanotify.h>
+#endif
+
+#ifdef __x86_64__
+#include <asm/prctl.h>
 #endif
 
 PAS_BEGIN_EXTERN_C;
@@ -457,7 +460,9 @@ static void open_new_log_file_if_necessary(void)
         open_new_log_file();
 }
 
+#ifdef __x86_64__
 static void add_cpu_indicator_globals(void);
+#endif
 
 static bool is_unsafe_signal_for_kill(int signum)
 {
@@ -604,7 +609,9 @@ void filc_initialize(filc_stack_limit stack_limit)
     fugc_initialize_heaps();
 
     filc_object_array_construct(&filc_global_variable_roots);
+#ifdef __x86_64__
     add_cpu_indicator_globals();
+#endif
     
     filc_object_array_construct(&filc_global_variable_root_ptrs);
 
@@ -7642,6 +7649,8 @@ void filc_resume_unwind(filc_thread* my_thread, const filc_origin *passed_origin
     filc_pop_frame(my_thread, frame);
 }
 
+#ifdef __x86_64__
+
 void __cpu_indicator_init(void);
 
 struct __processor_model {
@@ -7701,6 +7710,8 @@ filc_ptr pizlonated___cpu_features2(filc_thread* my_thread, const filc_origin* p
     PAS_UNUSED_PARAM(passed_origin);
     return filc_ptr_create_with_object_and_manual_tracking(&cpu_features2_global_object.object);
 }
+
+#endif
 
 static bool setjmp_saves_sigmask = false;
 
@@ -8269,6 +8280,8 @@ void filc_native_zclosure_set_data(filc_thread* my_thread, filc_ptr function_ptr
     filc_flight_ptr_store(my_thread, &function->data_ptr, data_ptr);
 }
 
+#ifdef __x86_64__
+
 static void cpuid_impl(unsigned leaf, unsigned count, filc_ptr eax_ptr, filc_ptr ebx_ptr,
                        filc_ptr ecx_ptr, filc_ptr edx_ptr)
 {
@@ -8312,6 +8325,8 @@ unsigned long filc_native_zxgetbv(filc_thread* my_thread)
                  : "c"(0));
     return (unsigned long)low | ((unsigned long)high << (unsigned long)32);
 }
+
+#endif
 
 filc_ptr filc_pizlonated_errno_handler;
 
@@ -12091,6 +12106,8 @@ int filc_native_zsys_vhangup(filc_thread* my_thread)
     return FILC_SYSCALL(my_thread, vhangup());
 }
 
+#ifdef __x86_64__
+
 int filc_native_zsys_ioperm(filc_thread* my_thread, unsigned long form, unsigned long num,
                             int turn_on)
 {
@@ -12101,6 +12118,8 @@ int filc_native_zsys_iopl(filc_thread* my_thread, int level)
 {
     return FILC_SYSCALL(my_thread, iopl(level));
 }
+
+#endif
 
 int filc_native_zsys_personality(filc_thread* my_thread, unsigned long persona)
 {
@@ -12116,6 +12135,8 @@ int filc_native_zsys_setfsuid(filc_thread* my_thread, unsigned fsuid)
 {
     return FILC_SYSCALL(my_thread, setfsuid(fsuid));
 }
+
+#ifdef __x86_64__
 
 /* We have to declare this ourselves but libc promises to implement it. Also, its signature is usually
    something like arch_prctl(int, unsigned long), but using void* is more convenient for us. */
@@ -12154,6 +12175,8 @@ int filc_native_zsys_modify_ldt(filc_thread* my_thread, int func, filc_ptr ptr,
     filc_check_write(ptr, bytecount);
     return FILC_SYSCALL(my_thread, syscall(SYS_modify_ldt, 0, filc_ptr_ptr(ptr), bytecount));
 }
+
+#endif
 
 struct user_cap_header {
     unsigned version;
@@ -14189,15 +14212,24 @@ long double filc_native_zmath_significandl(filc_thread* my_thread, long double v
 unsigned filc_native_zmath_getcw(filc_thread* my_thread)
 {
     PAS_UNUSED_PARAM(my_thread);
+#ifdef __x86_64__
     unsigned result;
     asm volatile ("fnstcw %0" : "=m"(result));
     return result;
+#else
+    filc_internal_panic(NULL, "zmath_getcw not implemented on this architecture.");
+#endif
 }
 
 void filc_native_zmath_setcw(filc_thread* my_thread, unsigned cw)
 {
     PAS_UNUSED_PARAM(my_thread);
+#ifdef __x86_64__
     asm volatile ("fldcw %0" : : "m"(cw));
+#else
+    PAS_UNUSED_PARAM(cw);
+    filc_internal_panic(NULL, "zmath_setcw not implemented on this architecture.");
+#endif
 }
 
 void filc_native_zmath_feclearexcept(filc_thread* my_thread, int excepts)

@@ -1,3 +1,5 @@
+#ifdef __x86_64__
+
 #include <cpuid.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -53,3 +55,11 @@ int main()
     return all_good ? 0 : 1;
 }
 
+#else
+
+int main()
+{
+    return 1;
+}
+
+#endif

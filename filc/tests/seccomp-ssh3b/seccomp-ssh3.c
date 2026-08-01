@@ -2,6 +2,7 @@
  * Copyright (c) 2012 Will Drewry <wad@dataspill.org>
  * Copyright (c) 2015,2017,2019,2020,2023 Damien Miller <djm@mindrot.org>
  * Copyright (c) 2025 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -181,7 +182,13 @@ static const struct sock_filter preauth_insns[] = {
 	/* Ensure the syscall arch convention is as expected. */
 	BPF_STMT(BPF_LD+BPF_W+BPF_ABS,
 		offsetof(struct seccomp_data, arch)),
+#if defined(__x86_64__)
 	BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+#elif defined(__aarch64__)
+	BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_AARCH64, 1, 0),
+#else
+#error "Bad arch"
+#endif
 	BPF_STMT(BPF_RET+BPF_K, SECCOMP_FILTER_FAIL),
 	/* Load the syscall number for checking. */
 	BPF_STMT(BPF_LD+BPF_W+BPF_ABS,

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2024-2026 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -32,6 +33,7 @@
 #include <pizlonated_runtime.h>
 #include <linux/futex.h>
 #include <linux/time.h>
+#include "syscall.h"
 
 unsigned zversion(void)
 {
@@ -487,7 +489,7 @@ long zsys_syscall(long n, ...)
     void* syscall_args = (char*)zargs() + 8;
     void* callee;
     switch (n) {
-    case 202: /* SYS_futex */ {
+    case SYS_futex: {
         struct futex_args* args = (struct futex_args*)syscall_args;
         switch (args->futex_op) {
         case FUTEX_WAIT:
@@ -530,47 +532,47 @@ long zsys_syscall(long n, ...)
         }
     }
 
-    case 217 /* SYS_getdents64 */:
+    case SYS_getdents64:
         callee = zsys_getdents;
         break;
 
-    case 238 /* SYS_set_mempolicy */:
+    case SYS_set_mempolicy:
         callee = zsys_set_mempolicy;
         break;
 
-    case 239 /* SYS_get_mempolicy */:
+    case SYS_get_mempolicy:
         callee = zsys_get_mempolicy;
         break;
 
-    case 444 /* SYS_landlock_create_ruleset */:
+    case SYS_landlock_create_ruleset:
         callee = zsys_landlock_create_ruleset;
         break;
 
-    case 445 /* SYS_landlock_add_rule */:
+    case SYS_landlock_add_rule:
         callee = zsys_landlock_add_rule;
         break;
 
-    case 446 /* SYS_landlock_restrict_self */:
+    case SYS_landlock_restrict_self:
         callee = zsys_landlock_restrict_self;
         break;
 
-    case 298 /* SYS_perf_event_open */:
+    case SYS_perf_event_open:
         callee = zsys_perf_event_open;
         break;
 
-    case 186 /* SYS_gettid */:
+    case SYS_gettid:
         callee = zthread_self_id;
         break;
 
-    case 318 /* SYS_getrandom */:
+    case SYS_getrandom:
         callee = zsys_getrandom;
         break;
 
-    case 39 /* SYS_getpid */:
+    case SYS_getpid:
         callee = zsys_getpid;
         break;
 
-    case 452 /* SYS_fchmodat2 */:
+    case SYS_fchmodat2:
         /* The pizlonated fchmodat syscall is really an interface to fchmodat2 on modern kernels, and
            on older kernels, it's an interface to a reasonably faithful emulation of fchmodat2.
         
@@ -579,72 +581,72 @@ long zsys_syscall(long n, ...)
         callee = zsys_fchmodat;
         break;
 
-    case 164 /* SYS_settimeofday */:
+    case SYS_settimeofday:
         callee = zsys_settimeofday;
         break;
 
-    case 3 /* SYS_close */:
+    case SYS_close:
         /* NOTE: Folks do this because they want a "nocancel" version of close(2). */
         callee = zsys_close;
         break;
 
-    case 332 /* SYS_statx */:
+    case SYS_statx:
         callee = zsys_statx;
         break;
 
-    case 326 /* SYS_copy_file_range */:
+    case SYS_copy_file_range:
         callee = zsys_copy_file_range;
         break;
 
-    case 316 /* SYS_renameat2 */:
+    case SYS_renameat2:
         callee = zsys_renameat2;
         break;
 
-    case 434 /* SYS_pidfd_open */:
+    case SYS_pidfd_open:
         callee = zsys_pidfd_open;
         break;
 
-    case 113 /* SYS_setreuid */:
+    case SYS_setreuid:
         callee = zsys_setreuid;
         break;
 
-    case 114 /* SYS_setregid */:
+    case SYS_setregid:
         callee = zsys_setregid;
         break;
 
-    case 117 /* SYS_setresuid */:
+    case SYS_setresuid:
         callee = zsys_setresuid;
         break;
 
-    case 250 /* SYS_keyctl */:
+    case SYS_keyctl:
         callee = zsys_keyctl;
         break;
 
-    case 203 /* SYS_sched_setaffinity */:
+    case SYS_sched_setaffinity:
         callee = zsys_sched_setaffinity;
         break;
 
-    case 204 /* SYS_sched_getaffinity */:
+    case SYS_sched_getaffinity:
         callee = zsys_raw_sched_getaffinity;
         break;
 
-    case 248 /* SYS_add_key */:
+    case SYS_add_key:
         callee = zsys_add_key;
         break;
 
-    case 249 /* SYS_request_key */:
+    case SYS_request_key:
         callee = zsys_request_key;
         break;
 
-    case 319 /* SYS_memfd_create */:
+    case SYS_memfd_create:
         callee = zsys_memfd_create;
         break;
 
-    case 1 /* SYS_write */:
+    case SYS_write:
         callee = zsys_write;
         break;
 
-    case 437 /* SYS_openat2 */:
+    case SYS_openat2:
         callee = zsys_openat2;
         break;
 

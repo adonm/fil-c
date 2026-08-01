@@ -29,7 +29,7 @@ set -e
 set -x
 
 cd projects/yolomusl
-./configure --prefix=$PWD/../../pizfix/yolo --syslibdir=$PWD/../../pizfix/yolo/lib
+./configure --prefix=$PWD/../../pizfix/yolo --syslibdir=$PWD/../../pizfix/yolo/lib LIBCC=$PWD/../../pizfix/lib/libyolort.a
 $MAKE clean
 $MAKE -j $NCPU
 $MAKE install

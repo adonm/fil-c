@@ -30,7 +30,7 @@ set -x
 
 cd projects/usermusl
 
-CC="$CCPREFIX$PWD/../../build/bin/clang" ./configure --prefix=$PWD/../../pizfix
+CC="$CCPREFIX$PWD/../../build/bin/clang" ./configure --prefix=$PWD/../../pizfix LIBCC=-lyolort
 $MAKE clean
 $MAKE -j $NCPU
 $MAKE install

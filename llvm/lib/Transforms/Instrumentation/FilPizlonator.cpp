@@ -10838,6 +10838,10 @@ class Pizlonator {
     }
 
     if (!IsEmptyAsm) {
+      if (Arch != Triple::x86_64) {
+        Reason = "inline assembly is only supported on x86_64";
+        return false;
+      }
       if (IA->getDialect() != InlineAsm::AD_ATT) {
         Reason = "only AT&T dialect inline assembly is supported";
         return false;

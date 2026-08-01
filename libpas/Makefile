@@ -36,6 +36,14 @@ FILC_YOLO_LIB_DIR ?= $(FILC_LIB_DIR)
 FILC_DYNAMIC_LINKER ?= $(FILC_YOLO_LIB_DIR)/ld-yolo-x86_64.so
 FILC_RUNTIME_LIBS ?= -lyoloc -lyolom
 
+ARCH ?= $(shell uname -m)
+
+ifeq ($(ARCH),x86_64)
+ARCH_CFLAGS = -march=x86-64-v2
+else
+ARCH_CFLAGS =
+endif
+
 # We build the runtime with clang by default because doing so produces ~1.2% better performance on
 # PizBench9019. But building with g++ is supported.
 # HOST_CLANG ?= g++
@@ -48,11 +56,11 @@ HOST_CLANG_EXTRA_FLAGS = -isystem `./find_clang_include_dir.rb`
 FILC_CLANG ?= ../build/bin/clang
 FILC_DRIVER_FLAGS ?=
 
-PASCC = $(HOST_CLANG) -march=x86-64-v2 -fPIC -pthread -nostdinc \
+PASCC = $(HOST_CLANG) $(ARCH_CFLAGS) -fPIC -pthread -nostdinc \
 	-isystem $(FILC_YOLO_INCLUDE) -isystem $(FILC_OS_INCLUDE) \
 	-isystem $(FILC_STDFIL_INCLUDE) \
 	$(HOST_CLANG_EXTRA_FLAGS)
-PASASM = $(HOST_CLANG) -march=x86-64-v2 -fPIC
+PASASM = $(HOST_CLANG) $(ARCH_CFLAGS) -fPIC
 FILCC = $(FILC_CLANG) $(FILC_DRIVER_FLAGS)
 SHLD = $(HOST_CLANG) -Wl,-dynamic-linker,$(FILC_DYNAMIC_LINKER) \
 	-nostdlib -shared $(FILC_YOLO_LIB_DIR)/crti.o \
@@ -87,15 +95,15 @@ FILSRCS = $(wildcard ../filc/src/*.c)
 
 PASPIZLODYNAMICOBJSBASE = \
 	$(patsubst %.c,build/pas-pizlo-release-%.o,$(notdir $(PASSRCS))) \
-	$(patsubst %.s,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
+	$(patsubst %.S,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
 	build/pas-pizlo-release-filc_dynamic.o
 PASPIZLOSTATICOBJSBASE = \
 	$(patsubst %.c,build/pas-pizlo-release-%.o,$(notdir $(PASSRCS))) \
-	$(patsubst %.s,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
+	$(patsubst %.S,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
 	build/pas-pizlo-release-filc_static.o
 PASPIZLOTESTOBJSBASE = \
 	$(patsubst %.c,build/pas-pizlo-test-%.o,$(notdir $(PASSRCS))) \
-	$(patsubst %.s,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
+	$(patsubst %.S,build/pas-pizlo-release-%.o,$(notdir $(PASASMSRCS))) \
 	build/pas-pizlo-test-filc_dynamic.o
 
 PASPIZLODYNAMICOBJS = \
@@ -162,7 +170,7 @@ build/pas-pizlo-test-%.o: src/libpas/%.c
 build/fil-pizlo-%.o: ../filc/src/%.c $(FILC_CLANG)
 	$(FILCC) $(FILCFLAGS) -c -o $@ $<
 
-build/pas-pizlo-release-%.o: src/libpas/%.s
+build/pas-pizlo-release-%.o: src/libpas/%.S
 	$(PASASM) $(PASASMFLAGS) -c -o $@ $<
 
 build/pas-pizlo-release-filc_runtime.o: src/libpas/filc_native.h

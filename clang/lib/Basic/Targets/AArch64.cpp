@@ -1272,7 +1272,7 @@ AArch64TargetInfo::checkCallingConvention(CallingConv CC) const {
 bool AArch64TargetInfo::isCLZForZeroUndef() const { return false; }
 
 TargetInfo::BuiltinVaListKind AArch64TargetInfo::getBuiltinVaListKind() const {
-  return TargetInfo::AArch64ABIBuiltinVaList;
+  return TargetInfo::CharPtrBuiltinVaList;
 }
 
 const char *const AArch64TargetInfo::GCCRegNames[] = {
@@ -1545,8 +1545,11 @@ void AArch64leTargetInfo::setDataLayout() {
                       "n32:64-S128-Fn32",
                       "_");
   } else
-    resetDataLayout("e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-"
-                    "i64:64-i128:128-n32:64-S128-Fn32");
+    resetDataLayout(
+        "e-m:e-ni:0-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-"
+        "i64:64-i128:128-n32:64-S128-Fn32",
+        "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-"
+        "i64:64-i128:128-n32:64-S128-Fn32", "");
 }
 
 void AArch64leTargetInfo::getTargetDefines(const LangOptions &Opts,

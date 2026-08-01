@@ -839,7 +839,7 @@ def filc_resource_dir : Joined<["--"], "filc-resource-dir=">, Flags<[NoXarchOpti
   HelpText<"Override Fil-C pizfix directory location (default: <binary>/../../../pizfix)">;
 def filc_dynamic_linker : Joined<["--"], "filc-dynamic-linker=">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
-  HelpText<"Override Fil-C dynamic linker path (default: pizfix/lib/ld-yolo-x86_64.so)">;
+  HelpText<"Override Fil-C dynamic linker path (default: pizfix/lib/ld-fil1-<arch>.so)">;
 def filc_crt_path : Joined<["--"], "filc-crt-path=">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Override Fil-C CRT object files directory (default: pizfix/lib)">;

@@ -105,7 +105,7 @@ four rules are: `/opt/fil/sbin/sshd` should match the type of
 `/usr/sbin/sshd` (expected `sshd_exec_t`); `/opt/fil/sbin/unix_chkpwd`
 should match `/usr/sbin/unix_chkpwd` (expected `chkpwd_exec_t`), which
 is needed for PAM password checking from sshd's sandboxed domain;
-`/opt/fil/lib/ld-yolo-x86_64.so` should match the system dynamic
+`/opt/fil/lib/ld-fil1-x86_64.so` should match the system dynamic
 loader (expected `ld_so_t`), with the installer probing the common
 loader paths (`/lib64/ld-linux-x86-64.so.2`, the Debian/Ubuntu
 multiarch path, and so on) to find one; and the shared libraries
@@ -322,7 +322,7 @@ off the output of `ls -Z` on each reference path.
 ```bash
 sudo semanage fcontext -a -t sshd_exec_t '/opt/fil/sbin/sshd'
 sudo semanage fcontext -a -t chkpwd_exec_t '/opt/fil/sbin/unix_chkpwd'
-sudo semanage fcontext -a -t ld_so_t '/opt/fil/lib/ld-yolo-x86_64\.so'
+sudo semanage fcontext -a -t ld_so_t '/opt/fil/lib/ld-fil1-x86_64\.so'
 sudo semanage fcontext -a -t lib_t '/opt/fil/lib/.+\.so(\..+)?'
 sudo restorecon -v /opt/fil/sbin/sshd /opt/fil/sbin/unix_chkpwd
 sudo restorecon -R -v /opt/fil/lib

@@ -33,7 +33,7 @@ FILC_OS_INCLUDE ?= $(FILC_OUTPUT_ROOT)/os-include
 FILC_STDFIL_INCLUDE ?= $(FILC_OUTPUT_ROOT)/stdfil-include
 FILC_INCLUDE_DIR ?= $(FILC_OUTPUT_ROOT)/include
 FILC_YOLO_LIB_DIR ?= $(FILC_LIB_DIR)
-FILC_DYNAMIC_LINKER ?= $(FILC_YOLO_LIB_DIR)/ld-yolo-x86_64.so
+FILC_DYNAMIC_LINKER ?= $(FILC_YOLO_LIB_DIR)/ld-fil1-`uname -m`.so
 FILC_RUNTIME_LIBS ?= -lyoloc -lyolom
 
 ARCH ?= $(shell uname -m)

@@ -463,14 +463,15 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
       return std::string(A->getValue());
     }
     
-    if (getDriver().HasPizfix) {
-      SmallString<128> P(getDriver().PizfixRoot);
-      llvm::sys::path::append(P, "lib", "ld-yolo-x86_64.so");
-      return std::string(P);
-    }
-    if (getDriver().HasOptfil)
-        return "/opt/fil/lib/ld-yolo-x86_64.so";
-    return "/lib/ld-yolo-x86_64.so";
+    SmallString<128> P;
+    if (getDriver().HasPizfix)
+      P = getDriver().PizfixRoot;
+    else if (getDriver().HasOptfil)
+      P = "/opt/fil";
+    else
+      P = "/";
+    llvm::sys::path::append(P, "lib", "ld-fil1-" + Triple.getArchName().str() + ".so");
+    return std::string(P);
   }
 
   const Distro Distro(getDriver().getVFS(), Triple);

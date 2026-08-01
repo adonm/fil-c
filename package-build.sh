@@ -51,8 +51,8 @@ strip $build_name/build/bin/clang-20
 
 mkdir -p $build_name/build/include/
 cp -R build/include/c++ $build_name/build/include/
-mkdir -p $build_name/build/include/x86_64-unknown-linux-gnu/
-cp -R build/include/x86_64-unknown-linux-gnu/c++ $build_name/build/include/x86_64-unknown-linux-gnu/
+mkdir -p $build_name/build/include/$ARCH-unknown-linux-gnu/
+cp -R build/include/$ARCH-unknown-linux-gnu/c++ $build_name/build/include/$ARCH-unknown-linux-gnu/
 mkdir -p $build_name/build/lib/clang/20/
 cp -R build/lib/clang/20/include $build_name/build/lib/clang/20/
 
@@ -78,15 +78,15 @@ do
         then
             echo "patchelf --set-rpath \$PWD/pizfix/lib64:\$PWD/pizfix/lib $binary" >> setup.sh
         fi
-        if patchelf --set-interpreter pizfix/lib/ld-yolo-x86_64.so $binary
+        if patchelf --set-interpreter pizfix/lib/ld-fil1-$ARCH.so $binary
         then
-            echo "patchelf --set-interpreter \$PWD/pizfix/lib/ld-yolo-x86_64.so $binary" >> setup.sh
+            echo "patchelf --set-interpreter \$PWD/pizfix/lib/ld-dil1-$ARCH.so $binary" >> setup.sh
         fi
     fi
 done
 
-rm pizfix/lib/ld-yolo-x86_64.so
-(cd pizfix/lib/ && ln -s libyoloc.so ld-yolo-x86_64.so)
+rm pizfix/lib/ld-fil1-$ARCH.so
+(cd pizfix/lib/ && ln -s libyoloc.so ld-fil1-$ARCH.so)
 
 echo "cd pizfix" >> setup.sh
 echo "mkdir os-include" >> setup.sh

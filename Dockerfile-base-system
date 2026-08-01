@@ -25,7 +25,7 @@ RUN find /rootfs/usr/bin /rootfs/usr/sbin /rootfs/usr/libexec \
     -type f \
     -executable ! -name "*.so" \
     -exec sh -c 'if file "{}" | grep -q "ELF" && file "{}" | grep -q "dynamically linked"; then \
-        patchelf --set-interpreter /lib/ld-yolo-x86_64.so "{}"; \
+        patchelf --set-interpreter /lib/ld-fil1-x86_64.so "{}"; \
     fi' {} \;
 
 # Create standard symlinks for compatibility:

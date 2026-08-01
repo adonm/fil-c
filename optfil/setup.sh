@@ -27,6 +27,7 @@
 set -e
 
 VERSION="0.682"
+ARCH=$(uname -m)
 
 usage() {
     echo "Usage: ./setup.sh [OPTIONS]"
@@ -479,9 +480,9 @@ else
 
     SYS_LOADER=$(selinux_first_existing \
         /lib64/ld-linux-x86-64.so.2 \
-        /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+        /lib/$(ARCH)-linux-gnu/ld-linux-x86-64.so.2 \
         /usr/lib64/ld-linux-x86-64.so.2 \
-        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+        /usr/lib/$(ARCH)-linux-gnu/ld-linux-x86-64.so.2 \
         /lib/ld-linux-x86-64.so.2)
 
     # For lib_t we probe a list of widely-shipped libraries rather than
@@ -490,13 +491,13 @@ else
     # though ordinary shared libraries still get lib_t.
     SYS_LIB=$(selinux_first_existing \
         /lib64/libz.so.1 \
-        /lib/x86_64-linux-gnu/libz.so.1 \
+        /lib/$(ARCH)-linux-gnu/libz.so.1 \
         /usr/lib64/libz.so.1 \
-        /usr/lib/x86_64-linux-gnu/libz.so.1 \
+        /usr/lib/$(ARCH)-linux-gnu/libz.so.1 \
         /lib64/libm.so.6 \
-        /lib/x86_64-linux-gnu/libm.so.6 \
+        /lib/$(ARCH)-linux-gnu/libm.so.6 \
         /usr/lib64/libcrypt.so.1 \
-        /usr/lib/x86_64-linux-gnu/libcrypt.so.1)
+        /usr/lib/$(ARCH)-linux-gnu/libcrypt.so.1)
 
     # Tell the user what we found before we try to do anything, so a
     # missing reference is reported up-front instead of as one of N
@@ -599,15 +600,15 @@ else
             '/opt/fil/lib/.+\.so(\..+)?' \
             "/opt/fil/lib"
 
-        # /opt/fil/lib/ld-yolo-x86_64.so -> ld_so_t. Registered after the
+        # /opt/fil/lib/ld-fil1-$(ARCH).so -> ld_so_t. Registered after the
         # library rule (see comment above) so that semanage's most-recent
         # entry wins for the loader file at restorecon time.
         selinux_run_rule selinux_label_file \
-            "/opt/fil/lib/ld-yolo-x86_64.so (loader)" \
+            "/opt/fil/lib/ld-fil1-$(ARCH).so (loader)" \
             "$SYS_LOADER" \
             ld_so_t \
-            '/opt/fil/lib/ld-yolo-x86_64\.so' \
-            "/opt/fil/lib/ld-yolo-x86_64.so"
+            '/opt/fil/lib/ld-fil1-$(ARCH)\.so' \
+            "/opt/fil/lib/ld-fil1-$(ARCH).so"
 
         selinux_attempts_total=$((selinux_attempts_succeeded + selinux_attempts_failed))
 

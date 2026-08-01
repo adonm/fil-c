@@ -64,11 +64,12 @@ cp -v $FILCSRC/projects/user-glibc-2.40/pizlonated-user-glibc.tar.gz $LFS/source
 mv $LFS/usr $LFS/yolo-glibc-prefix
 ./build_lc_make_usr.sh
 
-OLDLDNAME=ld-linux-x86-64.so.2
+ARCH=`uname -m`
+OLDLDNAME=ld-linux-$ARCH.so.2
 OLDLIBCIMPLNAME=libc.so.6
 OLDLIBCNONSHAREDNAME=libc_nonshared.a
 OLDLIBMIMPLNAME=libm.so.6
-LDNAME=ld-yolo-x86_64.so
+LDNAME=ld-fil1-$ARCH.so
 LIBNAMEBASE=libyolo
 LIBCNAMEBASE=${LIBNAMEBASE}c
 LIBCNAME=${LIBCNAMEBASE}.so
@@ -153,8 +154,8 @@ ln -s libc++.so.1.0 $LFS/usr/lib/libc++.so.1
 ln -s libc++abi.so.1.0 $LFS/usr/lib/libc++abi.so.1
 ln -s libc++abi.so.1 $LFS/usr/lib/libc++abi.so
 cp -rv $FILCSRC/build/include/c++ $LFS/usr/include
-mkdir -p $LFS/usr/include/x86_64-unknown-linux-gnu
-cp -rv $FILCSRC/build/include/x86_64-unknown-linux-gnu/c++ $LFS/usr/include/x86_64-unknown-linux-gnu
+mkdir -p $LFS/usr/include/$ARCH-unknown-linux-gnu
+cp -rv $FILCSRC/build/include/$ARCH-unknown-linux-gnu/c++ $LFS/usr/include/$ARCH-unknown-linux-gnu
 cp -v $FILCSRC/pizlix/hacked_ldd $LFS/usr/bin/ldd
 
 echo "lc" > $LFS/sources/lfsbuildstate

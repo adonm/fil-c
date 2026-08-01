@@ -43,8 +43,9 @@ cp -v $FILCSRC/build/bin/clang-20 bin/filcc-clang-20
 strip bin/filcc-clang-20
 patchelf --remove-rpath bin/filcc-clang-20
 
-patchelf --set-interpreter /opt/fil/lib/ld-yolo-x86_64.so bin/filcc-clang-20
-patchelf --replace-needed ld-linux-x86-64.so.2 ld-yolo-x86_64.so bin/filcc-clang-20
+ARCH=`uname -m`
+patchelf --set-interpreter /opt/fil/lib/ld-fil1-$ARCH.so bin/filcc-clang-20
+patchelf --replace-needed ld-linux-$ARCH.so.2 ld-fil1-$ARCH.so bin/filcc-clang-20
 patchelf --replace-needed libc.so.6 libyolocimpl.so bin/filcc-clang-20
 patchelf --replace-needed libm.so.6 libyolomimpl.so bin/filcc-clang-20
 

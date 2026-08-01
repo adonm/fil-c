@@ -610,8 +610,14 @@ int main(int argc, char** argv)
     result = prctl(PR_SVE_GET_VL);
     if (result == -1)
         ZASSERT(errno == EINVAL);
+#ifdef __x86_64__
     ZASSERT(prctl(PR_GET_TAGGED_ADDR_CTRL) == -1);
     ZASSERT(errno == EINVAL);
+#elif defined(__aarch64__)
+    ZASSERT(prctl(PR_GET_TAGGED_ADDR_CTRL) >= 0);
+#else
+#error "Bad arch"
+#endif
     ZASSERT(prctl(PR_GET_THP_DISABLE) != -1);
     ZASSERT(prctl(PR_GET_TIMING) != -1);
 

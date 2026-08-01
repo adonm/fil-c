@@ -194,7 +194,7 @@ AArch64TargetInfo::AArch64TargetInfo(const llvm::Triple &Triple,
   HasUnalignedAccess = true;
 
   // AArch64 targets default to using the ARM C++ ABI.
-  TheCXXABI.set(TargetCXXABI::GenericAArch64);
+  TheCXXABI.set(TargetCXXABI::GenericItanium);
 
   if (Triple.getOS() == llvm::Triple::Linux)
     this->MCountName = "\01_mcount";

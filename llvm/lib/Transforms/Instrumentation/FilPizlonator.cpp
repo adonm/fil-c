@@ -12222,6 +12222,7 @@ class Pizlonator {
             F->getName() == "__muldc3" ||
             F->getName() == "__divsc3" ||
             F->getName() == "__mulsc3" ||
+            F->getName() == "__multc3" ||
             F->getName() == "__mulxc3" ||
             isSetjmp(F));
   }

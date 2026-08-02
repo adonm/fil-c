@@ -8974,12 +8974,12 @@ int filc_native_zsys_sigprocmask(filc_thread* my_thread, int user_how, filc_ptr 
     sigset_t* oldset;
     if (filc_ptr_ptr(user_set_ptr)) {
         filc_check_user_sigset(user_set_ptr, filc_read_access);
-        set = (sigset_t*)alloca(sizeof(sigset_t));
+        set = (sigset_t*)filc_bmalloc_allocate_tmp(my_thread, sizeof(sigset_t));
         filc_from_user_sigset((sigset_t*)filc_ptr_ptr(user_set_ptr), set);
     } else
         set = NULL;
     if (filc_ptr_ptr(user_oldset_ptr)) {
-        oldset = (sigset_t*)alloca(sizeof(sigset_t));
+        oldset = (sigset_t*)filc_bmalloc_allocate_tmp(my_thread, sizeof(sigset_t));
         pas_zero_memory(oldset, sizeof(sigset_t));
     } else
         oldset = NULL;
@@ -10272,7 +10272,8 @@ int filc_native_zsys_sendmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgve
 
     filc_check_write(msgvec_ptr, filc_mul_size(sizeof(struct mmsghdr), vlen));
     struct mmsghdr* user_msgvec = (struct mmsghdr*)filc_ptr_ptr(msgvec_ptr);
-    struct mmsghdr* msgvec = (struct mmsghdr*)alloca(filc_mul_size(sizeof(struct mmsghdr), vlen));
+    struct mmsghdr* msgvec = (struct mmsghdr*)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size(sizeof(struct mmsghdr), vlen));
     unsigned index;
     for (index = vlen; index--;) {
         from_user_msghdr_for_send(
@@ -10310,7 +10311,8 @@ int filc_native_zsys_recvmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgve
 
     filc_check_write(msgvec_ptr, filc_mul_size(sizeof(struct mmsghdr), vlen));
     struct mmsghdr* user_msgvec = (struct mmsghdr*)filc_ptr_ptr(msgvec_ptr);
-    struct mmsghdr* msgvec = (struct mmsghdr*)alloca(filc_mul_size(sizeof(struct mmsghdr), vlen));
+    struct mmsghdr* msgvec = (struct mmsghdr*)filc_bmalloc_allocate_tmp(
+        my_thread, filc_mul_size(sizeof(struct mmsghdr), vlen));
     unsigned index;
     for (index = vlen; index--;) {
         from_user_msghdr_for_recv(
@@ -11275,7 +11277,7 @@ int filc_native_zsys_epoll_pwait_impl(filc_thread* my_thread, int epfd, filc_ptr
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(sigmask_ptr)) {
         filc_check_user_sigset(sigmask_ptr, filc_read_access);
-        sigmask = (sigset_t*)alloca(sizeof(sigset_t));
+        sigmask = (sigset_t*)filc_bmalloc_allocate_tmp(my_thread, sizeof(sigset_t));
         filc_from_user_sigset((sigset_t*)filc_ptr_ptr(sigmask_ptr), sigmask);
     }
     struct epoll_event* evs = make_epoll_events(my_thread, maxevents);
@@ -11292,7 +11294,7 @@ int filc_native_zsys_epoll_pwait2_impl(filc_thread* my_thread, int epfd, filc_pt
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(sigmask_ptr)) {
         filc_check_user_sigset(sigmask_ptr, filc_read_access);
-        sigmask = (sigset_t*)alloca(sizeof(sigset_t));
+        sigmask = (sigset_t*)filc_bmalloc_allocate_tmp(my_thread, sizeof(sigset_t));
         filc_from_user_sigset((sigset_t*)filc_ptr_ptr(sigmask_ptr), sigmask);
     }
     struct epoll_event* evs = make_epoll_events(my_thread, maxevents);
@@ -11393,7 +11395,7 @@ int filc_native_zsys_ppoll(filc_thread* my_thread, filc_ptr fds_ptr, unsigned lo
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(mask_ptr)) {
         filc_check_user_sigset(mask_ptr, filc_read_access);
-        sigmask = (sigset_t*)alloca(sizeof(sigset_t));
+        sigmask = (sigset_t*)filc_bmalloc_allocate_tmp(my_thread, sizeof(sigset_t));
         filc_from_user_sigset((sigset_t*)filc_ptr_ptr(mask_ptr), sigmask);
     }
     return FILC_SYSCALL(my_thread, ppoll((struct pollfd*)filc_ptr_ptr(fds_ptr), nfds,

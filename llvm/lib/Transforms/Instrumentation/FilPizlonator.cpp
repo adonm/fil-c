@@ -14041,7 +14041,7 @@ public:
                          "b.cs 1f\n\t"
                          "b filc_stack_overflow_failure\n\t"
                          "1:",
-                         "=r,r",
+                         "=r,r,~{cc}",
                          /*hasSideEffects=*/true);
       break;
     case Triple::x86_64:

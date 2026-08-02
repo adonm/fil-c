@@ -62,7 +62,7 @@ Quick links:
 
 - [Examples of Fil-C catching memory safety issues](https://github.com/pizlonator/fil-c/blob/deluge/invisicaps_by_example.md).
 
-- [Releases (Linux/X86_64 binaries)](https://github.com/pizlonator/fil-c/releases).
+- [Releases (Linux/X86_64 and Linux/ARM64 binaries)](https://github.com/pizlonator/fil-c/releases).
 
 Fil-C is already powerful enough to run a [memory-safe curl](https://github.com/pizlonator/deluded-curl-8.5.0)
 and a [memory-safe OpenSSH (both client and server)](https://github.com/pizlonator/deluded-openssh-portable)
@@ -113,7 +113,7 @@ First I'll tell you how to download or build Fil-C and then I'll tell you how to
 
 You can download a Fil-C binary release from [https://github.com/pizlonator/fil-c/releases](https://github.com/pizlonator/fil-c/releases).
 
-Then, in the filc-0.681-linux-x86_64 directory, run:
+Then, in the filc-0.682-linux-x86_64 or filc-0.682-linux-aarch64 directory, run:
 
     ./setup.sh
 
@@ -121,7 +121,7 @@ This gives you a simple Fil-C setup with compiler, runtime, a musl-based libc an
 
 ### Building Fil-C From Source
 
-Fil-C currently only works on Linux/X86_64. Upon getting Fil-C from
+Fil-C currently only works on Linux/X86_64 and Linux/ARM64 with 4K page size. Upon getting Fil-C from
 https://github.com/pizlonator/fil-c.git, and making sure you're on the `deluge` branch,
 simply do:
 

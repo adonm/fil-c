@@ -88,7 +88,7 @@ mv -v bin etc include lib libexec sbin share var yolo
 mkdir -v lib
 
 ARCH=`uname -m`
-OLDLDNAME=ld-linux-$ARCH.so.2
+OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
 OLDLIBCIMPLNAME=libc.so.6
 OLDLIBCNONSHAREDNAME=libc_nonshared.a
 OLDLIBMIMPLNAME=libm.so.6

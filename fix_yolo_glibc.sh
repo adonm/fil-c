@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 #
 # Copyright (c) 2025 Epic Games, Inc. All Rights Reserved.
 #
@@ -36,7 +36,7 @@ set -x
 
 cd ../pizfix
 
-OLDLDNAME=ld-linux-$ARCH.so.2
+OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
 OLDLIBCIMPLNAME=libc.so.6
 OLDLIBCNONSHAREDNAME=libc_nonshared.a
 OLDLIBMIMPLNAME=libm.so.6

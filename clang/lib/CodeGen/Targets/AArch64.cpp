@@ -465,7 +465,9 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadicFn,
     return ABIArgInfo::getDirect(
         llvm::ArrayType::get(llvm::PointerType::get(getVMContext(), 0), 2));
 
-  return getNaturalAlignIndirect(Ty, /*ByVal=*/false);
+  // Variadic arguments must be byval, since EmitVAArg always reads them out of
+  // the varargs snapshot by value (for now).
+  return getNaturalAlignIndirect(Ty, /*ByVal=*/!IsNamedArg);
 }
 
 ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy,

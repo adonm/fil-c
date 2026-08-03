@@ -51,6 +51,7 @@ cd /opt/fil
 #
 # So, we build ourselves our own strip! And we build it using Yolo-C, so that we can be sure that it
 # doesn't depend on any of the libraries we are about to strip.
+rm -rf binutils
 mkdir -v binutils
 cd binutils
 tar -xf $FILCSRC/pizlix/binutils-2.43.1.tar.xz

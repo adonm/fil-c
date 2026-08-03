@@ -45,7 +45,7 @@ patchelf --remove-rpath bin/filcc-clang-20
 
 ARCH=`uname -m`
 patchelf --set-interpreter /opt/fil/lib/ld-fil1-$ARCH.so bin/filcc-clang-20
-patchelf --replace-needed ld-linux-$ARCH.so.2 ld-fil1-$ARCH.so bin/filcc-clang-20
+patchelf --replace-needed ld-linux-${ARCH//_/-}.so.2 ld-fil1-$ARCH.so bin/filcc-clang-20
 patchelf --replace-needed libc.so.6 libyolocimpl.so bin/filcc-clang-20
 patchelf --replace-needed libm.so.6 libyolomimpl.so bin/filcc-clang-20
 

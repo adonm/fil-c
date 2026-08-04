@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/auxv.h>
+#include <sys/resource.h>
 
 extern char** environ;
 
@@ -213,6 +214,17 @@ void filc_start_program(int argc, char** argv,
 
     /* FIXME: Instead of starting a thread, we could just hop stack. */
 
+    pthread_attr_t attr;
+    PAS_ASSERT(!pthread_attr_init(&attr));
+
+    /* This is necessary to make `ulimit -s` work. */
+    struct rlimit stack_rlim;
+    intptr_t stack_min = PTHREAD_STACK_MIN;
+    PAS_ASSERT(stack_min > 0);
+    PAS_ASSERT(!getrlimit(RLIMIT_STACK, &stack_rlim));
+    PAS_ASSERT((intptr_t)stack_rlim.rlim_cur >= stack_min);
+    PAS_ASSERT(!pthread_attr_setstacksize(&attr, stack_rlim.rlim_cur));
+
     /* Make sure the phony main thread receives no signals and stash the true sigset for the main
        thread. */
     sigset_t allset;
@@ -220,8 +232,9 @@ void filc_start_program(int argc, char** argv,
     PAS_ASSERT(!pthread_sigmask(SIG_BLOCK, &allset, &args->oldset));
 
     pthread_t thread;
-    PAS_ASSERT(!pthread_create(&thread, NULL, thread_main, args));
+    PAS_ASSERT(!pthread_create(&thread, &attr, thread_main, args));
     PAS_ASSERT(!pthread_detach(thread));
+    PAS_ASSERT(!pthread_attr_destroy(&attr));
 
     /* We have to keep the main thread alive because otherwise /proc/self stops working. */
     for (;;) pause();

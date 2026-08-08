@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2021 Apple Inc. All rights reserved.
  * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -27,9 +28,14 @@
 #ifndef PAS_INTERNAL_CONFIG_H
 #define PAS_INTERNAL_CONFIG_H
 
-#include "pas_config.h"
+#include "pas_utils.h"
 
-#define PAS_SUBPAGE_SIZE                 4096
+#if (defined(__arm64__) && defined(__APPLE__)) || defined(__SCE__)
+#define PAS_SYSTEM_PAGE_SIZE_SHIFT       14u
+#else
+#define PAS_SYSTEM_PAGE_SIZE_SHIFT       12u
+#endif
+#define PAS_SYSTEM_PAGE_SIZE             ((size_t)1 << PAS_SYSTEM_PAGE_SIZE_SHIFT)
 
 #define PAS_USE_SMALL_SEGREGATED_OVERRIDE     true
 #define PAS_USE_MEDIUM_SEGREGATED_OVERRIDE    true
@@ -38,10 +44,10 @@
 #define PAS_USE_MARGE_BITFIT_OVERRIDE         true
 
 /* The OS may have a smaller page size. That's OK. */
-#define PAS_SMALL_PAGE_DEFAULT_SHIFT     14
+#define PAS_SMALL_PAGE_DEFAULT_SHIFT     PAS_MAX_CONST(14u, PAS_SYSTEM_PAGE_SIZE_SHIFT)
 #define PAS_SMALL_PAGE_DEFAULT_SIZE      ((size_t)1 << PAS_SMALL_PAGE_DEFAULT_SHIFT)
 
-#define PAS_SMALL_BITFIT_PAGE_DEFAULT_SHIFT   14
+#define PAS_SMALL_BITFIT_PAGE_DEFAULT_SHIFT   PAS_MAX_CONST(14u, PAS_SYSTEM_PAGE_SIZE_SHIFT)
 #define PAS_SMALL_BITFIT_PAGE_DEFAULT_SIZE    ((size_t)1 << PAS_SMALL_BITFIT_PAGE_DEFAULT_SHIFT)
 
 #define PAS_MEDIUM_PAGE_DEFAULT_SHIFT    17
@@ -49,13 +55,6 @@
 
 #define PAS_MARGE_PAGE_DEFAULT_SHIFT     22
 #define PAS_MARGE_PAGE_DEFAULT_SIZE      ((size_t)1 << PAS_MARGE_PAGE_DEFAULT_SHIFT)
-
-#if (defined(__arm64__) && defined(__APPLE__)) || defined(__SCE__)
-#define PAS_SYSTEM_PAGE_SIZE_SHIFT       14u
-#else
-#define PAS_SYSTEM_PAGE_SIZE_SHIFT       12u
-#endif
-#define PAS_SYSTEM_PAGE_SIZE             ((size_t)1 << PAS_SYSTEM_PAGE_SIZE_SHIFT)
 
 #define PAS_GRANULE_DEFAULT_SHIFT        PAS_SYSTEM_PAGE_SIZE_SHIFT
 #define PAS_GRANULE_DEFAULT_SIZE         ((size_t)1 << PAS_GRANULE_DEFAULT_SHIFT)
@@ -104,7 +103,7 @@
 
 #define PAS_INTRINSIC_SMALL_LOOKUP_SIZE_UPPER_BOUND 10000
 #define PAS_SMALL_LOOKUP_SIZE_UPPER_BOUND 500
-#define PAS_UTILITY_LOOKUP_SIZE_UPPER_BOUND 1400
+#define PAS_UTILITY_LOOKUP_SIZE_UPPER_BOUND (PAS_SYSTEM_PAGE_SIZE_SHIFT > 14 ? 2800 : 1400)
 
 #define PAS_NUM_INTRINSIC_SIZE_CLASSES \
     ((PAS_INTRINSIC_SMALL_LOOKUP_SIZE_UPPER_BOUND >> PAS_MIN_ALIGN_SHIFT) + 1)

@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2022 Apple Inc. All rights reserved.
  * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -38,6 +39,7 @@
 #include "pas_utils.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <unistd.h>
@@ -62,23 +64,50 @@ bool pas_page_malloc_decommit_zero_fill = false;
 #define PAS_NORESERVE 0
 #endif
 
+static size_t cached_real_page_size;
+
+static size_t real_page_size(void)
+{
+    if (!cached_real_page_size) {
+        size_t result;
+#ifdef _WIN32
+        SYSTEM_INFO system_info;
+        GetSystemInfo(&system_info);
+        result = system_info.dwPageSize;
+#else /* _WIN32 -> so !_WIN32 */
+        long long_result = sysconf(_SC_PAGESIZE);
+        PAS_ASSERT(long_result >= 0);
+        result = (size_t)long_result;
+#endif /* !_WIN32 */
+        PAS_ASSERT(result > 0);
+        PAS_ASSERT(result >= 4096);
+        PAS_ASSERT(pas_is_power_of_2(result));
+        cached_real_page_size = result;
+    }
+    return cached_real_page_size;
+}
+
 PAS_NEVER_INLINE size_t pas_page_malloc_alignment_slow(void)
 {
-    size_t result;
-#ifdef _WIN32
-    SYSTEM_INFO system_info;
-    GetSystemInfo(&system_info);
-    result = system_info.dwPageSize;
-#else /* _WIN32 -> so !_WIN32 */
-    long long_result = sysconf(_SC_PAGESIZE);
-    PAS_ASSERT(long_result >= 0);
-    result = (size_t)long_result;
-#endif /* !_WIN32 */
-    PAS_ASSERT(result > 0);
-    PAS_ASSERT(result >= 4096);
-    PAS_ASSERT(pas_is_power_of_2(result));
-    PAS_ASSERT(result <= PAS_SYSTEM_PAGE_SIZE);
-    return result;
+    char* override_str = secure_getenv("PAS_SIMULATE_PAGE_SIZE");
+    if (override_str) {
+        size_t value;
+        if (sscanf(override_str, "%zu", &value) != 1 ||
+            !value ||
+            !pas_is_power_of_2(value)) {
+            pas_panic("invalid environment variable PAS_SIMULATE_PAGE_SIZE value: %s "
+                      "(expected decimal power-of-2 byte size)\n",
+                      override_str);
+        }
+        if (value < real_page_size()) {
+            pas_panic("cannot use PAS_SIMULATE_PAGE_SIZE to simulate a smaller page size "
+                      "(actual page size is %zu, attempted to simulate %zu)\n",
+                      real_page_size(), value);
+        }
+        return value;
+    }
+
+    return real_page_size();
 }
 
 PAS_NEVER_INLINE size_t pas_page_malloc_alignment_shift_slow(void)
@@ -90,6 +119,85 @@ PAS_NEVER_INLINE size_t pas_page_malloc_alignment_shift_slow(void)
     PAS_ASSERT(result <= PAS_SYSTEM_PAGE_SIZE_SHIFT);
 
     return result;
+}
+
+static void deallocate_impl(void* ptr, size_t size)
+{
+#ifdef _WIN32
+    BOOL result;
+#endif
+    
+    if (!size)
+        return;
+
+#ifdef _WIN32
+    result = VirtualFree(ptr, 0, MEM_RELEASE);
+    PAS_ASSERT(result);
+#else
+    PAS_SYSCALL(munmap(ptr, size));
+#endif
+}
+
+static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_mode commit_mode)
+{
+    static const bool verbose = false;
+
+    void* mmap_result;
+    size_t mapped_size;
+
+    PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+
+    if (pas_page_malloc_alignment() > real_page_size()) {
+        if (pas_add_uintptr_overflow(real_page_size(), size, &mapped_size))
+            return NULL;
+    } else {
+        PAS_ASSERT(pas_page_malloc_alignment() == real_page_size());
+        mapped_size = size;
+    }
+    
+#ifdef _WIN32
+    mmap_result = VirtualAlloc(
+        NULL, mapped_size, commit_mode == pas_committed ? MEM_RESERVE | MEM_COMMIT : MEM_RESERVE,
+        PAGE_READWRITE);
+    if (mmap_result == NULL) {
+        /* FIXME: Clear the last error? */
+        if (verbose)
+            pas_log("VirtualAlloc returned NULL!\n");
+        return NULL;
+    }
+#else /* _WIN32 -> so !_WIN32 */
+    mmap_result = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
+    if (mmap_result == MAP_FAILED) {
+        errno = 0; /* Clear the error so that we don't leak errno in those
+                      cases where we handle the allocation failure
+                      internally. If we want to set errno for clients then we
+                      do that explicitly. */
+        return NULL;
+    }
+
+    if (commit_mode == pas_decommitted)
+        pas_page_malloc_decommit(mmap_result, size, pas_may_mmap);
+#endif /* !_WIN32 */
+
+    uintptr_t real_begin = (uintptr_t)mmap_result;
+    uintptr_t real_end = (uintptr_t)mmap_result + mapped_size;
+
+    uintptr_t simulated_begin = pas_round_up_to_power_of_2(real_begin, pas_page_malloc_alignment());
+    uintptr_t simulated_end = simulated_begin + size;
+
+    if (real_page_size() == pas_page_malloc_alignment()) {
+        PAS_ASSERT(real_begin == simulated_begin);
+        PAS_ASSERT(real_end == simulated_end);
+        return (void*)real_begin;
+    }
+
+    PAS_ASSERT(real_page_size() < pas_page_malloc_alignment());
+
+    deallocate_impl((void*)real_begin, simulated_begin - real_begin);
+    deallocate_impl((void*)simulated_end, real_end - simulated_end);
+
+    return (void*)simulated_begin;
 }
 
 pas_aligned_allocation_result
@@ -120,8 +228,11 @@ pas_page_malloc_try_allocate_without_deallocating_padding(
     page_allocation_alignment = pas_round_up_to_power_of_2(alignment.alignment,
                                                            pas_page_malloc_alignment());
     aligned_size = pas_round_up_to_power_of_2(size, page_allocation_alignment);
+
+    PAS_ASSERT(page_allocation_alignment >= pas_page_malloc_alignment());
+    PAS_ASSERT(aligned_size >= size);
     
-    if (page_allocation_alignment <= pas_page_malloc_alignment() && !alignment.alignment_begin)
+    if (page_allocation_alignment == pas_page_malloc_alignment() && !alignment.alignment_begin)
         mapped_size = aligned_size;
     else {
         /* If we have any interesting alignment requirements to satisfy, allocate extra memory,
@@ -133,28 +244,9 @@ pas_page_malloc_try_allocate_without_deallocating_padding(
     if (verbose)
         pas_log("mapped_size = %zu\n", mapped_size);
 
-#ifdef _WIN32
-    mmap_result = VirtualAlloc(NULL, mapped_size, commit_mode == pas_committed ? MEM_RESERVE | MEM_COMMIT : MEM_RESERVE, PAGE_READWRITE);
-    if (mmap_result == NULL) {
-        /* FIXME: Clear the last error? */
-        if (verbose)
-            pas_log("VirtualAlloc returned NULL!\n");
+    mmap_result = allocate_with_possibly_simulated_page_size(mapped_size, commit_mode);
+    if (!mmap_result)
         return result;
-    }
-#else /* _WIN32 -> so !_WIN32 */
-    mmap_result = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
-    if (mmap_result == MAP_FAILED) {
-        errno = 0; /* Clear the error so that we don't leak errno in those
-                      cases where we handle the allocation failure
-                      internally. If we want to set errno for clients then we
-                      do that explicitly. */
-        return result;
-    }
-
-    if (commit_mode == pas_decommitted)
-        pas_page_malloc_decommit(mmap_result, mapped_size, pas_may_mmap);
-#endif /* !_WIN32 */
     
     mapped = (char*)mmap_result;
     mapped_end = mapped + mapped_size;
@@ -491,23 +583,12 @@ void pas_page_malloc_decommit_without_mprotect(void* ptr, size_t size, pas_mmap_
 void pas_page_malloc_deallocate(void* ptr, size_t size)
 {
     uintptr_t ptr_as_int;
-#ifdef _WIN32
-    BOOL result;
-#endif
     
     ptr_as_int = (uintptr_t)ptr;
     PAS_ASSERT(pas_is_aligned(ptr_as_int, pas_page_malloc_alignment()));
     PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
     
-    if (!size)
-        return;
-
-#ifdef _WIN32
-    result = VirtualFree(ptr, 0, MEM_RELEASE);
-    PAS_ASSERT(result);
-#else
-    PAS_SYSCALL(munmap(ptr, size));
-#endif
+    deallocate_impl(ptr, size);
 
     pas_page_malloc_num_allocated_bytes -= size;
 }

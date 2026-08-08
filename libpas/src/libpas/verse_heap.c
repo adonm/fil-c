@@ -477,7 +477,7 @@ allocation_result_crash_on_error_for_filc(pas_allocation_result result)
 #if PAS_ENABLE_FILC
         filc_safety_panic(NULL, "out of memory.");
 #else
-        pas_panic("out of memory.");
+        pas_panic("out of memory.\n");
 #endif
     }
     return result;

@@ -167,7 +167,7 @@
 #define PAS_ENABLE_OUTLINE_MEDIUM_PAGE_HEADER 1
 #define PAS_ENABLE_INLINE_NON_COMMITTABLE_GRANULES 1
 #define PAS_ENABLE_OUTLINE_NON_COMMITTABLE_GRANULES 1
-#define PAS_ENABLE_FILC                  1
+#define PAS_ENABLE_FILC                  0 /* Fil-C code only works in the Fil-C build. */
 #endif
 
 #define PAS_COMPACT_PTR_SIZE             3

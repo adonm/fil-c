@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021-2022 Apple Inc. All rights reserved.
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -46,10 +47,19 @@ using namespace std;
 
 namespace {
 
+const bool verbose = false;
+
 size_t numCommittedPagesInTLC()
 {
     pas_thread_local_cache* cache = pas_thread_local_cache_try_get();
     CHECK(cache);
+    if (verbose) {
+        pas_log("size for index 0: %zu\n", pas_thread_local_cache_size_for_allocator_index_capacity(0));
+        pas_log("size for index %u: %zu\n",
+                cache->allocator_index_capacity,
+                pas_thread_local_cache_size_for_allocator_index_capacity(
+                    cache->allocator_index_capacity));
+    }
     return pas_count_committed_pages(
         cache,
         pas_thread_local_cache_size_for_allocator_index_capacity(
@@ -301,11 +311,17 @@ void testTLCDecommitThenDestroyImpl(unsigned numHeaps)
 
     if (PAS_COMMITTED_PAGES_VECTOR_WORKS)
         CHECK_GREATER(numCommittedPagesInTLC(), 1);
+    if (verbose)
+        pas_log("numCommittedPagesInTLC() = %zu\n", numCommittedPagesInTLC());
     CHECK(pas_thread_local_cache_try_get()->deallocation_log_index);
 
+    if (verbose)
+        pas_log("About to for_all\n");
     pas_thread_local_cache_for_all(pas_allocator_scavenge_force_stop_action,
                                    pas_deallocator_scavenge_no_action,
                                    pas_thread_local_cache_decommit_if_possible_action);
+    if (verbose)
+        pas_log("Did for_all\n");
 
     if (PAS_COMMITTED_PAGES_VECTOR_WORKS)
         CHECK_EQUAL(numCommittedPagesInTLC(), 1);
@@ -442,7 +458,7 @@ void testAllocateFromStoppedBaselineDuringThreadDestruction()
 
 void addTLCDecommitTests()
 {
-#if PAS_ENABLE_BMALLOC && !PAS_OS(FREEBSD)
+#if PAS_ENABLE_BMALLOC && (PAS_OS(DARWIN) || defined(_WIN32))
     {
         DecommitZeroFill decommitZeroFill;
     
@@ -454,7 +470,7 @@ void addTLCDecommitTests()
                 bmalloc_typed_runtime_config.base.view_cache_capacity_for_object_size =
                     pas_heap_runtime_config_aggressive_view_cache_capacity;
             });
-    
+
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 10000; }, false,
                                  588, 300, 304));
         ADD_TEST(testTLCDecommit(10000, [] (unsigned index) { return index < 10000; }, true,

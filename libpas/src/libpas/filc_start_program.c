@@ -24,6 +24,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
  */
 
+#include "pas_config.h"
+
+#if LIBPAS_ENABLED && PAS_ENABLE_FILC
+
 #include "filc_native.h"
 #include "filc_runtime.h"
 #include <elf.h>
@@ -240,3 +244,4 @@ void filc_start_program(int argc, char** argv,
     for (;;) pause();
 }
 
+#endif /* LIBPAS_ENABLED && PAS_ENABLE_FILC */

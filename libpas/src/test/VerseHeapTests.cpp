@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -28,6 +29,7 @@
 #if PAS_ENABLE_VERSE && PAS_ENABLE_BMALLOC
 
 #include "bmalloc_heap.h"
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include "pas_scavenger.h"
@@ -147,7 +149,7 @@ void testAllocations(size_t count,
     size_t actualSize = 0;
 
     for (size_t index = 0; index < count; ++index) {
-        void* ptr = verse_heap_allocate(defaultHeap, size);
+        void* ptr = (void*)verse_heap_allocate(defaultHeap, size).begin;
 
         CHECK_EQUAL(verse_heap_is_marked(ptr),
                     allocationMode == verse_heap_allocate_black);
@@ -246,7 +248,7 @@ void testAllocations(size_t count,
     }
 
     while (ptrSet.size()) {
-        void* ptr = verse_heap_allocate(defaultHeap, size);
+        void* ptr = (void*)verse_heap_allocate(defaultHeap, size).begin;
         CHECK(ptrSet.count(ptr));
         ptrSet.erase(ptr);
     }
@@ -264,7 +266,7 @@ void testAllocateDuringIteration(verse_heap_black_allocation_mode firstAllocatio
     if (firstAllocationMode == verse_heap_allocate_black)
         verse_heap_start_allocating_black_before_handshake();
 
-    void* ptr1 = verse_heap_allocate(defaultHeap, 100);
+    void* ptr1 = (void*)verse_heap_allocate(defaultHeap, 100).begin;
 
     if (firstAllocationMode == verse_heap_do_not_allocate_black) {
         verse_heap_start_allocating_black_before_handshake();
@@ -277,7 +279,7 @@ void testAllocateDuringIteration(verse_heap_black_allocation_mode firstAllocatio
 
     CHECK_EQUAL(foundObjects.size(), 0);
 
-    void* ptr2 = verse_heap_allocate(defaultHeap, 100);
+    void* ptr2 = (void*)verse_heap_allocate(defaultHeap, 100).begin;
 
     CHECK_EQUAL(verse_heap_get_segregated_page(reinterpret_cast<uintptr_t>(ptr1)),
                 verse_heap_get_segregated_page(reinterpret_cast<uintptr_t>(ptr2)));
@@ -694,7 +696,7 @@ void testWorkflow(const std::vector<Op>& ops)
             break;
         }
         case Allocate: {
-            void* ptr = verse_heap_allocate(getHeap(op.heap), op.size);
+            void* ptr = (void*)verse_heap_allocate(getHeap(op.heap), op.size).begin;
             size_t actualSize = verse_heap_get_allocation_size(reinterpret_cast<uintptr_t>(ptr));
             CHECK_GREATER_EQUAL(actualSize, op.size);
             Object object(ptr, actualSize, op.heap);
@@ -970,7 +972,7 @@ void chaosMutatorThreadMain(Thread* thread)
 
         auto allocate = [&] (size_t size) {
             Heap heap = randomHeap();
-            void* ptr = verse_heap_try_allocate(getHeap(heap), size);
+            void* ptr = (void*)verse_heap_try_allocate(getHeap(heap), size).begin;
             if (heap == Cage) {
                 if (!ptr)
                     return;
@@ -1351,7 +1353,7 @@ void testConservativeMarking(size_t size,
     vector<void*> deadObjectArray;
 
     for (size_t count = numTestObjects; count--;) {
-        void* ptr = verse_heap_allocate(defaultHeap, size);
+        void* ptr = (void*)verse_heap_allocate(defaultHeap, size).begin;
         CHECK(!fullObjectSet.count(ptr));
         CHECK(!liveObjectSet.count(ptr));
         fullObjectSet.insert(ptr);
@@ -1638,9 +1640,9 @@ void checkConservativeMarkingInViewUpForBits(pas_race_test_hook_kind kind, va_li
 void testConservativeMarkDuringPrepareForBitsAllocation(size_t size)
 {
     initializeOnlyDefaultHeap();
-	verse_heap_mark_bits_page_commit_controller_lock();
+    verse_heap_mark_bits_page_commit_controller_lock();
 
-    objectsThatShouldGetMarked.insert(verse_heap_allocate(defaultHeap, 16));
+    objectsThatShouldGetMarked.insert((void*)verse_heap_allocate(defaultHeap, 16).begin);
 
     verse_heap_start_allocating_black_before_handshake();
     handshakeOnOneThread();
@@ -1656,7 +1658,7 @@ void testCreateHeap(size_t minAlign, size_t reservationSize, size_t reservationA
 {
     pas_heap* heap = verse_heap_create(minAlign, reservationSize, reservationAlignment);
     verse_heap_did_become_ready_for_allocation();
-    void* ptr = verse_heap_allocate(heap, 0);
+    void* ptr = (void*)verse_heap_allocate(heap, 0).begin;
     CHECK(pas_is_aligned(reinterpret_cast<uintptr_t>(ptr), minAlign));
     if (reservationSize) {
         void* base = verse_heap_get_base(heap);
@@ -1761,15 +1763,15 @@ void testDecommitMarkBits()
     
     static constexpr bool verbose = false;
     
-	pas_scavenger_deep_sleep_timeout_in_milliseconds = 1.;
-	pas_scavenger_period_in_milliseconds = 1.;
-	pas_scavenger_max_epoch_delta = 1000ll * 1000ll;
+    pas_scavenger_deep_sleep_timeout_in_milliseconds = 1.;
+    pas_scavenger_period_in_milliseconds = 1.;
+    pas_scavenger_max_epoch_delta = 1000ll * 1000ll;
 
-	initializeOnlyDefaultHeap();
+    initializeOnlyDefaultHeap();
 
-	void* smallObject = verse_heap_allocate(defaultHeap, 16);
-	void* mediumObject = verse_heap_allocate(defaultHeap, 10000);
-	void* largeObject = verse_heap_allocate(defaultHeap, 10000000);
+    void* smallObject = (void*)verse_heap_allocate(defaultHeap, 16).begin;
+    void* mediumObject = (void*)verse_heap_allocate(defaultHeap, 10000).begin;
+    void* largeObject = (void*)verse_heap_allocate(defaultHeap, 10000000).begin;
 
     if (verbose) {
         pas_log("smallObject = %p\n", smallObject);
@@ -1777,41 +1779,51 @@ void testDecommitMarkBits()
         pas_log("largeObject = %p\n", largeObject);
     }
 
-	CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(smallObject)), pas_small_segregated_object_kind);
-	CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(mediumObject)), pas_medium_segregated_object_kind);
-	CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(largeObject)), pas_large_object_kind);
+    CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(smallObject)), pas_small_segregated_object_kind);
+    CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(mediumObject)), pas_medium_segregated_object_kind);
+    CHECK_EQUAL(verse_heap_get_object_kind(reinterpret_cast<uintptr_t>(largeObject)), pas_large_object_kind);
 
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
 
 #if !PAS_OS(DARWIN) && !PAS_OS(FREEBSD)
-	auto areMarkBitsCommitted = [&] (void* object) -> bool {
-		void* pageBase = reinterpret_cast<void*>(pas_round_down_to_power_of_2(reinterpret_cast<uintptr_t>(object), VERSE_HEAP_CHUNK_SIZE));
+    auto areMarkBitsCommitted = [&] (void* object) -> bool {
+        void* pageBase = reinterpret_cast<void*>(pas_round_down_to_power_of_2(reinterpret_cast<uintptr_t>(object), VERSE_HEAP_CHUNK_SIZE));
         pas_log("Checking commit status of %p with size %zu\n", pageBase, static_cast<size_t>(VERSE_HEAP_PAGE_SIZE));
-		size_t numCommittedPages = pas_count_committed_pages(pageBase, VERSE_HEAP_PAGE_SIZE, &allocationConfig);
-		CHECK(!numCommittedPages || numCommittedPages == (VERSE_HEAP_PAGE_SIZE >> pas_page_malloc_alignment_shift()));
-		return !!numCommittedPages;
-	};
+        size_t numCommittedPages = pas_count_committed_pages(pageBase, VERSE_HEAP_PAGE_SIZE, &allocationConfig);
+        CHECK(!numCommittedPages || numCommittedPages == (VERSE_HEAP_PAGE_SIZE >> pas_page_malloc_alignment_shift()));
+        return !!numCommittedPages;
+    };
     bool hasCommitCheck = true;
 #else // !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) -> so PAS_OS(DARWIN) || PAS_OS(FREEBSD)
     auto areMarkBitsCommitted = [&] (void* object) -> bool { return true; };
     bool hasCommitCheck = false;
 #endif // !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) -> so end of PAS_OS(DARWIN) || PAS_OS(FREEBSD)
 
-	verse_heap_mark_bits_page_commit_controller_lock();
+    auto flashMarkBits = [&] () {
+        verse_heap_set_is_marked(smallObject, true);
+        verse_heap_set_is_marked(mediumObject, true);
+        verse_heap_set_is_marked(largeObject, true);
+        verse_heap_set_is_marked(smallObject, false);
+        verse_heap_set_is_marked(mediumObject, false);
+        verse_heap_set_is_marked(largeObject, false);
+    };
 
+    verse_heap_mark_bits_page_commit_controller_lock();
+    flashMarkBits();
+    
     if (hasCommitCheck) {
         CHECK(areMarkBitsCommitted(smallObject));
         CHECK(areMarkBitsCommitted(mediumObject));
         CHECK(areMarkBitsCommitted(largeObject));
     }
 
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
 
-	verse_heap_mark_bits_page_commit_controller_unlock();
+    verse_heap_mark_bits_page_commit_controller_unlock();
     pas_scavenger_decommit_verse_heap_mark_bits();
 
     if (hasCommitCheck) {
@@ -1820,36 +1832,12 @@ void testDecommitMarkBits()
         CHECK(!areMarkBitsCommitted(largeObject));
     }
 
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
 
-	verse_heap_mark_bits_page_commit_controller_lock();
-
-    if (hasCommitCheck) {
-        CHECK(areMarkBitsCommitted(smallObject));
-        CHECK(areMarkBitsCommitted(mediumObject));
-        CHECK(areMarkBitsCommitted(largeObject));
-    }
-
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
-
-	verse_heap_mark_bits_page_commit_controller_unlock();
-	waitForScavengerShutdown();
-
-    if (hasCommitCheck) {
-        CHECK(!areMarkBitsCommitted(smallObject));
-        CHECK(!areMarkBitsCommitted(mediumObject));
-        CHECK(!areMarkBitsCommitted(largeObject));
-    }
-
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
-	
-	verse_heap_mark_bits_page_commit_controller_lock();
+    verse_heap_mark_bits_page_commit_controller_lock();
+    flashMarkBits();
 
     if (hasCommitCheck) {
         CHECK(areMarkBitsCommitted(smallObject));
@@ -1857,14 +1845,40 @@ void testDecommitMarkBits()
         CHECK(areMarkBitsCommitted(largeObject));
     }
 
-	CHECK(verse_heap_object_is_allocated(smallObject));
-	CHECK(verse_heap_object_is_allocated(mediumObject));
-	CHECK(verse_heap_object_is_allocated(largeObject));
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
+
+    verse_heap_mark_bits_page_commit_controller_unlock();
+    waitForScavengerShutdown();
+
+    if (hasCommitCheck) {
+        CHECK(!areMarkBitsCommitted(smallObject));
+        CHECK(!areMarkBitsCommitted(mediumObject));
+        CHECK(!areMarkBitsCommitted(largeObject));
+    }
+
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
 	
-	verse_heap_start_allocating_black_before_handshake();
-	handshakeOnOneThread();
-	sweepOnOneThread();
-	waitForScavengerShutdown();
+    verse_heap_mark_bits_page_commit_controller_lock();
+    flashMarkBits();
+
+    if (hasCommitCheck) {
+        CHECK(areMarkBitsCommitted(smallObject));
+        CHECK(areMarkBitsCommitted(mediumObject));
+        CHECK(areMarkBitsCommitted(largeObject));
+    }
+
+    CHECK(verse_heap_object_is_allocated(smallObject));
+    CHECK(verse_heap_object_is_allocated(mediumObject));
+    CHECK(verse_heap_object_is_allocated(largeObject));
+	
+    verse_heap_start_allocating_black_before_handshake();
+    handshakeOnOneThread();
+    sweepOnOneThread();
+    waitForScavengerShutdown();
 
     if (hasCommitCheck) {
         CHECK(areMarkBitsCommitted(smallObject));
@@ -1872,12 +1886,12 @@ void testDecommitMarkBits()
         CHECK(!areMarkBitsCommitted(largeObject));
     }
 
-	CHECK(!verse_heap_object_is_allocated(smallObject));
-	CHECK(!verse_heap_object_is_allocated(mediumObject));
-	CHECK(!verse_heap_object_is_allocated(largeObject));
+    CHECK(!verse_heap_object_is_allocated(smallObject));
+    CHECK(!verse_heap_object_is_allocated(mediumObject));
+    CHECK(!verse_heap_object_is_allocated(largeObject));
 
-	verse_heap_mark_bits_page_commit_controller_unlock();
-	waitForScavengerShutdown();
+    verse_heap_mark_bits_page_commit_controller_unlock();
+    waitForScavengerShutdown();
 	
     if (hasCommitCheck) {
         CHECK(!areMarkBitsCommitted(smallObject));
@@ -1885,9 +1899,9 @@ void testDecommitMarkBits()
         CHECK(!areMarkBitsCommitted(largeObject));
     }
 
-	CHECK(!verse_heap_object_is_allocated(smallObject));
-	CHECK(!verse_heap_object_is_allocated(mediumObject));
-	CHECK(!verse_heap_object_is_allocated(largeObject));
+    CHECK(!verse_heap_object_is_allocated(smallObject));
+    CHECK(!verse_heap_object_is_allocated(mediumObject));
+    CHECK(!verse_heap_object_is_allocated(largeObject));
 }
 
 void doOneSizeWorkflowTests(size_t size)

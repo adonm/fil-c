@@ -233,11 +233,11 @@ BootJITHeap::BootJITHeap()
         "boot-jit-heap",
         [] () {
 #if PAS_ENABLE_JIT
-            constexpr unsigned numRegions = 20;
+            constexpr unsigned numRegions = 50;
             
             for (unsigned i = numRegions; i--;) {
                 size_t size =
-                    pas_round_up_to_power_of_2(5000000, pas_page_malloc_alignment());
+                    pas_round_up_to_power_of_2(20000000, pas_page_malloc_alignment());
 
 #ifdef _WIN32
                 void* base = _aligned_malloc(size, pas_page_malloc_alignment());
@@ -401,7 +401,7 @@ void addViewCacheTests();
 
 void testSucceeded()
 {
-    if (pas_thread_that_is_crash_logging) {
+    if (pas_panicking_thread) {
         cout << "Test almost succeeded, but libpas is crashing!" << endl;
         abort();
     }

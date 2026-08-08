@@ -1682,6 +1682,8 @@ static inline bool pas_system_thread_id_weak_cas(pas_system_thread_id* ptr,
 }
 #endif
 
+extern pas_system_thread_id pas_panicking_thread;
+
 typedef pthread_mutex_t pas_system_mutex;
 typedef pthread_cond_t pas_system_condition;
 typedef pthread_once_t pas_system_once;

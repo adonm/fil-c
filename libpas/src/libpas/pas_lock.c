@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2020-2021 Apple Inc. All rights reserved.
- * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2023-2024 Epic Games, Inc. All Rights Reserved. 
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -34,7 +35,8 @@
 #include <mach/thread_switch.h>
 #endif
 #if PAS_OS(LINUX)
-#include <futex_calls.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
 #endif
 
 bool pas_lock_disallowed;
@@ -116,7 +118,7 @@ void pas_lock_lock_slow(pas_lock* lock)
             PAS_ASSERT(old_state == PAS_LOCK_HELD_WAITING);
         locked_state = PAS_LOCK_HELD_WAITING;
 
-        yolo_futex_wait((volatile int*)&lock->lock, PAS_LOCK_HELD_WAITING, 0);
+        syscall(SYS_futex, &lock->lock, FUTEX_WAIT_PRIVATE, PAS_LOCK_HELD_WAITING, 0, 0, 0);
     }
 }
 
@@ -132,7 +134,7 @@ void pas_lock_unlock_slow(pas_lock* lock)
 
         if (pas_compare_and_swap_uint32_strong(&lock->lock, PAS_LOCK_HELD_WAITING, PAS_LOCK_NOT_HELD)
             == PAS_LOCK_HELD_WAITING) {
-            yolo_futex_wake((volatile int*)&lock->lock, 1, 0);
+            syscall(SYS_futex, &lock->lock, FUTEX_WAKE_PRIVATE, 1, 0, 0, 0);
             return;
         }
     }

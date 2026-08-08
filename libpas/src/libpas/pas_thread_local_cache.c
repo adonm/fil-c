@@ -1101,6 +1101,8 @@ bool pas_thread_local_cache_for_all(pas_allocator_scavenge_action allocator_acti
                                     pas_deallocator_scavenge_action deallocator_action,
                                     pas_thread_local_cache_decommit_action thread_local_cache_decommit_action)
 {
+    static const bool verbose = false;
+    
     pas_thread_local_cache_node* node;
     bool result;
     size_t page_size;
@@ -1188,9 +1190,13 @@ bool pas_thread_local_cache_for_all(pas_allocator_scavenge_action allocator_acti
 
                 if (allocator_index >= cache->allocator_index_upper_bound)
                     break;
+                if (verbose)
+                    pas_log("allocator_index = %u\n", allocator_index);
 
                 scavenger_data = (pas_local_allocator_scavenger_data*)
                     pas_thread_local_cache_get_local_allocator_direct(cache, allocator_index);
+                if (verbose)
+                    pas_log("scavenger_data = %p\n", scavenger_data);
 
                 if (thread_local_cache_decommit_action == pas_thread_local_cache_decommit_if_possible_action) {
                     pas_allocator_index end_allocator_index = allocator_index + pas_thread_local_cache_layout_node_num_allocator_indices(layout_node);
@@ -1198,7 +1204,14 @@ bool pas_thread_local_cache_for_all(pas_allocator_scavenge_action allocator_acti
                     PAS_ASSERT(start_of_possible_decommit <= decommit_exclusion_range.start_of_possible_decommit);
                     PAS_ASSERT(start_of_possible_decommit <= decommit_exclusion_range.end_of_possible_decommit);
 
+                    if (verbose) {
+                        pas_log("decommit_exclusion_range = %zu...%zu\n",
+                                (size_t)decommit_exclusion_range.start_of_possible_decommit,
+                                (size_t)decommit_exclusion_range.end_of_possible_decommit);
+                    }
                     if (pas_decommit_exclusion_range_is_contiguous(decommit_exclusion_range)) {
+                        if (verbose)
+                            pas_log("stopping\n");
                         stop_allocator(
                             cache, allocator_action, allocator_index, scavenger_data, &result, &thread_suspend_data);
 
@@ -1218,6 +1231,8 @@ bool pas_thread_local_cache_for_all(pas_allocator_scavenge_action allocator_acti
                     }
 
                     if (pas_decommit_exclusion_range_is_inverted(decommit_exclusion_range)) {
+                        if (verbose)
+                            pas_log("inverted\n");
                         decommit_allocator_range(
                             cache, begin_segment, begin_node_index, start_of_possible_decommit,
                             decommit_exclusion_range.end_of_possible_decommit, segment, node_index);

@@ -1286,7 +1286,7 @@ void addAllTests()
             ADD_GROUP(addTheTests(1, false));
         }
     }
-#endif // PAS_ENABLE_HOTBIT
+#endif // PAS_ENABLE_JIT
 }
 
 } // anonymous namespace

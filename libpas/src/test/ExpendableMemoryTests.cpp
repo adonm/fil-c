@@ -282,7 +282,7 @@ void testRematerializeAfterSearchOfDecommitted()
             &heap->segregated_heap,
             pas_segregated_heap_index_for_size(size, BMALLOC_HEAP_CONFIG),
             pas_segregated_heap_medium_size_directory_search_within_size_class_progression,
-            pas_lock_is_not_held);
+            pas_lock_is_not_held).tuple;
 
     CHECK(tuple);
     CHECK_EQUAL(pas_compact_atomic_segregated_size_directory_ptr_load(&tuple->directory),
@@ -297,7 +297,7 @@ void testRematerializeAfterSearchOfDecommitted()
             &heap->segregated_heap,
             pas_segregated_heap_index_for_size(someOtherSize, BMALLOC_HEAP_CONFIG),
             pas_segregated_heap_medium_size_directory_search_within_size_class_progression,
-            pas_lock_is_not_held);
+            pas_lock_is_not_held).tuple;
 
     if (someOtherTuple) {
         cout << "Unexpectedly found a tuple: " << someOtherTuple << "\n";

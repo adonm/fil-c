@@ -36,9 +36,9 @@
 #include <set>
 #include <thread>
 #include "pas_committed_pages_vector.h"
-#include "ue_include/verse_heap_config_ue.h"
-#include "ue_include/verse_heap_mark_bits_page_commit_controller_ue.h"
-#include "ue_include/verse_heap_ue.h"
+#include "verse_heap_config.h"
+#include "verse_heap_mark_bits_page_commit_controller.h"
+#include "verse_heap.h"
 #include "verse_heap_inlines.h"
 #include "verse_heap_object_set_inlines.h"
 #include <vector>

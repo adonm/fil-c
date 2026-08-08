@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -30,7 +31,6 @@
 #include "pas_segmented_vector.h"
 #include "verse_heap_compact_large_entry_ptr.h"
 #include "verse_heap_iterate_filter.h"
-#include "ue_include/verse_heap_object_set_ue.h"
 
 #if PAS_ENABLE_VERSE
 
@@ -57,6 +57,19 @@ struct verse_heap_object_set {
         .large_entries_capacity = 0, \
         .views = PAS_SEGMENTED_VECTOR_INITIALIZER, \
     })
+
+PAS_API verse_heap_object_set* verse_heap_object_set_create(void);
+
+PAS_API void verse_heap_object_set_start_iterate_before_handshake(verse_heap_object_set* set);
+PAS_API size_t verse_heap_object_set_start_iterate_after_handshake(verse_heap_object_set* set);
+PAS_API void verse_heap_object_set_iterate_range(
+    verse_heap_object_set* set,
+    size_t begin,
+    size_t end,
+    verse_heap_iterate_filter filter,
+    void (*callback)(void* object, void* arg),
+    void* arg);
+PAS_API void verse_heap_object_set_end_iterate(verse_heap_object_set* set);
 
 PAS_API void verse_heap_object_set_add_view(verse_heap_object_set* set, pas_segregated_exclusive_view* view);
 PAS_API void verse_heap_object_set_add_large_entry(verse_heap_object_set* set, verse_heap_large_entry* entry);

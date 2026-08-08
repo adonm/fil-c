@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021 Apple Inc. All rights reserved.
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -30,9 +31,19 @@
 #include "pas_local_allocator_kind.h"
 #include "pas_local_allocator_location.h"
 #include "pas_lock.h"
-#include "ue_include/pas_local_allocator_scavenger_data_ue.h"
 
 PAS_BEGIN_EXTERN_C;
+
+struct pas_local_allocator_scavenger_data;
+typedef struct pas_local_allocator_scavenger_data pas_local_allocator_scavenger_data;
+
+/* This should just be 32-bit. */
+struct pas_local_allocator_scavenger_data {
+    bool is_in_use;
+    uint8_t should_stop_count;
+    bool dirty;
+    uint8_t encoded_kind_and_location;
+};
 
 #define PAS_LOCAL_ALLOCATOR_SCAVENGER_DATA_ENCODE_KIND_AND_LOCATION(kind, location) \
     ((uint8_t)((unsigned)(kind) | ((unsigned)(location) << 7)))

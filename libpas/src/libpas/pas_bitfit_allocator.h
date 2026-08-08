@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2020 Apple Inc. All rights reserved.
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -28,14 +29,18 @@
 #define PAS_BITFIT_ALLOCATOR_H
 
 #include "pas_utils.h"
-#include "ue_include/pas_bitfit_allocator_ue.h"
 
 PAS_BEGIN_EXTERN_C;
 
-struct pas_bitfit_allocator;
-struct pas_bitfit_page;
 typedef struct pas_bitfit_allocator pas_bitfit_allocator;
 typedef struct pas_bitfit_page pas_bitfit_page;
+typedef struct pas_bitfit_size_class pas_bitfit_size_class;
+typedef struct pas_bitfit_view pas_bitfit_view;
+
+struct pas_bitfit_allocator {
+    pas_bitfit_size_class* size_class;
+    pas_bitfit_view* view;
+};
 
 PAS_API void pas_bitfit_allocator_construct(pas_bitfit_allocator* allocator,
                                             pas_bitfit_size_class* size_class);

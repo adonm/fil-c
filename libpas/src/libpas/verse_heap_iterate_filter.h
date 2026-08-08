@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -27,11 +28,29 @@
 #define VERSE_HEAP_ITERATE_FILTER_H
 
 #include "pas_utils.h"
-#include "ue_include/verse_heap_iterate_filter_ue.h"
 
 #if PAS_ENABLE_VERSE
 
 PAS_BEGIN_EXTERN_C;
+
+enum verse_heap_iterate_filter {
+    /* Iterate unmarked objects.
+
+       Sample uses:
+       - Destructing dead objects before sweep.
+       - Executing fixpoint constraints on objects that can self-mark during the mark phase. */
+    verse_heap_iterate_unmarked,
+
+    /* Iterate marked objects.
+
+       Sample uses:
+       - Performing a census post-mark but pre-sweep, for example to null weak references.
+       - Executing fixpoint constraints on objects whose constraints become live when those objects are
+         live. */
+    verse_heap_iterate_marked,
+};
+
+typedef enum verse_heap_iterate_filter verse_heap_iterate_filter;
 
 static inline const char* verse_heap_iterate_filter_get_string(verse_heap_iterate_filter filter)
 {

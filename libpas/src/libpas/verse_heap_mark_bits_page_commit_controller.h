@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -30,7 +31,6 @@
 #include "pas_lock.h"
 #include "pas_segmented_vector.h"
 #include "verse_heap_compact_mark_bits_page_commit_controller_ptr.h"
-#include "ue_include/verse_heap_mark_bits_page_commit_controller_ue.h"
 
 #if PAS_ENABLE_VERSE
 
@@ -76,6 +76,12 @@ PAS_API bool verse_heap_mark_bits_page_commit_controller_scavenge_periodic(void)
 
 PAS_API void verse_heap_mark_bits_page_commit_controller_for_each(
     void (*callback)(verse_heap_mark_bits_page_commit_controller* controller));
+
+/* Forces all mark bit pages to be committed and ensures that they cannot become decommitted.  */
+PAS_API void verse_heap_mark_bits_page_commit_controller_lock(void);
+
+/* Relinquishes the requirement that mark bit pages are committed. */
+PAS_API void verse_heap_mark_bits_page_commit_controller_unlock(void);
 
 PAS_END_EXTERN_C;
 

@@ -68,7 +68,6 @@ pas_bitfit_allocator_try_allocate(pas_bitfit_allocator* allocator,
     PAS_ASSERT(config.base.is_enabled);
 
     /* I wish this could be a _Static_assert, but that trips over the compiler's competence. */
-    PAS_ASSERT(PAS_LOCAL_ALLOCATOR_SIZE(0) == PAS_FAKE_LOCAL_ALLOCATOR_SIZE(0));
     PAS_ASSERT(PAS_LOCAL_ALLOCATOR_ALIGNMENT >= alignof(pas_local_allocator));
     
     if (!size)

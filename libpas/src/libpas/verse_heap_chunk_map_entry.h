@@ -30,7 +30,7 @@
 #include "pas_compact_tagged_atomic_ptr.h"
 #include "pas_empty_mode.h"
 #include "pas_page_kind.h"
-#include "ue_include/verse_heap_config_ue.h"
+#include "verse_heap_core_config.h"
 
 #if PAS_ENABLE_VERSE
 

@@ -27,9 +27,7 @@
 
 #if LIBPAS_ENABLED
 
-#include "pas_utils.h"
-
-#include "ue_include/verse_local_allocator_ue.h"
+#include "verse_local_allocator.h"
 
 #include "pas_heap.h"
 #include "pas_local_allocator_inlines.h"

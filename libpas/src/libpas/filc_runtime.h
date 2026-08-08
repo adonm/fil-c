@@ -40,7 +40,7 @@
 #include "verse_heap.h"
 #include "verse_heap_config.h"
 #include "verse_heap_page_header.h"
-#include "ue_include/verse_local_allocator_ue.h"
+#include "verse_local_allocator.h"
 #include <inttypes.h>
 #include <pthread.h>
 #include <setjmp.h>

@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -10,10 +11,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -32,7 +33,6 @@
 #include "pas_simple_large_free_heap.h"
 #include "pas_thread_local_cache_layout_node.h"
 #include "pas_utils.h"
-#include "ue_include/verse_heap_ue.h"
 #include "verse_heap_chunk_map.h"
 #include "verse_heap_config.h"
 #include "verse_heap_iteration_state.h"
@@ -44,12 +44,24 @@
 
 PAS_BEGIN_EXTERN_C;
 
-struct pas_heap;
 typedef struct pas_heap pas_heap;
+typedef struct verse_heap_object_set verse_heap_object_set;
+typedef struct verse_heap_page_header verse_heap_page_header;
 
 PAS_API extern bool verse_heap_is_ready_for_allocation;
 
+PAS_API extern verse_heap_object_set verse_heap_all_objects;
 PAS_API extern verse_heap_object_set_set verse_heap_all_sets;
+
+/* This is meant to be queried directly by the Verse VM. */
+PAS_API extern size_t verse_heap_live_bytes;
+PAS_API extern size_t verse_heap_swept_bytes; /* Num bytes swept by the last sweep. */
+
+/* This is meant to be set directly by the Verse VM. Anytime live bytes is found to be greater than or equal
+   the threshold, the trigger callback is called. It's expected that the callback will do its own locking
+   and it will use that lock to protect its changes to the threshold. */
+PAS_API extern size_t verse_heap_live_bytes_trigger_threshold;
+PAS_API extern void (*verse_heap_live_bytes_trigger_callback)(void);
 
 /* We never free into this and we make sure that it only ever gets totally zeroed pages. As in, totally
    clean pages from time of birth.
@@ -74,6 +86,50 @@ PAS_DECLARE_IMMUTABLE_VECTOR(verse_heap_thread_local_cache_layout_node_vector,
 							 pas_thread_local_cache_layout_node);
 
 PAS_API extern verse_heap_thread_local_cache_layout_node_vector verse_heap_thread_local_cache_layout_node_vector_instance;
+
+/* Creates a heap with the requested minalign and optionally size and alignment.
+
+   Heaps cannot be destroyed.
+
+   If the min_align argument is smaller than VERSE_HEAP_MIN_ALIGN then the behavior is as if it was
+   VERSE_HEAP_MIN_ALIGN, but it must be at least 1.
+
+   If the size is 0, then:
+   - Alignment is ignored.
+   - This heap has no special virtual memory reservation; it just uses the global page cache.
+
+   If the size is not zero, then:
+   - Size must be at least VERSE_HEAP_CHUNK_SIZE.
+   - Alignment must be a power of 2 and at least 1.
+   - Size must be aligned to alignment.
+   - The heap uses a virtual memory reservation of that size and alignment. */
+PAS_API pas_heap* verse_heap_create(size_t min_align, size_t size, size_t alignment);
+
+PAS_API void verse_heap_did_become_ready_for_allocation(void);
+
+PAS_API void* verse_heap_get_base(pas_heap* heap);
+PAS_API void verse_heap_add_to_set(pas_heap* heap, verse_heap_object_set* set);
+
+/* Call this from one thread to start sweep and then do a handshake and then call the second function. */
+PAS_API void verse_heap_start_allocating_black_before_handshake(void);
+PAS_API void verse_heap_start_sweep_before_handshake(void);
+PAS_API size_t verse_heap_start_sweep_after_handshake(void);
+/* Use this to sweep in parallel (each thread calls this with a different range). */
+PAS_API void verse_heap_sweep_range(size_t begin, size_t end);
+/* Call this from one thread to end the sweep. */
+PAS_API void verse_heap_end_sweep(void);
+
+PAS_API pas_thread_local_cache_node* verse_heap_get_thread_local_cache_node(void);
+PAS_API void verse_heap_thread_local_cache_node_stop_local_allocators(pas_thread_local_cache_node* node,
+																	  uint64_t expected_version);
+
+PAS_API uintptr_t verse_heap_find_allocated_object_start(uintptr_t inner_ptr);
+PAS_API size_t verse_heap_get_allocation_size(uintptr_t inner_ptr);
+
+PAS_API bool verse_heap_owns_address(uintptr_t ptr);
+
+PAS_API verse_heap_page_header* verse_heap_get_page_header(uintptr_t inner_ptr);
+PAS_API pas_heap* verse_heap_get_heap(uintptr_t inner_ptr);
 
 static PAS_ALWAYS_INLINE unsigned* verse_heap_mark_bits_word_for_address(uintptr_t address)
 {

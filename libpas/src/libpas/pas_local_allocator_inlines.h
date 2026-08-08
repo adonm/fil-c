@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2018-2022 Apple Inc. All rights reserved.
  * Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -49,7 +50,6 @@
 #include "pas_segregated_view_allocator_inlines.h"
 #include "pas_thread_local_cache.h"
 #include "pas_thread_local_cache_node.h"
-#include "ue_include/verse_heap_config_ue.h"
 #include "verse_heap.h"
 #include "verse_heap_config.h"
 #include "verse_heap_object_set_inlines.h"
@@ -1238,9 +1238,6 @@ pas_local_allocator_refill_with_known_config(
     PAS_ASSERT(page_config.kind != pas_segregated_page_config_kind_null);
     PAS_ASSERT(page_config.base.is_enabled);
 
-    /* I wish these could be _Static_assert's, but that trips over the compiler's competence. */
-    PAS_ASSERT(PAS_LOCAL_ALLOCATOR_SIZE(0) == PAS_FAKE_LOCAL_ALLOCATOR_SIZE(0));
-    PAS_ASSERT(PAS_LOCAL_ALLOCATOR_SIZE(page_config.num_alloc_bits) == PAS_FAKE_LOCAL_ALLOCATOR_SIZE(page_config.num_alloc_bits));
     PAS_ASSERT(PAS_LOCAL_ALLOCATOR_ALIGNMENT >= alignof(pas_local_allocator));
 
     size_directory = pas_segregated_view_get_size_directory(allocator->view);

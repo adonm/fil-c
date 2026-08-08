@@ -41,16 +41,15 @@
 #include "pas_reserved_memory_provider.h"
 #include "pas_scavenger.h"
 #include "pas_try_allocate_common.h"
-#include "ue_include/verse_heap_config_ue.h"
-#include "ue_include/verse_heap_ue.h"
+#include "verse_heap_config.h"
 #include "verse_heap_chunk_map_entry.h"
 #include "verse_heap_inlines.h"
 #include "verse_heap_object_set_inlines.h"
 #include "verse_heap_object_set_set.h"
 #include "verse_heap_page_header_inlines.h"
 #include "verse_heap_runtime_config.h"
+#include "verse_local_allocator.h"
 #include <inttypes.h>
-#include "ue_include/verse_local_allocator_ue.h"
 
 #if PAS_ENABLE_VERSE
 

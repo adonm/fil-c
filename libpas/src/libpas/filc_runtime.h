@@ -237,7 +237,7 @@ typedef uintptr_t filc_word;
    Note that both the allocator offset and allocator size give breathing room for fields to be
    added. */
 #define FILC_THREAD_ALLOCATOR_OFFSET      3072u
-#define FILC_THREAD_ALLOCATOR_SIZE        208u
+#define FILC_THREAD_ALLOCATOR_SIZE        (PAS_SYSTEM_PAGE_SIZE > 16384 ? 568u : 208u)
 #define FILC_THREAD_MAX_INLINE_SIZE_CLASS 416u
 #define FILC_THREAD_NUM_ALLOCATORS \
     ((FILC_THREAD_MAX_INLINE_SIZE_CLASS >> VERSE_HEAP_MIN_ALIGN_SHIFT) + 1u)

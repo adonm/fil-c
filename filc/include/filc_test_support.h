@@ -97,6 +97,10 @@ void zdump_pas_status(void);
    so it's not an officially supported API. */
 void zset_scavenger_periods_to_1ms(void);
 
+/* The system page size that the GC is configured with. This might be larger than the actual system
+   page size. */
+__SIZE_TYPE__ zgc_page_size(void);
+
 #ifdef __cplusplus
 }
 #endif

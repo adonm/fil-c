@@ -90,7 +90,8 @@ static constexpr uint8_t ThreadStateStopRequested = 4;
 static constexpr uint8_t ThreadStateDeferredSignal = 8;
 
 static constexpr size_t ThreadAllocatorOffset = 3072;
-static constexpr size_t ThreadAllocatorSize = 208;
+static constexpr size_t ThreadAllocatorSize4KOr16K = 208;
+static constexpr size_t ThreadAllocatorSize64K = 568;
 static constexpr size_t ThreadMaxInlineSizeClass = 416;
 static constexpr size_t ThreadNumAllocators = (ThreadMaxInlineSizeClass / GCMinAlign) + 1;
 
@@ -2635,6 +2636,29 @@ class Pizlonator {
     llvm_unreachable("Should not get here.");
   }
 
+  size_t systemPageSize() {
+    switch (Arch) {
+    case Triple::aarch64:
+      return 65536;
+    case Triple::x86_64:
+      return 4096;
+    default:
+      report_fatal_error("Unknown arch");
+    }
+  }
+
+  size_t threadAllocatorSize() {
+    switch (systemPageSize()) {
+    case 4096:
+    case 16384:
+      return ThreadAllocatorSize4KOr16K;
+    case 65536:
+      return ThreadAllocatorSize64K;
+    default:
+      report_fatal_error("Unknown system page size");
+    }
+  }
+
   Value* allocateObjectInline(size_t Size, Instruction* InsertBefore) {
     // This sanity check allows us to avoid overflow checks. Note that if this check causes us to
     // bail then, in the non-overflowing cases, we would have bailed anyway due to the NUM_ALLOCATORS
@@ -2649,7 +2673,7 @@ class Pizlonator {
       return nullptr;
     GetElementPtrInst* Allocator = GetElementPtrInst::Create(
       Int8Ty, MyThread,
-      { ConstantInt::get(IntPtrTy, ThreadAllocatorOffset + AllocatorIndex * ThreadAllocatorSize) },
+      { ConstantInt::get(IntPtrTy, ThreadAllocatorOffset + AllocatorIndex * threadAllocatorSize()) },
       "filc_thread_allocator", InsertBefore);
     Allocator->setDebugLoc(InsertBefore->getDebugLoc());
     CallInst* Allocate = CallInst::Create(

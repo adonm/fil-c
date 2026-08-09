@@ -551,7 +551,12 @@ void filc_initialize(filc_stack_limit stack_limit)
     PAS_ASSERT(FILC_CC_INLINE_SIZE == 256);
     PAS_ASSERT(FILC_CC_ALIGNMENT == 64);
     PAS_ASSERT(FILC_THREAD_ALLOCATOR_OFFSET == 3072);
-    PAS_ASSERT(FILC_THREAD_ALLOCATOR_SIZE == 208);
+    if (PAS_SYSTEM_PAGE_SIZE == 4096)
+        PAS_ASSERT(FILC_THREAD_ALLOCATOR_SIZE == 208);
+    else {
+        PAS_ASSERT(PAS_SYSTEM_PAGE_SIZE == 65536);
+        PAS_ASSERT(FILC_THREAD_ALLOCATOR_SIZE == 568);
+    }
     PAS_ASSERT(FILC_THREAD_MAX_INLINE_SIZE_CLASS == 416);
     PAS_ASSERT(FILC_MAX_BYTES_BETWEEN_POLLCHECKS == 10000);
 
@@ -586,6 +591,9 @@ void filc_initialize(filc_stack_limit stack_limit)
     filc_get_bool_env("FILC_DUMP_SETUP", &should_dump_setup);
     if (should_dump_setup) {
         pas_log("filc setup:\n");
+        pas_log("    version: 0.682\n");
+        pas_log("    page size: %zu (OS), %zu (simulated), %zu (build)\n",
+                pas_real_page_size(), pas_page_malloc_alignment(), PAS_SYSTEM_PAGE_SIZE);
         pas_log("    testing library: %s\n", PAS_ENABLE_TESTING ? "yes" : "no");
         pas_log("    exit on panic: %s\n", filc_exit_on_panic ? "yes" : "no");
         pas_log("    dump errnos: %s\n", filc_dump_errnos ? "yes" : "no");
@@ -1280,10 +1288,12 @@ void filc_defer_signal(filc_thread* my_thread, siginfo_t* info)
         
         filc_signal_queue_chunk* chunk;
         if (!index) {
-            PAS_ASSERT(sizeof(filc_signal_queue_chunk) <= pas_page_malloc_alignment());
             pas_aligned_allocation_result allocation_result =
                 pas_page_malloc_try_allocate_without_deallocating_padding(
-                    pas_page_malloc_alignment(), pas_alignment_create_trivial(),
+                    pas_round_up_to_power_of_2(
+                        sizeof(filc_signal_queue_chunk),
+                        pas_page_malloc_alignment()),
+                    pas_alignment_create_trivial(),
                     pas_committed);
             PAS_ASSERT(allocation_result.result);
             chunk = (filc_signal_queue_chunk*)allocation_result.result;
@@ -1381,8 +1391,11 @@ void filc_consume_deferred_signals(filc_thread* my_thread)
             lookup_and_call_signal_handler_with_mask(my_thread, signal_queue_chunk->infos + index);
         
         filc_signal_queue_chunk* next = signal_queue_chunk->header.next;
-        PAS_ASSERT(sizeof(filc_signal_queue_chunk) <= pas_page_malloc_alignment());
-        pas_page_malloc_deallocate(signal_queue_chunk, pas_page_malloc_alignment());
+        pas_page_malloc_deallocate(
+            signal_queue_chunk,
+            pas_round_up_to_power_of_2(
+                sizeof(filc_signal_queue_chunk),
+                pas_page_malloc_alignment()));
         signal_queue_chunk = next;
         if (num_deferred_signals < FILC_SIGNAL_QUEUE_CHUNK_SIZE) {
             PAS_ASSERT(!signal_queue_chunk);
@@ -2892,7 +2905,7 @@ static PAS_ALWAYS_INLINE filc_object* allocate_aligned_impl(
     pas_heap* heap;
     if ((object_flags & FILC_OBJECT_FLAG_MMAP)) {
         PAS_ASSERT(!finalizer_queue);
-        PAS_TESTING_ASSERT(alignment == pas_page_malloc_alignment());
+        PAS_TESTING_ASSERT(alignment == pas_real_page_size());
         heap = fugc_destructor_heap;
     } else if (finalizer_queue)
         heap = fugc_finalizer_heap;
@@ -7135,6 +7148,12 @@ void filc_native_zset_scavenger_periods_to_1ms(filc_thread* my_thread)
     filc_enter(my_thread);
 }
 
+size_t filc_native_zgc_page_size(filc_thread* my_thread)
+{
+    PAS_UNUSED_PARAM(my_thread);
+    return PAS_SYSTEM_PAGE_SIZE;
+}
+
 void filc_native_zdump_stack(filc_thread* my_thread)
 {
     filc_thread_dump_stack(my_thread, pas_log_stream);
@@ -9391,7 +9410,7 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
                 "offset = %ld.\n", filc_ptr_ptr(address), length, prot, flags, fd, offset);
         filc_thread_dump_stack(my_thread, pas_log_stream);
     }
-    length = pas_round_up_to_power_of_2(length, pas_page_malloc_alignment());
+    length = pas_round_up_to_power_of_2(length, pas_real_page_size());
     if (filc_ptr_ptr(address)) {
         filc_check_write(address, length);
         check_mmap(address);
@@ -9418,7 +9437,7 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
     if (!filc_ptr_ptr(address)) {
         address = filc_ptr_create_with_object(
             my_thread, allocate_aligned_impl(
-                my_thread, length, pas_page_malloc_alignment(), FILC_OBJECT_FLAG_MMAP,
+                my_thread, length, pas_real_page_size(), FILC_OBJECT_FLAG_MMAP,
                 filc_exit_allowed, NULL));
         flags |= MAP_FIXED;
     }
@@ -9442,8 +9461,8 @@ filc_ptr filc_native_zsys_mmap(filc_thread* my_thread, filc_ptr address, size_t 
 
 void filc_unmap(void* ptr, size_t size)
 {
-    PAS_ASSERT(pas_is_aligned((uintptr_t)ptr, pas_page_malloc_alignment()));
-    PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned((uintptr_t)ptr, pas_real_page_size()));
+    PAS_ASSERT(pas_is_aligned(size, pas_real_page_size()));
     if (!size)
         return;
     void* result_ptr = mmap(ptr, size,
@@ -9458,10 +9477,10 @@ int filc_native_zsys_munmap(filc_thread* my_thread, filc_ptr address, size_t len
     static const bool verbose = false;
     if (!length)
         return 0;
-    length = pas_round_up_to_power_of_2(length, pas_page_malloc_alignment());
+    length = pas_round_up_to_power_of_2(length, pas_real_page_size());
     filc_check_write(address, length);
     check_mmap(address);
-    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(address), pas_page_malloc_alignment())) {
+    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(address), pas_real_page_size())) {
         filc_set_errno(EINVAL);
         return -1;
     }
@@ -10608,7 +10627,7 @@ int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, 
     filc_check_write(
         vec_ptr,
         pas_round_up_to_power_of_2(
-            len, pas_page_malloc_alignment()) >> pas_page_malloc_alignment_shift());
+            len, pas_real_page_size()) / pas_real_page_size());
     filc_exit(my_thread);
     int result = mincore(filc_ptr_ptr(addr), len, (unsigned char*)filc_ptr_ptr(vec_ptr));
     int my_errno = errno;
@@ -10882,14 +10901,14 @@ filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr
     if (FILC_SYSCALL(my_thread, shmctl(shmid, IPC_STAT, &stat)) < 0)
         goto done;
     
-    length = pas_round_up_to_power_of_2(stat.shm_segsz, pas_page_malloc_alignment());
+    length = pas_round_up_to_power_of_2(stat.shm_segsz, pas_real_page_size());
     
     /* And now we hold the dummy attachment until we make the real attachment, so that the length we
        got from it remains valid. */
     
     addr_ptr = filc_ptr_create_with_object(
         my_thread, allocate_aligned_impl(
-            my_thread, length, pas_page_malloc_alignment(),
+            my_thread, length, pas_real_page_size(),
             FILC_OBJECT_FLAG_MMAP, filc_exit_allowed, NULL));
 
     raw_result = FILC_SYSCALL(
@@ -10923,7 +10942,7 @@ int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
         filc_ptr_to_new_string(addr_ptr));
     filc_check_write(addr_ptr, available);
     check_mmap(addr_ptr);
-    PAS_ASSERT(pas_is_aligned(available, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned(available, pas_real_page_size()));
     filc_free(filc_ptr_object(addr_ptr));
     filc_exit(my_thread);
     filc_unmap(filc_ptr_ptr(addr_ptr), available);
@@ -11694,8 +11713,8 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
     /* NOTE: Because of how we handle private mappings (see comment below), we have to catch all cases
        of EINVAL proactively. */
     
-    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(old_address_ptr), pas_page_malloc_alignment()) ||
-        !pas_is_aligned((uintptr_t)filc_ptr_ptr(new_address_ptr), pas_page_malloc_alignment())) {
+    if (!pas_is_aligned((uintptr_t)filc_ptr_ptr(old_address_ptr), pas_real_page_size()) ||
+        !pas_is_aligned((uintptr_t)filc_ptr_ptr(new_address_ptr), pas_real_page_size())) {
         filc_set_errno(EINVAL);
         return mmap_error_result();
     }
@@ -11722,13 +11741,13 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
         return mmap_error_result();
     }
 
-    old_size = pas_round_up_to_power_of_2(old_size, pas_page_malloc_alignment());
-    new_size = pas_round_up_to_power_of_2(new_size, pas_page_malloc_alignment());
+    old_size = pas_round_up_to_power_of_2(old_size, pas_real_page_size());
+    new_size = pas_round_up_to_power_of_2(new_size, pas_real_page_size());
 
     /* If we're mremaping with !old_size then we still need the pointer to point at a page in the
        mmap, and since the pointer must be page-aligned, then it follows that there must always be
        at least a page available. */
-    filc_check_write(old_address_ptr, pas_max_uintptr(old_size, pas_page_malloc_alignment()));
+    filc_check_write(old_address_ptr, pas_max_uintptr(old_size, pas_real_page_size()));
     check_mmap(old_address_ptr);
 
     if ((flags & MREMAP_FIXED)) {
@@ -11741,7 +11760,7 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
     } else if ((flags & MREMAP_MAYMOVE)) {
         new_address_ptr = filc_ptr_create_with_object(
             my_thread, allocate_aligned_impl(
-                my_thread, new_size, pas_page_malloc_alignment(), FILC_OBJECT_FLAG_MMAP,
+                my_thread, new_size, pas_real_page_size(), FILC_OBJECT_FLAG_MMAP,
                 filc_exit_allowed, NULL));
     } else {
         if (new_size > filc_ptr_available(old_address_ptr)) {

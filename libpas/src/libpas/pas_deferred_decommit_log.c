@@ -162,6 +162,9 @@ void pas_deferred_decommit_log_add_already_locked(pas_deferred_decommit_log* log
 
     if (verbose)
         pas_log("Log %p adding range %p...%p.\n", log, (void*)range.begin, (void*)range.end);
+
+    PAS_ASSERT(pas_is_aligned(range.begin, pas_page_malloc_alignment()));
+    PAS_ASSERT(pas_is_aligned(range.end, pas_page_malloc_alignment()));
     
     log->total += pas_virtual_range_size(range);
     

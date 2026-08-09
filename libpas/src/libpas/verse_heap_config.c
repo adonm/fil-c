@@ -221,9 +221,7 @@ pas_segregated_shared_page_directory* verse_heap_segregated_shared_page_director
 
 void verse_heap_config_activate(void)
 {
-    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE == pas_page_malloc_alignment());
     PAS_ASSERT(VERSE_HEAP_PAGE_SIZE == PAS_SYSTEM_PAGE_SIZE);
-    PAS_ASSERT(VERSE_HEAP_PAGE_SIZE_SHIFT == pas_page_malloc_alignment_shift());
     PAS_ASSERT(VERSE_HEAP_PAGE_SIZE_SHIFT == PAS_SYSTEM_PAGE_SIZE_SHIFT);
     PAS_ASSERT(PAS_COMPACT_TAGGED_PTR_SIZE <= 4);
     

@@ -42,6 +42,8 @@ PAS_API extern size_t pas_page_malloc_cached_alignment_shift;
 PAS_API extern bool pas_page_malloc_decommit_zero_fill;
 #endif /* PAS_OS(DARWIN) */
 
+PAS_API size_t pas_real_page_size(void);
+
 PAS_API PAS_NEVER_INLINE size_t pas_page_malloc_alignment_slow(void);
 
 static inline size_t pas_page_malloc_alignment(void)

@@ -4,6 +4,7 @@ All of these places have the Fil-C version in them, and so need to be changed if
 - README.md
 - clang/lib/Basic/Version.cpp
 - filc/include/stdfil.h
+- libpas/src/libpas/filc_runtime.c
 - package-build.sh
 - optfil/build_finish.sh
 - optfil/setup.sh

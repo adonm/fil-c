@@ -1,6 +1,7 @@
 /*
  * Copyright (c) 2021-2022 Apple Inc. All rights reserved.
  * Copyright (c) 2023 Epic Games, Inc. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
  *
- * THIS SOFTWARE IS PROVIDED BY APPLE INC. ``AS IS'' AND ANY
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
  * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE INC. OR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
  * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
  * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
  * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -28,6 +29,7 @@
 #define PAS_EXPENDABLE_MEMORY_H
 
 #include "pas_heap_kind.h"
+#include "pas_internal_config.h"
 
 PAS_BEGIN_EXTERN_C;
 
@@ -56,7 +58,7 @@ struct pas_expendable_memory {
     pas_expendable_memory_state states[1];
 };
 
-#define PAS_EXPENDABLE_MEMORY_PAGE_SIZE ((uintptr_t)16384)
+#define PAS_EXPENDABLE_MEMORY_PAGE_SIZE ((uintptr_t)PAS_MAX_CONST(16384u, PAS_SYSTEM_PAGE_SIZE))
 
 PAS_API extern pas_expendable_memory_state_version pas_expendable_memory_version_counter;
 

@@ -219,6 +219,15 @@ void pas_segregated_page_construct(pas_segregated_page* page,
                 owner, pas_segregated_page_config_kind_get_string(page_config.kind));
     }
 
+    PAS_ASSERT(
+        pas_is_aligned(
+            (uintptr_t)pas_segregated_page_boundary(page, page_config),
+            pas_page_malloc_alignment()));
+    PAS_ASSERT(
+        pas_is_aligned(
+            (uintptr_t)pas_segregated_page_boundary(page, page_config) + page_config.base.page_size,
+            pas_page_malloc_alignment()));
+    
     if (pas_segregated_page_config_is_utility(page_config))
         page->lock_ptr = NULL;
     else

@@ -66,7 +66,7 @@ bool pas_page_malloc_decommit_zero_fill = false;
 
 static size_t cached_real_page_size;
 
-static size_t real_page_size(void)
+size_t pas_real_page_size(void)
 {
     if (!cached_real_page_size) {
         size_t result;
@@ -99,15 +99,15 @@ PAS_NEVER_INLINE size_t pas_page_malloc_alignment_slow(void)
                       "(expected decimal power-of-2 byte size)\n",
                       override_str);
         }
-        if (value < real_page_size()) {
+        if (value < pas_real_page_size()) {
             pas_panic("cannot use PAS_SIMULATE_PAGE_SIZE to simulate a smaller page size "
                       "(actual page size is %zu, attempted to simulate %zu)\n",
-                      real_page_size(), value);
+                      pas_real_page_size(), value);
         }
         return value;
     }
 
-    return real_page_size();
+    return pas_real_page_size();
 }
 
 PAS_NEVER_INLINE size_t pas_page_malloc_alignment_shift_slow(void)
@@ -147,11 +147,11 @@ static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_
 
     PAS_ASSERT(pas_is_aligned(size, pas_page_malloc_alignment()));
 
-    if (pas_page_malloc_alignment() > real_page_size()) {
-        if (pas_add_uintptr_overflow(real_page_size(), size, &mapped_size))
+    if (pas_page_malloc_alignment() > pas_real_page_size()) {
+        if (pas_add_uintptr_overflow(pas_page_malloc_alignment(), size, &mapped_size))
             return NULL;
     } else {
-        PAS_ASSERT(pas_page_malloc_alignment() == real_page_size());
+        PAS_ASSERT(pas_page_malloc_alignment() == pas_real_page_size());
         mapped_size = size;
     }
     
@@ -186,13 +186,16 @@ static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_
     uintptr_t simulated_begin = pas_round_up_to_power_of_2(real_begin, pas_page_malloc_alignment());
     uintptr_t simulated_end = simulated_begin + size;
 
-    if (real_page_size() == pas_page_malloc_alignment()) {
+    PAS_ASSERT(simulated_begin >= real_begin);
+    PAS_ASSERT(simulated_end <= real_end);
+
+    if (pas_real_page_size() == pas_page_malloc_alignment()) {
         PAS_ASSERT(real_begin == simulated_begin);
         PAS_ASSERT(real_end == simulated_end);
         return (void*)real_begin;
     }
 
-    PAS_ASSERT(real_page_size() < pas_page_malloc_alignment());
+    PAS_ASSERT(pas_real_page_size() < pas_page_malloc_alignment());
 
     deallocate_impl((void*)real_begin, simulated_begin - real_begin);
     deallocate_impl((void*)simulated_end, real_end - simulated_end);
@@ -247,6 +250,9 @@ pas_page_malloc_try_allocate_without_deallocating_padding(
     mmap_result = allocate_with_possibly_simulated_page_size(mapped_size, commit_mode);
     if (!mmap_result)
         return result;
+
+    if (verbose)
+        pas_log("pas_page_malloc got %p...%p\n", mmap_result, (char*)mmap_result + mapped_size);
     
     mapped = (char*)mmap_result;
     mapped_end = mapped + mapped_size;
@@ -372,8 +378,13 @@ static void manage_protection(void* base, size_t size, int prot)
     if (verbose)
         pas_log("protecting %p...%p with %d\n", base, (char*)base + size, prot);
 
-    result = mprotect(base, size, prot);
-    PAS_ASSERT(!result);
+    for (;;) {
+        result = mprotect(base, size, prot);
+        if (!result)
+            break;
+        PAS_ASSERT(errno == -1);
+        PAS_ASSERT(errno == EAGAIN);
+    }
 }
 
 void pas_page_malloc_protect_reservation(void* base, size_t size)
@@ -489,7 +500,7 @@ static void commit_impl(void* ptr, size_t size, bool do_mprotect, pas_mmap_capab
     }
 #else /* _WIN32 -> so !_WIN32 */
     if (should_mprotect_posix(do_mprotect, mmap_capability))
-        PAS_SYSCALL(mprotect((void*)base_as_int, end_as_int - base_as_int, PROT_READ | PROT_WRITE));
+        manage_protection((void*)base_as_int, end_as_int - base_as_int, PROT_READ | PROT_WRITE);
 
 #if PAS_OS(LINUX) || PAS_PLATFORM(PLAYSTATION)
     /* We don't need to call madvise to map page. */
@@ -564,7 +575,7 @@ static void decommit_impl(void* ptr, size_t size,
     posix_decommit(ptr, size, mmap_capability);
     
     if (should_mprotect_posix(do_mprotect, mmap_capability))
-        PAS_SYSCALL(mprotect((void*)base_as_int, end_as_int - base_as_int, PROT_NONE));
+        manage_protection((void*)base_as_int, end_as_int - base_as_int, PROT_NONE);
 #endif /* !_WIN32 */
 }
 

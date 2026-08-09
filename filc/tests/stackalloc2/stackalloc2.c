@@ -53,8 +53,11 @@ int main()
     foo3();
     foo4();
     foo5();
-    foo6();
-    foo7();
+    if (zgc_page_size() == 4096) {
+        foo6();
+        foo7();
+    } /* else our constants are wrong; FIXME: maybe add variants of this test for different page
+         sizes */
     return 0;
 }
 

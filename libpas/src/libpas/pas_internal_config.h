@@ -30,11 +30,15 @@
 
 #include "pas_utils.h"
 
+#ifndef PAS_SYSTEM_PAGE_SIZE_SHIFT
 #if (defined(__arm64__) && defined(__APPLE__)) || defined(__SCE__)
 #define PAS_SYSTEM_PAGE_SIZE_SHIFT       14u
+#elif defined(__aarch64__)
+#define PAS_SYSTEM_PAGE_SIZE_SHIFT       16u
 #else
 #define PAS_SYSTEM_PAGE_SIZE_SHIFT       12u
 #endif
+#endif /* !defined(PAS_SYSTEM_PAGE_SIZE_SHIFT) */
 #define PAS_SYSTEM_PAGE_SIZE             ((size_t)1 << PAS_SYSTEM_PAGE_SIZE_SHIFT)
 
 #define PAS_USE_SMALL_SEGREGATED_OVERRIDE     true

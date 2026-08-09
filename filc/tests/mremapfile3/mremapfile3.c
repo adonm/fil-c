@@ -58,44 +58,44 @@ int main()
     ASSERT(fd > 2);
 
     unsigned i;
-    for (i = 0; i < 16384; ++i) {
+    for (i = 0; i < getpagesize() * 4; ++i) {
         char c = (char)i;
         writeloop(fd, &c, 1);
     }
         
-    void* memory = mmap(NULL, 16384, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+    void* memory = mmap(NULL, getpagesize() * 4, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
     ASSERT(memory);
     ASSERT(memory != (void*)(intptr_t)-1);
 
-    for (i = 0; i < 16384; ++i)
+    for (i = 0; i < getpagesize() * 4; ++i)
         ASSERT(((char*)memory)[i] == (char)i);
 
     strcpy(memory, "hello, world!\n");
 
     /* Test the shrinking in place case. */
-    void* memory2 = mremap(memory, 16384, 16384, 0);
+    void* memory2 = mremap(memory, getpagesize() * 4, getpagesize() * 4, 0);
     ASSERT(memory2 == memory);
 
-    for (i = 4096; i < 16384; ++i)
+    for (i = getpagesize(); i < getpagesize() * 4; ++i)
         ((char*)memory)[i] = (char)(i * 3);
 
-    memory2 = mremap(memory, 4096, 8192, 0);
+    memory2 = mremap(memory, getpagesize(), getpagesize() * 2, 0);
     /* FIXME: Some day I'll make this work! */
     ASSERT(memory2 == (void*)(long)-1);
     ASSERT(errno == ENOMEM);
 
-    munmap(memory, 4096);
+    munmap(memory, getpagesize());
     close(fd);
 
     fd = open("filc/test-output/mremapfile3/mmapfile.dat", O_RDONLY);
     ASSERT(fd > 2);
-    for (i = 0; i < 16384; ++i) {
+    for (i = 0; i < getpagesize() * 4; ++i) {
         char c;
         ASSERT(readloop(fd, &c, 1) == 1);
         char expect_c;
         if (i <= strlen("hello, world!\n"))
             expect_c = "hello, world!\n"[i];
-        else if (i >= 4096)
+        else if (i >= getpagesize())
             expect_c = (char)(i * 3);
         else
             expect_c = (char)i;

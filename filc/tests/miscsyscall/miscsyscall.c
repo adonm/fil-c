@@ -591,8 +591,8 @@ int main(int argc, char** argv)
     int policy;
     pthread_getschedparam(pthread_self(), &policy, &param);
 
-    ZASSERT(!posix_madvise(zgc_aligned_alloc(4096, 4096), 4096, POSIX_MADV_NORMAL));
-    ZASSERT(!posix_madvise(zgc_aligned_alloc(4096, 4096), 4096, POSIX_MADV_DONTNEED));
+    ZASSERT(!posix_madvise(zgc_aligned_alloc(getpagesize(), getpagesize()), getpagesize(), POSIX_MADV_NORMAL));
+    ZASSERT(!posix_madvise(zgc_aligned_alloc(getpagesize(), getpagesize()), getpagesize(), POSIX_MADV_DONTNEED));
 
     ZASSERT(prctl(PR_GET_DUMPABLE) != -1);
     ZASSERT(prctl(PR_GET_NO_NEW_PRIVS) != -1);

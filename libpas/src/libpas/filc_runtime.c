@@ -11873,9 +11873,12 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
                shrunk the mapping, which means that the space beyond the mapping is mapped anonymous
                private. So, this mremap always fails with ENOMEM. */
             result = mremap(filc_ptr_ptr(old_address_ptr), old_size, new_size, 0);
-        } else {
-            PAS_ASSERT(old_size > new_size);
+        } else if (old_size > new_size) {
             filc_unmap((char*)filc_ptr_ptr(old_address_ptr) + new_size, old_size - new_size);
+            result = filc_ptr_ptr(new_address_ptr);
+        } else {
+            PAS_ASSERT(old_size == new_size);
+            errno = 0;
             result = filc_ptr_ptr(new_address_ptr);
         }
     }

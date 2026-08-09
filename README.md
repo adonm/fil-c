@@ -1,4 +1,4 @@
-# Fil-C 0.682
+# Fil-C 0.683
 
 Fil-C is a fanatically compatible memory-safe implementation of C and C++. Lots
 of software compiles and runs with Fil-C with zero or minimal changes. All
@@ -17,8 +17,7 @@ Fil-C is special because:
 
 - Fil-C's capability-based approach achieves a similar level of safety to
   hardware capabilities like [CHERI](https://www.cl.cam.ac.uk/research/security/ctsrd/cheri/),
-  except that it runs on stock hardware (X86_64 or ARM64 with 4K page size,
-  currently).
+  except that it runs on stock hardware (X86_64 or ARM64).
 
 - Fil-C is engineered to prevent memory safety bugs from being used for
   exploitation rather than just simply flagging them often enough to find bugs.
@@ -55,7 +54,7 @@ and their licenses are in `additional-licenses/` in that distribution.
 
 ## Requirements
 
-Fil-C only works on Linux/X86_64 or Linux/ARM64 with 4K page size.
+Fil-C only works on Linux/X86_64 or Linux/ARM64.
 
 Previous versions worked on Darwin/ARM64 and FreeBSD, but now I'm focusing just
 on Linux because it allows me to do a more faithful job of implementing libc.
@@ -72,11 +71,11 @@ This has a different effect depending on which binary distribution you
 selected:
 
 - In case of the classic musl-based distribution
-  (`filc-0.682-linux-x86_64.tar.xz` or `filc-0.682-linux-aarch64.tar.xz`), this
+  (`filc-0.683-linux-x86_64.tar.xz` or `filc-0.683-linux-aarch64.tar.xz`), this
   sets up Fil-C to run in the current directory.
 
 - In case of the /opt/fil glibc-based distribution
-  (`optfil-0.682-linux-x86_64.tar.xz`), this sets up Fil-C in `/opt/fil`.
+  (`optfil-0.683-linux-x86_64.tar.xz`), this sets up Fil-C in `/opt/fil`.
 
 If you downloaded Fil-C source, run:
 

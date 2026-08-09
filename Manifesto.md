@@ -113,7 +113,7 @@ First I'll tell you how to download or build Fil-C and then I'll tell you how to
 
 You can download a Fil-C binary release from [https://github.com/pizlonator/fil-c/releases](https://github.com/pizlonator/fil-c/releases).
 
-Then, in the filc-0.682-linux-x86_64 or filc-0.682-linux-aarch64 directory, run:
+Then, in the filc-0.683-linux-x86_64 or filc-0.683-linux-aarch64 directory, run:
 
     ./setup.sh
 
@@ -121,7 +121,7 @@ This gives you a simple Fil-C setup with compiler, runtime, a musl-based libc an
 
 ### Building Fil-C From Source
 
-Fil-C currently only works on Linux/X86_64 and Linux/ARM64 with 4K page size. Upon getting Fil-C from
+Fil-C currently only works on Linux/X86_64 and Linux/ARM64. Upon getting Fil-C from
 https://github.com/pizlonator/fil-c.git, and making sure you're on the `deluge` branch,
 simply do:
 

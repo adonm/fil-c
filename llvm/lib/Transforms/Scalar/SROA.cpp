@@ -2732,6 +2732,9 @@ class AllocaSliceRewriter : public InstVisitor<AllocaSliceRewriter, bool> {
   // original alloca.
   uint64_t NewBeginOffset = 0, NewEndOffset = 0;
 
+  // Fil-C Hack!
+  uint64_t Skew;
+
   uint64_t SliceSize = 0;
   bool IsSplittable = false;
   bool IsSplit = false;
@@ -2763,10 +2766,12 @@ public:
                       uint64_t NewAllocaEndOffset, bool IsIntegerPromotable,
                       VectorType *PromotableVecTy,
                       SmallSetVector<PHINode *, 8> &PHIUsers,
-                      SmallSetVector<SelectInst *, 8> &SelectUsers)
+                      SmallSetVector<SelectInst *, 8> &SelectUsers,
+                      uint64_t Skew)
       : DL(DL), AS(AS), Pass(Pass), OldAI(OldAI), NewAI(NewAI),
         NewAllocaBeginOffset(NewAllocaBeginOffset),
         NewAllocaEndOffset(NewAllocaEndOffset),
+        Skew(Skew),
         NewAllocaTy(NewAI.getAllocatedType()),
         IntTy(
             IsIntegerPromotable
@@ -2882,7 +2887,7 @@ private:
   /// alignment is itself suitable, this will return zero.
   Align getSliceAlign() {
     return commonAlignment(NewAI.getAlign(),
-                           NewBeginOffset - NewAllocaBeginOffset);
+                           NewBeginOffset - NewAllocaBeginOffset + Skew);
   }
 
   unsigned getIndex(uint64_t Offset) {
@@ -5003,10 +5008,17 @@ AllocaInst *SROA::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
   unsigned NumUses = 0;
   SmallSetVector<PHINode *, 8> PHIUsers;
   SmallSetVector<SelectInst *, 8> SelectUsers;
-
+  
+  // Fil-C Hack!
+  // FIXME: We can almost certainly get rid of this, once we have misaligned capability support.
+  constexpr uint64_t FilCWordSize = 8;
+  uint64_t Skew = 0;
+  if (DL.isFilC() && NoType && P.size() >= FilCWordSize)
+    Skew = P.beginOffset() % FilCWordSize;
+  
   AllocaSliceRewriter Rewriter(DL, AS, *this, AI, *NewAI, P.beginOffset(),
                                P.endOffset(), IsIntegerPromotable, VecTy,
-                               PHIUsers, SelectUsers);
+                               PHIUsers, SelectUsers, Skew);
   bool Promotable = true;
   for (Slice *S : P.splitSliceTails()) {
     Promotable &= Rewriter.visit(S);
@@ -5087,9 +5099,7 @@ AllocaInst *SROA::rewritePartition(AllocaInst &AI, AllocaSlices &AS,
 
     // Fil-C Hack!
     // FIXME: We can almost certainly get rid of this, once we have misaligned capability support.
-    constexpr uint64_t FilCWordSize = 8;
-    uint64_t Skew = P.beginOffset() % FilCWordSize;
-    if (DL.isFilC() && NoType && Skew != 0 && P.size() >= FilCWordSize) {
+    if (Skew != 0) {
       // If we have made a nonpromotable alloca without a type then it's likely that we
       // are copying around data out of phase with the Fil-C word size. Fix the alloca so
       // that copies to/from it keep pointers in phase.

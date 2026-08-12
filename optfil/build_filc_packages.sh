@@ -70,7 +70,7 @@ cd ../..
 ./package-source.sh projects/bash-5.2.32 pizlonated-bash
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
 ./package-source.sh projects/libffi-3.4.6 pizlonated-libffi
-./package-source.sh projects/openssh-10.3p1 pizlonated-openssh
+./package-source.sh projects/openssh-10.5p1 pizlonated-openssh
 ./package-source.sh projects/binutils-2.43.1 pizlonated-binutils
 ./package-source.sh projects/Linux-PAM-1.7.1 pizlonated-pam
 ./package-source.sh projects/keyutils-1.6.3 pizlonated-keyutils

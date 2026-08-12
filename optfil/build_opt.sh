@@ -551,7 +551,7 @@ test -d pizlonated-krb5
 rm -rf pizlonated-krb5
 hash -r
 
-tar -xf $FILCSRC/projects/openssh-10.3p1/pizlonated-openssh.tar.gz
+tar -xf $FILCSRC/projects/openssh-10.5p1/pizlonated-openssh.tar.gz
 cd pizlonated-openssh
 install -v -m700 -d /opt/fil/var/lib/sshd
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \

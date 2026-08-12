@@ -44,7 +44,7 @@
 static int input_kex_gen_init(int, uint32_t, struct ssh *);
 static int input_kex_gen_reply(int type, uint32_t seq, struct ssh *ssh);
 
-static int
+int
 kex_gen_hash(
     int hash_alg,
     const struct sshbuf *client_version,
@@ -124,7 +124,24 @@ kex_gen_client(struct ssh *ssh)
 		r = kex_kem_sntrup761x25519_keypair(kex);
 		break;
 	case KEX_KEM_MLKEM768X25519_SHA256:
-		r = kex_kem_mlkem768x25519_keypair(kex);
+ 		if (FIPS_mode()) {
+		    EVP_KEM *mlkem = EVP_KEM_fetch(NULL, "mlkem768", NULL);
+		    if (mlkem == NULL) {
+		        logit_f("Key exchange type mlkem768x25519 is not allowed in FIPS mode");
+		        r = SSH_ERR_INVALID_ARGUMENT;
+		    } else {
+			EVP_KEM_free(mlkem);
+		        r = kex_kem_mlkem768x25519_keypair(kex);
+		    }
+ 		} else {
+                        r = kex_kem_mlkem768x25519_keypair(kex);
+                }
+		break;
+	case KEX_KEM_MLKEM768NISTP256_SHA256:
+		    r = kex_kem_mlkem768nistp256_keypair(kex);
+		break;
+	case KEX_KEM_MLKEM1024NISTP384_SHA384:
+		    r = kex_kem_mlkem1024nistp384_keypair(kex);
 		break;
 	default:
 		r = SSH_ERR_INVALID_ARGUMENT;
@@ -203,8 +220,28 @@ input_kex_gen_reply(int type, uint32_t seq, struct ssh *ssh)
 		    &shared_secret);
 		break;
 	case KEX_KEM_MLKEM768X25519_SHA256:
-		r = kex_kem_mlkem768x25519_dec(kex, server_blob,
-		    &shared_secret);
+ 		if (FIPS_mode()) {
+		    EVP_KEM *mlkem = EVP_KEM_fetch(NULL, "mlkem768", NULL);
+		    if (mlkem == NULL) {
+		        logit_f("Key exchange type mlkem768x25519 is not allowed in FIPS mode");
+		        r = SSH_ERR_INVALID_ARGUMENT;
+		    } else {
+			EVP_KEM_free(mlkem);
+		        r = kex_kem_mlkem768x25519_dec(kex, server_blob,
+		            &shared_secret);
+		    }
+ 		} else {
+ 		    r = kex_kem_mlkem768x25519_dec(kex, server_blob,
+ 		        &shared_secret);
+ 		}
+ 		break;
+	case KEX_KEM_MLKEM768NISTP256_SHA256:
+		    r = kex_kem_mlkem768nistp256_dec(kex, server_blob,
+		        &shared_secret);
+		break;
+	case KEX_KEM_MLKEM1024NISTP384_SHA384:
+		    r = kex_kem_mlkem1024nistp384_dec(kex, server_blob,
+		        &shared_secret);
 		break;
 	default:
 		r = SSH_ERR_INVALID_ARGUMENT;
@@ -259,6 +296,8 @@ out:
 	    sizeof(kex->sntrup761_client_key));
 	explicit_bzero(kex->mlkem768_client_key,
 	    sizeof(kex->mlkem768_client_key));
+	explicit_bzero(kex->mlkem1024_client_key,
+	    sizeof(kex->mlkem1024_client_key));
 	sshbuf_free(server_host_key_blob);
 	free(signature);
 	sshbuf_free(tmp);
@@ -331,8 +370,28 @@ input_kex_gen_init(int type, uint32_t seq, struct ssh *ssh)
 		    &server_pubkey, &shared_secret);
 		break;
 	case KEX_KEM_MLKEM768X25519_SHA256:
-		r = kex_kem_mlkem768x25519_enc(kex, client_pubkey,
-		    &server_pubkey, &shared_secret);
+ 		if (FIPS_mode()) {
+		    EVP_KEM *mlkem = EVP_KEM_fetch(NULL, "mlkem768", NULL);
+		    if (mlkem == NULL) {
+		        logit_f("Key exchange type mlkem768x25519 is not allowed in FIPS mode");
+		        r = SSH_ERR_INVALID_ARGUMENT;
+		    } else {
+			EVP_KEM_free(mlkem);
+		        r = kex_kem_mlkem768x25519_enc(kex, client_pubkey,
+		            &server_pubkey, &shared_secret);
+		    }
+ 		} else {
+ 		    r = kex_kem_mlkem768x25519_enc(kex, client_pubkey,
+ 		        &server_pubkey, &shared_secret);
+ 		}
+ 		break;
+	case KEX_KEM_MLKEM768NISTP256_SHA256:
+		    r = kex_kem_mlkem768nistp256_enc(kex, client_pubkey,
+		        &server_pubkey, &shared_secret);
+		break;
+	case KEX_KEM_MLKEM1024NISTP384_SHA384:
+		    r = kex_kem_mlkem1024nistp384_enc(kex, client_pubkey,
+		        &server_pubkey, &shared_secret);
 		break;
 	default:
 		r = SSH_ERR_INVALID_ARGUMENT;

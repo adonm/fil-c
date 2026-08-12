@@ -54,6 +54,7 @@
 #include "misc.h"
 #include "dispatch.h"
 #include "myproposal.h"
+#include "xmalloc.h"
 
 #include "ssherr.h"
 #include "sshbuf.h"
@@ -733,6 +734,7 @@ kex_free(struct kex *kex)
 #ifdef WITH_OPENSSL
 	DH_free(kex->dh);
 	EC_KEY_free(kex->ec_client_key);
+	EVP_PKEY_free(kex->ec_hybrid_client_key);
 #endif /* WITH_OPENSSL */
 	for (mode = 0; mode < MODE_MAX; mode++) {
 		kex_free_newkeys(kex->newkeys[mode]);
@@ -746,6 +748,9 @@ kex_free(struct kex *kex)
 	sshbuf_free(kex->session_id);
 	sshbuf_free(kex->initial_sig);
 	sshkey_free(kex->initial_hostkey);
+#ifdef GSSAPI
+	free(kex->gss_host);
+#endif /* GSSAPI */
 	free(kex->failed_choice);
 	free(kex->hostkey_alg);
 	free(kex->name);

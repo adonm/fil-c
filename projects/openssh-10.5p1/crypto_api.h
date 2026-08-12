@@ -88,6 +88,10 @@ int	crypto_kem_sntrup761_keypair(unsigned char *pk, unsigned char *sk);
 #define crypto_kem_mlkem768_ENCSEEDBYTES 32
 #define crypto_kem_mlkem768_KEYPAIRSEEDBYTES 64
 
+#define crypto_kem_mlkem1024_PUBLICKEYBYTES 1568
+#define crypto_kem_mlkem1024_SECRETKEYBYTES 3168
+#define crypto_kem_mlkem1024_CIPHERTEXTBYTES 1568
+
 /* Aliases for MLKEM768 */
 #define MLKEM768_PUBLICKEYBYTES crypto_kem_mlkem768_PUBLICKEYBYTES
 #define MLKEM768_SECRETKEYBYTES crypto_kem_mlkem768_SECRETKEYBYTES

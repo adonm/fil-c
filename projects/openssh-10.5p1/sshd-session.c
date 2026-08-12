@@ -96,10 +96,17 @@
 #include "srclimit.h"
 #include "dh.h"
 
+/* This will only get set if we build with systemd. */
+static int systemd_num_listen_fds;
+
+#ifdef SYSTEMD_SOCKET_ACTIVATION
+#define SYSTEMD_LISTEN_FDS_START 3
+#endif
+
 /* Re-exec fds */
-#define REEXEC_DEVCRYPTO_RESERVED_FD	(STDERR_FILENO + 1)
-#define REEXEC_CONFIG_PASS_FD		(STDERR_FILENO + 2)
-#define REEXEC_MIN_FREE_FD		(STDERR_FILENO + 3)
+#define REEXEC_DEVCRYPTO_RESERVED_FD	(STDERR_FILENO + 1 + systemd_num_listen_fds)
+#define REEXEC_CONFIG_PASS_FD		(STDERR_FILENO + 2 + systemd_num_listen_fds)
+#define REEXEC_MIN_FREE_FD		(STDERR_FILENO + 3 + systemd_num_listen_fds)
 
 /* Privsep fds */
 #define PRIVSEP_MONITOR_FD		(STDERR_FILENO + 1)
@@ -565,8 +572,8 @@ notify_hostkeys(struct ssh *ssh)
 	}
 	debug3_f("sent %u hostkeys", nkeys);
 	if (nkeys == 0)
-		fatal_f("no hostkeys");
-	if ((r = sshpkt_send(ssh)) != 0)
+		debug3_f("no hostkeys");
+	else if ((r = sshpkt_send(ssh)) != 0)
 		sshpkt_fatal(ssh, r, "%s: send", __func__);
 	sshbuf_free(buf);
 }
@@ -828,7 +835,7 @@ main(int ac, char **av)
 
 	/* Parse command-line arguments. */
 	while ((opt = getopt(ac, av,
-	    "C:E:b:c:f:g:h:k:o:p:u:46DGQRTdeiqrtV")) != -1) {
+	    "C:E:b:c:f:g:h:k:o:p:u:N:46DGQRTdeiqrtV")) != -1) {
 		switch (opt) {
 		case '4':
 			options.address_family = AF_INET;
@@ -931,6 +938,16 @@ main(int ac, char **av)
 			fprintf(stderr, "%s, %s\n",
 			    SSH_RELEASE, SSH_OPENSSL_VERSION);
 			exit(0);
+#ifdef SYSTEMD_SOCKET_ACTIVATION
+		case 'N':
+			const char *errstr = NULL;
+
+			systemd_num_listen_fds = (int)strtonum(optarg, 1, INT_MAX - SYSTEMD_LISTEN_FDS_START, &errstr);
+			if (errstr != NULL)
+        			fatal("Invalid number of systemd listen FDs: %s", errstr);
+
+			break;
+#endif
 		default:
 			usage();
 			break;

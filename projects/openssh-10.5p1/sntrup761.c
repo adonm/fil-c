@@ -39,8 +39,6 @@ extern volatile crypto_int64 crypto_int64_optblocker;
 #define crypto_int16 int16_t
 #define crypto_int16_unsigned uint16_t
 
-
-
 __attribute__((unused))
 static inline
 crypto_int16 crypto_int16_load(const unsigned char *crypto_int16_s) {

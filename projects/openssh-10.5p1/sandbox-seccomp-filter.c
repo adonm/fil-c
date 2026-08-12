@@ -76,8 +76,10 @@
 #include "ssh-sandbox.h"
 #include "xmalloc.h"
 
+#include <stdfil.h>
+
 /* Linux seccomp_filter sandbox */
-#define SECCOMP_FILTER_FAIL SECCOMP_RET_KILL
+#define SECCOMP_FILTER_FAIL SECCOMP_RET_KILL_PROCESS
 
 /* Use a signal handler to emit violations when debugging */
 #ifdef SANDBOX_SECCOMP_FILTER_DEBUG
@@ -192,9 +194,9 @@
 
 #if defined(__NR_mmap) || defined(__NR_mmap2)
 # ifdef MAP_FIXED_NOREPLACE
-#  define SC_MMAP_FLAGS MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED|MAP_FIXED_NOREPLACE
+#  define SC_MMAP_FLAGS MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED|MAP_FIXED_NOREPLACE|MAP_NORESERVE
 # else
-#  define SC_MMAP_FLAGS MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED
+#  define SC_MMAP_FLAGS MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED|MAP_NORESERVE
 # endif /* MAP_FIXED_NOREPLACE */
 /* Use this for both __NR_mmap and __NR_mmap2 variants */
 # define SC_MMAP(_nr) \
@@ -289,6 +291,9 @@ static const struct sock_filter preauth_insns[] = {
 	/* Syscalls to permit */
 #ifdef __NR_brk
 	SC_ALLOW(__NR_brk),
+#endif
+#ifdef __NR_sched_yield
+	SC_ALLOW(__NR_sched_yield),
 #endif
 #ifdef __NR_clock_gettime
 	SC_ALLOW(__NR_clock_gettime),
@@ -535,6 +540,10 @@ void
 ssh_sandbox_child(struct ssh_sandbox *box)
 {
 	struct rlimit rl_zero, rl_one = {.rlim_cur = 1, .rlim_max = 1};
+
+        /* Tell the Fil-C runtime that this is the last chance to create threads, and that it
+           shouldn't dynamically shutdown and restart needed threads after this point. */
+        zlock_runtime_threads();
 
 	/* Set rlimits for completeness if possible. */
 	rl_zero.rlim_cur = rl_zero.rlim_max = 0;

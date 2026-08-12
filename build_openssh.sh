@@ -29,7 +29,7 @@
 set -e
 set -x
 
-cd projects/openssh-10.3p1
+cd projects/openssh-10.5p1
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

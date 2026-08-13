@@ -792,14 +792,6 @@ do_ssh2_kex(struct ssh *ssh)
 	char *newstr = NULL;
 	orig = myproposal[PROPOSAL_KEX_ALGS];
 
-	/*
-	 * If we don't have a host key, then there's no point advertising
-	 * the other key exchange algorithms
-	 */
-
-	if (strlen(myproposal[PROPOSAL_SERVER_HOST_KEY_ALGS]) == 0)
-		orig = NULL;
-
 	if (options.gss_keyex)
 		gss = ssh_gssapi_server_mechanisms();
 	else
@@ -818,7 +810,7 @@ do_ssh2_kex(struct ssh *ssh)
 	 * host key algorithm we support
 	 */
 	if (gss && (strlen(myproposal[PROPOSAL_SERVER_HOST_KEY_ALGS])) == 0)
-		myproposal[PROPOSAL_SERVER_HOST_KEY_ALGS] = "null";
+		myproposal[PROPOSAL_SERVER_HOST_KEY_ALGS] = xstrdup("null");
 
 	if (newstr)
 		myproposal[PROPOSAL_KEX_ALGS] = newstr;

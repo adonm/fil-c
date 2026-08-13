@@ -93,14 +93,25 @@ kex_proposal_populate_entries(struct ssh *ssh, char *prop[PROPOSAL_MAX],
 	const char *defpropclient[PROPOSAL_MAX] = { KEX_CLIENT };
 	const char **defprop = ssh->kex->server ? defpropserver : defpropclient;
 	u_int i;
-	char *cp;
+	char *cp, *hkalgs_prop;
 
 	if (prop == NULL)
 		fatal_f("proposal missing");
 
-	/* Append EXT_INFO signalling to KexAlgorithms */
-	if (kexalgos == NULL)
-		kexalgos = defprop[PROPOSAL_KEX_ALGS];
+	/* our hostkey algorithm proposal */
+	hkalgs_prop = xstrdup(hkalgs ? hkalgs : defprop[PROPOSAL_SERVER_HOST_KEY_ALGS]);
+
+	/*
+	 * If we don't have a hostkey (sshd_config "HostKey none" =>
+	 * hkalgs_prop list is empty), there's no point in including
+	 * the default kex algorithms; start with the empty list
+	 * instead. GSSAPI code will later add the dynamically
+	 * determined gss-* algorithms.
+	 */
+        if (kexalgos == NULL)
+		kexalgos = strlen(hkalgs_prop) == 0 ? "" : defprop[PROPOSAL_KEX_ALGS];
+
+	/* Append feature signalling to KexAlgorithms. */
 	if ((cp = kex_names_cat(kexalgos, ssh->kex->server ?
 	    "ext-info-s,kex-strict-s-v00@openssh.com" :
 	    "ext-info-c,kex-strict-c-v00@openssh.com")) == NULL)
@@ -124,7 +135,7 @@ kex_proposal_populate_entries(struct ssh *ssh, char *prop[PROPOSAL_MAX],
 			prop[i] = xstrdup(comp ? comp : defprop[i]);
 			break;
 		case PROPOSAL_SERVER_HOST_KEY_ALGS:
-			prop[i] = xstrdup(hkalgs ? hkalgs : defprop[i]);
+			prop[i] = hkalgs_prop;
 			break;
 		default:
 			prop[i] = xstrdup(defprop[i]);

@@ -1440,7 +1440,7 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 		intptr = &options->gss_authentication;
 		goto parse_flag;
 
-	case sGSSAPIKeyEx:
+	case sGSSAPIKeyExchange:
 		intptr = &options->gss_keyex;
 		goto parse_flag;
 
@@ -1456,7 +1456,7 @@ process_server_config_line_depth(ServerOptions *options, char *line,
 		intptr = &options->gss_strict_acceptor;
 		goto parse_flag;
 
-	case sGSSAPIStoreRekey:
+	case sGSSAPIStoreCredentialsOnRekey:
 		intptr = &options->gss_store_rekey;
 		goto parse_flag;
 
@@ -4242,8 +4242,8 @@ dump_config(ServerOptions *o)
 	dump_cfg_fmtint(sGSSAPICleanupCredentials, o->gss_cleanup_creds);
 	dump_cfg_fmtint(sGSSAPIDelegateCredentials, o->gss_deleg_creds);
 	dump_cfg_fmtint(sGSSAPIStrictAcceptorCheck, o->gss_strict_acceptor);
-	dump_cfg_fmtint(sGSSAPIKeyEx, o->gss_keyex);
-	dump_cfg_fmtint(sGSSAPIStoreRekey, o->gss_store_rekey);
+	dump_cfg_fmtint(sGSSAPIKeyExchange, o->gss_keyex);
+	dump_cfg_fmtint(sGSSAPIStoreCredentialsOnRekey, o->gss_store_rekey);
 	dump_cfg_string(sGSSAPIKexAlgorithms, o->gss_kex_algorithms);
 #endif
 	dump_cfg_fmtint(sPasswordAuthentication, o->password_authentication);

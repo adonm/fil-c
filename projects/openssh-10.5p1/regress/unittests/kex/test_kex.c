@@ -168,6 +168,7 @@ do_kex_with_key(char *kex, char *cipher, char *mac,
 	server2->kex->kex[KEX_C25519_SHA256] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_SNTRUP761X25519_SHA512] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_MLKEM768X25519_SHA256] = kex_gen_server;
+        server2->kex->kex[KEX_KEM_MLKEM768ECDH_SHA256] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_MLKEM768NISTP256_SHA256] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_MLKEM1024NISTP384_SHA384] = kex_gen_server;
 	server2->kex->load_host_public_key = server->kex->load_host_public_key;

@@ -591,7 +591,7 @@ void filc_initialize(filc_stack_limit stack_limit)
     filc_get_bool_env("FILC_DUMP_SETUP", &should_dump_setup);
     if (should_dump_setup) {
         pas_log("filc setup:\n");
-        pas_log("    version: 0.683\n");
+        pas_log("    version: 0.684\n");
         pas_log("    page size: %zu (OS), %zu (simulated), %zu (build)\n",
                 pas_real_page_size(), pas_page_malloc_alignment(), PAS_SYSTEM_PAGE_SIZE);
         pas_log("    testing library: %s\n", PAS_ENABLE_TESTING ? "yes" : "no");

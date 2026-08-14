@@ -19,7 +19,7 @@
 
 #include "VCSVersion.inc"
 
-#define FILC_VERSION "0.683"
+#define FILC_VERSION "0.684"
 
 namespace clang {
 

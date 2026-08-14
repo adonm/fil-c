@@ -161,17 +161,8 @@ compat_kex_proposal(struct ssh *ssh, const char *p)
 	}
 	if (mlkem_available == 2)
 		return cp ? cp : xstrdup(p);
-	if (mlkem_available == 1 && FIPS_mode()) {
-		if ((cp2 = match_filter_denylist(cp ? cp : p,
-		    "mlkem768x25519-sha256")) == NULL)
-			fatal("match_filter_denylist failed");
-		free(cp);
-		cp = cp2;
-	}
 	if (mlkem_available == 0) {
 		if ((cp2 = match_filter_denylist(cp ? cp : p,
-		    "mlkem768x25519-sha256,"
-		    "mlkem768nistp256-sha256,"
 		    "mlkem1024nistp384-sha384")) == NULL)
 			fatal("match_filter_denylist failed");
 		free(cp);

@@ -169,7 +169,6 @@ do_kex_with_key(char *kex, char *cipher, char *mac,
 	server2->kex->kex[KEX_KEM_SNTRUP761X25519_SHA512] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_MLKEM768X25519_SHA256] = kex_gen_server;
         server2->kex->kex[KEX_KEM_MLKEM768ECDH_SHA256] = kex_gen_server;
-	server2->kex->kex[KEX_KEM_MLKEM768NISTP256_SHA256] = kex_gen_server;
 	server2->kex->kex[KEX_KEM_MLKEM1024NISTP384_SHA384] = kex_gen_server;
 	server2->kex->load_host_public_key = server->kex->load_host_public_key;
 	server2->kex->load_host_private_key = server->kex->load_host_private_key;
@@ -242,9 +241,9 @@ kex_tests(void)
 		do_kex("diffie-hellman-group16-sha512");
 		do_kex("diffie-hellman-group18-sha512");
 	}
+	do_kex("mlkem768nistp256-sha256");
 # ifdef USE_MLKEM768X25519
 	do_kex("mlkem768x25519-sha256");
-	do_kex("mlkem768nistp256-sha256");
 	do_kex("mlkem1024nistp384-sha384");
 # endif /* USE_MLKEM768X25519 */
 # ifdef USE_SNTRUP761X25519

@@ -88,8 +88,6 @@ static const struct kexalg kexalgs[] = {
 #ifdef USE_MLKEM768X25519
 	{ KEX_MLKEM768X25519_SHA256, KEX_KEM_MLKEM768X25519_SHA256, 0,
 	    SSH_DIGEST_SHA256, KEX_IS_PQ },
-	{ KEX_MLKEM768NISTP256_SHA256, KEX_KEM_MLKEM768NISTP256_SHA256, 0,
-	    SSH_DIGEST_SHA256, KEX_IS_PQ },
 	{ KEX_MLKEM1024NISTP384_SHA384, KEX_KEM_MLKEM1024NISTP384_SHA384, 0,
 	    SSH_DIGEST_SHA384, KEX_IS_PQ },
 #endif
@@ -125,10 +123,6 @@ int is_mlkem768_available()
 		ERR_set_mark();
 		mlkem768 = EVP_KEM_fetch(NULL, "mlkem768", NULL);
 		is_fetched = (mlkem768 == NULL) ? 0 : 2;
-		if (is_fetched == 0 && FIPS_mode() == 1) {
-		    mlkem768 = EVP_KEM_fetch(NULL, "mlkem768", "provider=default,-fips");
-		    is_fetched = (mlkem768 == NULL) ? 0 : 1;
-		}
 		EVP_KEM_free(mlkem768);
 		ERR_pop_to_mark();
 	}
@@ -142,30 +136,18 @@ kex_alg_list_internal(char sep, const struct kexalg *algs)
 	char *ret = NULL;
 	const struct kexalg *k;
 	char sep_str[2] = {sep, '\0'};
-	int x25519mlkem_available = 0, nistmlkem_available = 0;
+	int nistmlkem_available = 0;
 
 	/*
 	 * FIPS provider can provide ML-KEMs and then all hybrids are available
 	 * Otherwise only NIST hybrids are available
 	 * */
-	if (FIPS_mode()) {
-	    if (is_mlkem768_available() == 2) {
-	        x25519mlkem_available = 1;
-	        nistmlkem_available = 1;
-	    } else if (is_mlkem768_available() == 1) {
-	        nistmlkem_available = 1;
-	    }
-	} else {
-	    if (is_mlkem768_available() > 0) {
-	        x25519mlkem_available = 1;
-	        nistmlkem_available = 1;
-	    }
+	if (is_mlkem768_available() > 0) {
+	    nistmlkem_available = 1;
 	}
 
 	for (k = algs; k->name != NULL; k++) {
-		if (  (strcmp(k->name, KEX_MLKEM768X25519_SHA256) == 0    && x25519mlkem_available == 0)
-		   || (strcmp(k->name, KEX_MLKEM768NISTP256_SHA256) == 0  && nistmlkem_available == 0)
-		   || (strcmp(k->name, KEX_MLKEM1024NISTP384_SHA384) == 0 && nistmlkem_available == 0))
+		if (  (strcmp(k->name, KEX_MLKEM1024NISTP384_SHA384) == 0 && nistmlkem_available == 0))
 			continue;
                 
 		xextendf(&ret, sep_str, "%s", k->name);
@@ -190,29 +172,17 @@ static const struct kexalg *
 kex_alg_by_name(const char *name)
 {
 	const struct kexalg *k;
-	int x25519mlkem_available = 0, nistmlkem_available = 0;
+	int nistmlkem_available = 0;
 
 	/*
 	 * FIPS provider can provide ML-KEMs and then all hybrids are available
 	 * Otherwise only NIST hybrids are available
 	 * */
-	if (FIPS_mode()) {
-	    if (is_mlkem768_available() == 2) {
-	        x25519mlkem_available = 1;
-	        nistmlkem_available = 1;
-	    } else if (is_mlkem768_available() == 1) {
-	        nistmlkem_available = 1;
-	    }
-	} else {
-	    if (is_mlkem768_available() > 0) {
-	        x25519mlkem_available = 1;
-	        nistmlkem_available = 1;
-	    }
+	if (is_mlkem768_available() > 0) {
+	    nistmlkem_available = 1;
 	}
 
-	if (  (strcmp(name, KEX_MLKEM768X25519_SHA256) == 0    && x25519mlkem_available == 0)
-	   || (strcmp(name, KEX_MLKEM768NISTP256_SHA256) == 0  && nistmlkem_available == 0)
-	   || (strcmp(name, KEX_MLKEM1024NISTP384_SHA384) == 0 && nistmlkem_available == 0))
+	if (  (strcmp(name, KEX_MLKEM1024NISTP384_SHA384) == 0 && nistmlkem_available == 0))
 	   return NULL;
 
 	for (k = kexalgs; k->name != NULL; k++) {
@@ -285,18 +255,7 @@ kex_names_valid(const char *names)
 	for ((p = strsep(&cp, ",")); p && *p != '\0';
 	    (p = strsep(&cp, ","))) {
 		if (kex_alg_by_name(p) == NULL) {
-			if (FIPS_mode()) {
-				if ((strcmp(p, KEX_MLKEM768X25519_SHA256) == 0)
-				    || (strcmp(p, KEX_MLKEM768NISTP256_SHA256) == 0)
-				    || (strcmp(p, KEX_MLKEM1024NISTP384_SHA384) == 0)) {
-					debug("\"%.100s\" is not allowed in FIPS mode", p);
-					continue;
-				}
-				else
-					error("\"%.100s\" is not allowed in FIPS mode", p);
-			}
- 			else
-                                error("Unsupported KEX algorithm \"%.100s\"", p);
+			error("Unsupported KEX algorithm \"%.100s\"", p);
 			free(s);
 			return 0;
 		}

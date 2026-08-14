@@ -99,7 +99,6 @@ enum kex_exchange {
 	KEX_KEM_SNTRUP761X25519_SHA512,
 	KEX_KEM_MLKEM768X25519_SHA256,
 	KEX_KEM_MLKEM768ECDH_SHA256,
-	KEX_KEM_MLKEM768NISTP256_SHA256,
 	KEX_KEM_MLKEM1024NISTP384_SHA384,
 #ifdef GSSAPI
 	KEX_GSS_GRP1_SHA1,
@@ -292,12 +291,6 @@ int	 kex_kem_mlkem768ecdh_keypair(struct kex *);
 int	 kex_kem_mlkem768ecdh_enc(struct kex *, const struct sshbuf *,
     struct sshbuf **, struct sshbuf **);
 int	 kex_kem_mlkem768ecdh_dec(struct kex *, const struct sshbuf *,
-    struct sshbuf **);
-
-int	 kex_kem_mlkem768nistp256_keypair(struct kex *);
-int	 kex_kem_mlkem768nistp256_enc(struct kex *, const struct sshbuf *,
-    struct sshbuf **, struct sshbuf **);
-int	 kex_kem_mlkem768nistp256_dec(struct kex *, const struct sshbuf *,
     struct sshbuf **);
 
 int	 kex_kem_mlkem1024nistp384_keypair(struct kex *);

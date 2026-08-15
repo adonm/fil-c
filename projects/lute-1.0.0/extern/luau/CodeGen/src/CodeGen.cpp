@@ -183,6 +183,14 @@ unsigned int getCpuFeaturesX64()
 
 bool isSupported()
 {
+#ifdef __FILC__
+    // Fil-C: the native code generator emits uninstrumented machine code that
+    // cannot observe Fil-C's pointer capabilities, so JIT compilation can never
+    // work. Report codegen as unsupported; all lute call sites guard on this
+    // and fall back to the interpreter.
+    return false;
+#endif
+
     if (LUA_EXTRA_SIZE != 1)
         return false;
 

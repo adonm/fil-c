@@ -43,6 +43,7 @@ test ! -d projects/pizfix
 ./build_lz4.sh
 ./build_xxhash.sh
 ./build_blake3.sh
+./build_brotli.sh
 ./build_expat.sh
 ./build_pcre.sh      # Hilariously, pcre + pcre2 would like to depend on libedit, but libedit depends
 ./build_pcre2.sh     # on ncurses, and ncurses depends on pcre2. Luckily, only pcretest wants libedit.
@@ -93,7 +94,6 @@ test ! -d projects/pizfix
 ./build_m4.sh
 ./build_emacs.sh
 ./build_vim.sh
-./build_brotli.sh
 ./build_yaml.sh
 ./build_ruby.sh
 ./build_bison.sh

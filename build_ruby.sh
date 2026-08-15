@@ -28,6 +28,13 @@
 set -e
 set -x
 
+# 'make install' runs the freshly built ruby to generate RDoc documentation,
+# and RDoc calls File.expand_path("~"), which requires a usable home directory.
+# In minimal/container environments HOME can be unset or empty, and if the
+# libc's getpwuid fallback doesn't yield a usable home either, rdoc dies with
+# "no implicit conversion of nil into String". Give the build a real HOME.
+export HOME="${HOME:-/tmp}"
+
 cd projects/ruby-3.3.10/
 extract_source
 CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ ./configure --enable-shared --disable-yjit --disable-rjit --without-jit --without-gcc --without-valgrind --with-thread=pthread --without-jemalloc --with-coroutine=pthread --prefix=$PWD/../../../pizfix

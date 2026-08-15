@@ -64,6 +64,9 @@ set(ZLIB_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/zlib;${ZLIB_OUTPUT_DIR})
 set(ZLIB_INCLUDE_DIRS ${ZLIB_INCLUDE_DIR} CACHE STRING "" FORCE)
 
 # boringssl setup
+# Fil-C: no asm. Assembly code is uninstrumented and cannot safely interoperate
+# with Fil-C's capability-based pointers, so build boringssl in pure C mode.
+set(OPENSSL_NO_ASM ON)
 add_subdirectory(extern/boringssl)
 set(BORINGSSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/extern/boringssl")
 set(BORINGSSL_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/boringssl/include)

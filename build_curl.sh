@@ -30,7 +30,16 @@ set -x
 
 cd projects/curl-8.9.1
 extract_source
+# --enable-websockets: WebSocket support is still experimental in curl 8.9.1
+# and off by default, but lute's net module implements its websocket client on
+# top of libcurl's connect-only mode (CURLOPT_CONNECT_ONLY=2 + curl_ws_send/
+# curl_ws_recv), so the corpus curl must provide it.
+# --without-brotli: build_all_slow.sh builds brotli after curl, so a fresh
+# corpus build has no brotli for curl to find. Pin that outcome so that
+# rebuilding curl into an already-populated pizfix (where configure would
+# auto-detect brotli) produces the same libcurl either way.
 CC=$PWD/../../../build/bin/clang ./configure --with-openssl --with-nghttp2 \
+    --enable-websockets --without-brotli \
     --prefix=$PWD/../../../pizfix
 $MAKE -j $NCPU
 $MAKE -j $NCPU install

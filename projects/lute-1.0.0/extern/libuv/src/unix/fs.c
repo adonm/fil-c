@@ -471,7 +471,7 @@ static ssize_t uv__preadv_or_pwritev(int fd,
                                      const struct iovec* bufs,
                                      size_t nbufs,
                                      off_t off,
-                                     _Atomic uintptr_t* cache,
+                                     void*_Atomic* cache,
                                      int is_pread) {
   ssize_t (*f)(int, const struct iovec*, uv__iovcnt, off_t);
   void* p;
@@ -484,7 +484,7 @@ static ssize_t uv__preadv_or_pwritev(int fd,
 #endif  /* RTLD_DEFAULT */
     if (p == NULL)
       p = is_pread ? uv__preadv_emul : uv__pwritev_emul;
-    atomic_store_explicit(cache, (uintptr_t) p, memory_order_relaxed);
+    atomic_store_explicit(cache, p, memory_order_relaxed);
   }
 
   /* Use memcpy instead of `f = p` to work around a compiler bug,
@@ -499,7 +499,7 @@ static ssize_t uv__preadv(int fd,
                           const struct iovec* bufs,
                           size_t nbufs,
                           off_t off) {
-  static _Atomic uintptr_t cache;
+  static void*_Atomic cache;
   return uv__preadv_or_pwritev(fd, bufs, nbufs, off, &cache, /*is_pread*/1);
 }
 
@@ -508,7 +508,7 @@ static ssize_t uv__pwritev(int fd,
                            const struct iovec* bufs,
                            size_t nbufs,
                            off_t off) {
-  static _Atomic uintptr_t cache;
+  static void*_Atomic cache;
   return uv__preadv_or_pwritev(fd, bufs, nbufs, off, &cache, /*is_pread*/0);
 }
 

@@ -37,7 +37,9 @@ add_subdirectory(extern/luau)
 # can no longer build its own event loop library and LUTE_SYSTEM_LIBUV is
 # required. The imported target reuses the target name (uv_a) that the
 # vendored libuv build used to define, so nothing else in the build needs to
-# care which libuv is in use.
+# care which libuv is in use. We link the shared library (libuv.so): its
+# system dependencies ride along as DT_NEEDED entries, so there is no
+# transitive link interface to enumerate here.
 set(LUTE_SYSTEM_LIBUV "" CACHE PATH "Path to a Fil-C libuv install prefix (pizfix); required, since this port removed the vendored libuv")
 if(NOT LUTE_SYSTEM_LIBUV)
     message(FATAL_ERROR
@@ -46,19 +48,19 @@ if(NOT LUTE_SYSTEM_LIBUV)
         "-DLUTE_SYSTEM_LIBUV=<prefix>. The vendored extern/libuv was removed "
         "from this port, so lute cannot build its own event loop library.")
 endif()
-add_library(uv_a STATIC IMPORTED GLOBAL)
+add_library(uv_a SHARED IMPORTED GLOBAL)
 set_target_properties(uv_a PROPERTIES
-    IMPORTED_LOCATION "${LUTE_SYSTEM_LIBUV}/lib/libuv.a"
-    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_LIBUV}/include"
-    # libuv's Linux system dependencies (see libuv.pc Libs.private)
-    INTERFACE_LINK_LIBRARIES "pthread;dl;rt")
+    IMPORTED_LOCATION "${LUTE_SYSTEM_LIBUV}/lib/libuv.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_LIBUV}/include")
 set(LIBUV_INCLUDE_DIR "${LUTE_SYSTEM_LIBUV}/include")
 
 # zlib setup
 # Fil-C: same story as libuv: use an already Fil-C-ported zlib from a userland
 # install prefix (e.g. pizfix). The vendored extern/zlib was removed, so
 # LUTE_SYSTEM_ZLIB is required. The imported target reuses the target name
-# (zlibstatic) that the vendored zlib build used to define.
+# (zlibstatic) that the vendored zlib build used to define, so nothing else in
+# the build needs to care which zlib is in use; the name is a misnomer now
+# that we link the shared library (libz.so).
 set(LUTE_SYSTEM_ZLIB "" CACHE PATH "Path to a Fil-C zlib install prefix (pizfix); required, since this port removed the vendored zlib")
 if(NOT LUTE_SYSTEM_ZLIB)
     message(FATAL_ERROR
@@ -67,9 +69,9 @@ if(NOT LUTE_SYSTEM_ZLIB)
         "-DLUTE_SYSTEM_ZLIB=<prefix>. The vendored extern/zlib was removed "
         "from this port, so lute cannot build its own compression library.")
 endif()
-add_library(zlibstatic STATIC IMPORTED GLOBAL)
+add_library(zlibstatic SHARED IMPORTED GLOBAL)
 set_target_properties(zlibstatic PROPERTIES
-    IMPORTED_LOCATION "${LUTE_SYSTEM_ZLIB}/lib/libz.a"
+    IMPORTED_LOCATION "${LUTE_SYSTEM_ZLIB}/lib/libz.so"
     INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_ZLIB}/include")
 # These variables are consumed by CMakeBuild/uWebSockets.cmake
 # (ZLIB_INCLUDE_DIRS, ZLIB_LIBRARIES) and lute/cli (ZLIB_INCLUDE_DIR).
@@ -82,7 +84,8 @@ set(ZLIB_LIBRARIES zlibstatic)
 # install prefix (e.g. pizfix). The vendored extern/boringssl was removed, so
 # lute can no longer build its own TLS library and LUTE_SYSTEM_OPENSSL is
 # required. The imported targets reuse the target names the vendored boringssl
-# build used to define (ssl, crypto). lute/crypto falls back to libsodium for
+# build used to define (ssl, crypto), and point at the shared libraries
+# (libssl.so, libcrypto.so). lute/crypto falls back to libsodium for
 # blake2b256, which OpenSSL doesn't provide as an EVP (see
 # lute/crypto/src/crypto.cpp).
 set(LUTE_SYSTEM_OPENSSL "" CACHE PATH "Path to a Fil-C OpenSSL install prefix (pizfix); required, since this port removed the vendored boringssl")
@@ -93,16 +96,14 @@ if(NOT LUTE_SYSTEM_OPENSSL)
         "-DLUTE_SYSTEM_OPENSSL=<prefix>. The vendored extern/boringssl was "
         "removed from this port, so lute cannot build its own TLS library.")
 endif()
-add_library(ssl STATIC IMPORTED GLOBAL)
+add_library(ssl SHARED IMPORTED GLOBAL)
 set_target_properties(ssl PROPERTIES
-    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libssl.a"
-    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
-    INTERFACE_LINK_LIBRARIES "pthread;dl")
-add_library(crypto STATIC IMPORTED GLOBAL)
+    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libssl.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include")
+add_library(crypto SHARED IMPORTED GLOBAL)
 set_target_properties(crypto PROPERTIES
-    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libcrypto.a"
-    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
-    INTERFACE_LINK_LIBRARIES "pthread;dl")
+    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libcrypto.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include")
 # CMakeBuild/uSockets.cmake's WITH_BORINGSSL branch adds ${BORINGSSL_INCLUDE_DIR}
 # to uSockets' include path (the BORINGSSL_* name is upstream's); point it at
 # the system prefix.
@@ -112,11 +113,12 @@ set(BORINGSSL_INCLUDE_DIR "${LUTE_SYSTEM_OPENSSL}/include")
 # Fil-C: same story again: use an already Fil-C-ported curl from a userland
 # install prefix (e.g. pizfix). The vendored extern/curl was removed, so
 # LUTE_SYSTEM_CURL is required. The imported target reuses the target name
-# (libcurl) that the vendored curl build used to define. pizfix's libcurl.a is
-# a static archive, so its transitive dependencies ride along on the
-# interface: per libcurl.pc (Requires.private) those are OpenSSL, zlib, zstd
-# and nghttp2, all built with Fil-C and installed in the same prefix (ssl,
-# crypto and zlibstatic are the imported targets above).
+# (libcurl) that the vendored curl build used to define. We link the shared
+# library (libcurl.so), whose dependencies ride along as DT_NEEDED entries,
+# so there is no transitive link interface to enumerate here. That matters:
+# exactly what the corpus curl was built against (OpenSSL, zlib, zstd,
+# nghttp2, brotli, ...) changes as build_all_slow.sh evolves, and only the
+# shared library knows the answer.
 set(LUTE_SYSTEM_CURL "" CACHE PATH "Path to a Fil-C curl install prefix (pizfix); required, since this port removed the vendored curl")
 if(NOT LUTE_SYSTEM_CURL)
     message(FATAL_ERROR
@@ -125,12 +127,10 @@ if(NOT LUTE_SYSTEM_CURL)
         "-DLUTE_SYSTEM_CURL=<prefix>. The vendored extern/curl was removed "
         "from this port, so lute cannot build its own HTTP client library.")
 endif()
-add_library(libcurl STATIC IMPORTED GLOBAL)
+add_library(libcurl SHARED IMPORTED GLOBAL)
 set_target_properties(libcurl PROPERTIES
-    IMPORTED_LOCATION "${LUTE_SYSTEM_CURL}/lib/libcurl.a"
-    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_CURL}/include"
-    # libcurl.pc Requires.private: zlib, libzstd, openssl, libnghttp2
-    INTERFACE_LINK_LIBRARIES "ssl;crypto;zlibstatic;${LUTE_SYSTEM_CURL}/lib/libnghttp2.a;${LUTE_SYSTEM_CURL}/lib/libzstd.a;pthread;dl")
+    IMPORTED_LOCATION "${LUTE_SYSTEM_CURL}/lib/libcurl.so"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_CURL}/include")
 
 # uWebSockets setup
 # Fil-C: WITH_BORINGSSL is uSockets/uWebSockets' upstream toggle for TLS via an

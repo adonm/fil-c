@@ -65,8 +65,17 @@ static void init_fork_detect(void) {
   // know whether MADV_WIPEONFORK actually took effect. Therefore try an invalid
   // call to check that the implementation of |madvise| is actually rejecting
   // unknown |advice| values.
+#ifdef __FILC__
+  // Fil-C: an unrecognized madvise advice value makes the Fil-C runtime panic
+  // rather than return an error, so the invalid-advice probe cannot be used.
+  // Fil-C passes recognized advice values (including MADV_WIPEONFORK) through
+  // to the real kernel, and there is no qemu layer that could silently ignore
+  // the call, so the probe is unnecessary anyway.
+  if (madvise(addr, (size_t)page_size, MADV_WIPEONFORK) != 0) {
+#else
   if (madvise(addr, (size_t)page_size, -1) == 0 ||
       madvise(addr, (size_t)page_size, MADV_WIPEONFORK) != 0) {
+#endif
     munmap(addr, (size_t)page_size);
     return;
   }

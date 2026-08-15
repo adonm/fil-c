@@ -64,3 +64,28 @@ extract_source()
     git diff --relative HEAD . | (cd extracted-source && patch -p1)
     cd extracted-source
 }
+
+# Runs 'make check' with default SIGINT/SIGQUIT dispositions.
+#
+# When the build runs in a batch environment (setsid/nohup, or an unprivileged
+# container without a controlling tty), SIGINT and SIGQUIT are ignored on entry
+# and a POSIX shell cannot reset them. Some test suites (e.g. gnulib's
+# test-execute, used by m4 among others) require the default dispositions -
+# they raise SIGINT in a child and expect it to die. python3 can reset the
+# dispositions (the cannot-reset-ignored-signals rule is shell-specific), so
+# use it as an exec launcher when SIGINT is ignored on entry. Falls back to a
+# plain 'make check' when python3 is unavailable or signals are fine.
+make_check()
+{
+    if python3 -c 'import signal, sys; sys.exit(0 if signal.getsignal(signal.SIGINT) == signal.SIG_IGN else 1)' 2>/dev/null
+    then
+        python3 -c '
+import os, signal, sys
+for sig in (signal.SIGINT, signal.SIGQUIT):
+    if signal.getsignal(sig) == signal.SIG_IGN:
+        signal.signal(sig, signal.SIG_DFL)
+os.execvp(sys.argv[1], sys.argv[1:])' make check "$@"
+    else
+        make check "$@"
+    fi
+}

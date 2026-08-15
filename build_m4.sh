@@ -32,5 +32,7 @@ cd projects/m4-1.4.19
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
-make check -j $NCPU
+# make_check (libpas/common.sh) resets ignored SIGINT/SIGQUIT dispositions so
+# gnulib's test-execute passes in batch/unprivileged-container environments.
+make_check -j $NCPU
 make install -j $NCPU

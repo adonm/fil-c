@@ -32,14 +32,30 @@ set(LUAU_BUILD_TESTS OFF)
 add_subdirectory(extern/luau)
 
 # libuv setup
-set(LIBUV_BUILD_SHARED OFF)
-set(BUILD_SHARED_LIBS OFF) # why does an option for LIBUV_BUILD_SHARED exist separately
-set(LIBUV_BUILD_TESTS OFF)
-set(LIBUV_BUILD_BENCH OFF)
-add_subdirectory(extern/libuv)
+# Fil-C: lute can use an already Fil-C-ported libuv from a userland install prefix
+# (e.g. pizfix) instead of building the vendored extern/libuv a second time.
+set(LUTE_SYSTEM_LIBUV "" CACHE PATH "Path to a Fil-C libuv install prefix (pizfix); if set, don't build extern/libuv")
+if(LUTE_SYSTEM_LIBUV)
+    # The Fil-C build of libuv installs a static archive as lib/libuv.a. Expose it
+    # under the same target name (uv_a) that the vendored libuv build would define,
+    # so nothing else in the build needs to care which libuv is in use.
+    add_library(uv_a STATIC IMPORTED GLOBAL)
+    set_target_properties(uv_a PROPERTIES
+        IMPORTED_LOCATION "${LUTE_SYSTEM_LIBUV}/lib/libuv.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_LIBUV}/include"
+        # libuv's Linux system dependencies (see libuv.pc Libs.private)
+        INTERFACE_LINK_LIBRARIES "pthread;dl;rt")
+    set(LIBUV_INCLUDE_DIR "${LUTE_SYSTEM_LIBUV}/include")
+else()
+    set(LIBUV_BUILD_SHARED OFF)
+    set(BUILD_SHARED_LIBS OFF) # why does an option for LIBUV_BUILD_SHARED exist separately
+    set(LIBUV_BUILD_TESTS OFF)
+    set(LIBUV_BUILD_BENCH OFF)
+    add_subdirectory(extern/libuv)
 
-# Define libuv include directory here, before it's needed by other subdirectories
-set(LIBUV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/libuv/include)
+    # Define libuv include directory here, before it's needed by other subdirectories
+    set(LIBUV_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/libuv/include)
+endif()
 
 # zlib setup
 #

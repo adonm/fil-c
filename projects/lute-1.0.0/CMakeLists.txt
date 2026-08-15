@@ -79,43 +79,37 @@ endif()
 set(ZLIB_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/zlib;${ZLIB_OUTPUT_DIR})
 set(ZLIB_INCLUDE_DIRS ${ZLIB_INCLUDE_DIR} CACHE STRING "" FORCE)
 
-# boringssl setup
-# Fil-C: like LUTE_SYSTEM_LIBUV, lute can use an already Fil-C-ported OpenSSL
-# from a userland install prefix (e.g. pizfix) instead of building the vendored
-# extern/boringssl. The imported targets reuse the target names the vendored
-# boringssl build would define (ssl, crypto), and curl finds the same OpenSSL
-# via OPENSSL_ROOT_DIR. lute/crypto falls back to libsodium for blake2b256,
-# which OpenSSL doesn't provide as an EVP (see lute/crypto/src/crypto.cpp).
-set(LUTE_SYSTEM_OPENSSL "" CACHE PATH "Path to a Fil-C OpenSSL install prefix (pizfix); if set, don't build extern/boringssl")
-if(LUTE_SYSTEM_OPENSSL)
-    add_library(ssl STATIC IMPORTED GLOBAL)
-    set_target_properties(ssl PROPERTIES
-        IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libssl.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
-        INTERFACE_LINK_LIBRARIES "pthread;dl")
-    add_library(crypto STATIC IMPORTED GLOBAL)
-    set_target_properties(crypto PROPERTIES
-        IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libcrypto.a"
-        INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
-        INTERFACE_LINK_LIBRARIES "pthread;dl")
-    # lute's own CMakeBuild/FindOpenSSL.cmake (used by curl's find_package)
-    # derives all of its paths from these two variables, so point them at the
-    # system prefix.
-    set(BORINGSSL_OUTPUT_DIR "${LUTE_SYSTEM_OPENSSL}/lib")
-    set(BORINGSSL_INCLUDE_DIR "${LUTE_SYSTEM_OPENSSL}/include")
-else()
-    # Fil-C: no asm. Assembly code is uninstrumented and cannot safely interoperate
-    # with Fil-C's capability-based pointers, so build boringssl in pure C mode.
-    set(OPENSSL_NO_ASM ON)
-    add_subdirectory(extern/boringssl)
-    set(BORINGSSL_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/extern/boringssl")
-    set(BORINGSSL_INCLUDE_DIR ${PROJECT_SOURCE_DIR}/extern/boringssl/include)
-
-    # Suppress frame-size warnings in boringssl when sanitizers are enabled
-    if (LUTE_ENABLE_SANITIZERS AND NOT MSVC)
-        target_compile_options(crypto PRIVATE -Wno-frame-larger-than)
-    endif()
+# OpenSSL setup
+# Fil-C: this port always uses an already Fil-C-ported OpenSSL from a userland
+# install prefix (e.g. pizfix). The vendored extern/boringssl was removed, so
+# lute can no longer build its own TLS library and LUTE_SYSTEM_OPENSSL is
+# required. The imported targets reuse the target names the vendored boringssl
+# build used to define (ssl, crypto), and curl finds the same OpenSSL via
+# OPENSSL_ROOT_DIR. lute/crypto falls back to libsodium for blake2b256, which
+# OpenSSL doesn't provide as an EVP (see lute/crypto/src/crypto.cpp).
+set(LUTE_SYSTEM_OPENSSL "" CACHE PATH "Path to a Fil-C OpenSSL install prefix (pizfix); required, since this port removed the vendored boringssl")
+if(NOT LUTE_SYSTEM_OPENSSL)
+    message(FATAL_ERROR
+        "LUTE_SYSTEM_OPENSSL is not set. This Fil-C port of lute requires a "
+        "prebuilt Fil-C OpenSSL install prefix (e.g. pizfix): re-run cmake with "
+        "-DLUTE_SYSTEM_OPENSSL=<prefix>. The vendored extern/boringssl was "
+        "removed from this port, so lute cannot build its own TLS library.")
 endif()
+add_library(ssl STATIC IMPORTED GLOBAL)
+set_target_properties(ssl PROPERTIES
+    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libssl.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
+    INTERFACE_LINK_LIBRARIES "pthread;dl")
+add_library(crypto STATIC IMPORTED GLOBAL)
+set_target_properties(crypto PROPERTIES
+    IMPORTED_LOCATION "${LUTE_SYSTEM_OPENSSL}/lib/libcrypto.a"
+    INTERFACE_INCLUDE_DIRECTORIES "${LUTE_SYSTEM_OPENSSL}/include"
+    INTERFACE_LINK_LIBRARIES "pthread;dl")
+# lute's own CMakeBuild/FindOpenSSL.cmake (used by curl's find_package) derives
+# all of its paths from these two variables (the BORINGSSL_* names are
+# upstream's), so point them at the system prefix.
+set(BORINGSSL_OUTPUT_DIR "${LUTE_SYSTEM_OPENSSL}/lib")
+set(BORINGSSL_INCLUDE_DIR "${LUTE_SYSTEM_OPENSSL}/include")
 
 # curl setup
 
@@ -133,15 +127,16 @@ set(BUILD_CURL_EXE OFF)
 set(BUILD_SHARED_LIBS OFF)
 set(BUILD_STATIC_LIBS ON)
 
-# curl needs to know whether the OpenSSL it links is actually BoringSSL; with a
-# system OpenSSL (LUTE_SYSTEM_OPENSSL) it isn't, and curl's own detection gets
-# the right answer from the headers.
-if(NOT LUTE_SYSTEM_OPENSSL)
-    set(HAVE_BORINGSSL ON)
-endif()
+# curl needs to know whether the OpenSSL it links is actually BoringSSL. This
+# port always links the system OpenSSL (LUTE_SYSTEM_OPENSSL is required), so
+# HAVE_BORINGSSL is never forced on and curl's own header check
+# (check_symbol_exists for OPENSSL_IS_BORINGSSL) gets the right answer.
 add_subdirectory(extern/curl)
 
 # uWebSockets setup
+# Fil-C: WITH_BORINGSSL is uSockets/uWebSockets' upstream toggle for TLS via an
+# OpenSSL-compatible libssl/libcrypto; here the ssl/crypto targets are the
+# imported system OpenSSL from LUTE_SYSTEM_OPENSSL above, not BoringSSL.
 set(WITH_BORINGSSL ON)
 set(WITH_LIBUV ON)
 set(WITH_ZLIB ON)

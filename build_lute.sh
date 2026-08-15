@@ -74,7 +74,8 @@ cp tools/templates/definitions_impl.cpp lute/definitions/src/generated/modules.c
 cp tools/templates/definitions_header.h lute/definitions/src/generated/modules.h
 
 # Use pizfix's Fil-C libuv and OpenSSL instead of building the vendored
-# extern/libuv and extern/boringssl a second time. Use absolute paths, since cmake
+# extern/libuv a second time (the vendored extern/boringssl was removed from
+# this port; LUTE_SYSTEM_OPENSSL is required). Use absolute paths, since cmake
 # caches them.
 CC="$PWD/../../../build/bin/clang -g" CXX="$PWD/../../../build/bin/clang++ -g" \
     cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \

@@ -12,7 +12,10 @@ endif()
 set(OPENSSL_LIBRARIES "${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}")
 set(OPENSSL_INCLUDE_DIR "${BORINGSSL_INCLUDE_DIR}")
 set(OPENSSL_INCLUDE_DIRS "${OPENSSL_INCLUDE_DIR}")
-set(OPENSSL_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/boringssl/")
+# Fil-C: the vendored extern/boringssl was removed. The top-level CMakeLists
+# points BORINGSSL_INCLUDE_DIR at the system OpenSSL prefix's include dir
+# (LUTE_SYSTEM_OPENSSL), so derive the root from it.
+get_filename_component(OPENSSL_ROOT_DIR "${BORINGSSL_INCLUDE_DIR}" DIRECTORY)
 
 # Create the imported targets
 if(NOT TARGET OpenSSL::SSL)

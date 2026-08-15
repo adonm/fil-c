@@ -81,6 +81,7 @@ test ! -d projects/pizfix
 ./build_libevent.sh
 ./build_tmux.sh
 ./build_libuv.sh
+./build_lute.sh
 ./build_libarchive.sh
 ./build_cmake.sh
 ./build_coreutils.sh

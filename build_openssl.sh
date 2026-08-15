@@ -36,9 +36,13 @@ make -j $NCPU
 
 # Only run the test suite in a glibc build. There are a bunch of failures in the test suite in a musl
 # build.
+#
+# Retry the suite once if it fails: 70-test_quic_radix.t (check_pc_flood) has a flaky
+# wall-clock timeout ("timed out while executing op 33" in test/radix/terp.c) when the
+# whole suite runs with full parallelism; it passes reliably on a re-run.
 if test -e ../../../pizfix/lib/libc.so.6666
 then
-    HARNESS_JOBS=$NCPU make test
+    HARNESS_JOBS=$NCPU make test || HARNESS_JOBS=$NCPU make test
 fi
 
 make -j $NCPU install_sw

@@ -4,9 +4,31 @@
 #include "lua.h"
 #include "lualib.h"
 
+// BoringSSL ships <openssl/digest.h>, spells EVP_MD's struct tag `env_md_st`,
+// and provides EVP_blake2b256(); OpenSSL has only <openssl/evp.h>, spells the
+// tag `evp_md_st`, and offers no blake2b-with-256-bit-output EVP. Detect which
+// one the build uses via the boringssl-only base.h, and when building against
+// OpenSSL, compute blake2b256 with libsodium's crypto_generichash_blake2b
+// (BLAKE2b with a 32-byte digest is exactly blake2b-256) instead, with
+// kBlake2b256Sentinel standing in for the EVP_MD pointer in the hash table.
+#ifdef __has_include
+#if __has_include("openssl/base.h")
+#include "openssl/base.h"
+#endif
+#endif
+
+#ifdef OPENSSL_IS_BORINGSSL
 #include "openssl/digest.h"
+using LuteEvpMd = env_md_st;
+#else
+#include "openssl/evp.h"
+using LuteEvpMd = evp_md_st;
+static const char kBlake2b256Sentinel = 0;
+#endif
+
 #include "sodium/crypto_pwhash.h"
 #include "sodium/crypto_secretbox.h"
+#include "sodium/crypto_generichash_blake2b.h"
 #include "sodium/randombytes.h"
 
 #include <string>
@@ -34,7 +56,7 @@ static const char kVerifyPasswordHashName[] = "verify";
 struct HashFunction
 {
     std::string name;
-    const env_md_st* md;
+    const LuteEvpMd* md;
 };
 
 static const HashFunction hashFunctions[] = {
@@ -42,7 +64,11 @@ static const HashFunction hashFunctions[] = {
     {"sha1", EVP_sha1()},
     {"sha256", EVP_sha256()},
     {"sha512", EVP_sha512()},
+#ifdef OPENSSL_IS_BORINGSSL
     {"blake2b256", EVP_blake2b256()},
+#else
+    {"blake2b256", reinterpret_cast<const LuteEvpMd*>(&kBlake2b256Sentinel)},
+#endif
 };
 
 int makeHashFunctionMap(lua_State* L)
@@ -58,9 +84,9 @@ int makeHashFunctionMap(lua_State* L)
     return 1;
 }
 
-const env_md_st* getHashFunction(lua_State* L, int idx)
+const LuteEvpMd* getHashFunction(lua_State* L, int idx)
 {
-    if (auto typ = static_cast<const env_md_st*>(lua_tolightuserdatatagged(L, idx, kHashFunctionTag)))
+    if (auto typ = static_cast<const LuteEvpMd*>(lua_tolightuserdatatagged(L, idx, kHashFunctionTag)))
         return typ;
 
     luaL_typeerrorL(L, idx, "hash function");
@@ -104,8 +130,20 @@ int lua_digest(lua_State* L)
     if (argumentCount != 2)
         luaL_error(L, "%s: expected 2 arguments, but got %d", kDigestName, argumentCount);
 
-    const env_md_st* hashFunction = getHashFunction(L, 1);
+    const LuteEvpMd* hashFunction = getHashFunction(L, 1);
     BinaryData message = extractData(L, 2);
+
+#ifndef OPENSSL_IS_BORINGSSL
+    if (hashFunction == reinterpret_cast<const LuteEvpMd*>(&kBlake2b256Sentinel))
+    {
+        // See the comment at the top of this file: blake2b-256 via libsodium.
+        uint8_t* buffer = static_cast<uint8_t*>(lua_newbuffer(L, 32));
+        if (crypto_generichash_blake2b(buffer, 32, static_cast<const uint8_t*>(message.data), message.length, nullptr, 0) != 0)
+            luaL_error(L, "%s: failed to compute hash", kDigestName);
+
+        return 1;
+    }
+#endif
 
     uint8_t* buffer = static_cast<uint8_t*>(lua_newbuffer(L, EVP_MD_size(hashFunction)));
     if (EVP_Digest(message.data, message.length, buffer, nullptr, hashFunction, nullptr) == 0)

@@ -73,14 +73,16 @@ cp tools/templates/batteries_header.h lute/batteries/generated/batteries.h
 cp tools/templates/definitions_impl.cpp lute/definitions/src/generated/modules.cpp
 cp tools/templates/definitions_header.h lute/definitions/src/generated/modules.h
 
-# Use pizfix's Fil-C libuv and OpenSSL instead of building the vendored
-# extern/libuv a second time (the vendored extern/boringssl was removed from
-# this port; LUTE_SYSTEM_OPENSSL is required). Use absolute paths, since cmake
-# caches them.
+# Use pizfix's Fil-C libuv, zlib, OpenSSL and curl (the vendored extern/libuv,
+# extern/zlib, extern/boringssl and extern/curl were all removed from this
+# port; all four LUTE_SYSTEM_* options are required). Use absolute paths,
+# since cmake caches them.
 CC="$PWD/../../../build/bin/clang -g" CXX="$PWD/../../../build/bin/clang++ -g" \
     cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \
     -DLUTE_SYSTEM_LIBUV=$PIZFIX \
-    -DLUTE_SYSTEM_OPENSSL=$PIZFIX
+    -DLUTE_SYSTEM_ZLIB=$PIZFIX \
+    -DLUTE_SYSTEM_OPENSSL=$PIZFIX \
+    -DLUTE_SYSTEM_CURL=$PIZFIX
 
 # Build lute0 (stub embeddings), regenerate the real embeddings with it, then
 # rebuild so the final binary embeds the actual stdlib/commands/batteries/

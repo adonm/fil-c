@@ -30,7 +30,12 @@ set -x
 
 cd projects/zsh-5.8.0.1-dev
 extract_source
+# --with-tcsetpgrp: configure's "does tcsetpgrp() actually work" check requires a
+# controlling terminal, which doesn't exist when building in a batch/unprivileged
+# container environment (configure aborts with "no controlling tty"). tcsetpgrp
+# itself works fine on Linux whenever a controlling tty exists at runtime, so
+# tell configure to assume it works instead of testing.
 CC="$PWD/../../../build/bin/clang -O -g -Wno-implicit-function-declaration -Wno-implicit-int" \
-    ./configure --prefix="$PWD/../../../pizfix"
+    ./configure --prefix="$PWD/../../../pizfix" --with-tcsetpgrp
 make
 make install.bin install.modules install.fns

@@ -65,6 +65,12 @@ if(MSVC)
     include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
+# Fil-C: do NOT rename the source-tree zconf.h to zconf.h.included. The rename
+# mutates the (vendored, version-controlled) source tree on every configure,
+# which is hostile to hermetic/dirty-tree-sensitive workflows. It's unnecessary
+# anyway: the generated zconf.h in the binary dir takes include precedence
+# (see the include_directories order below).
+if(0)
 if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
     # If we're doing an out of source build and the user has a zconf.h
     # in their source tree...
@@ -75,6 +81,7 @@ if(NOT CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_CURRENT_BINARY_DIR)
         message(STATUS "but CMake generates it automatically in the build directory.")
         file(RENAME ${CMAKE_CURRENT_SOURCE_DIR}/zconf.h ${CMAKE_CURRENT_SOURCE_DIR}/zconf.h.included)
   endif()
+endif()
 endif()
 
 set(ZLIB_PC ${CMAKE_CURRENT_BINARY_DIR}/zlib.pc)

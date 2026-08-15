@@ -17,12 +17,14 @@
 #include <llvm/IR/Comdat.h>
 #include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/InlineAsm.h>
+#include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Operator.h>
 #include <llvm/IR/TypedPointerType.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IR/IntrinsicsX86.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
+#include <llvm/Transforms/Utils/LowerAtomic.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
 #include <llvm/Transforms/Utils/PromoteMemToReg.h>
 #include <llvm/TargetParser/Triple.h>
@@ -12463,6 +12465,216 @@ class Pizlonator {
     }
   }
 
+  /* The backend can only handle an atomic operation natively if its type has a power-of-two
+     size of at most 16 bytes and its alignment is at least its size. Anything else - most
+     notably a 16-byte atomic with only 8-byte alignment (like a struct S { long a, b; }, or a
+     struct containing a pointer), or an 8-byte atomic with only 4-byte alignment - makes the
+     backend emit raw, unpizlonated calls to __atomic_load & friends, since the backend runs
+     after us. Those raw calls could never bind to our pizlonated implementations of those
+     functions. So, we convert such atomic operations into calls to the __atomic_* libcalls
+     here, before any instrumentation happens. The calls are then pizlonated like any other
+     calls, so they end up in the lock-based implementations in filc/src/runtime.c - the same
+     place that the frontend's libcalls for atomics bigger than 16 bytes end up.
+
+     Note that we deliberately don't touch atomic operations whose type contains pointers;
+     those have their own capability-aware handling later in this pass.
+
+     Also note that for flattened-integer atomic operations (say, an i128 atomic on a struct
+     that contains a pointer), the capabilities of any pointers in the accessed memory are
+     lost, since the frontend emitted the atomic operation on a flattened integer type and
+     an SSA value of integer type cannot carry a capability. That's consistent with what
+     happens to such atomics when they are aligned and the backend handles them natively. */
+  void convertMisalignedAtomicsToLibcalls() {
+    FunctionType* LoadStoreFT = FunctionType::get(
+      VoidTy, { Int64Ty, RawPtrTy, RawPtrTy, Int32Ty }, false);
+    /* Note that the frontend declares __atomic_compare_exchange with an i1 return (C _Bool)
+       while we use i32 here (matching the definition in filc/src/runtime.c). Either way, the
+       signature computation normalizes small integer types to i64, so both declarations
+       mangle to the same pizlonated name. */
+    FunctionType* CompareExchangeFT = FunctionType::get(
+      Int32Ty, { Int64Ty, RawPtrTy, RawPtrTy, RawPtrTy, Int32Ty, Int32Ty }, false);
+
+    auto GetLibcall = [&] (const char* Name, FunctionType* FT) {
+      if (Function* F = M.getFunction(Name)) {
+        assert(F->getFunctionType() == FT ||
+               StringRef(Name) == "__atomic_compare_exchange");
+        return F;
+      }
+      Function* F = Function::Create(FT, GlobalValue::ExternalLinkage, Name, M);
+      F->addFnAttr(Attribute::NoUnwind);
+      F->addFnAttr(Attribute::WillReturn);
+      return F;
+    };
+
+    Function* AtomicLoadLibcall = GetLibcall("__atomic_load", LoadStoreFT);
+    Function* AtomicStoreLibcall = GetLibcall("__atomic_store", LoadStoreFT);
+    Function* AtomicCompareExchangeLibcall =
+      GetLibcall("__atomic_compare_exchange", CompareExchangeFT);
+
+    auto NeedsLibcall = [&] (Type* T, Align Alignment) {
+      if (hasPtrs(T))
+        return false;
+      uint64_t Size = DLBefore.getTypeStoreSize(T);
+      if (Size > 16 || (Size & (Size - 1)))
+        return true;
+      return Alignment.value() < Size;
+    };
+
+    auto CreateTemp = [&] (Function* F, Type* T) {
+      Instruction* InsertionPoint = &*F->getEntryBlock().getFirstInsertionPt();
+      IRBuilder<> EntryBuilder(InsertionPoint);
+      return EntryBuilder.CreateAlloca(T, nullptr, "filc_atomic_tmp");
+    };
+
+    auto Model = [&] (AtomicOrdering Ordering) {
+      return ConstantInt::get(Int32Ty, static_cast<unsigned>(toCABI(Ordering)));
+    };
+
+    auto SizeConstant = [&] (Type* T) {
+      return ConstantInt::get(Int64Ty, DLBefore.getTypeStoreSize(T));
+    };
+
+    auto ConvertLoad = [&] (LoadInst* LI) {
+      AllocaInst* Tmp = CreateTemp(LI->getFunction(), LI->getType());
+      IRBuilder<> B(LI);
+      B.SetCurrentDebugLocation(LI->getDebugLoc());
+      B.CreateCall(
+        AtomicLoadLibcall,
+        { SizeConstant(LI->getType()), LI->getPointerOperand(), Tmp,
+          Model(LI->getOrdering()) });
+      LoadInst* Result = B.CreateLoad(LI->getType(), Tmp, "filc_atomic_load");
+      LI->replaceAllUsesWith(Result);
+      LI->eraseFromParent();
+    };
+
+    auto ConvertStore = [&] (StoreInst* SI) {
+      Type* T = SI->getValueOperand()->getType();
+      AllocaInst* Tmp = CreateTemp(SI->getFunction(), T);
+      IRBuilder<> B(SI);
+      B.SetCurrentDebugLocation(SI->getDebugLoc());
+      B.CreateStore(SI->getValueOperand(), Tmp);
+      B.CreateCall(
+        AtomicStoreLibcall,
+        { SizeConstant(T), SI->getPointerOperand(), Tmp, Model(SI->getOrdering()) });
+      SI->eraseFromParent();
+    };
+
+    auto ConvertCmpXchg = [&] (AtomicCmpXchgInst* AI) {
+      Type* T = AI->getCompareOperand()->getType();
+      Function* F = AI->getFunction();
+      AllocaInst* Expected = CreateTemp(F, T);
+      AllocaInst* Desired = CreateTemp(F, T);
+      IRBuilder<> B(AI);
+      B.SetCurrentDebugLocation(AI->getDebugLoc());
+      B.CreateStore(AI->getCompareOperand(), Expected);
+      B.CreateStore(AI->getNewValOperand(), Desired);
+      CallInst* Ok = B.CreateCall(
+        AtomicCompareExchangeLibcall,
+        { SizeConstant(T), AI->getPointerOperand(), Expected, Desired,
+          Model(AI->getSuccessOrdering()), Model(AI->getFailureOrdering()) });
+      Value* Success = B.CreateIsNotNull(Ok, "filc_atomic_cmpxchg_success");
+      LoadInst* Old = B.CreateLoad(T, Expected, "filc_atomic_cmpxchg_old");
+      Value* Result = PoisonValue::get(AI->getType());
+      Result = B.CreateInsertValue(Result, Old, { 0 }, "filc_atomic_cmpxchg_old_insert");
+      Result = B.CreateInsertValue(Result, Success, { 1 }, "filc_atomic_cmpxchg_result");
+      AI->replaceAllUsesWith(Result);
+      AI->eraseFromParent();
+    };
+
+    auto FailureOrderingForRMW = [&] (AtomicOrdering Ordering) {
+      switch (Ordering) {
+      case AtomicOrdering::Release:
+        return AtomicOrdering::Monotonic;
+      case AtomicOrdering::AcquireRelease:
+        return AtomicOrdering::Acquire;
+      default:
+        return Ordering;
+      }
+    };
+
+    auto ConvertRMW = [&] (AtomicRMWInst* AI) {
+      Type* T = AI->getType();
+      Function* F = AI->getFunction();
+      AllocaInst* Expected = CreateTemp(F, T);
+      AllocaInst* Desired = CreateTemp(F, T);
+
+      BasicBlock* Head = AI->getParent();
+      BasicBlock* Tail = Head->splitBasicBlock(AI, "filc_atomicrmw_end");
+      BasicBlock* Loop = BasicBlock::Create(C, "filc_atomicrmw_loop", F, Tail);
+
+      Head->getTerminator()->eraseFromParent();
+      IRBuilder<> HB(Head);
+      HB.SetCurrentDebugLocation(AI->getDebugLoc());
+      HB.CreateCall(
+        AtomicLoadLibcall,
+        { SizeConstant(T), AI->getPointerOperand(), Expected,
+          Model(AtomicOrdering::Monotonic) });
+      HB.CreateBr(Loop);
+
+      IRBuilder<> LB(Loop);
+      LB.SetCurrentDebugLocation(AI->getDebugLoc());
+      LB.setIsFPConstrained(AI->getFunction()->hasFnAttribute(Attribute::StrictFP));
+      LoadInst* Loaded = LB.CreateLoad(T, Expected, "filc_atomicrmw_loaded");
+      Value* New = llvm::buildAtomicRMWValue(AI->getOperation(), LB, Loaded, AI->getValOperand());
+      LB.CreateStore(New, Desired);
+      CallInst* Ok = LB.CreateCall(
+        AtomicCompareExchangeLibcall,
+        { SizeConstant(T), AI->getPointerOperand(), Expected, Desired,
+          Model(AI->getOrdering()), Model(FailureOrderingForRMW(AI->getOrdering())) });
+      Value* Success = LB.CreateIsNotNull(Ok, "filc_atomicrmw_success");
+      LB.CreateCondBr(Success, Tail, Loop);
+
+      IRBuilder<> TB(AI);
+      TB.SetCurrentDebugLocation(AI->getDebugLoc());
+      LoadInst* Old = TB.CreateLoad(T, Expected, "filc_atomicrmw_old");
+      AI->replaceAllUsesWith(Old);
+      AI->eraseFromParent();
+    };
+
+    for (Function& F : M.functions()) {
+      if (F.isDeclaration())
+        continue;
+      std::vector<LoadInst*> Loads;
+      std::vector<StoreInst*> Stores;
+      std::vector<AtomicCmpXchgInst*> CmpXchgs;
+      std::vector<AtomicRMWInst*> RMWs;
+      for (BasicBlock& BB : F) {
+        for (Instruction& I : BB) {
+          if (LoadInst* LI = dyn_cast<LoadInst>(&I)) {
+            if (LI->isAtomic() && !LI->getPointerAddressSpace() &&
+                NeedsLibcall(LI->getType(), LI->getAlign()))
+              Loads.push_back(LI);
+            continue;
+          }
+          if (StoreInst* SI = dyn_cast<StoreInst>(&I)) {
+            if (SI->isAtomic() && !SI->getPointerAddressSpace() &&
+                NeedsLibcall(SI->getValueOperand()->getType(), SI->getAlign()))
+              Stores.push_back(SI);
+            continue;
+          }
+          if (AtomicCmpXchgInst* AI = dyn_cast<AtomicCmpXchgInst>(&I)) {
+            if (!AI->getPointerAddressSpace() &&
+                NeedsLibcall(AI->getCompareOperand()->getType(), AI->getAlign()))
+              CmpXchgs.push_back(AI);
+            continue;
+          }
+          if (AtomicRMWInst* AI = dyn_cast<AtomicRMWInst>(&I)) {
+            if (!AI->getPointerAddressSpace() && NeedsLibcall(AI->getType(), AI->getAlign()))
+              RMWs.push_back(AI);
+          }
+        }
+      }
+      for (LoadInst* LI : Loads)
+        ConvertLoad(LI);
+      for (StoreInst* SI : Stores)
+        ConvertStore(SI);
+      for (AtomicCmpXchgInst* AI : CmpXchgs)
+        ConvertCmpXchg(AI);
+      for (AtomicRMWInst* AI : RMWs)
+        ConvertRMW(AI);
+    }
+  }
+
   void expandConstantExprOperands(Instruction* I) {
     for (unsigned Index = I->getNumOperands(); Index--;) {
       Instruction* InsertBefore;
@@ -13737,6 +13949,7 @@ public:
       errs() << "Module with indirectbr lowered:\n" << M << "\n";
     
     lockDownLinkage();
+    convertMisalignedAtomicsToLibcalls();
     removeIrrelevantIntrinsics();
     findNonescapingAllocas();
     removeLifetimeIntrinsics();

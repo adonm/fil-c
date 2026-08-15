@@ -126,7 +126,8 @@ else()
     list(APPEND LUTE_OPTIONS -Wall) # All warnings
     list(APPEND LUTE_OPTIONS -Wimplicit-fallthrough)
     list(APPEND LUTE_OPTIONS -Wsign-compare) # This looks to be included in -Wall for GCC but not clang
-    list(APPEND LUTE_OPTIONS -Werror) # Warnings are errors
+    # Fil-C: -Werror removed. The Fil-C compiler emits warnings that lute and its
+    # vendored dependencies don't expect, so warnings must not be errors here.
 endif()
 
 # libraries

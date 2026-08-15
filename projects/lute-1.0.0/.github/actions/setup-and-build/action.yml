@@ -1,0 +1,98 @@
+name: "Setup and Build"
+description: "Install dependencies, configure and build target"
+
+inputs:
+  target:
+    description: "Which target to build"
+    required: true
+  config:
+    description: "Build configuration (debug or release)"
+    required: false
+    default: "debug"
+  options:
+    description: "Additional luthier options"
+    required: false
+    default: ""
+  token:
+    description: "Token for foreman"
+    required: true
+  use-bootstrap:
+    description: "Whether to use the bootstrap script to build the Lute used to run luthier"
+    required: false
+    default: "false"
+
+outputs:
+  exe_path:
+    description: "Path to the compiled executable"
+    value: ${{ steps.artifact_path.outputs.exe_path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install tools
+      if: ${{ inputs.use-bootstrap == 'false' }}
+      uses: Roblox/setup-foreman@v3
+      with:
+        token: ${{ inputs.token }}
+        allow-external-github-orgs: true
+
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build clang
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew update
+        brew unlink brotli zstd
+
+    - name: Set up MSVC
+      if: runner.os == 'Windows'
+      uses: luau-lang/msvc-dev-cmd@v1
+
+    - name: Set up NASM
+      if: runner.os == 'Windows'
+      uses: luau-lang/setup-nasm@v1
+
+    - name: Cache extern folder
+      uses: actions/cache@v4
+      id: cache-extern
+      with:
+        path: extern
+        key: extern-${{ hashFiles('extern/*.tune') }}
+
+    - name: Bootstrap Lute (if needed) and set LUTE
+      shell: bash
+      run: |
+        if [[ "${{ inputs.use-bootstrap }}" == "true" ]]; then
+          echo "Bootstrapping Lute..."
+          ./tools/bootstrap.sh
+          echo "LUTE=./build/lute0" >> $GITHUB_ENV
+        else
+          echo "LUTE=lute" >> $GITHUB_ENV
+        fi
+
+    - name: Fetch ${{ inputs.target }}
+      if: steps.cache-extern.outputs.cache-hit != 'true'
+      shell: bash
+      run: $LUTE ./tools/luthier.luau fetch ${{ inputs.target }}
+
+    - name: Configure ${{ inputs.target }}
+      shell: bash
+      run: $LUTE ./tools/luthier.luau configure ${{ inputs.target }} --config ${{ inputs.config }} ${{ inputs.options }}
+
+    - name: Build ${{ inputs.target }}
+      shell: bash
+      run: $LUTE ./tools/luthier.luau build ${{ inputs.target }} --config ${{ inputs.config }} ${{ inputs.options }}
+
+    - name: Get Artifact Path
+      id: artifact_path
+      shell: bash
+      run: |
+        exe_path=$($LUTE ./tools/luthier.luau build ${{ inputs.target }} --config ${{ inputs.config }} --which)
+        echo "Executable path: $exe_path"  # Debug print
+        echo "exe_path=$exe_path" >> "$GITHUB_OUTPUT"

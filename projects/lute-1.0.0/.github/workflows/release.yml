@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate branch format
+        run: |
+          BRANCH="${{ github.ref_name }}"
+
+          if [[ ! "$BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.x$ ]]; then
+            echo "Invalid branch format: $BRANCH. Expected release/v{Major}.{Minor}.x"
+            echo "Dispatch this workflow on a release branch (e.g. release/v0.1.x)"
+            exit 1
+          fi
+
+  release-common:
+    needs: validate
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-common.yml
+    with:
+      branch: ${{ github.ref_name }}
+    secrets: inherit

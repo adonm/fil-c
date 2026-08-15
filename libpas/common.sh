@@ -65,7 +65,7 @@ extract_source()
     cd extracted-source
 }
 
-# Runs 'make check' with default SIGINT/SIGQUIT dispositions.
+# Runs 'make check' with default signal dispositions.
 #
 # When the build runs in a batch environment (setsid/nohup, or an unprivileged
 # container without a controlling tty), SIGINT and SIGQUIT are ignored on entry
@@ -73,7 +73,10 @@ extract_source()
 # test-execute, used by m4 among others) require the default dispositions -
 # they raise SIGINT in a child and expect it to die. python3 can reset the
 # dispositions (the cannot-reset-ignored-signals rule is shell-specific), so
-# use it as an exec launcher when SIGINT is ignored on entry. Falls back to a
+# use it as an exec launcher when SIGINT is ignored on entry. Note that python
+# itself ignores SIGPIPE (and SIGXFZ/SIGXFSZ) at startup, so the launcher must
+# explicitly reset those too or they'd propagate to the tests (gnulib's
+# test-execute case 3 expects a child to die from SIGPIPE). Falls back to a
 # plain 'make check' when python3 is unavailable or signals are fine.
 make_check()
 {
@@ -81,8 +84,10 @@ make_check()
     then
         python3 -c '
 import os, signal, sys
-for sig in (signal.SIGINT, signal.SIGQUIT):
-    if signal.getsignal(sig) == signal.SIG_IGN:
+names = ["SIGINT", "SIGQUIT", "SIGPIPE", "SIGXFZ", "SIGXFSZ"]
+for name in names:
+    sig = getattr(signal, name, None)
+    if sig is not None and signal.getsignal(sig) == signal.SIG_IGN:
         signal.signal(sig, signal.SIG_DFL)
 os.execvp(sys.argv[1], sys.argv[1:])' make check "$@"
     else

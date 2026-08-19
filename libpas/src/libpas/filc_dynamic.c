@@ -33,8 +33,12 @@
 #if PAS_ENABLE_FILC
 
 #include "filc_native.h"
+#include "bmalloc_heap.h"
 #include "pas_string_stream.h"
 #include <dlfcn.h>
+#include <link.h>
+#include <stddef.h>
+#include <string.h>
 
 filc_ptr filc_native_zsys_dlopen(filc_thread* my_thread, filc_ptr filename_ptr, int flags)
 {
@@ -131,6 +135,150 @@ int filc_native_zsys_dladdr(filc_thread* my_thread, filc_ptr addr_ptr, filc_ptr 
                       filc_ptr_forge_null());
     filc_store_ptr_at(my_thread, info_ptr, &info->dli_saddr,
                       filc_ptr_forge_null());
+    return result;
+}
+
+/* dl_iterate_phdr support.
+
+   The user callback and every pointer we hand it inside `struct dl_phdr_info` (the `dlpi_name`
+   string and the `dlpi_phdr` array) must be backed by a real Fil-C capability, otherwise Fil-C
+   would trap when the callback dereferences them (which is exactly the panic the old
+   `static_dl_iterate_phdr` stub produced). We cannot forge a capability over the host's ELF image
+   directly (there is no unsafe escape hatch: GIMSO), so we copy the phdrs and the name into
+   freshly-allocated Fil-C objects that carry valid capabilities, mirroring how zsys_dladdr and
+   filc_native_zstack_scan build safe pointers for the values they pass to user code.
+
+   Because the host dl_iterate_phdr holds the dynamic linker lock while it runs, we do not re-enter
+   Fil-C (which may allocate, run the GC, or itself call into the loader) from inside its callback.
+   Instead we collect the raw phdr data for every object natively, and only then build the Fil-C
+   objects and invoke the user callback. */
+
+typedef struct {
+    unsigned long dlpi_addr;
+    char* name;                    /* bmalloc'd, or NULL */
+    void* phdr;                    /* bmalloc'd copy of phnum phdrs, or NULL */
+    unsigned long long phdr_size;  /* bytes */
+    unsigned phnum;
+    unsigned long long dlpi_adds;
+    unsigned long long dlpi_subs;
+    size_t dlpi_tls_modid;
+    void* dlpi_tls_data;
+} filc_phdr_entry;
+
+typedef struct {
+    filc_phdr_entry* entries;
+    size_t count;
+    size_t capacity;
+} filc_phdr_collect;
+
+static int filc_phdr_collect_callback(struct dl_phdr_info* info, size_t size, void* data)
+{
+    filc_phdr_collect* collect = (filc_phdr_collect*)data;
+    if (collect->count == collect->capacity) {
+        size_t new_capacity = collect->capacity ? collect->capacity * 2 : 8;
+        filc_phdr_entry* new_entries =
+            (filc_phdr_entry*)bmalloc_allocate(new_capacity * sizeof(filc_phdr_entry));
+        if (collect->entries) {
+            memcpy(new_entries, collect->entries, collect->count * sizeof(filc_phdr_entry));
+            bmalloc_deallocate(collect->entries);
+        }
+        collect->entries = new_entries;
+        collect->capacity = new_capacity;
+    }
+
+    filc_phdr_entry* entry = collect->entries + collect->count++;
+    entry->dlpi_addr = info->dlpi_addr;
+    if (info->dlpi_name) {
+        size_t len = strlen(info->dlpi_name) + 1;
+        entry->name = (char*)bmalloc_allocate(len);
+        memcpy(entry->name, info->dlpi_name, len);
+    } else
+        entry->name = NULL;
+    entry->phnum = info->dlpi_phnum;
+    entry->phdr_size = (unsigned long long)info->dlpi_phnum * sizeof(ElfW(Phdr));
+    if (entry->phdr_size && info->dlpi_phdr) {
+        entry->phdr = bmalloc_allocate(entry->phdr_size);
+        memcpy(entry->phdr, info->dlpi_phdr, entry->phdr_size);
+    } else {
+        entry->phdr = NULL;
+        entry->phdr_size = 0;
+    }
+    /* The dlpi_adds/dlpi_subs/dlpi_tls_* fields were added to the ABI after the original four, so
+       only trust them when the host reported a struct large enough to contain them. */
+    if (size >= offsetof(struct dl_phdr_info, dlpi_tls_data) + sizeof(void*)) {
+        entry->dlpi_adds = info->dlpi_adds;
+        entry->dlpi_subs = info->dlpi_subs;
+        entry->dlpi_tls_modid = info->dlpi_tls_modid;
+        entry->dlpi_tls_data = info->dlpi_tls_data;
+    } else {
+        entry->dlpi_adds = 0;
+        entry->dlpi_subs = 0;
+        entry->dlpi_tls_modid = 0;
+        entry->dlpi_tls_data = NULL;
+    }
+    return 0; /* keep enumerating; we deliver to the user later */
+}
+
+int filc_native_zsys_dl_iterate_phdr(filc_thread* my_thread, filc_ptr callback_ptr, filc_ptr data_ptr)
+{
+    filc_phdr_collect collect;
+    collect.entries = NULL;
+    collect.count = 0;
+    collect.capacity = 0;
+
+    filc_exit(my_thread);
+    dl_iterate_phdr(filc_phdr_collect_callback, &collect);
+    filc_enter(my_thread);
+
+    int result = 0;
+    size_t index;
+    for (index = 0; index < collect.count; ++index) {
+        filc_phdr_entry* entry = collect.entries + index;
+
+        filc_ptr info_ptr = filc_ptr_create_with_object(
+            my_thread, filc_allocate(my_thread, sizeof(struct dl_phdr_info)));
+        struct dl_phdr_info* info = (struct dl_phdr_info*)filc_ptr_ptr(info_ptr);
+
+        info->dlpi_addr = entry->dlpi_addr;
+        filc_store_ptr_at(my_thread, info_ptr, &info->dlpi_name,
+                          entry->name ? filc_strdup(my_thread, entry->name)
+                                      : filc_ptr_forge_null());
+
+        filc_ptr phdr_ptr;
+        if (entry->phdr_size) {
+            phdr_ptr = filc_ptr_create_with_object(
+                my_thread, filc_allocate(my_thread, entry->phdr_size));
+            memcpy(filc_ptr_ptr(phdr_ptr), entry->phdr, entry->phdr_size);
+        } else
+            phdr_ptr = filc_ptr_forge_null();
+        filc_store_ptr_at(my_thread, info_ptr, &info->dlpi_phdr, phdr_ptr);
+
+        info->dlpi_phnum = (ElfW(Half))entry->phnum;
+        info->dlpi_adds = entry->dlpi_adds;
+        info->dlpi_subs = entry->dlpi_subs;
+        info->dlpi_tls_modid = entry->dlpi_tls_modid;
+        /* dlpi_tls_data points into the host's TLS image, which is not a Fil-C object, so we can
+           only hand back an address without a dereferenceable capability (as zsys_dladdr does for
+           dli_fbase). Callers that just want module names/phdrs never touch it. */
+        filc_store_ptr_at(my_thread, info_ptr, &info->dlpi_tls_data,
+                          entry->dlpi_tls_data ? filc_ptr_forge_invalid(entry->dlpi_tls_data)
+                                               : filc_ptr_forge_null());
+
+        result = filc_call_user_int_ptr_size_ptr(
+            my_thread, callback_ptr, info_ptr, sizeof(struct dl_phdr_info), data_ptr);
+        if (result)
+            break;
+    }
+
+    for (index = 0; index < collect.count; ++index) {
+        if (collect.entries[index].name)
+            bmalloc_deallocate(collect.entries[index].name);
+        if (collect.entries[index].phdr)
+            bmalloc_deallocate(collect.entries[index].phdr);
+    }
+    if (collect.entries)
+        bmalloc_deallocate(collect.entries);
+
     return result;
 }
 

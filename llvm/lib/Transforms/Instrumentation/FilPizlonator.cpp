@@ -13552,6 +13552,24 @@ class Pizlonator {
     if (F.isDeclaration())
       return;
     
+    if (F.callsFunctionThatReturnsTwice()) {
+      // If this function has a setjmp (or anything like it), then we cannot lazify the volatile
+      // allocas. If we do lazify volatile allocas, then a variable that wasn't initialized at time of
+      // the setjmp will not have its alloca allocated, which will then cause any stores to that
+      // volatile local to disappear upon longjmp. See the bug300 test (specifically the
+      // `uninitialized` variable in that test).
+      //
+      // Figuring out the connection between volatile accesses and their allocas is hard. So, as an
+      // approximation for now, we just say that *any* volatile accesses in a function that uses setjmp
+      // disables the lazification.
+      for (BasicBlock& BB : F) {
+        for (Instruction& I : BB) {
+          if (I.isVolatile())
+            return;
+        }
+      }
+    }
+
     std::unordered_set<AllocaInst*> Allocas;
 
     for (Instruction& I : F.getEntryBlock()) {

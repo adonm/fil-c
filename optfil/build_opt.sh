@@ -866,6 +866,27 @@ cd ..
 rm -rf pizlonated-libxml2
 hash -r
 
+tar -xf $FILCSRC/pizlix/postgresql-18.6.tar.bz2
+cd postgresql-18.6
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --with-ssl=openssl --without-icu --without-readline --without-zlib
+# Fil-C emits pizlonated_ prefixed symbols. The version script built from the exports list names the plain ones, so it hides every
+# entry point, and -fvisibility=hidden hides the prefixed ones as well because they do not inherit the default visibility that
+# PGDLLEXPORT puts on the declaration. Without both of these libpq exports nothing.
+sed -i 's/-fvisibility=hidden//g' src/Makefile.global
+# Only libpq and pg_config are built, not the server. src/port builds server variants of some files that need the generated backend
+# headers, so those are made first rather than raced.
+make -j `nproc` -C src/backend submake-generated-headers
+make -j `nproc` -C src/port SHLIB_EXPORTS=
+make -j `nproc` -C src/common SHLIB_EXPORTS=
+make -j `nproc` -C src/interfaces/libpq SHLIB_EXPORTS=
+make -j `nproc` -C src/bin/pg_config
+make -C src/interfaces/libpq SHLIB_EXPORTS= install
+make -C src/bin/pg_config install
+make -C src/include install
+cd ..
+rm -rf postgresql-18.6
+hash -r
+
 cd ..
 test -d build
 test -d ../fil

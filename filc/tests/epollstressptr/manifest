@@ -2,3 +2,5 @@ return:
   success
 slow:
   true
+neverInDocker:
+  true

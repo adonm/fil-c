@@ -84,9 +84,18 @@ raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o f
 
 $testDirectory = Pathname.new("filc/tests")
 $testOutputDirectory = Pathname.new("filc/test-output")
-$testOutputDirectory.mkpath
-$testOutputDirectory.rmtree
-$testOutputDirectory.mkpath
+FileUtils.rm_rf($testOutputDirectory)
+if Pathname.new("filc/run-tests-docker-hack").exist?
+    realOutputDirectory = Pathname.new("/filc-test-output")
+    realOutputDirectory.mkpath
+    realOutputDirectory.rmtree
+    realOutputDirectory.mkpath
+    $testOutputDirectory.make_symlink(realOutputDirectory)
+    $dockerHack = true
+else
+    $testOutputDirectory.mkpath
+    $dockerHack = false
+end
 
 $tests = []
 
@@ -134,6 +143,10 @@ $testDirectory.each_entry {
     end
     if manifest["skip"] and not $specificTest
         puts "Skipping #{testName}"
+        next
+    end
+    if manifest["neverInDocker"] and $dockerHack
+        puts "Skipping #{testName} because of Docker"
         next
     end
     expectedReturn = manifest["return"]

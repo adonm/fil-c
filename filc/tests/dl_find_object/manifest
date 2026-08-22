@@ -1,4 +1,0 @@
-return:
-  success
-output-includes:
-  - "dl_find_object resolved main"

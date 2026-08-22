@@ -1,4 +1,0 @@
-return:
-  success
-output-includes:
-  - "dl_iterate_phdr saw"

@@ -47,6 +47,7 @@
 #include "urldata.h"
 #include "setopt.h"
 #include "strcase.h"
+#include "curl_ca_bundle.h"
 #include "vtls/vtls.h"
 #include "vtls/vtls_config.h"
 
@@ -257,10 +258,8 @@ CURLcode Curl_ssl_easy_config_complete(struct Curl_easy *data,
                                        struct Curl_peer *origin)
 {
   struct ssl_config_data *sslc = &data->set.ssl;
-#if defined(CURL_CA_PATH) || defined(CURL_CA_BUNDLE)
   struct UserDefined *set = &data->set;
   CURLcode result;
-#endif
 
   ssl_easy_config_compl_options(origin, data->state.initial_origin, sslc);
 
@@ -269,20 +268,22 @@ CURLcode Curl_ssl_easy_config_complete(struct Curl_easy *data,
     if(!sslc->custom_capath && !sslc->custom_cafile && !sslc->custom_cablob)
       sslc->native_ca_store = TRUE;
 #endif
-#ifdef CURL_CA_PATH
     if(!sslc->custom_capath && !set->str[STRING_SSL_CAPATH]) {
-      result = Curl_setstropt(&set->str[STRING_SSL_CAPATH], CURL_CA_PATH);
-      if(result)
-        return result;
+      const char *capath = Curl_ca_path();
+      if(capath) {
+        result = Curl_setstropt(&set->str[STRING_SSL_CAPATH], capath);
+        if(result)
+          return result;
+      }
     }
-#endif
-#ifdef CURL_CA_BUNDLE
     if(!sslc->custom_cafile && !set->str[STRING_SSL_CAFILE]) {
-      result = Curl_setstropt(&set->str[STRING_SSL_CAFILE], CURL_CA_BUNDLE);
-      if(result)
-        return result;
+      const char *bundle = Curl_ca_bundle();
+      if(bundle) {
+        result = Curl_setstropt(&set->str[STRING_SSL_CAFILE], bundle);
+        if(result)
+          return result;
+      }
     }
-#endif
   }
   sslc->primary.CAfile = data->set.str[STRING_SSL_CAFILE];
   sslc->primary.CRLfile = data->set.str[STRING_SSL_CRLFILE];
@@ -337,22 +338,22 @@ CURLcode Curl_ssl_easy_config_complete(struct Curl_easy *data,
     if(!sslc->custom_capath && !sslc->custom_cafile && !sslc->custom_cablob)
       sslc->native_ca_store = TRUE;
 #endif
-#ifdef CURL_CA_PATH
     if(!sslc->custom_capath && !set->str[STRING_SSL_CAPATH_PROXY]) {
-      result = Curl_setstropt(&set->str[STRING_SSL_CAPATH_PROXY],
-                              CURL_CA_PATH);
-      if(result)
-        return result;
+      const char *capath = Curl_ca_path();
+      if(capath) {
+        result = Curl_setstropt(&set->str[STRING_SSL_CAPATH_PROXY], capath);
+        if(result)
+          return result;
+      }
     }
-#endif
-#ifdef CURL_CA_BUNDLE
     if(!sslc->custom_cafile && !set->str[STRING_SSL_CAFILE_PROXY]) {
-      result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_PROXY],
-                              CURL_CA_BUNDLE);
-      if(result)
-        return result;
+      const char *bundle = Curl_ca_bundle();
+      if(bundle) {
+        result = Curl_setstropt(&set->str[STRING_SSL_CAFILE_PROXY], bundle);
+        if(result)
+          return result;
+      }
     }
-#endif
   }
   sslc->primary.CAfile = data->set.str[STRING_SSL_CAFILE_PROXY];
   sslc->primary.CApath = data->set.str[STRING_SSL_CAPATH_PROXY];

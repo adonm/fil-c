@@ -30,6 +30,7 @@
 #include "connect.h" /* Curl_getconnectinfo() */
 #include "bufref.h"
 #include "curlx/strparse.h"
+#include "curl_ca_bundle.h"
 
 /*
  * Initialize statistical and informational data.
@@ -164,18 +165,10 @@ static CURLcode getinfo_char(struct Curl_easy *data, CURLINFO info,
     *param_charp = data->info.conn_scheme;
     break;
   case CURLINFO_CAPATH:
-#ifdef CURL_CA_PATH
-    *param_charp = CURL_CA_PATH;
-#else
-    *param_charp = NULL;
-#endif
+    *param_charp = Curl_ca_path();
     break;
   case CURLINFO_CAINFO:
-#ifdef CURL_CA_BUNDLE
-    *param_charp = CURL_CA_BUNDLE;
-#else
-    *param_charp = NULL;
-#endif
+    *param_charp = Curl_ca_bundle();
     break;
   default:
     return CURLE_UNKNOWN_OPTION;

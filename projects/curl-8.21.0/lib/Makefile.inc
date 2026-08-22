@@ -157,6 +157,7 @@ LIB_CFILES =         \
   asyn-ares.c        \
   asyn-base.c        \
   asyn-thrdd.c       \
+  curl_ca_bundle.c   \
   bufq.c             \
   bufref.c           \
   cf-dns.c           \
@@ -310,6 +311,7 @@ LIB_HFILES =         \
   cookie.h           \
   creds.h            \
   curl_addrinfo.h    \
+  curl_ca_bundle.h   \
   curl_ctype.h       \
   curl_endian.h      \
   curl_fnmatch.h     \

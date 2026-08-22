@@ -33,6 +33,7 @@
 #include "vssh/ssh.h"
 #include "vquic/vquic.h"
 #include "easy_lock.h"
+#include "curl_ca_bundle.h"
 
 #ifdef USE_ARES
 #  include <ares.h>
@@ -556,16 +557,8 @@ static curl_version_info_data version_info = {
   0,    /* nghttp2 version number */
   NULL, /* nghttp2 version string */
   NULL, /* quic library string */
-#ifdef CURL_CA_BUNDLE
-  CURL_CA_BUNDLE, /* cainfo */
-#else
-  NULL,
-#endif
-#ifdef CURL_CA_PATH
-  CURL_CA_PATH,  /* capath */
-#else
-  NULL,
-#endif
+  NULL, /* cainfo - set at runtime by curl_version_info() */
+  NULL, /* capath - set at runtime by curl_version_info() */
   0,    /* zstd_ver_num */
   NULL, /* zstd version */
   NULL, /* Hyper version */
@@ -674,6 +667,9 @@ curl_version_info_data *curl_version_info(CURLversion stamp)
 
   feature_names[n] = NULL;  /* Terminate array. */
   version_info.features = features;
+
+  version_info.cainfo = Curl_ca_bundle();
+  version_info.capath = Curl_ca_path();
 
   return &version_info;
 }

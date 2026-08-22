@@ -52,7 +52,9 @@ private:
   std::vector<std::string> HttpHeaders;
   std::string HTTPProxyAuth;
   std::string HTTPProxy;
-  curl_proxytype HTTPProxyType;
+  // Fil-C: curl 8.16+ defines CURLPROXY_* as long macros rather than enum
+  // constants, so keep this as a long (this is what upstream cmake does too).
+  long HTTPProxyType;
   bool UseHttp10 = false;
   bool Quiet = false;
   int TimeOutSeconds = 0;

@@ -431,6 +431,11 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadicFn,
   bool IsWin64 = Kind == AArch64ABIKind::Win64 ||
                  CallingConvention == llvm::CallingConv::Win64;
   bool IsWinVariadic = IsWin64 && IsVariadicFn;
+  // For HFAs/HVAs, cap the argument alignment to 16, otherwise
+  // set it to 8 according to the AAPCS64 document.
+  unsigned ActualAlign =
+      getContext().getTypeUnadjustedAlignInChars(Ty).getQuantity();
+  unsigned Align = (ActualAlign >= 16) ? 16 : 8;
   // In variadic functions on Windows, all composite types are treated alike,
   // no special handling of HFAs/HVAs.
   if (!IsWinVariadic && isHomogeneousAggregate(Ty, Base, Members)) {
@@ -439,11 +444,6 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadicFn,
       return ABIArgInfo::getDirect(
           llvm::ArrayType::get(CGT.ConvertType(QualType(Base, 0)), Members));
 
-    // For HFAs/HVAs, cap the argument alignment to 16, otherwise
-    // set it to 8 according to the AAPCS64 document.
-    unsigned Align =
-        getContext().getTypeUnadjustedAlignInChars(Ty).getQuantity();
-    Align = (Align >= 16) ? 16 : 8;
     return ABIArgInfo::getDirect(
         llvm::ArrayType::get(CGT.ConvertType(QualType(Base, 0)), Members), 0,
         nullptr, true, Align);
@@ -461,9 +461,14 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty, bool IsVariadicFn,
   }
 
   // Aggregates <= 16 bytes are passed directly in registers or on the stack.
-  if (Size <= 128)
-    return ABIArgInfo::getDirect(
+  if (Size <= 128) {
+    if (ActualAlign >= 8) {
+      return ABIArgInfo::getDirect(
         llvm::ArrayType::get(llvm::PointerType::get(getVMContext(), 0), 2));
+    }
+    return ABIArgInfo::getDirect(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(getVMContext()), 2));
+  }
 
   // Variadic arguments must be byval, since EmitVAArg always reads them out of
   // the varargs snapshot by value (for now).
@@ -529,10 +534,15 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy,
   }
 
   // Aggregates <= 16 bytes are returned directly in registers or on the stack.
-  if (Size <= 128)
-    return ABIArgInfo::getDirect(
+  if (Size <= 128) {
+    if (getContext().getTypeUnadjustedAlignInChars(RetTy).getQuantity() >= 8) {
+      return ABIArgInfo::getDirect(
         llvm::ArrayType::get(llvm::PointerType::get(getVMContext(), 0), 2));
-
+    }
+    return ABIArgInfo::getDirect(
+      llvm::ArrayType::get(llvm::Type::getInt64Ty(getVMContext()), 2));
+  }
+  
   return getNaturalAlignIndirect(RetTy);
 }
 

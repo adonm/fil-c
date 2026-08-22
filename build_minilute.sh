@@ -1,6 +1,5 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
 # Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -24,33 +23,33 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
+
 set -x
 
-rm -rf pizfix
+# minilute builds in-place (it is not an extracted source archive). Its
+# Makefile builds the vendored luau (projects/lute-1.0.0/extern/luau, release
+# mode) and links the static libs; CC/CXX select the toolchain.
+cd projects/minilute
 
-./build_compiler_rt.sh
-./build_yolounwind.sh
-./configure_llvm.sh
-./build_clang.sh
-./build_os_include.sh
+# build_base.sh wipes pizfix, so any previously built minilute/luau objects
+# were compiled and linked against the wiped libc and are stale (they may
+# reference sonames/symbols the fresh libc no longer provides). Always force
+# a from-scratch build of minilute and the vendored luau; it only takes
+# seconds and keeps this script correct when run standalone, too.
+make distclean
 
-if test "x$ALTYOLO" != "x"
-then
-    $ALTYOLO
-else
-    ./build_yolomusl.sh
-fi
+make -j $NCPU CC="$PWD/../../build/bin/clang" CXX="$PWD/../../build/bin/clang++"
 
-./build_runtime.sh
+cp minilute ../../pizfix/bin/
 
-if test "x$ALTUSER" != "x"
-then
-    $ALTUSER
-else
-    ./build_usermusl.sh
-fi
-    
-./build_cxx.sh
+# Validation (run from the repo root): the smoke test exercises relative
+# requires, @lute/fs, and @lute/process; the sarcasm invocation proves the
+# real assembler frontend works.
+cd ../..
 
-./build_minilute.sh
+pizfix/bin/minilute projects/minilute/tests/smoke.luau
+
+pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau --version

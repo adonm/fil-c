@@ -29,11 +29,12 @@
 set -e
 set -x
 
-cd projects/curl-8.9.1
+cd projects/curl-8.21.0
 extract_source
-# --enable-websockets: WebSocket support is still experimental in curl 8.9.1
-# and off by default, but lute's net module implements its websocket client on
-# top of libcurl's connect-only mode (CURLOPT_CONNECT_ONLY=2 + curl_ws_send/
+# --enable-websockets: WebSocket support is on by default in curl 8.21.0 (it
+# was still experimental and off by default in curl 8.9.1), but pass it
+# explicitly since lute's net module implements its websocket client on top of
+# libcurl's connect-only mode (CURLOPT_CONNECT_ONLY=2 + curl_ws_send/
 # curl_ws_recv), so the corpus curl must provide it.
 CC=$PWD/../../../build/bin/clang ./configure --with-openssl --with-nghttp2 \
     --enable-websockets \

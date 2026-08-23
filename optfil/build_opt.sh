@@ -577,7 +577,7 @@ cd ..
 rm -rf pizlonated-openssh
 hash -r
 
-tar -xf $FILCSRC/projects/sudo-1.9.15p5/pizlonated-sudo.tar.gz
+tar -xf $FILCSRC/projects/sudo-1.9.17p2/pizlonated-sudo.tar.gz
 cd pizlonated-sudo
 CC=/opt/fil/bin/filcc CC_FOR_BUILD=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --with-all-insults --with-pam --with-pam-login --with-fqdn --with-logging=syslog --with-logfac=authpriv --with-env-editor --with-editor=/opt/fil/bin/mg --with-timeout=15 --with-password-timeout=0 --with-passprompt="[memory safe sudo] password for %p: " --with-tty-tickets --without-sendmail --enable-zlib=system  --with-rundir=/opt/fil/var/sudo
 make -j `nproc`

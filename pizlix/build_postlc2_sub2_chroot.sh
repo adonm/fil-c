@@ -161,7 +161,7 @@ cd pizlonated-sudo
             --libexecdir=/usr/lib      \
             --with-secure-path         \
             --with-env-editor          \
-            --docdir=/usr/share/doc/sudo-1.9.15p5 \
+            --docdir=/usr/share/doc/sudo-1.9.17p2 \
             --with-passprompt="[sudo] password for %p: "
 make
 make install

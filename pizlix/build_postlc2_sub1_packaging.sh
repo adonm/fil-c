@@ -20,7 +20,7 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2
 ./package-source.sh projects/curl-8.21.0 pizlonated-curl
 ./package-source.sh projects/emacs-30.1 pizlonated-emacs
-./package-source.sh projects/sudo-1.9.15p5 pizlonated-sudo
+./package-source.sh projects/sudo-1.9.17p2 pizlonated-sudo
 ./package-source.sh projects/git-2.46.0 pizlonated-git
 ./package-source.sh projects/libuv-1.51.0 pizlonated-libuv
 ./package-source.sh projects/icu-76.1 pizlonated-icu

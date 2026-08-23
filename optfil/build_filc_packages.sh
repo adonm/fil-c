@@ -102,5 +102,5 @@ cd ../..
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
-./package-source.sh projects/libxml2-2.14.4 pizlonated-libxml2
+./package-source.sh projects/libxml2-2.15.3 pizlonated-libxml2
 

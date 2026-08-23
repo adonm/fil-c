@@ -857,7 +857,7 @@ cd ..
 rm -rf pizlonated-patchelf
 hash -r
 
-tar -xf $FILCSRC/projects/libxml2-2.14.4/pizlonated-libxml2.tar.gz
+tar -xf $FILCSRC/projects/libxml2-2.15.3/pizlonated-libxml2.tar.gz
 cd pizlonated-libxml2
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --disable-maintainer-mode --with-icu --without-python
 make -j `nproc`

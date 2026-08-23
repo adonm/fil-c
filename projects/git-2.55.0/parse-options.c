@@ -150,9 +150,9 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 	{
 		intmax_t value = get_int_value(opt, flags);
 		if (unset)
-			value &= ~opt->defval;
+			value &= ~(intptr_t)opt->defval;
 		else
-			value |= opt->defval;
+			value |= (intptr_t)opt->defval;
 		return set_int_value(opt, flags, value);
 	}
 
@@ -160,9 +160,9 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 	{
 		intmax_t value = get_int_value(opt, flags);
 		if (unset)
-			value |= opt->defval;
+			value |= (intptr_t)opt->defval;
 		else
-			value &= ~opt->defval;
+			value &= ~(intptr_t)opt->defval;
 		return set_int_value(opt, flags, value);
 	}
 
@@ -172,7 +172,7 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 		if (unset)
 			BUG("BITOP can't have unset form");
 		value &= ~opt->extra;
-		value |= opt->defval;
+		value |= (intptr_t)opt->defval;
 		return set_int_value(opt, flags, value);
 	}
 
@@ -195,7 +195,7 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 	}
 
 	case OPTION_SET_INT:
-		return set_int_value(opt, flags, unset ? 0 : opt->defval);
+		return set_int_value(opt, flags, unset ? 0 : (intptr_t)opt->defval);
 
 	case OPTION_STRING:
 		if (unset)
@@ -266,7 +266,7 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 		if (unset) {
 			value = 0;
 		} else if (opt->flags & PARSE_OPT_OPTARG && !p->opt) {
-			value = opt->defval;
+			value = (intptr_t)opt->defval;
 		} else if (get_arg(p, opt, flags, &arg)) {
 			return -1;
 		} else if (!*arg) {
@@ -295,7 +295,7 @@ static enum parse_opt_result do_get_value(struct parse_opt_ctx_t *p,
 		if (unset) {
 			value = 0;
 		} else if (opt->flags & PARSE_OPT_OPTARG && !p->opt) {
-			value = opt->defval;
+			value = (intptr_t)opt->defval;
 		} else if (get_arg(p, opt, flags, &arg)) {
 			return -1;
 		} else if (!*arg) {
@@ -678,7 +678,7 @@ static void parse_options_check(const struct option *opts)
 		case OPTION_NEGBIT:
 		case OPTION_BITOP:
 		case OPTION_COUNTUP:
-			if (!signed_int_fits(opts->defval, opts->precision))
+			if (!signed_int_fits((intptr_t)opts->defval, opts->precision))
 				optbug(opts, "has invalid defval");
 			/* fallthru */
 		case OPTION_NUMBER:

@@ -162,7 +162,7 @@ struct option {
 
 	enum parse_opt_option_flags flags;
 	parse_opt_cb *callback;
-	intptr_t defval;
+	void *defval;
 	parse_opt_ll_cb *ll_callback;
 	intptr_t extra;
 	parse_opt_subcommand_fn *subcommand_fn;
@@ -177,7 +177,7 @@ struct option {
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG|(f), \
 	.callback = NULL, \
-	.defval = (b), \
+	.defval = (void *)(b), \
 }
 #define OPT_COUNTUP_F(s, l, v, h, f) { \
 	.type = OPTION_COUNTUP, \
@@ -196,7 +196,7 @@ struct option {
 	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG | (f), \
-	.defval = (i), \
+	.defval = (void *)(i), \
 }
 #define OPT_BOOL_F(s, l, v, h, f)   OPT_SET_INT_F(s, l, v, h, 1, f)
 #define OPT_CALLBACK_F(s, l, v, a, h, f, cb) { \
@@ -245,7 +245,7 @@ struct option {
 	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG|PARSE_OPT_NONEG, \
-	.defval = (set), \
+	.defval = (void *)(set), \
 	.extra = (clear), \
 }
 #define OPT_NEGBIT(s, l, v, h, b) { \
@@ -256,7 +256,7 @@ struct option {
 	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG, \
-	.defval = (b), \
+	.defval = (void *)(b), \
 }
 #define OPT_COUNTUP(s, l, v, h)     OPT_COUNTUP_F(s, l, v, h, 0)
 #define OPT_SET_INT(s, l, v, h, i)  OPT_SET_INT_F(s, l, v, h, i, 0)
@@ -269,7 +269,7 @@ struct option {
 	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_NOARG | PARSE_OPT_HIDDEN, \
-	.defval = 1, \
+	.defval = (void *)1, \
 }
 #define OPT_CMDMODE_F(s, l, v, h, i, f) { \
 	.type = OPTION_SET_INT, \
@@ -279,7 +279,7 @@ struct option {
 	.precision = sizeof(*v), \
 	.help = (h), \
 	.flags = PARSE_OPT_CMDMODE|PARSE_OPT_NOARG|PARSE_OPT_NONEG | (f), \
-	.defval = (i), \
+	.defval = (void *)(i), \
 }
 #define OPT_CMDMODE(s, l, v, h, i)  OPT_CMDMODE_F(s, l, v, h, i, 0)
 
@@ -356,7 +356,7 @@ struct option {
 	.help = (h), \
 	.flags = PARSE_OPT_OPTARG, \
 	.callback = parse_opt_color_flag_cb, \
-	.defval = (intptr_t)"always", \
+	.defval = "always", \
 }
 
 #define OPT_NOOP_NOARG(s, l) { \
@@ -614,7 +614,7 @@ int parse_opt_tracking_mode(const struct option *, const char *, int);
 	.help = (h), \
 	.flags = PARSE_OPT_LASTARG_DEFAULT | (f), \
 	.callback = parse_opt_commits, \
-	.defval = (intptr_t) "HEAD", \
+	.defval = "HEAD", \
 }
 #define OPT_CONTAINS(v, h) _OPT_CONTAINS_OR_WITH("contains", v, h, PARSE_OPT_NONEG)
 #define OPT_NO_CONTAINS(v, h) _OPT_CONTAINS_OR_WITH("no-contains", v, h, PARSE_OPT_NONEG)

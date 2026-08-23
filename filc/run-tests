@@ -196,7 +196,11 @@ $testDirectory.each_entry {
                 clang = "clang"
                 extraOpts = ""
             end
-            outp.puts "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clang} -c -o #{Shellwords.shellescape(outputPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests #{optFlags} -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            if manifest["use-sarcasm"] and entry.extname == ".s"
+                outp.puts "#{$pizfix}/bin/minilute #{$pizfix}/../projects/sarcasm/sarcasm-cli.luau #{Shellwords.shellescape(fullPath + entry)} -o #{Shellwords.shellescape(outputPath + entry)}.o >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            else
+                outp.puts "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clang} -c -o #{Shellwords.shellescape(outputPath + entry)}.o #{Shellwords.shellescape(fullPath + entry)} -Ifilc/tests #{optFlags} -g #{extraOpts} >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
+            end
             if expectedReturn == "compileFailure"
                 outp.puts "if [ $? -eq 0 ]"
                 outp.puts "then"

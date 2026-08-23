@@ -334,9 +334,28 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 
 	local calledExterns = {}   -- sig-name -> desc, for callsite thunks
 	local definedFI = {}       -- FI symbols defined here (skip resolver thunks for these)
+	local emittedET = {}       -- generic thunks are per-signature: emit each once per module
 
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
+		-- Entry-signature arity limits. Both ISAs marshal at most 3 arguments through
+		-- the register CC. On x86_64 the fast CC packs argument words densely into the
+		-- FOUR registers rdx,rcx,r8,r9 (a pointer arg = 2 words; anything wider is passed
+		-- on the stack, which sarcasm does not yet marshal), so an x86_64 signature is
+		-- additionally limited to 4 register argument words. (On arm64 the fixed
+		-- x2..x7 pairs already cap any 3-arg signature at 6 words, matching its CC.)
+		if sigDesc.argWords > 3 then
+			error("sarcasm: >3 register args not yet supported")
+		end
+		if target.arch == "x86_64" then
+			local words = 0
+			for k = 1, sigDesc.argWords do words += (sigDesc.argTypes[k] == 7) and 2 or 1 end
+			if words > 4 then
+				error("sarcasm: function '" .. fn.name
+					.. "': >4 register argument words not yet supported (this signature needs "
+					.. tostring(words) .. ")")
+			end
+		end
 		-- body = statements after the function label up to (not incl) .size
 		local body = {}
 		for _, st in fn.body do table.insert(body, st) end
@@ -351,7 +370,10 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		-- emit getter, FIP body, generic thunk, FO/origins, access origins, alias
 		glue.getter(out, fn.name)
 		target.emitFip(out, tr, colorResult)
-		glue.genericThunk(out, sigDesc.signature, sigDesc.argWords, sigDesc.retWords, sigDesc.retIsPtr)
+		if not emittedET[sigDesc.signature] then
+			glue.genericThunk(out, sigDesc.signature, sigDesc.argWords, sigDesc.retWords, sigDesc.retIsPtr, sigDesc.argTypes)
+			emittedET[sigDesc.signature] = true
+		end
 		glue.foAndOrigins(out, fn.name, sigDesc.signature, tr.numRoots, fnDbg)
 		for _, ao in tr.accessOrigins do
 			glue.accessOrigin(out, ao.sym, ao.size, ao.align, fn.name, ao.write,
@@ -385,7 +407,7 @@ local USAGE = "usage: " .. PROGNAME .. " [-o <file>] [-g] [-S|--no-assemble] [--
 local HELP = table.concat({
 	PROGNAME .. " " .. VERSION .. " — SAfe Runtime Capability-enforced Assembler",
 	"",
-	"Rewrites annotated Yolo-C ARM64 assembly into memory-safe, Fil-C-linkable",
+	"Rewrites annotated Yolo-C ARM64/X86_64 assembly into memory-safe, Fil-C-linkable",
 	"assembly, then assembles it with `as` (a drop-in-ish assembler replacement).",
 	"",
 	USAGE,
@@ -400,13 +422,14 @@ local HELP = table.concat({
 	"      --version      Print version information and exit.",
 	"  -h, --help         Print this help and exit.",
 	"",
-	"Input is ARM64 assembly annotated with ;! directives, e.g.:",
+	"Input is ARM64 or X86_64 (AT&T or Intel) assembly annotated with ;! directives, e.g.:",
 	"  hash:  ;! unsigned(ptr)        (function label: Fil-C signature)",
 	"  ldr x1, [x0]  ;! load ptr      (pointer load from memory)",
 	"  str x1, [x0]  ;! store ptr     (pointer store to memory)",
 	"  bl foo        ;! int(ptr, size_t)   (call: callee signature)",
 	"",
-	"Only ARM64 is supported. Assembly that cannot be proven safe is rejected.",
+	"ARM64 and X86_64 are supported (auto-detected from the input). Assembly that",
+	"cannot be proven safe is rejected.",
 }, "\n")
 
 -- Report a command-line usage error (clean message, no stack trace); exit code 2.
@@ -464,9 +487,14 @@ function sarcasm.main(argv)
 	local text = fs.read(fs.open(input, "r"))
 	local arch, syntax = detect.detect(text)
 	local target = makeTarget(arch, syntax)
-	local stmts = (arch == "x86_64") and x86_64_parse.parseString(text, syntax) or arm64_parse.parseString(text)
 	local fileName = string.match(input, "([^/]+)$")
-	local ok, asm = pcall(sarcasm.compile, stmts, fileName, debug, target)
+	-- Parse + compile under one pcall: parse-time rejections (e.g. an unresolvable
+	-- numeric label reference) get the same clean "sarcasm: <file>: <msg>" treatment
+	-- as compile-time rejections.
+	local ok, asm = pcall(function()
+		local stmts = (arch == "x86_64") and x86_64_parse.parseString(text, syntax) or arm64_parse.parseString(text)
+		return sarcasm.compile(stmts, fileName, debug, target)
+	end)
 	if not ok then
 		local msg = tostring(asm)
 		-- Errors we raise deliberately are prefixed "sarcasm:" and are user-facing:

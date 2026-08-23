@@ -29,7 +29,7 @@ end
 -- thread CC buffers into the register CC, calls the fast entrypoint, marshals the
 -- return value back. argWords/retWords count 8-byte words. retIsPtr controls whether
 -- the return lower is copied (else zeroed).
-function glue.genericThunk(out, signature: number, argWords: number, retWords: number, retIsPtr: boolean)
+function glue.genericThunk(out, signature: number, argWords: number, retWords: number, retIsPtr: boolean, argTypes)
 	assert(argWords <= 3, "sarcasm: >3 register args not yet supported")
 	local sym = "pizlonated2ET" .. tostring(signature)
 	local argBytes = argWords * 8
@@ -207,6 +207,13 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	local sig = sigDesc.signature
 	local sym = "pizlonatedFI" .. tostring(sig) .. "_" .. callee
 	local L = ".Lcsr_" .. callee .. "_" .. tostring(sig)
+
+	-- The arm64 fast CC packs arg k into the fixed pair x(2+2k)/x(3+2k) (x2..x7): at
+	-- most 3 arguments. Beyond that there is no incoming CC register to read (and the
+	-- x19+ hold plan would run into x29/x30), so reject cleanly.
+	if sigDesc.argWords > 3 then
+		error("sarcasm: callsite thunk for '" .. callee .. "': >3 register args not yet supported")
+	end
 
 	-- register save plan: x19 = myth; then per-arg iv (+ lo if pointer)
 	local myth = 19

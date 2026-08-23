@@ -8,8 +8,12 @@ registers and instructions differ.
 
 ## Register calling convention (fast entrypoint / direct call)
 - `%rdi` = myth, `%rsi` = function object (FO payload ptr).
-- args: (`%rdx`,`%rcx`) = arg0 (intval, lower), (`%r8`,`%r9`) = arg1 (intval, lower).
-  Beyond 2 args → spill to CC buffers.
+- args: packed DENSELY into `%rdx`,`%rcx`,`%r8`,`%r9` — a pointer-class arg occupies two
+  consecutive registers (intval, lower), a scalar-class arg one (intval only). E.g.
+  `(ptr, size_t, size_t)` = arg0 in rdx/rcx, arg1 in r8, arg2 in r9. Arguments beyond
+  the fourth word are passed on the stack (verified against clang output: a 3rd pointer
+  arg arrives at 8+16N(%rsp) after the callee's frame). sarcasm does not marshal stack
+  arguments and rejects signatures needing more than 4 register argument words.
 - return: `%al` bit0 = exception flag; `%rdx` = ret intval; `%rcx` = ret lower.
 
 ## Runtime-call argument registers (SysV: rdi, rsi, rdx, rcx, r8, r9)

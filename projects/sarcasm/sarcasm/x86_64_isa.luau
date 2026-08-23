@@ -131,11 +131,26 @@ x86.SCRATCH_NUM = 11
 x86.CALLER_SAVED_NUMS = { 0, 1, 2, 6, 7, 8, 9, 10 }
 
 -- Fil-C fast-entrypoint calling convention (register numbers).
+-- Args are packed DENSELY (a pointer-class arg occupies two consecutive slots --
+-- intval, lower; a scalar-class arg occupies one slot, intval only), matching
+-- pizlonated clang output. Clang's x86_64 fast CC has only FOUR dense argument
+-- registers (rdx, rcx, r8, r9); arguments beyond the fourth word are passed on the
+-- stack. sarcasm does not marshal stack arguments -- it rejects signatures needing
+-- more than 4 register argument words (see sarcasm.luau / x86_64_codegen.luau), so
+-- only the first four slots below are ever used.
+local DENSE_ARG_REGS = { 2, 1, 8, 9, 10, 11 }  -- rdx, rcx, r8, r9, (r10, r11: unreachable)
+local function denseArgSlot(argTypes, k)
+	local slot = 1
+	for i = 1, k - 1 do
+		slot += (argTypes[i] == 7) and 2 or 1   -- 7 = TYPE_PTR (see sig.luau)
+	end
+	return slot
+end
 x86.CC = {
 	myth = 7,       -- rdi
 	fo = 6,         -- rsi
-	argIv = function(k) return k == 1 and 2 or 8 end,      -- arg0 iv=rdx(2), arg1 iv=r8(8)
-	argLo = function(k) return k == 1 and 1 or 9 end,      -- arg0 lo=rcx(1), arg1 lo=r9(9)
+	argIv = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k)] end,
+	argLo = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k) + 1] end,  -- ptr args only
 	retFlag = 0,    -- al (rax)
 	retIv = 2,      -- rdx
 	retLo = 1,      -- rcx

@@ -10,6 +10,8 @@
 --   { kind="mem",  base=<reg?>, index=<reg?>, scale=<1|2|4|8>, dispVal=<num?>,
 --                  dispSym=<str?>, size=<bytes?>, indirect=<bool?> }
 
+local numlabel = require("./numlabel")
+
 local x86parse = {}
 
 -- name -> { num, width } ---------------------------------------------------
@@ -110,6 +112,11 @@ local function parseAttOperand(field)
 		if parts[3] and parts[3] ~= "" then mem.scale = tonumber(parts[3]) or 1 end
 		return mem
 	end
+	-- numeric local label reference: `1f` / `1b` (next/previous `1:` definition)
+	local nref, ndir = string.match(field, "^(%d+)([fb])$")
+	if nref then
+		return { kind = "numref", text = field, num = nref, dir = ndir, indirect = indirect }
+	end
 	-- bare symbol / label / number
 	if string.match(field, "^-?%d") or string.match(field, "^0[xX]") then
 		return { kind = "imm", text = field, value = tonumber(field) }
@@ -173,6 +180,11 @@ local function parseIntelOperand(field)
 	end
 	local r = classifyReg(field)
 	if r then r.indirect = indirect; return r end
+	-- numeric local label reference: `1f` / `1b` (next/previous `1:` definition)
+	local nref, ndir = string.match(field, "^(%d+)([fb])$")
+	if nref then
+		return { kind = "numref", text = field, num = nref, dir = ndir, indirect = indirect }
+	end
 	if string.match(field, "^-?%d") or string.match(field, "^0[xX]") then
 		return { kind = "imm", text = field, value = tonumber(field) }
 	end
@@ -257,6 +269,7 @@ function x86parse.parseString(text, syntax)
 		if annotation and #out > before then out[#out].annotation = annotation end
 		for k = before + 1, #out do out[k].line = out[k].line or lineNo end
 	end
+	numlabel.resolve(out)
 	return out
 end
 

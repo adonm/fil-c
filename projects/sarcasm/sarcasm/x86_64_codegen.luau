@@ -28,6 +28,21 @@ M.cc = {
 	rtRet = 0,                                    -- rax
 }
 
+-- Callsite signature validation (called by the shared transform for each `;! sig` call
+-- annotation). The x86_64 fast CC packs argument words densely into the FOUR registers
+-- rdx,rcx,r8,r9 (a pointer arg = 2 words); wider arguments are passed on the stack,
+-- which sarcasm does not yet marshal. So a call needs at most 4 register argument
+-- words. (Resolved-EXTERNAL calls are also bounded by the callsite thunk's 4-register
+-- hold pool -- the same limit; see x86_64_glue.callsiteThunk.)
+function M.checkCallsiteSig(cs, callee)
+	local words = 0
+	for k = 1, cs.argWords do words += (cs.argTypes[k] == 7) and 2 or 1 end
+	if words > 4 then
+		error("sarcasm: call to '" .. callee .. "': >4 register argument words not yet supported"
+			.. " (this call's signature needs " .. tostring(words) .. ")")
+	end
+end
+
 -- Static operand analysis -------------------------------------------------
 function M.memOperand(stmt)
 	for _, op in stmt.operands do if op.kind == "mem" then return op end end

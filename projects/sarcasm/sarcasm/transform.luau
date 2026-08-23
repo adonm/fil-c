@@ -79,7 +79,16 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function callSigOf(stmt)
 		local ann = stmt.annotation
 		if not ann then return nil end
-		if callSigCache[stmt] == nil then callSigCache[stmt] = sig.parseSignature(ann) end
+		if callSigCache[stmt] == nil then
+			local cs = sig.parseSignature(ann)
+			-- Per-arch callsite arity validation (the argument marshal has a finite
+			-- number of CC registers). Raises a clean sarcasm: error when over limit.
+			if cgm.checkCallsiteSig then
+				local callee = stmt.operands and stmt.operands[1] and stmt.operands[1].text or "?"
+				cgm.checkCallsiteSig(cs, callee)
+			end
+			callSigCache[stmt] = cs
+		end
 		return callSigCache[stmt]
 	end
 	local function callInfo(stmt)
@@ -121,6 +130,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	-- classify nodes: load-ptr / store-ptr / call / alloca.
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
+	local callPtrDefs = {}
 	local sizeNames = {}
 	for _, node in lf.nodes do
 		if node.kind == "insn" then
@@ -134,14 +144,18 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				else
 					allocaResultDefs[node] = true
 				end
-			elseif node.c.control == "call" and ann then callNodes[node] = ann
+			elseif node.c.control == "call" and ann then
+				callNodes[node] = ann
+				local cs = callSigOf(node.stmt)
+				if cs and cs.retIsPtr then callPtrDefs[node] = true end
 			elseif ann == "load ptr" then loadPtrDefs[node] = true
 			elseif ann == "store ptr" then storePtrNodes[node] = true end
 		end
 	end
 
 	local pf = ptrflow.analyze(lf,
-		{ argPtrTemps = argPtrTemps, loadPtrDefs = loadPtrDefs, allocaResultDefs = allocaResultDefs },
+		{ argPtrTemps = argPtrTemps, loadPtrDefs = loadPtrDefs, allocaResultDefs = allocaResultDefs,
+			callPtrDefs = callPtrDefs },
 		allocTemp, { baseMnemonic = cgm.baseMnemonic })
 
 	-- Link each fixed-size alloca-result node to its region; give the region a stable pointer
@@ -200,10 +214,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	for k, ty in sigDesc.argTypes do
 		local info = argInfo[k]
 		if info.entryTemp then
-			cg.move(info.entryTemp, pColored(cc.argIv(k)), true)
+			cg.move(info.entryTemp, pColored(cc.argIv(sigDesc.argTypes, k)), true)
 			if info.isPtr then
 				local loT = pf.lowerTemp[info.entryTemp]
-				cg.move(loT, pColored(cc.argLo(k)), true)
+				cg.move(loT, pColored(cc.argLo(sigDesc.argTypes, k)), true)
 				emitRootStore(loT)
 			end
 		end
@@ -353,14 +367,23 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local callUses = { pColored(cc.myth) }
 		for k = 1, cs.argWords do
 			local aTemp = argTemps[cc.yoloArg(k)]
-			cg.move(pColored(cc.argIv(k)), aTemp)
-			table.insert(callUses, pColored(cc.argIv(k)))
-			if cs.argTypes[k] == 7 then table.insert(callUses, emitCapMove(cc.argLo(k), aTemp)) end
+			cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
+			table.insert(callUses, pColored(cc.argIv(cs.argTypes, k)))
+			if cs.argTypes[k] == 7 then table.insert(callUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
 		end
 		cg.call("pizlonatedFI" .. cs.signature .. "_" .. callee, callUses, cg.callerSavedClobbers())
 		cg.exceptionBranch(ensureExcLabel())
 		if not cs.isVoid then
 			cg.move(node.defTemps[1], pColored(cc.retIv))
+			if cs.retIsPtr then
+				-- a pointer call result is (iv, lo); define its lower from retLo and root it
+				-- before any later safepoint can run.
+				local loT = pf.lowerTemp[node.defTemps[1]]
+				if loT then
+					cg.move(loT, pColored(cc.retLo))
+					emitRootStore(loT)
+				end
+			end
 		end
 	end
 

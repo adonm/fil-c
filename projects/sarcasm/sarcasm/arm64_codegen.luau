@@ -18,12 +18,21 @@ M.ALLOCATABLE = isa.ALLOCATABLE
 -- x1=iv, x2=lo. Runtime calls (AAPCS): x0,x1,x2,...; result x0. yolo params arrive in x{k-1}.
 M.cc = {
 	myth = 0, retFlag = 0, retIv = 1, retLo = 2,
-	argIv = function(k) return 2 + 2 * (k - 1) end,
-	argLo = function(k) return 3 + 2 * (k - 1) end,
+	argIv = function(argTypes, k) return 2 + 2 * (k - 1) end,
+	argLo = function(argTypes, k) return 3 + 2 * (k - 1) end,
 	yoloArg = function(k) return k - 1 end,
 	rtArg = function(k) return k - 1 end,
 	rtRet = 0,
 }
+
+-- Callsite signature validation (called by the shared transform for each `;! sig` call
+-- annotation). The arm64 fast CC packs arg k into the fixed pair x(2+2k)/x(3+2k)
+-- (x2..x7), so at most 3 arguments can be marshalled.
+function M.checkCallsiteSig(cs, callee)
+	if cs.argWords > 3 then
+		error("sarcasm: call to '" .. callee .. "': >3 register args not yet supported")
+	end
+end
 
 -- Static operand analysis -------------------------------------------------
 function M.memOperand(stmt)

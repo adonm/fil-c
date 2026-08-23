@@ -16,6 +16,8 @@
 --                    shift = <shift?>, text = <original> }
 -- A shift is { op = "lsl"|"lsr"|"asr"|"ror"|"uxtb"|... , amount = <number?>, amountText = <string?> }
 
+local numlabel = require("./numlabel")
+
 local parse = {}
 
 local SHIFT_OPS = {
@@ -127,6 +129,11 @@ local function parseSimple(field: string)
 	local imm = string.match(field, "^#(.+)$")
 	if imm then
 		return { kind = "imm", text = imm, value = tonumber(imm) }
+	end
+	-- numeric local label reference: `1f` / `1b` (next/previous `1:` definition)
+	local nref, ndir = string.match(field, "^(%d+)([fb])$")
+	if nref then
+		return { kind = "numref", text = field, num = nref, dir = ndir }
 	end
 	if string.match(field, "^-?%d") or string.match(field, "^0[xX]") then
 		return { kind = "imm", text = field, value = tonumber(field) }
@@ -332,6 +339,7 @@ function parse.parseString(text: string)
 		-- stamp every statement produced from this source line with its line number
 		for k = before + 1, #out do out[k].line = lineNo end
 	end
+	numlabel.resolve(out)
 	return out
 end
 

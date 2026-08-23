@@ -234,6 +234,12 @@ function arm64_render.prologue(rc)
 	table.insert(out, "\tadd\tx10, x10, :lo12:" .. tr.originSym)
 	table.insert(out, "\tstp\tx9, x10, [sp, #0]")
 	table.insert(out, "\tstr\tx8, [x0, #16]")
+	-- Zero-initialize every GC root slot: root slots are written lazily by rootStore, but
+	-- the frame declares all of them from the start, so any safepoint that runs before a
+	-- slot's first rootStore would otherwise expose stack garbage to the GC as a live lower.
+	for i = 0, (tr.numRoots or 0) - 1 do
+		table.insert(out, "\tstr\txzr, [sp, #" .. tostring(layout.rootBase + 8 * i) .. "]")
+	end
 end
 
 function arm64_render.epilogue(rc)

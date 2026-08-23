@@ -260,6 +260,16 @@ function x86_64_render.prologue(rc)
 	ln("\t" .. mq .. "\t" .. (att and ("%rsp, 16(%rdi)") or ("QWORD PTR [rdi + 16], rsp")))
 	ln("\t" .. (att and "leaq" or "lea") .. "\t" .. (att and (tr.originSym .. "(%rip), %" .. SC) or (SC .. ", [rip + " .. tr.originSym .. "]")))
 	ln("\t" .. mq .. "\t" .. (att and ("%" .. SC .. ", 8(%rsp)") or ("QWORD PTR [rsp + 8], " .. SC)))
+	-- Zero-initialize every GC root slot. Root slots are written lazily by rootStore (arg
+	-- lowers at entry; load-ptr / alloca / call-result lowers after those points), but the
+	-- frame declares all of them from the start — so any safepoint (pollcheck, allocation,
+	-- call) that runs before a slot's first rootStore would otherwise expose stack garbage
+	-- to the GC as a live lower. Matches clang, which emits `movq $0, slot(%rsp)` for its
+	-- lowers in the prologue.
+	for i = 0, (tr.numRoots or 0) - 1 do
+		local off = layout.rootBase + 8 * i
+		ln("\t" .. mq .. "\t" .. (att and ("$0, " .. off .. "(%rsp)") or ("QWORD PTR [rsp + " .. off .. "], 0")))
+	end
 end
 
 function x86_64_render.epilogue(rc)

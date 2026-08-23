@@ -1,12 +1,13 @@
 # sarcasm — SAfe Runtime Capability-enforced Assembler
 
-sarcasm is an assembler (written in Luau, run via `lute`) that takes ARM64 assembly
-written to link with **Yolo-C** and rewrites it into **memory-safe** assembly that links
-with **Fil-C**. It performs the GIMSO transformation on pointers, changes the pointer
-representation to invisicaps, reallocates registers with Iterated Register Coalescing,
-and emits code that follows the Fil-C ABI (calling convention, safepoints, stack-overflow
-checks, GC roots). It only supports **ARM64** (aarch64) and rejects anything it cannot
-prove safe rather than passing unsafe code through.
+sarcasm is an assembler (written in Luau, run via `lute`) that takes ARM64 or X86_64
+assembly written to link with **Yolo-C** and rewrites it into **memory-safe** assembly
+that links with **Fil-C**. It performs the GIMSO transformation on pointers, changes the
+pointer representation to invisicaps, reallocates registers with Iterated Register
+Coalescing, and emits code that follows the Fil-C ABI (calling convention, safepoints,
+stack-overflow checks, GC roots). It supports **ARM64** (aarch64) and **X86_64** (both
+AT&T and Intel input syntax; the target is auto-detected from the input), and rejects
+anything it cannot prove safe rather than passing unsafe code through.
 
 ## Usage
 
@@ -29,8 +30,8 @@ See `tests/test-spasm.s`, `tests/test2-spasm.s`, `tests/test3-spasm.s`, `tests/t
 for ARM64 examples, and `tests/test-spasm-x86.s` / `tests/test-spasm-x86-intel.s` for x86_64.
 
 ## Pipeline (`sarcasm/`)
-- `parse.luau`   — ARM64 GNU/clang assembly parser (+ `;!` annotations).
-- `arm64.luau`   — instruction semantics: register def/use, control flow, RMW.
+Shared, architecture-independent modules:
+- `detect.luau`  — auto-detects the target (arm64 vs x86_64; att vs intel syntax).
 - `sig.luau`     — Fil-C signature encoding (`1 + Ret + 133*Arg`).
 - `frame.luau`   — drops the input frame; virtualizes stack slots as locals.
 - `lift.luau`    — lifts to a virtual-register IR via reaching-definition **register webs**.
@@ -41,16 +42,25 @@ for ARM64 examples, and `tests/test-spasm-x86.s` / `tests/test-spasm-x86-intel.s
   heap accesses, Fil-C calls (marshalling + exception propagation), pollchecks at loop
   headers, SOV check, frame push/pop, GC roots.
 - `regalloc.luau` — Iterated Register Coalescing (Appel & George) over the GPR file.
-- `glue.luau`    — getter, FO object, generic entrypoint thunk, origins, alias, and the
-  **weak callsite resolver thunk** for called externals.
 - `emit.luau`    — renders IR with the allocation; synthesizes prologue/epilogue.
-- `sarcasm.luau`   — the driver (function splitting, orchestration, `as` invocation).
+- `build.luau`   — constructors for synthesized IR nodes.
+- `sarcasm.luau` — the driver (function splitting, orchestration, `as` invocation).
+
+Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interface):
+- `*_parse.luau`   — GNU/clang assembly parser (+ `;!` annotations); x86_64 handles both
+  AT&T and Intel syntax.
+- `*_isa.luau`     — instruction semantics: register def/use, control flow, RMW.
+- `*_frame.luau`   — per-arch frame policy for the shared frame preprocessor.
+- `*_codegen.luau` — per-arch instruction emitters used by the shared transform.
+- `*_render.luau`  — per-arch rendering + prologue/epilogue synthesis for emit.
+- `*_glue.luau`    — getter, FO object, generic entrypoint thunk, origins, alias, and the
+  **weak callsite resolver thunk** for called externals.
 
 ## Safety model for memory accesses
-- **Frame accesses** (`sp`/`x29`-relative, within the input frame) are virtualized as
-  register-allocated locals — no capability needed. Accesses outside the frame, or
-  writes into the caller's argument area, are **rejected at compile time**. Taking the
-  address of the stack frame is also rejected.
+- **Frame accesses** (`sp`/`x29`-relative on ARM64, `rsp`/`rbp`-relative on X86_64,
+  within the input frame) are virtualized as register-allocated locals — no capability
+  needed. Accesses outside the frame, or writes into the caller's argument area, are
+  **rejected at compile time**. Taking the address of the stack frame is also rejected.
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
@@ -58,14 +68,20 @@ for ARM64 examples, and `tests/test-spasm-x86.s` / `tests/test-spasm-x86-intel.s
   capability array exists, and run the FUGC store barrier when marking is active.
 
 ## Testing
-`tests/verify.sh` (run from the repo root; uses `lute` on the host and `as`/clang via
-docker) is the comprehensive suite: it compiles every yolo input with sarcasm, assembles
-with **GNU `as`**, links with Fil-C `main`s, and checks results, out-of-bounds/null-cap
-**traps**, the pointer-store capability round-trip, register-indexed access, the callsite
-resolver (via a forced-resolution link), and the compile-time frame-bounds rejection.
-Current status: 12/12. `tests/run-all.sh` is the original four-file subset (11/11).
+`tests/verify.sh` (ARM64) and `tests/verify-x86.sh` (X86_64) are the comprehensive
+suites (run from the repo root; they use `lute` on the host and `as`/clang via docker):
+they compile every yolo input with sarcasm, assemble with **GNU `as`**, link with Fil-C
+`main`s, and check results, out-of-bounds/null-cap **traps**, the pointer-store
+capability round-trip, register-indexed access, the callsite resolver, the presence of
+every inserted check (structural), and every compile-time rejection. The X86_64 suite
+exercises every behavioral case in BOTH AT&T and Intel syntax. `tests/run-all.sh` is the
+original four-file ARM64 subset. The X86_64 compile-time rejections are also covered by
+`filc/tests/sarcasm-reject-*` (run via `filc/run-tests`).
 
 `tests/roundtrip-test.luau` checks that lift + identity-coloring reproduces the input
-byte-for-byte (validates the register-web machinery).
+byte-for-byte (validates the register-web machinery); `tests/detect-test.luau` covers
+the arch/syntax auto-detection and `tests/cleanup-test.luau` the spill reload
+elimination.
 
-See `ABI-NOTES.md` for the decoded Fil-C ARM64 ABI and `DESIGN.md` for the architecture.
+See `ABI-NOTES.md` / `ABI-NOTES-x86.md` for the decoded Fil-C ABIs and `DESIGN.md` for
+the architecture.

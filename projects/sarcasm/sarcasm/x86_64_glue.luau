@@ -23,17 +23,37 @@ function glue_x86.getter(out, name)
 	table.insert(out, "")
 end
 
+-- Dense fast-CC arg registers: (iv[, lo]) pairs packed consecutively; a scalar arg
+-- consumes one slot, a pointer arg two. Matches pizlonated clang output. Clang's
+-- x86_64 fast CC has only FOUR dense argument registers (rdx, rcx, r8, r9) -- wider
+-- arguments go on the stack, which sarcasm does not marshal; signatures needing more
+-- than 4 register argument words are rejected, so slots 5-6 below are unreachable.
+local DENSE_ARG_REGS = { "%rdx", "%rcx", "%r8", "%r9", "%r10", "%r11" }
+local function denseArgRegs(argTypes, argWords)
+	local ivReg, loReg = {}, {}
+	local slot = 1
+	for k = 1, argWords do
+		ivReg[k] = DENSE_ARG_REGS[slot]
+		if argTypes[k] == 7 then   -- TYPE_PTR
+			loReg[k] = DENSE_ARG_REGS[slot + 1]
+			slot += 2
+		else
+			slot += 1
+		end
+	end
+	return ivReg, loReg
+end
+
 -- generic (buffer) entrypoint pizlonated2ET<sig>.
-function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr)
+function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr, argTypes)
 	assert(argWords <= 3, "sarcasm: >3 register args not yet supported")
 	local sym = "pizlonated2ET" .. tostring(signature)
 	local argBytes = argWords * 8
 	local retBytes = retWords * 8
 	local L = ".LBB_2ET" .. signature
 	local function e(s) table.insert(out, s) end
-	-- CC iv/lo register for arg k (1-based): iv=rdx,r8,(r10?); lo=rcx,r9. Support up to 3.
-	local ivReg = { "%rdx", "%r8", "%r10" }
-	local loReg = { "%rcx", "%r9", "%r11" }
+	-- dense CC iv/lo registers for arg k (1-based); lo only for pointer args.
+	local ivReg, loReg = denseArgRegs(argTypes, argWords)
 	e("\t.text")
 	e("\t.weak\t" .. sym)
 	e("\t.p2align\t4")
@@ -45,7 +65,9 @@ function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr)
 	e("\tmovq\t%rdi, %rbx")
 	for i = 0, argWords - 1 do
 		e("\tmovq\t" .. tostring(128 + 8 * i) .. "(%rdi), " .. ivReg[i + 1])
-		e("\tmovq\t" .. tostring(384 + 8 * i) .. "(%rdi), " .. loReg[i + 1])
+		if loReg[i + 1] then
+			e("\tmovq\t" .. tostring(384 + 8 * i) .. "(%rdi), " .. loReg[i + 1])
+		end
 	end
 	e("\tcallq\t*(%rsi)")
 	e("\ttestb\t$1, %al")
@@ -179,10 +201,21 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 	local sig = sigDesc.signature
 	local sym = "pizlonatedFI" .. tostring(sig) .. "_" .. callee
 	local L = ".Lcsr_" .. callee .. "_" .. tostring(sig)
-	local ivReg = { "%rdx", "%r8", "%r10" }   -- incoming fast-call arg iv registers
-	local loReg = { "%rcx", "%r9", "%r11" }   -- incoming fast-call arg lo registers
+	-- incoming fast-call args arrive densely packed; lo registers only for ptr args
+	local ivReg, loReg = denseArgRegs(sigDesc.argTypes, sigDesc.argWords)
 	local myth = "%rbx"
 	local pool = { "%r12", "%r13", "%r14", "%r15" }
+	-- Hold-pool capacity check: stashing the incoming CC across the resolver call takes
+	-- one callee-saved hold per argument word (two per pointer arg: intval + lower). A
+	-- signature needing more words than the pool holds cannot be marshalled -- reject it
+	-- cleanly rather than running off the end of the pool.
+	local holdWords = 0
+	for k = 1, sigDesc.argWords do holdWords += (sigDesc.argTypes[k] == 7) and 2 or 1 end
+	if holdWords > #pool then
+		error("sarcasm: callsite thunk for '" .. callee .. "': >" .. tostring(#pool)
+			.. " register argument words not yet supported (this call's signature needs "
+			.. tostring(holdWords) .. ")")
+	end
 	local nextHold = 1
 	local args = {}
 	for k = 1, sigDesc.argWords do

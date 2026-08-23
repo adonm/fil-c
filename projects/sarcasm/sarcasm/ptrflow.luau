@@ -47,6 +47,18 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 	end
 
 	-- Fixpoint propagation through copies and address arithmetic.
+	--
+	-- Convergence. isPtr only ever goes false->true, but a temp's lower CAN be reassigned
+	-- by a later def of the same web (x86 2-operand RMW instructions and branch joins
+	-- both give one web several def nodes). Reassignment is fine when the web's pointer
+	-- sources eventually agree (e.g. a `;! load ptr` seed's fresh lower gets replaced by
+	-- the propagated source's lower and stays there). A web whose defs draw on genuinely
+	-- different pointer origins never settles: the lower flip-flops between the origins'
+	-- lowers forever. Each pass is a deterministic function of the (isPtr, lowerTemp)
+	-- state, so a repeated global state proves non-convergence. That is a genuine
+	-- conflict -- one web has a single runtime lower, so it cannot hold pointers from
+	-- two origins -- and is rejected cleanly instead of spinning.
+	local seenStates = {}
 	local changed = true
 	while changed do
 		changed = false
@@ -62,13 +74,38 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 					local lo = lowerTemp[srcPtr]
 					if lo and lowerTemp[d] ~= lo then lowerTemp[d] = lo; changed = true end
 				end
-				-- A memory-source instruction is a LOAD, not a register copy/arithmetic:
-				-- the loaded value's pointer-ness comes from a `;! load ptr` seed, never the
-				-- address register. On x86 a load is `mov reg, [mem]`, so without this guard
-				-- ptrflow would treat it as `reg = base` and flip-flop the lower forever.
+				-- A memory operand's base/index registers are consumed as an ADDRESS, not
+				-- as a value source: a memory-source instruction is a LOAD, and the loaded
+				-- value's pointer-ness comes from a `;! load ptr` seed, never the address
+				-- register. On x86 a load is `mov reg, [mem]`, so without the hasMemSrc
+				-- guard ptrflow would treat it as `reg = base` and flip-flop the lower
+				-- forever. The same applies to memory-source arithmetic like
+				-- `addq (%rsi), %rax` (which adds the loaded SCALAR to %rax): the address
+				-- registers are excluded from the pointer-source candidates, otherwise
+				-- each such def would re-derive %rax's lower from its own address register
+				-- and flip-flop across the defs of the web. (`lea` is the exception: its
+				-- memory-shaped operand IS the computed value, so its base/index remain
+				-- legitimate pointer sources.)
 				local hasMemSrc = false
+				local addrUse = nil
 				local sops = node.stmt and node.stmt.operands
-				if sops then for _, op in sops do if op.kind == "mem" then hasMemSrc = true end end end
+				if sops then
+					for _, op in sops do
+						if op.kind == "mem" then
+							hasMemSrc = true
+							if m ~= "lea" and node.opTemp then
+								if op.base and node.opTemp[op.base] then
+									if not addrUse then addrUse = {} end
+									addrUse[node.opTemp[op.base]] = true
+								end
+								if op.index and node.opTemp[op.index] then
+									if not addrUse then addrUse = {} end
+									addrUse[node.opTemp[op.index]] = true
+								end
+							end
+						end
+					end
+				end
 				if d then
 					if m == "mov" and #us == 1 and not hasMemSrc then
 						if isPtr[us[1]] then markFrom(us[1]) end
@@ -79,7 +116,9 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 						-- keeps the pointer's lower (bounds checks still guard any misuse).
 						local ptrSrc, intCount = nil, 0
 						for _, u in us do
-							if isPtr[u] then ptrSrc = u else intCount += 1 end
+							if addrUse and addrUse[u] then
+								-- consumed as a memory address, not a value source
+							elseif isPtr[u] then ptrSrc = u else intCount += 1 end
 						end
 						if ptrSrc and not (m == "sub" and intCount == 0) then
 							markFrom(ptrSrc)
@@ -87,6 +126,20 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 					end
 				end
 			end
+		end
+		if changed then
+			-- Cycle detection: a repeated (isPtr, lowerTemp) state after a changing pass
+			-- means the deterministic iteration would loop forever (see above).
+			local parts = {}
+			for t, lo in lowerTemp do table.insert(parts, tostring(t) .. "=" .. tostring(lo)) end
+			for t, v in isPtr do if v then table.insert(parts, tostring(t) .. "=ptr") end end
+			table.sort(parts)
+			local key = table.concat(parts, ";")
+			if seenStates[key] then
+				error("sarcasm: pointer-flow analysis does not converge: a register web "
+					.. "has conflicting pointer sources (one temp cannot carry two capabilities)")
+			end
+			seenStates[key] = true
 		end
 	end
 

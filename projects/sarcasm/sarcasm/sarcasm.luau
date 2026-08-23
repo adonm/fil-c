@@ -339,22 +339,21 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
 		-- Entry-signature arity limits. Both ISAs marshal at most 3 arguments through
-		-- the register CC. On x86_64 the fast CC packs argument words densely into the
-		-- FOUR registers rdx,rcx,r8,r9 (a pointer arg = 2 words; anything wider is passed
-		-- on the stack, which sarcasm does not yet marshal), so an x86_64 signature is
-		-- additionally limited to 4 register argument words. (On arm64 the fixed
-		-- x2..x7 pairs already cap any 3-arg signature at 6 words, matching its CC.)
+		-- the register CC, and both fast CCs pack argument words DENSELY (a pointer arg
+		-- = 2 words; anything wider is passed on the stack, which sarcasm does not yet
+		-- marshal): x86_64 packs into the FOUR registers rdx,rcx,r8,r9 (4 words max);
+		-- arm64 packs into the SIX registers x2..x7 (6 words max, which any 3-arg
+		-- signature already satisfies).
 		if sigDesc.argWords > 3 then
 			error("sarcasm: >3 register args not yet supported")
 		end
-		if target.arch == "x86_64" then
-			local words = 0
-			for k = 1, sigDesc.argWords do words += (sigDesc.argTypes[k] == 7) and 2 or 1 end
-			if words > 4 then
-				error("sarcasm: function '" .. fn.name
-					.. "': >4 register argument words not yet supported (this signature needs "
-					.. tostring(words) .. ")")
-			end
+		local maxWords = (target.arch == "x86_64") and 4 or 6
+		local words = 0
+		for k = 1, sigDesc.argWords do words += (sigDesc.argTypes[k] == 7) and 2 or 1 end
+		if words > maxWords then
+			error("sarcasm: function '" .. fn.name
+				.. "': >" .. tostring(maxWords) .. " register argument words not yet supported (this signature needs "
+				.. tostring(words) .. ")")
 		end
 		-- body = statements after the function label up to (not incl) .size
 		local body = {}

@@ -8,6 +8,34 @@ local glue = {}
 
 local FUNCTION_UPPER_FLAGS = "36873221949095936" -- 0x83 << 48
 
+-- Dense fast-CC arg registers: (iv[, lo]) pairs packed consecutively from x2; a scalar
+-- arg consumes one slot, a pointer arg two. Matches pizlonated clang output. The arm64
+-- fast CC has SIX dense argument registers (x2..x7) -- wider arguments go on the stack,
+-- which sarcasm does not marshal; signatures needing more than 6 register argument
+-- words are rejected.
+local DENSE_ARG_REGS = { 2, 3, 4, 5, 6, 7 }
+local function denseArgRegs(argTypes, argWords)
+	local ivReg, loReg = {}, {}
+	local slot = 1
+	for k = 1, argWords do
+		ivReg[k] = DENSE_ARG_REGS[slot]
+		if argTypes[k] == 7 then   -- TYPE_PTR
+			loReg[k] = DENSE_ARG_REGS[slot + 1]
+			slot += 2
+		else
+			slot += 1
+		end
+	end
+	return ivReg, loReg
+end
+
+-- Number of fast-CC register argument words a signature needs (ptr args = 2).
+local function argRegWords(argTypes, argWords)
+	local words = 0
+	for k = 1, argWords do words += (argTypes[k] == 7) and 2 or 1 end
+	return words
+end
+
 -- Function getter: returns the FO flight pointer (intval in x0, lower in x1).
 function glue.getter(out, name: string)
 	local fo = "pizlonatedFO_" .. name
@@ -30,11 +58,13 @@ end
 -- return value back. argWords/retWords count 8-byte words. retIsPtr controls whether
 -- the return lower is copied (else zeroed).
 function glue.genericThunk(out, signature: number, argWords: number, retWords: number, retIsPtr: boolean, argTypes)
-	assert(argWords <= 3, "sarcasm: >3 register args not yet supported")
+	assert(argRegWords(argTypes, argWords) <= 6, "sarcasm: >6 register argument words not yet supported")
 	local sym = "pizlonated2ET" .. tostring(signature)
 	local argBytes = argWords * 8
 	local retBytes = retWords * 8
 	local lend = ".LBB_2ET" .. signature
+	-- dense CC iv/lo registers for arg k (1-based); lo only for pointer args.
+	local ivReg, loReg = denseArgRegs(argTypes, argWords)
 	table.insert(out, "\t.text")
 	table.insert(out, "\t.weak\t" .. sym)
 	table.insert(out, "\t.p2align\t2")
@@ -43,12 +73,13 @@ function glue.genericThunk(out, signature: number, argWords: number, retWords: n
 	table.insert(out, "\tstp\tx30, x19, [sp, #-16]!")
 	table.insert(out, "\tcmp\tx2, #" .. tostring(argBytes))
 	table.insert(out, "\tb.lo\t" .. lend .. "_fail")
-	-- load args: intval reg = x2 + 2*i, lower reg = x3 + 2*i
+	-- load args from the per-argument buffer slots (iv at 128+8i, lower at 384+8i)
+	-- into the densely packed CC registers.
 	for i = 0, argWords - 1 do
-		local ivReg = "x" .. tostring(2 + 2 * i)
-		local loReg = "x" .. tostring(3 + 2 * i)
-		table.insert(out, "\tldr\t" .. ivReg .. ", [x0, #" .. tostring(128 + 8 * i) .. "]")
-		table.insert(out, "\tldr\t" .. loReg .. ", [x0, #" .. tostring(384 + 8 * i) .. "]")
+		table.insert(out, "\tldr\tx" .. tostring(ivReg[i + 1]) .. ", [x0, #" .. tostring(128 + 8 * i) .. "]")
+		if loReg[i + 1] then
+			table.insert(out, "\tldr\tx" .. tostring(loReg[i + 1]) .. ", [x0, #" .. tostring(384 + 8 * i) .. "]")
+		end
 	end
 	table.insert(out, "\tmov\tx19, x0")
 	table.insert(out, "\tldr\tx8, [x1]")
@@ -208,14 +239,21 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	local sym = "pizlonatedFI" .. tostring(sig) .. "_" .. callee
 	local L = ".Lcsr_" .. callee .. "_" .. tostring(sig)
 
-	-- The arm64 fast CC packs arg k into the fixed pair x(2+2k)/x(3+2k) (x2..x7): at
-	-- most 3 arguments. Beyond that there is no incoming CC register to read (and the
-	-- x19+ hold plan would run into x29/x30), so reject cleanly.
-	if sigDesc.argWords > 3 then
-		error("sarcasm: callsite thunk for '" .. callee .. "': >3 register args not yet supported")
-	end
+	-- incoming fast-call args arrive densely packed in x2..x7; lo registers only for
+	-- pointer args.
+	local ivReg, loReg = denseArgRegs(sigDesc.argTypes, sigDesc.argWords)
 
-	-- register save plan: x19 = myth; then per-arg iv (+ lo if pointer)
+	-- register save plan: x19 = myth; then per-arg iv (+ lo if pointer) from x20 up.
+	-- Stashing the incoming CC across the resolver call takes one callee-saved hold per
+	-- argument word (two per pointer arg: intval + lower). The CC has at most 6 argument
+	-- words (x2..x7), so the holds top out at x20..x25, well within x19..x28; a signature
+	-- needing more than 6 words goes on the stack, which sarcasm does not marshal --
+	-- reject it cleanly.
+	local holdWords = argRegWords(sigDesc.argTypes, sigDesc.argWords)
+	if holdWords > 6 then
+		error("sarcasm: callsite thunk for '" .. callee .. "': >6 register argument words not yet supported"
+			.. " (this call's signature needs " .. tostring(holdWords) .. ")")
+	end
 	local myth = 19
 	local nextReg = 20
 	local args = {}  -- k -> { iv = reg, lo = reg|nil, isPtr = bool }
@@ -248,8 +286,8 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	-- save incoming CC registers into callee-saved
 	e("\tmov\tx" .. myth .. ", x0")
 	for k = 1, sigDesc.argWords do
-		e("\tmov\tx" .. args[k].iv .. ", x" .. (2 + 2 * (k - 1)))
-		if args[k].lo then e("\tmov\tx" .. args[k].lo .. ", x" .. (3 + 2 * (k - 1))) end
+		e("\tmov\tx" .. args[k].iv .. ", x" .. ivReg[k])
+		if args[k].lo then e("\tmov\tx" .. args[k].lo .. ", x" .. loReg[k]) end
 	end
 	-- resolve the function object
 	e("\tbl\tpizlonated_" .. callee)
@@ -268,8 +306,8 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	-- direct fast call
 	e("\tmov\tx0, x" .. myth)
 	for k = 1, sigDesc.argWords do
-		e("\tmov\tx" .. (2 + 2 * (k - 1)) .. ", x" .. args[k].iv)
-		if args[k].lo then e("\tmov\tx" .. (3 + 2 * (k - 1)) .. ", x" .. args[k].lo) end
+		e("\tmov\tx" .. ivReg[k] .. ", x" .. args[k].iv)
+		if args[k].lo then e("\tmov\tx" .. loReg[k] .. ", x" .. args[k].lo) end
 	end
 	for i, r in saved do e("\tldr\tx" .. r .. ", [sp, #" .. (8 * i) .. "]") end
 	e("\tldr\tx5, [x1]")

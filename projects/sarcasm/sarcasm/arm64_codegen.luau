@@ -14,23 +14,39 @@ M.baseMnemonic = function(m) return string.lower(m) end
 M.precolorName = function(num) return "x" .. num end
 M.ALLOCATABLE = isa.ALLOCATABLE
 
--- Calling convention. Fast entrypoint: x0=myth, (x2,x3)=arg0, (x4,x5)=arg1; ret w0=flags,
--- x1=iv, x2=lo. Runtime calls (AAPCS): x0,x1,x2,...; result x0. yolo params arrive in x{k-1}.
+-- Calling convention. Fast entrypoint: x0=myth; args are packed DENSELY into the SIX
+-- registers x2..x7 (a pointer-class arg occupies two consecutive slots -- intval, lower;
+-- a scalar-class arg occupies one slot, intval only), matching pizlonated clang output.
+-- Arguments beyond the sixth word are passed on the stack, which sarcasm does not
+-- marshal. ret w0=flags, x1=iv, x2=lo. Runtime calls (AAPCS): x0,x1,x2,...; result x0.
+-- yolo params arrive in x{k-1}.
+local DENSE_ARG_REGS = { 2, 3, 4, 5, 6, 7 }
+local function denseArgSlot(argTypes, k)
+	local slot = 1
+	for i = 1, k - 1 do
+		slot += (argTypes[i] == 7) and 2 or 1   -- 7 = TYPE_PTR (see sig.luau)
+	end
+	return slot
+end
 M.cc = {
 	myth = 0, retFlag = 0, retIv = 1, retLo = 2,
-	argIv = function(argTypes, k) return 2 + 2 * (k - 1) end,
-	argLo = function(argTypes, k) return 3 + 2 * (k - 1) end,
+	argIv = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k)] end,
+	argLo = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k) + 1] end,  -- ptr args only
 	yoloArg = function(k) return k - 1 end,
 	rtArg = function(k) return k - 1 end,
 	rtRet = 0,
 }
 
 -- Callsite signature validation (called by the shared transform for each `;! sig` call
--- annotation). The arm64 fast CC packs arg k into the fixed pair x(2+2k)/x(3+2k)
--- (x2..x7), so at most 3 arguments can be marshalled.
+-- annotation). The arm64 fast CC packs argument words densely into the SIX registers
+-- x2..x7 (a pointer arg = 2 words); wider arguments are passed on the stack, which
+-- sarcasm does not yet marshal. So a call needs at most 6 register argument words.
 function M.checkCallsiteSig(cs, callee)
-	if cs.argWords > 3 then
-		error("sarcasm: call to '" .. callee .. "': >3 register args not yet supported")
+	local words = 0
+	for k = 1, cs.argWords do words += (cs.argTypes[k] == 7) and 2 or 1 end
+	if words > 6 then
+		error("sarcasm: call to '" .. callee .. "': >6 register argument words not yet supported"
+			.. " (this call's signature needs " .. tostring(words) .. ")")
 	end
 end
 

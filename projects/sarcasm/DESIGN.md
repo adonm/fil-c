@@ -57,16 +57,14 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
 - `*_glue.luau`    — getter/FO/2ET/origins/access-origin/alias link & run, plus the weak
   callsite resolver thunk for called externals.
 
-NOTE (x86_64 vs arm64 CC packing): the x86_64 fast-CC packing is DENSE — a scalar arg
-consumes one register slot, a pointer arg two consecutive slots, packed from rdx across
-rdx,rcx,r8,r9 (4 words max; clang passes anything wider on the stack) — matching
-pizlonated clang output. arm64's `argIv/argLo` still uses the older FIXED-PAIR packing
-(arg k always in x(2+2k)/x(3+2k)): the dense-packing fix was NOT applied to arm64
-behavior, only mechanical signature updates. If arm64 clang packs mixed
-scalar/pointer signatures densely (e.g. `int(long, void*)` putting arg1's intval in x3
-rather than x4), arm64 has the same class of packing mismatch the x86_64 fix addressed
-— a future arm64 session should check arm64 clang output and port the x86_64
-dense-packing fix if needed.
+NOTE (x86_64 vs arm64 CC packing): BOTH fast-CC packings are DENSE — a scalar arg
+consumes one register slot, a pointer arg two consecutive slots. x86_64 packs from rdx
+across rdx,rcx,r8,r9 (4 words max); arm64 packs from x2 across x2..x7 (6 words max);
+clang passes anything wider on the stack (sarcasm rejects such signatures). arm64 used
+to implement the older FIXED-PAIR packing (arg k always in x(2+2k)/x(3+2k)), which only
+coincides with dense packing when every arg before k is a pointer; it was ported to
+dense packing after verifying pizlonated clang's aarch64 output (e.g.
+`long(long,long,ptr)` puts arg1 in x3 and arg2's intval/lower in x4/x5).
 
 ## Core stages
 

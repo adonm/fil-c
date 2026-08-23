@@ -78,7 +78,13 @@ allocation. For fixed sizes, sp-relative address math inside `[base, base+size)`
 
 ## Fast entrypoint register CC (pizlonatedFIP<sig>_<name>)
 - x0 = myth, x1 = function object payload ptr (closure data; often unused).
-- args: (x2,x3)=(arg0.intval, arg0.lower), (x4,x5)=(arg1...), (x6,x7)=(arg2...), rest spill.
+- args are packed DENSELY into x2..x7: a scalar arg consumes one slot (intval only), a
+  pointer arg two consecutive slots (intval, lower). E.g. `long(long,long,ptr)`: arg0=x2,
+  arg1=x3, arg2=(x4,x5); `unsigned long(ptr,size_t,size_t)`: arg0=(x2,x3), arg1=x4,
+  arg2=x5. (Verified against pizlonated clang aarch64 output; the older fixed-pair
+  description here — arg k always in (x(2+2k), x(3+2k)) — was WRONG for any signature
+  with a scalar before a later arg.) Arguments beyond the sixth word go on the stack;
+  sarcasm does not marshal stack arguments and rejects such signatures.
 - return: w0 bit0 = exception flag (1=exception); x1 = ret.intval; x2 = ret.lower.
 
 ## Stack overflow check (prologue, after saving regs, before frame push)

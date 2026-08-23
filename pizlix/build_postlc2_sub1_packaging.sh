@@ -24,7 +24,7 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/git-2.55.0 pizlonated-git
 ./package-source.sh projects/libuv-1.51.0 pizlonated-libuv
 ./package-source.sh projects/icu-76.1 pizlonated-icu
-./package-source.sh projects/libxml2-2.14.4 pizlonated-libxml2
+./package-source.sh projects/libxml2-2.15.3 pizlonated-libxml2
 ./package-source.sh projects/libarchive-3.7.4 pizlonated-libarchive
 ./package-source.sh projects/dhcpcd-10.0.8 pizlonated-dhcpcd
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh

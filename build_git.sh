@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/git-2.46.0
+cd projects/git-2.55.0
 extract_source
 PATH=$PWD/../../../pizfix/bin:$PATH CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix \
             --with-gitconfig=/etc/gitconfig \

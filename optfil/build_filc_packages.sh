@@ -93,7 +93,7 @@ cd ../..
 ./package-source.sh projects/libtasn1-4.19.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.25.5 pizlonated-p11-kit
 ./package-source.sh projects/curl-8.21.0 pizlonated-curl
-./package-source.sh projects/git-2.46.0 pizlonated-git
+./package-source.sh projects/git-2.55.0 pizlonated-git
 ./package-source.sh projects/libevent-2.1.12 pizlonated-libevent
 ./package-source.sh projects/m4-1.4.19 pizlonated-m4
 ./package-source.sh projects/zstd-1.5.6 pizlonated-zstd

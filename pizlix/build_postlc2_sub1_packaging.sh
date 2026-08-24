@@ -15,7 +15,7 @@ cd $FILCSRC
 
 rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/cmake-3.30.2 pizlonated-cmake
-./package-source.sh projects/libtasn1-4.19.0 pizlonated-libtasn1
+./package-source.sh projects/libtasn1-4.21.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.25.5 pizlonated-p11-kit
 ./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2
 ./package-source.sh projects/curl-8.21.0 pizlonated-curl

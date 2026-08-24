@@ -109,7 +109,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-@HAVE_LD_VERSION_SCRIPT_TRUE@am__append_1 = -Wl,--version-script=$(srcdir)/libtasn1.map
+@HAVE_LD_VERSION_SCRIPT_TRUE@am__append_1 = --version-script=$(srcdir)/libtasn1.map
 @HAVE_LD_VERSION_SCRIPT_FALSE@am__append_2 = -export-symbols-regex '^(asn1|libtasn1_).*'
 @HAVE_LD_OUTPUT_DEF_TRUE@am__append_3 = -Wl,--output-def,libtasn1-$(DLL_VERSION).def
 subdir = lib

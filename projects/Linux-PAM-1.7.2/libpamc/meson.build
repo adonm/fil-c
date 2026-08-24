@@ -13,7 +13,7 @@ libpamc_map = 'libpamc.map'
 libpamc_map_path = meson.current_source_dir() / libpamc_map
 
 libpamc_link_deps = [libpamc_map]
-libpamc_link_args = ['-Wl,--version-script=' + libpamc_map_path]
+libpamc_link_args = ['--version-script=' + libpamc_map_path]
 
 libpamc = shared_library(
   'pamc',

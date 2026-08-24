@@ -12,7 +12,7 @@ libpam_misc_map = 'libpam_misc.map'
 libpam_misc_map_path = meson.current_source_dir() / libpam_misc_map
 
 libpam_misc_link_deps = [libpam_misc_map]
-libpam_misc_link_args = ['-Wl,--version-script=' + libpam_misc_map_path]
+libpam_misc_link_args = ['--version-script=' + libpam_misc_map_path]
 
 libpam_misc = shared_library(
   'pam_misc',

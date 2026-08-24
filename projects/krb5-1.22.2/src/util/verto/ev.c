@@ -179,6 +179,8 @@
 
 #include <signal.h>
 
+#include <stdfil.h>
+
 #ifdef EV_H
 # include EV_H
 #else
@@ -652,6 +654,11 @@ struct signalfd_siginfo
 #if 1400 <= _MSC_VER
   #include <intrin.h> /* fence functions _ReadBarrier, also bit search functions _BitScanReverse */
 #endif
+
+/* Let's play it safe with fences. There's no point in being fancy. */
+#define ECB_MEMORY_FENCE zfence()
+#define ECB_MEMORY_FENCE_ACQUIRE zfence()
+#define ECB_MEMORY_FENCE_RELEASE zfence()
 
 #ifndef ECB_MEMORY_FENCE
   #if ECB_GCC_VERSION(2,5) || defined __INTEL_COMPILER || (__llvm__ && __GNUC__) || __SUNPRO_C >= 0x5110 || __SUNPRO_CC >= 0x5110

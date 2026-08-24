@@ -1,0 +1,543 @@
+<?xml version='1.0'?>
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook XML V4.3//EN"
+	"http://www.oasis-open.org/docbook/xml/4.3/docbookx.dtd">
+
+<refentry id="p11-kit">
+
+<refentryinfo>
+	<title>p11-kit</title>
+	<productname>p11-kit</productname>
+	<authorgroup>
+		<author>
+			<contrib>Maintainer</contrib>
+			<firstname>Stef</firstname>
+			<surname>Walter</surname>
+			<email>stef@thewalter.net</email>
+		</author>
+	</authorgroup>
+</refentryinfo>
+
+<refmeta>
+	<refentrytitle>p11-kit</refentrytitle>
+	<manvolnum>8</manvolnum>
+	<refmiscinfo class="manual">System Commands</refmiscinfo>
+</refmeta>
+
+<refnamediv>
+	<refname>p11-kit</refname>
+	<refpurpose>Tool for operating on configured PKCS#11 modules</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>p11-kit list-modules</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit list-tokens ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit list-objects ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit import-object ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit export-object ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit delete-object ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit generate-keypair ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit list-profiles ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit add-profile ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit delete-profile ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit list-mechanisms ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit print-config</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit extract ...</command>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>p11-kit server ...</command>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1 id="p11-kit-description">
+	<title>Description</title>
+	<para><command>p11-kit</command> is a command line tool that
+	can be used to perform operations on PKCS#11 modules configured on the
+	system.</para>
+
+	<para>See the various sub commands below. The following global options
+	can be used:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>-v, --verbose</option></term>
+			<listitem><para>Run in verbose mode with debug
+			output.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>-q, --quiet</option></term>
+			<listitem><para>Run in quiet mode without warning or
+			failure messages.</para></listitem>
+		</varlistentry>
+	</variablelist>
+
+</refsect1>
+
+<refsect1 id="p11-kit-list-modules">
+	<title>List Modules</title>
+
+	<para>List system configured PKCS#11 modules.</para>
+
+<programlisting>
+$ p11-kit list-modules
+</programlisting>
+
+	<para>The modules, information about them and the tokens present in
+	the PKCS#11 modules will be displayed.</para>
+
+</refsect1>
+
+<refsect1 id="p11-kit-list-tokens">
+	<title>List Tokens</title>
+
+	<para>List all tokens available in system configured PKCS#11 modules.</para>
+
+<programlisting>
+$ p11-kit list-tokens pkcs11:token
+</programlisting>
+
+	<para>This retrieves all tokens and displays some of their
+	common attributes.</para>
+
+	<para>This subcommand takes the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--only-uris</option></term>
+			<listitem><para>Print only the matching token URIs.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-list-objects">
+	<title>List Objects</title>
+
+	<para>List objects matching given PKCS#11 URI.</para>
+
+<programlisting>
+$ p11-kit list-objects pkcs11:object_on_token
+</programlisting>
+
+	<para>This retrieves all objects that match given PKCS#11 URI and displays
+        some of their common attributes. Storage objects also have their PKCS#11 URI
+        displayed.</para>
+
+	<para>This subcommand takes the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-import-object">
+	<title>Import Object</title>
+
+	<para>Import object into PKCS#11 token.</para>
+
+<programlisting>
+$ p11-kit import-object --file=file.pem &lsqb;--label=label&rsqb; &lsqb;--id=object_id&rsqb; pkcs11:token
+</programlisting>
+
+	<para>Takes either an X.509 certificate or a public key in the form of a PEM file
+	and imports it into the first token matched by given PKCS#11 URI.</para>
+
+	<para>The following options are required:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--file=&lt;file.pem&gt;</option></term>
+			<listitem><para>File containing either an X.509 certificate
+			or a public key in PEM format.</para></listitem>
+		</varlistentry>
+	</variablelist>
+
+	<para>This subcommand also accepts the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--label=&lt;label&gt;</option></term>
+			<listitem><para>Assigns label to the imported object.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--id=&lt;object_id&gt;</option></term>
+			<listitem><para>Assigns ID to the imported object. The ID should be specified in hexadecimal format without '0x' prefix.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-export-object">
+	<title>Export Object</title>
+
+	<para>Export object matching PKCS#11 URI.</para>
+
+<programlisting>
+$ p11-kit export-object pkcs11:object_on_token
+</programlisting>
+
+	<para>Displays PEM formatted contents of the first object matched by given PKCS#11 URI.
+	The matched object has to either be an X.509 certificate or a public key.</para>
+
+	<para>This subcommand takes the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-delete-object">
+	<title>Delete Object</title>
+
+	<para>Delete object matching PKCS#11 URI.</para>
+
+<programlisting>
+$ p11-kit delete-object pkcs11:object_on_token
+</programlisting>
+
+	<para>Destroys the first object matched by given PKCS#11 URI.</para>
+
+	<para>This subcommand takes the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-generate-keypair">
+	<title>Generate Key-pair</title>
+
+	<para>Generate key-pair on a PKCS#11 token.</para>
+
+<programlisting>
+$ p11-kit generate-keypair --type=algorithm &lcub;--bits=n|--curve=name&rcub; &lsqb;--label=label&rsqb; &lsqb;--id=object_id&rsqb; pkcs11:token
+</programlisting>
+
+	<para>Generate private-public key-pair of given type on the first
+	token matched by given PKCS#11 URI. This command should be used
+	together with --type option and one of --bits or --curve options.</para>
+
+	<para>The following options are required:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--type=&lt;algorithm&gt;</option></term>
+			<listitem><para>Specify the type of keys to generate.
+			Supported values are rsa, ecdsa and eddsa.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--bits=&lt;n&gt;</option></term>
+			<listitem><para>Specify the number of bits for the key-pair generation.
+			Cannot be used together with --curve option.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--curve=&lt;name&gt;</option></term>
+                        <listitem><para>Specify an elliptic curve for the key-pair generation.
+                        Supported values are secp256r1, secp384r1, secp521r1, ed25519 and ed448.
+			Cannot be used together with --bits option.</para></listitem>
+		</varlistentry>
+	</variablelist>
+
+	<para>This subcommand also accepts the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--label=&lt;label&gt;</option></term>
+			<listitem><para>Assigns label to the generated key-pair objects.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--id=&lt;object_id&gt;</option></term>
+			<listitem><para>Assigns ID to the generated key-pair objects. The ID should be specified in hexadecimal format without '0x' prefix.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-list-profiles">
+	<title>List Profiles</title>
+
+	<para>List PKCS#11 profiles supported by the token.</para>
+
+<programlisting>
+$ p11-kit list-profiles pkcs11:token
+</programlisting>
+
+	<para>Displays profile IDs of the first token matched by given
+	PKCS#11 URI in human-readable form.</para>
+
+	<para>This subcommand takes the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-add-profile">
+	<title>Add Profile</title>
+
+	<para>Add PKCS#11 profile to a token.</para>
+
+<programlisting>
+$ p11-kit add-profile --profile=profile pkcs11:token
+</programlisting>
+
+	<para>Creates new profile object with given profile ID on the
+	first token matched by given PKCS#11 URI. This command fails
+	if the profile ID already exists on the token.</para>
+
+	<para>The following options are required:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--profile=&lt;profile&gt;</option></term>
+			<listitem><para>Profile ID to add. Value can either
+			be numerical or textual.</para></listitem>
+		</varlistentry>
+	</variablelist>
+
+	<para>This subcommand also accepts the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-delete-profile">
+	<title>Delete Profile</title>
+
+	<para>Delete PKCS#11 profile from a token.</para>
+
+<programlisting>
+$ p11-kit delete-profile --profile=profile pkcs11:token
+</programlisting>
+
+	<para>Destroys all profile objects with given profile ID from
+	the first token matched by given PKCS#11 URI.</para>
+
+	<para>The following options are required:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--profile=&lt;profile&gt;</option></term>
+			<listitem><para>Profile ID to delete. Value can either
+			be numerical or textual.</para></listitem>
+		</varlistentry>
+	</variablelist>
+
+	<para>This subcommand also accepts the following options:</para>
+
+	<variablelist>
+		<varlistentry>
+			<term><option>--login</option></term>
+			<listitem><para>Authenticate to the token before enumerating objects. The PIN value is read from either the <literal>pin-value</literal> attribute in the URI or from the terminal.</para></listitem>
+		</varlistentry>
+		<varlistentry>
+			<term><option>--provider=&lt;module_path&gt;</option></term>
+			<listitem><para>Load only the given PKCS#11 module instead of enumerating modules installed on the system. If <parameter>module_path</parameter> is a relative path, the module is loaded from the default module path. This path can be determined by running:</para>
+			<programlisting>
+$ <command>pkg-config p11-kit-1 --variable p11_module_path</command>
+/usr/lib64/pkcs11</programlisting></listitem>
+		</varlistentry>
+	</variablelist>
+</refsect1>
+
+<refsect1 id="p11-kit-list-mechanisms">
+	<title>List Mechanisms</title>
+
+	<para>List PKCS#11 mechanisms supported by the token.</para>
+
+<programlisting>
+$ p11-kit list-mechanisms pkcs11:token
+</programlisting>
+
+	<para>This lists all available mechanimsms for a PKCS#11 token</para>
+
+</refsect1>
+
+<refsect1 id="p11-kit-print-config">
+	<title>Print Config</title>
+
+	<para>Print merged configuration.</para>
+
+<programlisting>
+$ p11-kit print-config
+</programlisting>
+
+	<para>P11-kit provides 3 levels of configuration: system wide, per-module, and per-user.
+	At run-time all 3 levels are merged into a single configuration. This command displays the
+	merged configuration.</para>
+
+</refsect1>
+
+<refsect1 id="p11-kit-extract">
+	<title>Extract</title>
+
+	<para>Extract certificates from configured PKCS#11 modules.</para>
+
+	<para>This operation has been moved to a separate command <command>trust extract</command>.
+	See <simplelist><member><citerefentry><refentrytitle>trust</refentrytitle><manvolnum>1</manvolnum></citerefentry></member></simplelist>
+	for more information</para>
+</refsect1>
+
+<refsect1 id="p11-kit-server">
+	<title>Server</title>
+
+	<para>Run a server process that exposes PKCS#11 module remotely.</para>
+
+<programlisting>
+$ p11-kit server pkcs11:token1 pkcs11:token2 ...
+$ p11-kit server --provider /path/to/pkcs11-module.so pkcs11:token1 pkcs11:token2 ...
+</programlisting>
+
+	<para>This launches a server that exposes the given PKCS#11 tokens on a local socket. The tokens must belong to the same module. To access the socket, use <literal>p11-kit-client.so</literal> module. The server address and PID are printed as a shell-script snippet which sets the appropriate environment variable: <literal>P11_KIT_SERVER_ADDRESS</literal> and <literal>P11_KIT_SERVER_PID</literal>.</para>
+
+</refsect1>
+
+<refsect1 id="p11-kit-extract-trust">
+	<title>Extract Trust</title>
+
+	<para>Extract standard trust information files.</para>
+
+	<para>This operation has been moved to a separate command <command>trust extract-compat</command>.
+	See <citerefentry><refentrytitle>trust</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+	for more information</para>
+</refsect1>
+
+<refsect1 id="p11-kit-remote">
+	<title>Remote</title>
+
+	<para>Run a PKCS#11 module remotely.</para>
+
+<programlisting>
+$ p11-kit remote /path/to/pkcs11-module.so
+$ p11-kit remote pkcs11:token1 pkcs11:token2 ...
+</programlisting>
+
+	<para>This is not meant to be run directly from a terminal. But rather in a
+	<option>remote</option> option in a
+	<citerefentry><refentrytitle>pkcs11.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+	file.</para>
+	<para>This exposes the given PKCS#11 module or tokens over standard input and output. Those two forms, whether to expose a module or tokens, are mutually exclusive and if the second form is used, the tokens must belong to the same module.</para>
+</refsect1>
+
+<refsect1 id="p11-kit-bugs">
+  <title>Bugs</title>
+  <para>
+    Please send bug reports to either the distribution bug tracker
+    or the upstream bug tracker at
+    <ulink url="https://github.com/p11-glue/p11-kit/issues/">https://github.com/p11-glue/p11-kit/issues/</ulink>.
+  </para>
+</refsect1>
+
+<refsect1 id="p11-kit-see-also">
+  <title>See also</title>
+    <simplelist type="inline">
+        <member><citerefentry><refentrytitle>pkcs11.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry></member>
+    </simplelist>
+    <para>
+    Further details available in the p11-kit online documentation at
+    <ulink url="https://p11-glue.github.io/p11-glue/p11-kit/manual/">https://p11-glue.github.io/p11-glue/p11-kit/manual/</ulink>.
+  </para>
+</refsect1>
+
+</refentry>

@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Copyright (c) 2025 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
 #
-# THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+# THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
 # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
 # CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
 # EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
 # PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -33,6 +34,7 @@ REALM="TEST.REALM"
 
 # Get hostname for service principals
 HOSTNAME=$(hostname)
+HOSTNAMEF=$(hostname -f)
 
 # Current user for creating principals
 CURRENT_USER=${SUDO_USER:-$(whoami)}
@@ -117,11 +119,15 @@ echo "  - Initialize Kerberos database at /var/lib/krb5kdc/principal*"
 echo "  - Create test principals:"
 echo "      - $CURRENT_USER@$REALM (user)"
 echo "      - $CURRENT_USER/admin@$REALM (admin)"
-echo "      - host/$HOSTNAME@$REALM (SSH service)"
+if [ $HOSTNAME = $HOSTNAMEF ]; then
+    echo "      - host/$HOSTNAME@$REALM (SSH service)"
+else
+    echo "      - host/$HOSTNAME@$REALM and host/$HOSTNAMEF@$REALM (SSH service)"
+fi
 echo "  - Extract host keytab to /etc/krb5.keytab"
 echo
 echo "Realm: $REALM"
-echo "Hostname: $HOSTNAME"
+echo "Hostname: $HOSTNAME and $HOSTNAMEF"
 echo "User: $CURRENT_USER"
 echo
 echo "Type YES (in all caps) to proceed, or anything else to abort:"
@@ -158,6 +164,12 @@ $MARKER
     .$HOSTNAME = $REALM
     $HOSTNAME = $REALM
 EOF
+if [ $HOSTNAME != $HOSTNAMEF ]; then
+cat >> /etc/krb5.conf <<EOF
+    .$HOSTNAMEF = $REALM
+    $HOSTNAMEF = $REALM
+EOF
+fi
 
 # Create /var/lib/krb5kdc/ directory
 echo "Creating /var/lib/krb5kdc/ directory..."
@@ -224,6 +236,11 @@ echo
 echo "Creating host service principal: host/$HOSTNAME@$REALM"
 /opt/fil/sbin/kadmin.local -q "addprinc -randkey host/$HOSTNAME"
 
+if [ $HOSTNAME != $HOSTNAMEF ]; then
+    echo "Creating host service principal: host/$HOSTNAMEF@$REALM"
+    /opt/fil/sbin/kadmin.local -q "addprinc -randkey host/$HOSTNAMEF"
+fi
+
 # Also create localhost principal for convenience
 echo "Creating host service principal: host/localhost@$REALM (for convenience)"
 /opt/fil/sbin/kadmin.local -q "addprinc -randkey host/localhost"
@@ -232,6 +249,11 @@ echo "Creating host service principal: host/localhost@$REALM (for convenience)"
 echo
 echo "Extracting host keytab to /etc/krb5.keytab..."
 /opt/fil/sbin/kadmin.local -q "ktadd -k /etc/krb5.keytab host/$HOSTNAME"
+
+if [ $HOSTNAME != $HOSTNAMEF ]; then
+    /opt/fil/sbin/kadmin.local -q "ktadd -k /etc/krb5.keytab host/$HOSTNAMEF"
+fi
+
 /opt/fil/sbin/kadmin.local -q "ktadd -k /etc/krb5.keytab host/localhost"
 
 chmod 600 /etc/krb5.keytab
@@ -254,6 +276,9 @@ echo "Principals created:"
 echo "  - $CURRENT_USER@$REALM (your user)"
 echo "  - $CURRENT_USER/admin@$REALM (admin)"
 echo "  - host/$HOSTNAME@$REALM (SSH service)"
+if [ $HOSTNAME != $HOSTNAMEF ]; then
+    echo "  - host/$HOSTNAMEF@$REALM (SSH service)"
+fi
 echo "  - host/localhost@$REALM (SSH service)"
 echo
 echo "================================================================================"
@@ -272,6 +297,10 @@ echo "   /opt/fil/bin/klist"
 echo
 echo "4. Test GSSAPI SSH (make sure GSSAPIAuthentication is enabled in sshd_config):"
 echo "   ssh -p 10022 $HOSTNAME"
+if [ $HOSTNAME != $HOSTNAMEF ]; then
+    echo "       - or if that doesn't work -"
+    echo "   ssh -p 10022 $HOSTNAMEF"
+fi
 echo "   (Should log in without asking for a password!)"
 echo
 echo "5. To clean up later, run:"

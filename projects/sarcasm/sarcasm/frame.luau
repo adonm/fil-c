@@ -46,8 +46,11 @@ function frame.preprocess(body, regions, policy)
 		return nil
 	end
 
-	local function checkBounds(off, width, isWrite, raw)
-		if off < 0 then
+	-- `lowBound` overrides the lowest legal offset (default 0); x86_64 passes -128 for
+	-- both rsp-relative and (normalized) rbp-relative accesses to permit the SysV red
+	-- zone below the stack pointer.
+	local function checkBounds(off, width, isWrite, raw, lowBound)
+		if off < (lowBound or 0) then
 			error("sarcasm: stack access below frame (sp offset " .. off .. "): " .. (raw or "?"))
 		end
 		if off + width > frameSize then

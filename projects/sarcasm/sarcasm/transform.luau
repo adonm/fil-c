@@ -53,6 +53,15 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local funcLine = (body[1] and body[1].line) or 0
 	local curLine = funcLine
 
+	-- Frame geometry (size, whether rbp/x29 is the frame pointer) is needed before the
+	-- region scan: fixed alloca bases are normalized to sp-relative frame offsets, which
+	-- requires frameSize. The analysis is pure; frame.preprocess re-runs it internally.
+	local fctx = nil
+	if framePolicy.analyzeFrame then
+		local fs, fpo, ufp = framePolicy.analyzeFrame(body)
+		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp }
+	end
+
 	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size); gcc -O0
 	-- re-derives the buffer address per use, so we redirect such sp math into the allocation.
 	local allocaRegions = {}
@@ -60,8 +69,18 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if st.kind == "insn" then
 			local al = parseAlloca(st.annotation)
 			if al and al.kind == "resultSize" then
-				local base = cgm.allocaRegionBase(st)
-				if base then table.insert(allocaRegions, { base = base, size = al.size, stmt = st }) end
+				local base = cgm.allocaRegionBase(st, fctx)
+				if base then
+					table.insert(allocaRegions, { base = base, size = al.size, stmt = st })
+				else
+					-- Without a recognized base the annotation would silently create NO
+					-- region: the buffer address escapes as a bare allocation pointer while
+					-- stack-relative accesses meant for the buffer virtualize into unrelated
+					-- slots — a silent miscompile. Reject instead.
+					error("sarcasm: `;! alloca result size=N` annotation is on an instruction"
+						.. " that does not compute a stack-frame-relative address (cannot prove"
+						.. " safety): " .. (st.raw or st.mnemonic))
+				end
 			end
 		end
 	end
@@ -195,7 +214,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	emit({ kind = "prologue", name = name })
 
-	local cg = cgm.make({ emit = emit, allocTemp = allocTemp, pColored = pColored, pf = pf, temps = temps })
+	local cg = cgm.make({ emit = emit, allocTemp = allocTemp, pColored = pColored, pf = pf, temps = temps,
+		frameCtx = fctx })
 
 	-- GC root slots
 	local rootTemps, loToSlot = {}, {}
@@ -394,7 +414,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if al.kind == "size" then
 			local sizeOp = cgm.allocaSizeOperand(node.stmt)
 			local sizeTemp = allocTemp({ role = "allocasize" })
-			if sizeOp and sizeOp.kind == "reg" then cg.move(sizeTemp, node.opTemp[sizeOp], true)
+			-- node.opTemp is non-nil only for operands the lift modeled (GPRs); anything
+			-- else (e.g. a vector register) is not a usable size operand.
+			if sizeOp and sizeOp.kind == "reg" and node.opTemp[sizeOp] then cg.move(sizeTemp, node.opTemp[sizeOp], true)
 			elseif sizeOp and sizeOp.kind == "imm" then cg.moveImm(sizeTemp, sizeOp.value or tonumber(sizeOp.text))
 			else error("sarcasm: `alloca size` instruction has no size operand: " .. node.stmt.raw) end
 			allocaSizes[al.name] = sizeTemp

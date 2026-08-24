@@ -60,8 +60,14 @@ function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr, arg
 	e("\t.type\t" .. sym .. ",@function")
 	e(sym .. ":")
 	e("\tpushq\t%rbx")
-	e("\tcmpq\t$" .. tostring(argBytes - 1) .. ", %rdx")
-	e("\tjbe\t" .. L .. "_fail")
+	-- args-size check: actual (rdx) must be >= expected argBytes. Skipped for a zero-arg
+	-- signature (argBytes - 1 == -1 would make the unsigned jbe ALWAYS fail — every actual
+	-- size is <= -1); clang's zero-arg 2ET thunk has no check either, and the weak symbol
+	-- must be link-compatible with clang's (any caller may pass extra argument words).
+	if argBytes > 0 then
+		e("\tcmpq\t$" .. tostring(argBytes - 1) .. ", %rdx")
+		e("\tjbe\t" .. L .. "_fail")
+	end
 	e("\tmovq\t%rdi, %rbx")
 	for i = 0, argWords - 1 do
 		e("\tmovq\t" .. tostring(128 + 8 * i) .. "(%rdi), " .. ivReg[i + 1])

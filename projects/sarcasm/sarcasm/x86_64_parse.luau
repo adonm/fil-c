@@ -38,7 +38,22 @@ local function classifyReg(name)
 	local low = string.lower(name)
 	if low == "rip" then return { kind = "reg", rc = "rip", name = "rip", width = 64 } end
 	local r = REG[low]
-	if not r then return nil end
+	if not r then
+		-- Vector/x87 register names (xmm/ymm/zmm/mm/st) get rc="xmm" so downstream (the
+		-- frame policy) can REJECT them cleanly; left unclassified they would masquerade
+		-- as symbols and pass through into garbage output or cryptic assembler errors.
+		local vec, num = string.match(low, "^([xyz]?mm)(%d+)$")
+		if vec then
+			local w = (vec == "xmm") and 128 or (vec == "ymm") and 256 or (vec == "zmm") and 512 or 64
+			return { kind = "reg", rc = "xmm", num = tonumber(num), width = w, name = low }
+		end
+		-- x87 FPU stack registers: st / st(N) / stN (AT&T %st/%st(N); Intel st/st(N)/stN).
+		local stn = string.match(low, "^st%((%d+)%)$") or string.match(low, "^st(%d+)$")
+		if low == "st" or stn then
+			return { kind = "reg", rc = "xmm", num = tonumber(stn) or 0, width = 80, name = low }
+		end
+		return nil
+	end
 	local rc = (r.num == 4) and "sp" or "gpr"  -- rsp is the stack pointer
 	return { kind = "reg", rc = rc, num = r.num, width = r.width, name = low }
 end
@@ -92,7 +107,12 @@ local function parseAttOperand(field)
 		local t = string.sub(field, 2)
 		return { kind = "imm", text = t, value = tonumber(t) }
 	end
-	if string.sub(field, 1, 1) == "%" and not string.find(field, "(", 1, true) then
+	-- A `%reg` operand is register-shaped unless the parens make it memory — EXCEPT the
+	-- x87 stack register %st(N), whose parens are part of the register NAME; classifying
+	-- it here keeps it out of the memory parse below (where it would become a bogus
+	-- "%st"-displacement operand and crash or corrupt the renderer).
+	if string.sub(field, 1, 1) == "%"
+		and (not string.find(field, "(", 1, true) or string.match(field, "^%%st%(%d+%)$")) then
 		local r = classifyReg(string.sub(field, 2))
 		if r then r.indirect = indirect; return r end
 	end

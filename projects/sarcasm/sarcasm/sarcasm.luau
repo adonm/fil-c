@@ -338,6 +338,10 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
+		-- FP/vector type classes cannot be marshalled through the dense GPR-only CC
+		-- (clang passes/returns them in vector registers, which sarcasm rejects), so an
+		-- FP entry signature would silently miscompile the ABI. Reject it cleanly.
+		sig.checkSupportedClasses(sigDesc)
 		-- Entry-signature arity limits. Both ISAs marshal at most 3 arguments through
 		-- the register CC, and both fast CCs pack argument words DENSELY (a pointer arg
 		-- = 2 words; anything wider is passed on the stack, which sarcasm does not yet

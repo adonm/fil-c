@@ -26,8 +26,9 @@ Input assembly must carry `;!` annotations:
   on the instruction that yields the pointer (dynamic), or `;! alloca result size=N` for a
   fixed-size buffer. These become GC allocations (`filc_allocate`), not real stack memory.
 
-See `tests/test-spasm.s`, `tests/test2-spasm.s`, `tests/test3-spasm.s`, `tests/test3-spasm0.s`
-for ARM64 examples, and `tests/test-spasm-x86.s` / `tests/test-spasm-x86-intel.s` for x86_64.
+See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-att/hash.s`
+(AT&T syntax) and `filc/tests/sarcasm-hash-int/hash.s` (Intel syntax), or
+`filc/tests/sarcasm-call/get-sarcasm.s`.
 
 ## Pipeline (`sarcasm/`)
 Shared, architecture-independent modules:
@@ -58,9 +59,21 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
 
 ## Safety model for memory accesses
 - **Frame accesses** (`sp`/`x29`-relative on ARM64, `rsp`/`rbp`-relative on X86_64,
-  within the input frame) are virtualized as register-allocated locals — no capability
-  needed. Accesses outside the frame, or writes into the caller's argument area, are
-  **rejected at compile time**. Taking the address of the stack frame is also rejected.
+  within the input frame — on X86_64 that frame includes the 128-byte SysV red zone
+  below rsp, reached via rsp- or normalized rbp-relative offsets alike) are
+  virtualized as register-allocated locals — no capability needed.
+  Accesses outside the frame, or writes into the caller's argument area, are
+  **rejected at compile time**. Taking the address of the stack frame (e.g.
+  `leaq 8(%rsp), %rax` or `movq %rsp, %rax`) is also rejected. On X86_64 the frame
+  geometry is derived from the prologue prefix only, and there is **no mid-function
+  stack-pointer movement**: constant rsp adjustments and push/pop outside the
+  prologue/epilogue are rejected (balanced callee-saved save/restore pairs that no
+  stack access can observe are the one exception), and dynamic allocation must use the
+  `;! alloca` annotation. `enter` is rejected, and floating-point/vector code is out
+  of scope — any instruction naming an xmm-class register (xmm/ymm/zmm, MMX mmN, or
+  x87 st/st(N)) or bearing an x87 FPU mnemonic (fld*, fst*, fnst*, ...) is rejected,
+  and floating-point types are rejected in `;!` signatures (sarcasm has no vector
+  register file and marshals dense GPRs only).
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
@@ -68,20 +81,20 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   capability array exists, and run the FUGC store barrier when marking is active.
 
 ## Testing
-`tests/verify.sh` (ARM64) and `tests/verify-x86.sh` (X86_64) are the comprehensive
-suites (run from the repo root; they use `lute` on the host and `as`/clang via docker):
-they compile every yolo input with sarcasm, assemble with **GNU `as`**, link with Fil-C
-`main`s, and check results, out-of-bounds/null-cap **traps**, the pointer-store
-capability round-trip, register-indexed access, the callsite resolver, the presence of
-every inserted check (structural), and every compile-time rejection. The X86_64 suite
-exercises every behavioral case in BOTH AT&T and Intel syntax. `tests/run-all.sh` is the
-original four-file ARM64 subset. The X86_64 compile-time rejections are also covered by
-`filc/tests/sarcasm-reject-*` (run via `filc/run-tests`).
+All testing is via the Fil-C test suite: the 104 `filc/tests/sarcasm-*` tests run with
+`filc/run-tests -f sarcasm` from the repo root. Each test carries a manifest with
+`use-sarcasm: true`; `.s` inputs are assembled via minilute + sarcasm
+(`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c` files via clang. The
+suite compiles every yolo input with sarcasm, links with Fil-C `main`s, and checks
+results, out-of-bounds/null-cap **traps**, the pointer-store capability round-trip,
+register-indexed access, the callsite resolver, pollchecks, GC stress, and every
+compile-time rejection that applies on x86_64 (`filc/tests/sarcasm-reject-*`). Most
+behavioral cases are exercised in both AT&T and Intel variants (`-att` / `-int` test
+pairs).
 
-`tests/roundtrip-test.luau` checks that lift + identity-coloring reproduces the input
-byte-for-byte (validates the register-web machinery); `tests/detect-test.luau` covers
-the arch/syntax auto-detection and `tests/cleanup-test.luau` the spill reload
-elimination.
+The old in-tree `tests/` harness (host-lute `verify.sh`/`verify-x86.sh` via docker,
+plus the Luau unit tests) has been removed; its coverage now lives in
+`filc/tests/sarcasm-*`.
 
 See `ABI-NOTES.md` / `ABI-NOTES-x86.md` for the decoded Fil-C ABIs and `DESIGN.md` for
 the architecture.

@@ -106,6 +106,30 @@ function sig.parseSignature(ann: string)
 	}
 end
 
+-- Canonical names for the classes classifyType can produce (for diagnostics).
+local CLASS_NAME = {
+	[TYPE_INT] = "integer", [TYPE_FLOAT] = "float", [TYPE_DOUBLE] = "double",
+	[TYPE_LONGDOUBLE] = "long double", [TYPE_PTR] = "ptr",
+}
+
+-- Floating-point/vector type classes cannot be marshalled: sarcasm packs and unpacks
+-- dense GPRs only, while the Fil-C ABI passes and returns FP/vector values in vector
+-- registers (which sarcasm rejects wholesale). An FP-typed signature would therefore
+-- silently miscompile the ABI at BOTH ends (entry unpacking and callsite packing), so
+-- reject it wherever a signature is consumed. `where` optionally prefixes a context
+-- (e.g. "call to 'foo'"). Raises a clean sarcasm: error naming the offending type.
+function sig.checkSupportedClasses(sd, where)
+	local function check(t)
+		if t ~= TYPE_INT and t ~= TYPE_PTR then
+			error("sarcasm: " .. (where and (where .. ": ") or "")
+				.. "floating-point types are not supported in signatures: "
+				.. (CLASS_NAME[t] or ("type class " .. tostring(t))))
+		end
+	end
+	for _, t in (sd.retTypes or {}) do check(t) end
+	for _, t in (sd.argTypes or {}) do check(t) end
+end
+
 sig.TYPE_INT = TYPE_INT
 sig.TYPE_PTR = TYPE_PTR
 

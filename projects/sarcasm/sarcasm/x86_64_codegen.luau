@@ -8,6 +8,7 @@
 local build = require("./build")
 local isa = require("./x86_64_isa")
 local xparse = require("./x86_64_parse")
+local sig = require("./sig")
 
 local M = {}
 
@@ -33,8 +34,11 @@ M.cc = {
 -- rdx,rcx,r8,r9 (a pointer arg = 2 words); wider arguments are passed on the stack,
 -- which sarcasm does not yet marshal. So a call needs at most 4 register argument
 -- words. (Resolved-EXTERNAL calls are also bounded by the callsite thunk's 4-register
--- hold pool -- the same limit; see x86_64_glue.callsiteThunk.)
+-- hold pool -- the same limit; see x86_64_glue.callsiteThunk.) FP/vector type classes
+-- are rejected outright: they marshal through vector registers sarcasm does not model,
+-- so an FP callsite signature would silently pass/return garbage.
 function M.checkCallsiteSig(cs, callee)
+	sig.checkSupportedClasses(cs, "call to '" .. callee .. "'")
 	local words = 0
 	for k = 1, cs.argWords do words += (cs.argTypes[k] == 7) and 2 or 1 end
 	if words > 4 then
@@ -67,9 +71,33 @@ function M.accessSizeAlign(stmt)
 	return sz, sz
 end
 
--- x86 uses `lea`/`mov` for address arithmetic, so there is no `mov rd, rsp` alloca-base
--- idiom to recognize for fixed-size regions (gcc emits `lea`, handled as a region result).
-function M.allocaRegionBase(stmt) return nil end
+-- Fixed-size alloca base (mirrors arm64's `mov rd, sp` / `add rd, sp, #imm`): a fixed
+-- stack buffer's address is materialized with `leaq disp(%rbp), %rd` when a frame pointer
+-- is in use (the gcc/clang -O0 idiom), or `leaq disp(%rsp), %rd` / `movq %rsp, %rd` under
+-- frame-pointer omission. `fctx` carries the frame analysis ({ frameSize, usesFp }); an
+-- rbp-relative displacement is normalized to an rsp-relative frame offset (rbp = rsp +
+-- frameSize) so region math stays in one coordinate space. Returns the rsp-relative base
+-- offset, or nil if the annotated instruction does not compute a stack-frame-relative
+-- address.
+function M.allocaRegionBase(stmt, fctx)
+	local m = isa.baseMnemonic(string.lower(stmt.mnemonic))
+	local ops = stmt.operands
+	if m == "lea" then
+		local mem = M.memOperand(stmt)
+		if mem and mem.base and not mem.index and not mem.dispSym then
+			if mem.base.rc == "sp" then return mem.dispVal or 0 end
+			if fctx and fctx.usesFp and mem.base.name == "rbp" then
+				return fctx.frameSize + (mem.dispVal or 0)
+			end
+		end
+		return nil
+	end
+	if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
+		and ops[2] and ops[2].rc == "sp" then
+		return 0
+	end
+	return nil
+end
 
 -- Is this a load/store the transform models? On x86 most instructions can carry a memory
 -- operand (it is a load/store architecture only in spirit), so any mem operand is a real
@@ -226,6 +254,56 @@ function M.make(ctx)
 	function cg.clearRetFlag()
 		emit(build.insn("mov", { build.rp(M.cc.retFlag, 32), build.imm(0) }, { defs = { pColored(M.cc.retFlag) } }))
 	end
+	-- Redirect an rsp/rbp-relative address computation landing inside a fixed alloca region
+	-- to the allocation pointer (gcc -O0 re-derives the buffer address per use). Returns
+	-- true if it replaced the node; a direct stack-relative *access* into a region is
+	-- rejected (mirrors arm64's regionRedirect). All matching happens in rsp-relative
+	-- frame offsets: an rbp-relative displacement d is normalized to frameSize + d (rbp =
+	-- rsp + frameSize when it is the frame pointer).
+	local fctx = ctx.frameCtx
+	local function stackOff(base, disp)
+		if not base then return nil end
+		if base.rc == "sp" then return disp end
+		if fctx and fctx.usesFp and base.name == "rbp" then return fctx.frameSize + disp end
+		return nil  -- not a stack base (e.g. rbp as an ordinary GPR with frame-pointer omission)
+	end
+	function cg.regionRedirect(node, regionOf)
+		local m = isa.baseMnemonic(string.lower(node.stmt.mnemonic))
+		local ops = node.stmt.operands
+		if m == "lea" then
+			local mem = M.memOperand(node.stmt)
+			if mem and not mem.index and not mem.dispSym then
+				local off = stackOff(mem.base, mem.dispVal or 0)
+				local r = off and regionOf(off)
+				if r then
+					local rd = node.defTemps[1]
+					cg.addImm(rd, r.ptrTemp, off - r.base)
+					pf.isPtr[rd] = true; pf.lowerTemp[rd] = r.loTemp
+					return true
+				end
+			end
+		end
+		if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
+			and ops[2] and ops[2].rc == "sp" then
+			local r = regionOf(0)
+			if r then
+				local rd = node.defTemps[1]
+				-- rsp+0 redirected into the region: buffer + (0 - base), NOT buffer + 0.
+				cg.addImm(rd, r.ptrTemp, -r.base)
+				pf.isPtr[rd] = true; pf.lowerTemp[rd] = r.loTemp
+				return true
+			end
+		end
+		local mem = M.memOperand(node.stmt)
+		if mem and not mem.dispSym then
+			local off = stackOff(mem.base, mem.dispVal or 0)
+			if off and regionOf(off) then
+				error("sarcasm: direct stack-relative memory access into an alloca region is not supported: " .. node.stmt.raw)
+			end
+		end
+		return false
+	end
+
 	-- passthrough special-casing: cltq -> renameable movslq on the rax web; lea does not
 	-- access memory (its [mem] is an address computation), so pass it through unchecked.
 	function cg.lowerSpecial(node, mem)

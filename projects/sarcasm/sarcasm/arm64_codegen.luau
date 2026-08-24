@@ -6,6 +6,7 @@
 
 local build = require("./build")
 local isa = require("./arm64_isa")
+local sig = require("./sig")
 
 local M = {}
 

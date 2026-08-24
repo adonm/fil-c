@@ -804,13 +804,13 @@ cd ../..
 rm -rf pizlonated-p11-kit
 hash -r
 
-tar -xf $FILCSRC/pizlix/nghttp2-1.62.1.tar.xz
-cd nghttp2-1.62.1
+tar -xf $FILCSRC/pizlix/nghttp2-1.70.0.tar.xz
+cd nghttp2-1.70.0
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --disable-static --enable-lib-only
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf nghttp2-1.62.1
+rm -rf nghttp2-1.70.0
 hash -r
 
 tar -xf $FILCSRC/projects/curl-8.21.0/pizlonated-curl.tar.gz

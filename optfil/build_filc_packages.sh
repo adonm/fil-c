@@ -75,7 +75,7 @@ cd ../..
 ./package-source.sh projects/Linux-PAM-1.7.1 pizlonated-pam
 ./package-source.sh projects/keyutils-1.6.3 pizlonated-keyutils
 ./package-source.sh projects/dummy-pam-ecryptfs pizlonated-dummy-pam-ecryptfs
-./package-source.sh projects/krb5-1.21.3 pizlonated-krb5
+./package-source.sh projects/krb5-1.22.2 pizlonated-krb5
 ./package-source.sh projects/libsepol-3.9 pizlonated-sepol
 ./package-source.sh projects/libselinux-3.9 pizlonated-selinux
 ./package-source.sh projects/sudo-1.9.17p2 pizlonated-sudo

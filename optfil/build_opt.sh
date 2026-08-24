@@ -541,7 +541,7 @@ cd ..
 rm -rf pizlonated-dummy-pam-ecryptfs
 hash -r
 
-tar -xf $FILCSRC/projects/krb5-1.21.3/pizlonated-krb5.tar.gz
+tar -xf $FILCSRC/projects/krb5-1.22.2/pizlonated-krb5.tar.gz
 cd pizlonated-krb5/src
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --with-readline --with-crypto-impl=openssl --sysconfdir=/etc --localstatedir=/var/lib --runstatedir=/run
 make -j `nproc`

@@ -783,7 +783,7 @@ cd ../..
 rm -rf libpsl-0.21.5
 hash -r
 
-tar -xf $FILCSRC/projects/libtasn1-4.19.0/pizlonated-libtasn1.tar.gz
+tar -xf $FILCSRC/projects/libtasn1-4.21.0/pizlonated-libtasn1.tar.gz
 cd pizlonated-libtasn1
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --disable-static
 make -j `nproc`

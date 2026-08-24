@@ -90,7 +90,7 @@ cd ../..
 ./package-source.sh projects/procps-ng-4.0.4 pizlonated-procps
 ./package-source.sh projects/tmux-3.5a pizlonated-tmux
 ./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2
-./package-source.sh projects/libtasn1-4.19.0 pizlonated-libtasn1
+./package-source.sh projects/libtasn1-4.21.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.25.5 pizlonated-p11-kit
 ./package-source.sh projects/curl-8.21.0 pizlonated-curl
 ./package-source.sh projects/git-2.55.0 pizlonated-git

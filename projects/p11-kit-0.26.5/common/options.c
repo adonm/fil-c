@@ -43,6 +43,7 @@
 #include <assert.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,7 +65,16 @@
 static char
 short_option (int opt)
 {
-	if (isalpha (opt) || isdigit (opt))
+	/*
+	 * Option vals above UCHAR_MAX are used for long-only options
+	 * (e.g. opt_filter = 1000 in trust/list.c). Passing them to
+	 * isalpha()/isdigit() is undefined behavior, since those only
+	 * accept values representable as unsigned char (or EOF), and it
+	 * reads past the end of the ctype table. Fil-C turns that latent
+	 * out-of-bounds read into a panic, so guard the range first.
+	 */
+	if (opt >= 0 && opt <= UCHAR_MAX &&
+	    (isalpha (opt) || isdigit (opt)))
 		return (char)opt;
 	return 0;
 }

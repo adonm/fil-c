@@ -126,7 +126,7 @@ libp11_kit_sources += custom_target('generate proxy-generated.h',
 
 libp11_kit_symbol_map = meson.current_source_dir() / 'libp11-kit.map'
 libp11_kit_ldflags = cc.get_supported_link_arguments([
-  '-Wl,--version-script,' + libp11_kit_symbol_map
+  '--version-script=' + libp11_kit_symbol_map
 ])
 libp11_kit_symbol_def = meson.current_source_dir() / 'libp11-kit-@0@.dll.def'.format(soversion)
 
@@ -162,7 +162,7 @@ meson.add_install_script(
 
 p11_module_symbol_map = meson.current_source_dir() / 'p11-module.map'
 p11_module_ldflags = cc.get_supported_link_arguments([
-  '-Wl,--version-script,' + p11_module_symbol_map
+  '--version-script=' + p11_module_symbol_map
 ])
 
 # On macOS, the default suffix for loadable modules is .so, but meson uses

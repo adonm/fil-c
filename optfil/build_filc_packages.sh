@@ -98,7 +98,7 @@ cd ../..
 ./package-source.sh projects/m4-1.4.19 pizlonated-m4
 ./package-source.sh projects/zstd-1.5.6 pizlonated-zstd
 ./package-source.sh projects/xxHash-0.8.3 pizlonated-xxHash
-./package-source.sh projects/rsync-3.4.3 pizlonated-rsync
+./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf

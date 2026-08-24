@@ -1,0 +1,148 @@
+2026-01-08  Simon Josefsson  <simon@josefsson.org>
+
+	version 4.21.0
+	* NEWS.md: Record release date.
+
+	ci: Improve release jobs
+
+	doc: Fix typo in last commit for NEWS
+
+2026-01-08  Vijay Sarvepalli  <vssarvepalli@cert.org>
+
+	Fix for CVE-2025-13151 Buffer overflow
+
+2026-01-08  Simon Josefsson  <simon@josefsson.org>
+
+	Fix help2man man page reproducibility
+
+	ci: Improve pipeline
+
+	doc: NEWS renamed to NEWS.md and uses markdown syntax
+
+	Bump copyright years
+
+	Refresh README-release.diff
+
+	maint: Run ./bootstrap --sync
+
+	maint: Bump GNULIB_REVISION
+
+2025-08-24  Simon Josefsson  <simon@josefsson.org>
+
+	doc: Improve NEWS entries.
+
+2025-08-24  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'fix-typos-in-doc' into 'master'
+	libtasn1.texi: fix typos in the example
+
+	See merge request gnutls/libtasn1!107
+
+2025-08-24  Masatake YAMATO  <yamato@redhat.com>
+
+	libtasn1.texi: fix typos in the example
+
+2025-08-24  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'testCoverageBumpv2' into 'master'
+	tests / asn1Decoding.c: Improve test coverage and Fix asn1Decoding Issues
+
+	See merge request gnutls/libtasn1!116
+
+2025-08-24  Andrew Hamilton  <adhamilt@gmail.com>
+
+	Improve test coverage and Fix asn1Decoding Issues
+
+2025-07-28  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'ci-fix-winnt' into 'master'
+	Fix CI
+
+	See merge request gnutls/libtasn1!120
+
+2025-07-28  Simon Josefsson  <simon@josefsson.org>
+
+	ci: Drop AlmaLinux8-c89 job due to gettext.h.
+
+	bootstrap.conf: Don't use deprecated gnulib modules.
+
+	maint: Use modern gnulib codespell rules.
+
+	maint: Give up building on Debian 3 woody, gnulib fails in multiple ways now.
+
+	maint: Bump GNULIB_REVISION.
+
+2025-07-25  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'ci-fix-debian10' into 'master'
+	ci: Use debian10 from EOL repo.
+
+	See merge request gnutls/libtasn1!119
+
+2025-07-25  Simon Josefsson  <simon@josefsson.org>
+
+	ci: Use debian10 from EOL repo.
+
+2025-04-04  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'ci-improve-coverage' into 'master'
+	Modernize code coverage generation and outputs.
+
+	See merge request gnutls/libtasn1!118
+
+2025-04-04  Simon Josefsson  <simon@josefsson.org>
+
+	Modernize code coverage generation and outputs.
+
+2025-04-04  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'ci-fix-macos' into 'master'
+	ci: Bump macOS image versions.
+
+	See merge request gnutls/libtasn1!117
+
+2025-04-04  Simon Josefsson  <simon@josefsson.org>
+
+	ci: Bump macOS image versions.
+
+2025-02-21  Simon Josefsson  <simon@josefsson.org>
+
+	Merge branch 'wip/minor-fixes' into 'master'
+	Minor fixes for code readability
+
+	See merge request gnutls/libtasn1!113
+
+2025-02-17  Daiki Ueno  <ueno@gnu.org>
+
+	coding: use ASN1_MAX_TAG_SIZE consistently
+	There were two different definitions of the maximum tag size in DER,
+	namely, MAX_TAG_LEN (= 16) and ASN1_MAX_TAG_SIZE (= 4), where all
+	use-cases of the former is to create a buffer for _asn1_tag_der, which
+	takes an argument with the latter length. This replaces the usage of
+	the former with the latter.
+
+	Use stdarg Gnulib module
+
+	Use #include "..." for including internal headers
+
+	Remove comment on duplicate structure definitons
+	Since f21ac35f6ea131cef3ce3636aa6da7851c81762b the asn1_node_st struct
+	(previously node_asn_struct) is defined centrally and thus the
+	comment is no longer relevant.
+
+2025-02-06  Simon Josefsson  <simon@josefsson.org>
+
+	maint: Bump LT_REVISION.
+
+	maint: post-release administrivia
+	* NEWS: Add header line for next release.
+	* .prev-version: Record previous version.
+	* cfg.mk (old_NEWS_hash): Auto-update.
+
+2025-02-01  Simon Josefsson  <simon@josefsson.org>
+
+	version 4.20.0
+	* NEWS: Record release date.
+
+
+See the source repo for older entries

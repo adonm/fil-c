@@ -26,7 +26,7 @@
 set -e
 set -x
 
-cd projects/nghttp2-1.62.1
+cd projects/nghttp2-1.70.0
 extract_source
 PATH=$PWD/../../../pizfix/bin:$PATH CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ ./configure --with-openssl --with-zlib --prefix=$PWD/../../../pizfix
 make -j $NCPU

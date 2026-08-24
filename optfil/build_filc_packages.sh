@@ -72,7 +72,7 @@ cd ../..
 ./package-source.sh projects/libffi-3.4.6 pizlonated-libffi
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh
 ./package-source.sh projects/binutils-2.43.1 pizlonated-binutils
-./package-source.sh projects/Linux-PAM-1.7.1 pizlonated-pam
+./package-source.sh projects/Linux-PAM-1.7.2 pizlonated-pam
 ./package-source.sh projects/keyutils-1.6.3 pizlonated-keyutils
 ./package-source.sh projects/dummy-pam-ecryptfs pizlonated-dummy-pam-ecryptfs
 ./package-source.sh projects/krb5-1.22.2 pizlonated-krb5

@@ -511,7 +511,7 @@ cd ..
 rm -rf coreutils-9.5
 hash -r
 
-tar -xf $FILCSRC/projects/Linux-PAM-1.7.1/pizlonated-pam.tar.gz
+tar -xf $FILCSRC/projects/Linux-PAM-1.7.2/pizlonated-pam.tar.gz
 cd pizlonated-pam
 mkdir -v build
 cd build
@@ -524,7 +524,8 @@ CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ meson \
     -D usergroups=true \
     -D nis=disabled \
     -D libdir=/opt/fil/lib \
-    -D sysconfdir=/etc
+    -D sysconfdir=/etc \
+    -D vendordir=
 ninja
 ninja install
 chmod -v 4755 /opt/fil/sbin/unix_chkpwd

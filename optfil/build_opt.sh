@@ -792,11 +792,11 @@ cd ..
 rm -rf pizlonated-libtasn1
 hash -r
 
-tar -xf $FILCSRC/projects/p11-kit-0.25.5/pizlonated-p11-kit.tar.gz
+tar -xf $FILCSRC/projects/p11-kit-0.26.5/pizlonated-p11-kit.tar.gz
 cd pizlonated-p11-kit
 mkdir -v p11-build
 cd p11-build
-CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ meson setup .. --prefix=/opt/fil --sysconfdir=/etc --buildtype=release
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ meson setup .. --prefix=/opt/fil --sysconfdir=/etc --libdir=lib --buildtype=release
 ninja
 ninja install
 cd ../..

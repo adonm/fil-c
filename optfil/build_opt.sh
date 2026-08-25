@@ -283,6 +283,42 @@ cd ..
 rm -rf pizlonated-xxHash
 hash -r
 
+tar -xf $FILCSRC/projects/BLAKE3-1.8.5/pizlonated-blake3.tar.gz
+cd pizlonated-blake3
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=/opt/fil -DBLAKE3_SIMD_TYPE=x86-intrinsics -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build c/build --target install -j `nproc`
+cd ..
+rm -rf pizlonated-blake3
+hash -r
+
+tar -xf $FILCSRC/projects/brotli-1.1.0/pizlonated-brotli.tar.gz
+cd pizlonated-brotli
+mkdir build
+cd build
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ \
+    cmake -D CMAKE_INSTALL_PREFIX=/opt/fil \
+          -D CMAKE_BUILD_TYPE=RelWithDebInfo \
+          ..
+make -j `nproc`
+make -j `nproc` install
+cd ../..
+rm -rf pizlonated-brotli
+hash -r
+
+tar -xf $FILCSRC/projects/zip-3.0/pizlonated-zip.tar.gz
+cd pizlonated-zip
+make -f unix/Makefile generic CC=/opt/fil/bin/filcc -j `nproc`
+make -f unix/Makefile install CC=/opt/fil/bin/filcc prefix=/opt/fil -j `nproc`
+cd ..
+rm -rf pizlonated-zip
+
+tar -xf $FILCSRC/projects/unzip-6.0/pizlonated-unzip.tar.gz
+cd pizlonated-unzip
+make -f unix/Makefile generic CC=/opt/fil/bin/filcc -j `nproc`
+make -f unix/Makefile install CC=/opt/fil/bin/filcc prefix=/opt/fil -j `nproc`
+cd ..
+rm -rf pizlonated-unzip
+
 tar -xf $FILCSRC/projects/attr-2.5.2/pizlonated-attr.tar.gz
 cd pizlonated-attr
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure \
@@ -398,6 +434,15 @@ make -j `nproc`
 make -j `nproc` install
 cd ..
 rm -rf pizlonated-libxcrypt
+hash -r
+
+tar -xf $FILCSRC/projects/dash-0.5.12/pizlonated-dash.tar.gz
+cd pizlonated-dash
+CC="/opt/fil/bin/filcc" CXX="/opt/fil/bin/fil++" ./configure --prefix=/opt/fil
+make -j `nproc`
+make -j `nproc` install
+cd ..
+rm -rf pizlonated-dash
 hash -r
 
 tar -xf $FILCSRC/projects/bash-5.2.32/pizlonated-bash.tar.gz

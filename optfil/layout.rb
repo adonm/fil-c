@@ -5,7 +5,7 @@ listAsString = "acl  attr  bash  binutils  bzip2  coreutils  curl  diff  find  f
                 libedit  libevent  libidn2  libpsl  selinux  libtasn1  libuv  lz4  m4
                 make  mg  nghttp2  openssl  openssh  p11-kit  patch  patchelf  pam  pcre2
                 pkgconf  procps-ng  psmisc  readline  rsync  sed  sudo  tar  tmux
-                unistring  wget  xxhash  xz  zlib  zstd libxml2 libpq"
+                unistring  wget  xxhash  xz  zlib  zstd libxml2 libpq zip unzip dash brotli blake3"
 
 list = listAsString.split.sort
 

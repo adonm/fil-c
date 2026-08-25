@@ -103,4 +103,9 @@ cd ../..
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
 ./package-source.sh projects/libxml2-2.15.3 pizlonated-libxml2
+./package-source.sh projects/brotli-1.1.0 pizlonated-brotli
+./package-source.sh projects/BLAKE3-1.8.5 pizlonated-blake3
+./package-source.sh projects/zip-3.0 pizlonated-zip
+./package-source.sh projects/unzip-6.0 pizlonated-unzip
+./package-source.sh projects/dash-0.5.12 pizlonated-dash
 

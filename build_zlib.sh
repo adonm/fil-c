@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/zlib-1.3
+cd projects/zlib-1.3.2
 extract_source
 CC="$CCPREFIX$PWD/../../../build/bin/clang" CFLAGS="-O3 -g" ./configure \
          --prefix=$PWD/../../../pizfix

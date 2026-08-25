@@ -2,9 +2,12 @@
 -- The GIMSO transform (architecture-independent): rewrite a lifted yolo function into a
 -- memory-safe Fil-C fast-entrypoint body (IR nodes), plus metadata for glue/prologue/
 -- epilogue emission. The walk and every invisicap sequence (access checks, pointer loads/
--- stores with the FUGC store barrier, calls, pollchecks, allocations) live here ONCE; the
+-- stores with the FUGC store barrier, atomic pointer loads/stores/compare-exchange and
+-- pointer RMWs via the Fil-C runtime, calls, pollchecks, allocations) live here ONCE; the
 -- actual instructions are produced through a per-arch codegen `cg` (arm64_codegen /
--- x86_64_codegen), so the safety-critical logic is single-source across ISAs.
+-- x86_64_codegen), so the safety-critical logic is single-source across ISAs. (The
+-- atomic pointer operations are x86_64-only: the arm64 backend rejects their
+-- annotations during shape validation, so those sequences are unreachable there.)
 --
 -- transformFunction(name, sigDesc, body, backend) where backend = { cg = <codegen module>,
 -- frame = <frame module> }.
@@ -148,13 +151,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if ty == 7 and et then table.insert(argPtrTemps, et) end
 	end
 
-	-- classify nodes: load-ptr / store-ptr / call / alloca.
+	-- classify nodes: load-ptr / store-ptr / call / alloca. EVERY annotation on an
+	-- instruction must be recognized and honored — an unrecognized or mismatched
+	-- one was historically SILENTLY IGNORED, and a `;! load ptr` / `;! store ptr`
+	-- on the wrong instruction shape was a silent miscompile (the annotated
+	-- instruction was replaced by an invisicap load/store, dropping the original
+	-- operation). Both are now clean compile-time errors.
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
 	local callPtrDefs = {}
+	-- Phase 2 (x86_64-only): atomic pointer operations and pointer RMWs.
+	local atomicLoadPtrDefs, atomicStorePtrNodes = {}, {}
+	local atomicCasPtrDefs, loadStorePtrNodes, atomicRmwPtrNodes = {}, {}, {}
 	local sizeNames = {}
 	for _, node in lf.nodes do
 		if node.kind == "insn" then
 			local ann = node.stmt.annotation
+			local raw = node.stmt.raw or node.stmt.mnemonic or "?"
 			local al = parseAlloca(ann)
 			if al then
 				allocaNodes[node] = al
@@ -164,17 +176,68 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				else
 					allocaResultDefs[node] = true
 				end
+			elseif ann and sig.PTR_ANNOTATIONS[ann] then
+				-- cmpxchg8b/cmpxchg16b cannot be made to work on pointers: an
+				-- invisicap is a (intval, lower) pair whose updates cannot be
+				-- synthesized from a double-width compare-and-swap. Reject every
+				-- ptr-family annotation on them (including the future atomic
+				-- forms, so they can never sneak through).
+				local bm = cgm.baseMnemonic(string.lower(node.stmt.mnemonic))
+				if bm == "cmpxchg8b" or bm == "cmpxchg16b" then
+					error("sarcasm: " .. bm .. " cannot operate on pointers: " .. raw)
+				end
+				if ann == "load ptr" or ann == "store ptr" then
+					local kind = cgm.ptrAccessKind and cgm.ptrAccessKind(node.stmt) or "other"
+					if kind == "rmw" then
+						error("sarcasm: `;! " .. ann .. "` on a read-modify-write instruction;"
+							.. " pointer RMWs need `;! load store ptr` (or `;! atomic load store ptr`): " .. raw)
+					end
+					local want = (ann == "load ptr") and "load" or "store"
+					if kind ~= want then
+						error("sarcasm: `;! " .. ann .. "` requires a plain 8-byte GPR " .. want
+							.. " instruction: " .. raw)
+					end
+					if ann == "load ptr" then loadPtrDefs[node] = true else storePtrNodes[node] = true end
+				else
+					-- Phase 2 annotations: the per-arch shape validator returns the
+					-- sequence kind (raising the shape errors); the arm64 backend
+					-- rejects all five with a "not supported on ARM64" error.
+					if not cgm.ptrAtomicShape then
+						error("sarcasm: `;! " .. ann .. "` is not supported on this target: " .. raw)
+					end
+					local shape = cgm.ptrAtomicShape(ann, node.stmt)
+					if shape == "atomicload" then atomicLoadPtrDefs[node] = true
+					elseif shape == "atomicstore" then atomicStorePtrNodes[node] = true
+					elseif shape == "cas" then atomicCasPtrDefs[node] = true
+					elseif shape == "rmw" then loadStorePtrNodes[node] = true
+					elseif shape == "atomicrmw" then atomicRmwPtrNodes[node] = true
+					else error("sarcasm: internal error: bad ptr-atomic shape " .. tostring(shape)) end
+				end
 			elseif node.c.control == "call" and ann then
 				callNodes[node] = ann
 				local cs = callSigOf(node.stmt)
 				if cs and cs.retIsPtr then callPtrDefs[node] = true end
-			elseif ann == "load ptr" then loadPtrDefs[node] = true
-			elseif ann == "store ptr" then storePtrNodes[node] = true end
+			elseif ann then
+				if string.find(ann, "%(") then
+					error("sarcasm: signature annotation `" .. ann .. "` on a non-call"
+						.. " instruction: " .. raw)
+				end
+				error("sarcasm: unrecognized annotation: " .. ann .. " (on: " .. raw .. ")")
+			end
 		end
 	end
 
+	-- The atomic pointer load (`;! atomic load ptr`) and the pointer compare-exchange
+	-- (`;! atomic ptr` on cmpxchg — its def temp is the implicit accumulator def web)
+	-- define pointer results exactly like `;! load ptr`: seed them the same way so
+	-- ptrflow allocates their lower temps.
+	local ptrSeedDefs = {}
+	for n in pairs(loadPtrDefs) do ptrSeedDefs[n] = true end
+	for n in pairs(atomicLoadPtrDefs) do ptrSeedDefs[n] = true end
+	for n in pairs(atomicCasPtrDefs) do ptrSeedDefs[n] = true end
+
 	local pf = ptrflow.analyze(lf,
-		{ argPtrTemps = argPtrTemps, loadPtrDefs = loadPtrDefs, allocaResultDefs = allocaResultDefs,
+		{ argPtrTemps = argPtrTemps, loadPtrDefs = ptrSeedDefs, allocaResultDefs = allocaResultDefs,
 			callPtrDefs = callPtrDefs },
 		allocTemp, { baseMnemonic = cgm.baseMnemonic })
 
@@ -250,12 +313,35 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		failCounter += 1
 		local aco = ".Lfilc_aco_" .. name .. "_" .. failCounter
 		local lbl = ".Lfail_" .. name .. "_" .. failCounter
-		table.insert(accessOrigins, { sym = aco, size = size, align = align, write = isWrite and true or false, line = curLine })
+		-- The runtime's optimized-access-check origin cannot express alignments
+		-- wider than a word (filc_optimized_access_check_fail asserts
+		-- check_origin->alignment <= FILC_WORD_SIZE), so the recorded alignment
+		-- is clamped to 8 — exactly like the compiler (FilPizlonator's
+		-- buildCheck does std::min(Alignment, WordSize)). The CHECK above still
+		-- tests the full alignment (e.g. cmpxchg16b's 16); since the clamped
+		-- origin could not attribute a word-aligned-but-not-fully-aligned
+		-- pointer (every recorded test would pass — the runtime's "Should not
+		-- be reached" assert), that failure goes to a dedicated stub reporting
+		-- the true alignment (see emitAccessCheck). For the merely-word-
+		-- misaligned case the clamp only affects the trap-message text.
+		table.insert(accessOrigins, { sym = aco, size = size, align = math.min(align, 8),
+			write = isWrite and true or false, line = curLine })
 		cg.failStub(failStubs, lbl, ivTemp, loTemp, aco)
 		return lbl
 	end
 
 	-- access check for a precomputed effective address (capLo==nil => null cap, always traps).
+	-- Check order: null capability, alignment, not-readonly/CanWrite (writes), lower
+	-- bound, upper bound. This matches the compiler's emitted order exactly:
+	-- FilPizlonator's canonicalizeAccessChecks stable-sorts each access's checks by
+	-- CheckKind, whose declaration order is ValidObject < Alignment < CanWrite <
+	-- LowerBound < UpperBound (verified against filcc -O0/-O2 IR: the CanWrite aux
+	-- test precedes the lower-bound compare). Note the runtime's hand-written
+	-- inline helper (filc_check_aligned_access_with_name) and sarcasm's own
+	-- pointer-store sequence (emitPtrStore below) both do the bounds tests BEFORE
+	-- the readonly reject instead — every order traps equivalently, since all
+	-- failures branch to the same fail stub / panic, so the difference is
+	-- unobservable.
 	local function emitAccessCheck(effTemp, capLo, size, align, isWrite)
 		if capLo == nil then
 			cg.jump(failLabelFor(effTemp, nil, size, align, isWrite))
@@ -263,6 +349,33 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 		local lbl = failLabelFor(effTemp, capLo, size, align, isWrite)
 		cg.branchZero(capLo, lbl)                 -- null capability
+		if align > 1 then
+			-- An alignment wider than a word (cmpxchg16b's 16 — x86_64 only;
+			-- arm64 access alignments cap at 8) cannot be attributed by the
+			-- optimized fail stub: the origin records the word-clamped
+			-- alignment, so an in-bounds, writable, word-aligned-but-not-fully-
+			-- aligned pointer would pass every recorded test and hit the
+			-- runtime's "Should not be reached" assert (a pas crash, not a
+			-- clean trap). Give the alignment failure its own stub, reporting
+			-- the TRUE alignment through filc_check_aligned_access_fail.
+			local aLbl = lbl
+			if align > 8 then
+				failCounter += 1
+				aLbl = ".Lalignfail_" .. name .. "_" .. failCounter
+				cg.alignFailStub(failStubs, aLbl, effTemp, capLo, size, align, isWrite)
+			end
+			cg.testMaskBranch(effTemp, align - 1, "ne", aLbl)
+		end
+		if isWrite then
+			-- CanWrite: every heap write rejects read-only/special objects,
+			-- exactly like compiled Fil-C (and the ptr-store path below): the
+			-- aux word at [lower-8] carries ObjectFlagReadonly|ObjectFlagFree
+			-- at bits 49-50. The fail origin's write bit makes the runtime
+			-- report "cannot write to read-only object." (resp. free object).
+			local auxword = allocTemp({ role = "scratch" })
+			cg.load(auxword, capLo, -8, 8)
+			cg.testMaskBranch(auxword, "0x6000000000000", "ne", lbl)
+		end
 		cg.cmpBranch(effTemp, capLo, "ult", lbl)  -- eff < lower
 		local upper = allocTemp({ role = "scratch" })
 		cg.load(upper, capLo, -16, 8)             -- upper = [lower-16]
@@ -273,7 +386,6 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		else
 			cg.cmpBranch(effTemp, upper, "uge", lbl)  -- eff >= upper
 		end
-		if align > 1 then cg.testMaskBranch(effTemp, align - 1, "ne", lbl) end
 	end
 
 	-- invisicap pointer load: load (dstIv, dstLo) from the address of `mem`.
@@ -346,8 +458,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.fpRestore()
 		cg.move(aux, pColored(cc.rtRet))
 		cg.jump(barrier)
-		-- do-barrier: filc_store_barrier_for_lower_slow(myth, lower)
+		-- do-barrier: filc_store_barrier_for_lower_slow(myth, lower) — but only for a
+		-- non-null lower: the runtime's filc_store_barrier_for_lower guards
+		-- `marking && lower`, and its _slow entrypoint asserts the lower is non-null
+		-- (storing a NULL/integer-derived pointer has no object to barrier).
 		cg.label(doBarrier)
+		cg.branchZero(valLo, storeLbl)
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), valLo)
@@ -375,6 +491,261 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.call("filc_pollcheck_slow", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
 		cg.label(okLbl)
+	end
+
+	-- Phase 2 (x86_64): atomic pointer operations and pointer RMWs, via the Fil-C
+	-- runtime — exactly the calls filcc emits for C11 atomic pointer operations
+	-- (verified against build/bin/clang output; see ABI-NOTES-x86.md). The callees
+	-- are nounwind runtime entrypoints in plain SysV: a filc_ptr argument is two
+	-- consecutive argument words (intval first, then lower), a filc_ptr result comes
+	-- back as rax=intval, rdx=lower — so there is NO exception-flag check after
+	-- these calls (unlike pizlonated-function calls). Returned lowers are rooted
+	-- immediately (a safepoint may run before the next use); pointer ARGUMENTS need
+	-- no caller rooting (the runtime protects them itself). Each sequence emits the
+	-- usual inline access check first (null-cap -> align -> CanWrite -> lower ->
+	-- upper) so a trap gets sarcasm's origin; the runtime re-checks internally.
+	--
+	-- EFLAGS: a flag consumer (jcc/setcc) immediately after the annotated
+	-- instruction must see the flags the NATIVE instruction would produce, but the
+	-- injected sequences clobber EFLAGS. The RMW/CAS paths therefore keep the
+	-- pre-op value (and the source operand) live in webs and re-execute the
+	-- operation on a scratch copy as the LAST flag-affecting step (the result
+	-- moves and root stores in between don't touch flags). A consumer that does
+	-- NOT immediately follow still sees clobbered flags — the same documented
+	-- caveat as the injected bounds checks everywhere else.
+	local function marshalResultPtr(dstIv, dstLo)
+		cg.move(dstIv, pColored(cc.rtRet))
+		cg.move(dstLo, pColored(cc.rtRetLo))
+		emitRootStore(dstLo)
+	end
+
+	-- filc_load_ptr_atomic_with_manual_tracking_outline(slot) -> old (rax=iv, rdx=lo).
+	-- No myth arg, does not allocate, can only panic.
+	local function emitAtomicLoadCall(effTemp, capLoTemp)
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), effTemp)
+		cg.move(pColored(cc.rtArg(2)), capLoTemp)
+		cg.call("filc_load_ptr_atomic_with_manual_tracking_outline",
+			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
+	end
+
+	-- filc_store_ptr_atomic_outline(myth, slot, value). Can allocate (creates the
+	-- 16-byte atomic box / ensures aux) => GC safepoint; barriers value internally.
+	local function emitAtomicStoreCall(effTemp, capLoTemp, valIv, valLo)
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), vMyth)
+		cg.move(pColored(cc.rtArg(2)), effTemp)
+		cg.move(pColored(cc.rtArg(3)), capLoTemp)
+		cg.move(pColored(cc.rtArg(4)), valIv)
+		cg.move(pColored(cc.rtArg(5)), valLo)
+		cg.call("filc_store_ptr_atomic_outline",
+			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)),
+				pColored(cc.rtArg(4)), pColored(cc.rtArg(5)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
+	end
+
+	-- filc_strong_cas_ptr_with_manual_tracking(myth, slot, 0, expected, new) -> old.
+	-- new_value travels on the STACK ([rsp]=iv, [rsp+8]=lower at the call; see
+	-- codegen's pushStackPtr). Can allocate => GC safepoint. Success <=> returned
+	-- old.iv == expected.iv (a raw-intval comparison; the runtime compares intvals
+	-- only). The expected's lower may be null ("integer guess") — the comparison
+	-- ignores it.
+	local function emitAtomicCasCall(effTemp, capLoTemp, expIv, expLo, newIv, newLo)
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), vMyth)
+		cg.move(pColored(cc.rtArg(2)), effTemp)
+		cg.move(pColored(cc.rtArg(3)), capLoTemp)
+		cg.moveZero(pColored(cc.rtArg(4)))          -- offset = 0
+		cg.move(pColored(cc.rtArg(5)), expIv)
+		cg.move(pColored(cc.rtArg(6)), expLo)
+		cg.pushStackPtr(newIv, newLo)
+		cg.call("filc_strong_cas_ptr_with_manual_tracking",
+			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)),
+				pColored(cc.rtArg(4)), pColored(cc.rtArg(5)), pColored(cc.rtArg(6)) },
+			cg.callerSavedClobbers())
+		cg.popStackPtr()
+		cg.fpRestore()
+	end
+
+	-- `;! atomic load ptr`: movq (mem), %reg — the runtime atomic pointer load.
+	local function emitAtomicPtrLoad(node, mem)
+		local dstIv = node.defTemps[1]
+		if not dstIv then
+			error("sarcasm: `;! atomic load ptr` requires a modeled (GPR) destination"
+				.. " register: " .. (node.stmt.raw or "?"))
+		end
+		local dstLo = pf.lowerTemp[dstIv]
+		local effTemp, capLo = cg.computeAddr(node, mem)
+		emitAccessCheck(effTemp, capLo, 8, 8, false)
+		if capLo == nil then cg.moveZero(dstLo); cg.moveZero(dstIv); emitRootStore(dstLo); return end
+		emitAtomicLoadCall(effTemp, capLo)
+		marshalResultPtr(dstIv, dstLo)
+	end
+
+	-- `;! atomic store ptr`: movq %reg, (mem) — the runtime atomic pointer store.
+	local function emitAtomicPtrStore(node, mem)
+		local valOp = storeValueOperand(node.stmt, mem)
+		local valIv = valOp and node.opTemp[valOp] or nil
+		if not valIv then
+			error("sarcasm: `;! atomic store ptr` requires a modeled (GPR) value"
+				.. " register: " .. (node.stmt.raw or "?"))
+		end
+		local valLo = pf.lowerTemp[valIv]
+		local effTemp, capLo = cg.computeAddr(node, mem)
+		emitAccessCheck(effTemp, capLo, 8, 8, true)
+		if capLo == nil then return end
+		if valLo == nil then valLo = allocTemp({ role = "nulllo" }); cg.moveZero(valLo) end
+		emitAtomicStoreCall(effTemp, capLo, valIv, valLo)
+	end
+
+	-- `;! atomic ptr` on cmpxchgq (lock or not — both go through the runtime call):
+	-- pointer compare-exchange. BYPASSES emitPinned: the expected value (the
+	-- implicit accumulator's use web) travels in argument registers instead of
+	-- physical rax; the old value arrives in rax/rdx and defines the accumulator's
+	-- def web (seeded as a pointer by ptrflow).
+	local function emitAtomicPtrCas(node, mem)
+		local c = node.c
+		local pin = c.pin
+		local accUseT = (pin and pin.uses and pin.uses[1]) and node.opTemp[pin.uses[1]] or nil
+		local accDefT = (pin and pin.defs and pin.defs[1]) and node.opTemp[pin.defs[1]] or nil
+		if not (accUseT and accDefT) then
+			error("sarcasm: internal error: cmpxchg implicit accumulator has no temp: "
+				.. (node.stmt.raw or "?"))
+		end
+		local accDefLo = pf.lowerTemp[accDefT]
+		local accUseLo = pf.lowerTemp[accUseT]
+		local srcOp = node.stmt.operands[2]
+		local newIv = srcOp and node.opTemp[srcOp] or nil
+		if not newIv then
+			error("sarcasm: `;! atomic ptr` requires a modeled (GPR) new-value register: "
+				.. (node.stmt.raw or "?"))
+		end
+		local newLo = pf.lowerTemp[newIv]
+		local effTemp, capLo = cg.computeAddr(node, mem)
+		emitAccessCheck(effTemp, capLo, 8, 8, true)
+		-- The expected intval must survive the call for the flag recompute below:
+		-- the expected and result webs can COINCIDE (a cmpxchg retry loop unions
+		-- the accumulator's use and def webs), so compare against a private copy.
+		local expCopy = allocTemp({ role = "casexp" })
+		cg.move(expCopy, accUseT)
+		if capLo == nil then
+			cg.moveZero(accDefT); cg.moveZero(accDefLo); emitRootStore(accDefLo); return
+		end
+		if not accUseLo then accUseLo = allocTemp({ role = "nullexp" }); cg.moveZero(accUseLo) end
+		if not newLo then newLo = allocTemp({ role = "nullnew" }); cg.moveZero(newLo) end
+		emitAtomicCasCall(effTemp, capLo, accUseT, accUseLo, newIv, newLo)
+		marshalResultPtr(accDefT, accDefLo)
+		-- Native cmpxchg sets flags from (accumulator - dest); dest's old value is
+		-- the returned old value, so (expected - old) reproduces the native flags
+		-- exactly (ZF=1 iff the exchange happened). MUST be the last flag-affecting
+		-- step: a following je/sete behaves natively.
+		emit(build.insn("cmp", { build.rt(expCopy), build.rt(accDefT) },
+			{ uses = { expCopy, accDefT } }))
+	end
+
+	-- Pointer-RMW support (`;! load store ptr` / `;! atomic load store ptr`).
+	local RMW_UNARY = { inc = true, dec = true, neg = true, ["not"] = true }
+
+	-- The source operand of a supported pointer-RMW node: a register web temp or an
+	-- immediate operand (neither for the unary inc/dec/neg/not forms).
+	local function rmwSource(node)
+		local bm = cgm.baseMnemonic(string.lower(node.stmt.mnemonic))
+		if RMW_UNARY[bm] then return nil, nil, true end
+		local so = node.stmt.operands[2]
+		if so and so.kind == "reg" then
+			local t = node.opTemp[so]
+			if not t then
+				error("sarcasm: `;! " .. node.stmt.annotation .. "` source register has no"
+					.. " temp: " .. (node.stmt.raw or "?"))
+			end
+			return t, nil, false
+		end
+		return nil, so, false   -- immediate operand (the 8-byte form was validated)
+	end
+
+	-- Re-emit the annotated ALU operation as a register operation: dstT = dstT OP src.
+	local function emitRmwAluOp(node, dstT, srcT, srcImmOp, unary)
+		local operands = { build.rt(dstT) }
+		local uses = { dstT }
+		if not unary then
+			if srcT then table.insert(operands, build.rt(srcT)); table.insert(uses, srcT)
+			else table.insert(operands, srcImmOp) end
+		end
+		emit(build.insn(node.stmt.mnemonic, operands, { defs = { dstT }, uses = uses }))
+	end
+
+	-- Recompute the native flags of the RMW (old OP src) as the last flag-affecting
+	-- step (see the EFLAGS comment above). `not` sets no flags (native behavior is
+	-- "flags unchanged", unrecoverable across the injected checks — the documented
+	-- EFLAGS caveat); adc/sbb read a carry-in the checks already clobbered (also
+	-- documented-indeterminate, like the pinned adcx forms) — and note the clobbered
+	-- carry-in already affected the STORED result too: the op itself ran on it right
+	-- after the load/check sequence (deterministically CF=0 for the non-atomic
+	-- `;! load store ptr` path, whose last flag-affecting instruction is a `test`;
+	-- whatever the runtime call left for the atomic forms).
+	local function emitRmwFlags(node, oldIv, srcT, srcImmOp, unary)
+		local scratch = allocTemp({ role = "rmwflags" })
+		cg.move(scratch, oldIv)
+		emitRmwAluOp(node, scratch, srcT, srcImmOp, unary)
+	end
+
+	-- `;! load store ptr`: NON-atomic RMW on a pointer slot = the box-aware
+	-- non-atomic pointer load, the ALU op on the intval, then the non-atomic
+	-- pointer store (checks incl. CanWrite, ensure-aux, barrier, lower+iv stores).
+	-- The capability rides through unchanged — Fil-C pointer arithmetic through
+	-- memory.
+	local function emitLoadStorePtr(node, mem)
+		local srcT, srcImmOp, unary = rmwSource(node)
+		local oldIv = allocTemp({ role = "lspold" })
+		local oldLo = allocTemp({ role = "lsplo" })
+		emitPtrLoad(node, mem, oldIv, oldLo)
+		emitRootStore(oldLo)
+		local newIv = allocTemp({ role = "lspnew" })
+		cg.move(newIv, oldIv)
+		emitRmwAluOp(node, newIv, srcT, srcImmOp, unary)
+		emitPtrStore(node, mem, newIv, oldLo)
+		emitRmwFlags(node, oldIv, srcT, srcImmOp, unary)
+	end
+
+	-- `;! atomic load store ptr`: WITHOUT `lock`, an atomic load, the op, and an
+	-- atomic store (each access atomic; the RMW as a whole is not). WITH `lock`, a
+	-- compare-exchange loop through the runtime — a real atomic RMW.
+	local alrmwCounter = 0
+	local function emitAtomicLoadStorePtr(node, mem)
+		local srcT, srcImmOp, unary = rmwSource(node)
+		local effTemp, capLo = cg.computeAddr(node, mem)
+		emitAccessCheck(effTemp, capLo, 8, 8, true)
+		-- a null capability trapped above; keep the (unreachable) fall-through
+		-- well-formed with a null-lower marshal temp
+		local capLoArg = capLo
+		if not capLoArg then capLoArg = allocTemp({ role = "nullcap" }); cg.moveZero(capLoArg) end
+		local oldIv = allocTemp({ role = "alspold" })
+		local oldLo = allocTemp({ role = "alsplo" })
+		local newIv = allocTemp({ role = "alspnew" })
+		if not node.stmt.lockPrefix then
+			emitAtomicLoadCall(effTemp, capLoArg)
+			marshalResultPtr(oldIv, oldLo)
+			cg.move(newIv, oldIv)
+			emitRmwAluOp(node, newIv, srcT, srcImmOp, unary)
+			emitAtomicStoreCall(effTemp, capLoArg, newIv, oldLo)
+		else
+			alrmwCounter += 1
+			local loopTop = ".Lcasloop_" .. name .. "_" .. alrmwCounter
+			cg.label(loopTop)
+			-- a safepoint on every iteration (a contended CAS loop must not starve
+			-- the GC's stop-the-world; filcc's atomic-RMW loops pollcheck too)
+			emitPollcheck()
+			emitAtomicLoadCall(effTemp, capLoArg)
+			marshalResultPtr(oldIv, oldLo)
+			cg.move(newIv, oldIv)
+			emitRmwAluOp(node, newIv, srcT, srcImmOp, unary)
+			emitAtomicCasCall(effTemp, capLoArg, oldIv, oldLo, newIv, oldLo)
+			local casIv = allocTemp({ role = "alspcas" })
+			cg.move(casIv, pColored(cc.rtRet))
+			cg.cmpBranch(oldIv, casIv, "ne", loopTop)   -- mismatch: retry
+		end
+		emitRmwFlags(node, oldIv, srcT, srcImmOp, unary)
 	end
 
 	local excLabel = nil
@@ -526,6 +897,18 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					end
 					local valLo = pf.lowerTemp[valIv]
 					emitPtrStore(node, mem, valIv, valLo)
+				elseif atomicLoadPtrDefs[node] then
+					emitAtomicPtrLoad(node, mem)
+				elseif atomicStorePtrNodes[node] then
+					emitAtomicPtrStore(node, mem)
+				elseif atomicCasPtrDefs[node] then
+					-- bypasses emitPinned entirely: the runtime call needs no
+					-- physical rax pinning (see emitAtomicPtrCas)
+					emitAtomicPtrCas(node, mem)
+				elseif loadStorePtrNodes[node] then
+					emitLoadStorePtr(node, mem)
+				elseif atomicRmwPtrNodes[node] then
+					emitAtomicLoadStorePtr(node, mem)
 				elseif mem then
 					cg.checkMemInsn(node, mem)
 					local effTemp, capLo = cg.computeAddr(node, mem)

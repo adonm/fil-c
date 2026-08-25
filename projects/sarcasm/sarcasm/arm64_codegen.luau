@@ -94,8 +94,38 @@ end
 
 -- `alloca size` size operand: `sub sp, sp, X` -> X is operands[3].
 function M.allocaSizeOperand(stmt) return stmt.operands[3] end
+
+-- Ptr-annotation shape validation (shared with the x86_64 backend; the shared
+-- transform rejects `;! load ptr` / `;! store ptr` on anything that is not the
+-- matching plain access — a mismatch used to be a silent miscompile). Returns
+-- "load" (`ldr xN, [..]`), "store" (`str xN, [..]`), or "other". arm64 has no
+-- single-instruction memory-destination RMW in its accepted set (checkMemInsn
+-- rejects them), so "rmw" never occurs here.
+function M.ptrAccessKind(stmt)
+	local ops = stmt.operands or {}
+	if not M.memOperand(stmt) then return "other" end
+	local m = string.lower(stmt.mnemonic)
+	local r = ops[1]
+	if r and r.kind == "reg" and (r.width or 64) == 64 then
+		if m == "ldr" then return "load" end
+		if m == "str" then return "store" end
+	end
+	return "other"
+end
 -- store value operand: `str Xs, [mem]` -> Xs is operands[1] (source-first).
 function M.isStoreInsn(stmt) return string.sub(string.lower(stmt.mnemonic), 1, 2) == "st" end
+
+-- The Phase-2 atomic/pointer-RMW annotations (`;! atomic load ptr`,
+-- `;! atomic store ptr`, `;! atomic ptr`, `;! load store ptr`,
+-- `;! atomic load store ptr`) are x86_64-only for now: the runtime functions exist
+-- on ARM64 too, but the call-marshalling/flag-recompute sequences are only
+-- implemented in the x86_64 backend (and arm64 has no single-instruction
+-- memory-destination RMW in its accepted set for the RMW forms). Reject cleanly
+-- rather than silently miscompile.
+function M.ptrAtomicShape(ann, stmt)
+	error("sarcasm: `;! " .. ann .. "` (atomic pointer operations and pointer RMWs) is"
+		.. " not supported on ARM64: " .. ((stmt and (stmt.raw or stmt.mnemonic)) or "?"))
+end
 
 function M.isMemInsn(mnem) return isa.isMemInsn(mnem) end
 

@@ -22,12 +22,15 @@ M.ALLOCATABLE = isa.ALLOCATABLE
 -- Calling convention (numbers are register encodings; see x86_64_isa).
 -- Fast entrypoint: rdi=myth, (rdx,rcx)=arg0, (r8,r9)=arg1; ret al=flags, rdx=iv, rcx=lo.
 -- Runtime (SysV) calls: rdi,rsi,rdx,... ; result in rax.  yolo params arrive in SysV regs.
+-- A runtime filc_ptr result (the atomic pointer operations) comes back as rax=intval,
+-- rdx=lower (plain SysV: two consecutive integer return words).
 M.cc = {
 	myth = isa.CC.myth, retFlag = isa.CC.retFlag, retIv = isa.CC.retIv, retLo = isa.CC.retLo,
 	argIv = isa.CC.argIv, argLo = isa.CC.argLo,
 	yoloArg = function(k) return isa.SYSV[k] end,
 	rtArg = function(k) return isa.SYSV[k] end,   -- runtime-call arg registers
 	rtRet = 0,                                    -- rax
+	rtRetLo = 2,                                  -- rdx (filc_ptr return: lower word)
 }
 
 -- Callsite signature validation (called by the shared transform for each `;! sig` call
@@ -87,6 +90,21 @@ function M.accessSizeAlign(stmt)
 	if zs then local s = WIDTH_LETTER[zs]; return s, s end
 	local mem
 	for _, op in stmt.operands do if op.kind == "mem" then mem = op end end
+	-- cmpxchg8b/cmpxchg16b: the ISA-fixed width is in the mnemonic itself (there
+	-- is no size suffix and no register form); the sole operand is memory. An
+	-- Intel PTR size annotation CONTRADICTING the ISA-fixed width is rejected
+	-- like any other annotation lie. (cmpxchg16b's 16-byte alignment requirement
+	-- is hardware-enforced; checking it here keeps a misaligned address a clean
+	-- filc trap rather than a #GP.)
+	if mnem == "cmpxchg8b" or mnem == "cmpxchg16b" then
+		local w = (mnem == "cmpxchg16b") and 16 or 8
+		if mem and mem.size and mem.size ~= w then
+			error("sarcasm: PTR size annotation (" .. tostring(mem.size)
+				.. " bytes) contradicts the memory access width (" .. tostring(w)
+				.. " bytes) of '" .. mnem .. "': " .. (stmt.raw or mnem))
+		end
+		return w, w
+	end
 	local base = isa.baseMnemonic(mnem)
 	if (base == "movzx" or base == "movsx") and mem and mem.size then return mem.size, mem.size end
 	-- GPR access: the width is register-defined (AT&T suffix / first GPR operand
@@ -142,6 +160,120 @@ function M.isMemInsn(mnem) return true end
 
 -- `alloca size` size operand: `sub rsp, X` -> X is operands[2] (dest-first).
 function M.allocaSizeOperand(stmt) return stmt.operands[2] end
+
+-- Ptr-annotation shape validation (the shared transform rejects `;! load ptr` /
+-- `;! store ptr` on anything that is not the matching plain access — a mismatch
+-- used to be a SILENT MISCOMPILE: the annotated instruction was replaced by an
+-- invisicap load/store, dropping the original operation). Returns:
+--   "load"  — a plain 8-byte GPR load  (`movq (mem), %reg64` / Intel `mov r64, [mem]`)
+--   "store" — a plain 8-byte GPR store (`movq %reg64, (mem)`)
+--   "rmw"   — a memory-destination read-modify-write (ALU mem-RMW, xadd, cmpxchg,
+--             adcx/adox/crc32, cmpxchg8b/16b): needs `;! load store ptr` instead
+--   "other" — anything else (no memory operand, FP/SIMD, imm store, narrow mov, ...)
+function M.ptrAccessKind(stmt)
+	local ops = stmt.operands or {}
+	local mem = M.memOperand(stmt)
+	if not mem then return "other" end
+	if isa.isMemRmw(stmt) then return "rmw" end
+	local base = isa.baseMnemonic(string.lower(stmt.mnemonic))
+	if base == "mov" and #ops == 2 then
+		if ops[1] == mem and isa.isGpr(ops[2]) and (ops[2].width or 64) == 64 then return "store" end
+		if ops[2] == mem and isa.isGpr(ops[1]) and (ops[1].width or 64) == 64 then return "load" end
+	end
+	return "other"
+end
+
+-- The memory-destination RMW operations supported on pointer slots (8-byte forms):
+-- the lockable ALU family plus the unary inc/dec/neg/not. (Shifts/rotates/imul are
+-- memory-destination RMWs too, but a shift/rotate/multiply of a pointer intval is
+-- not a capability-preserving operation sarcasm implements.)
+local PTR_RMW_OPS = { add = true, adc = true, ["and"] = true, ["or"] = true, sbb = true,
+	sub = true, xor = true, inc = true, dec = true, neg = true, ["not"] = true }
+
+-- Shape validation for the Phase-2 atomic/pointer-RMW annotations (`;! atomic load ptr`,
+-- `;! atomic store ptr`, `;! atomic ptr`, `;! load store ptr`,
+-- `;! atomic load store ptr`). Returns the sequence kind for the shared transform:
+--   "atomicload" / "atomicstore" — runtime atomic pointer load/store (plain movq forms)
+--   "cas"       — `;! atomic ptr` on cmpxchgq (pointer compare-exchange)
+--   "rmw"       — `;! load store ptr` on a supported 8-byte mem-RMW (non-atomic)
+--   "atomicrmw" — `;! atomic load store ptr` on a supported 8-byte mem-RMW
+-- Anything else raises a clean sarcasm: error. (cmpxchg8b/cmpxchg16b are rejected
+-- earlier, in the shared transform, for EVERY ptr-family annotation.)
+function M.ptrAtomicShape(ann, stmt)
+	local raw = stmt.raw or stmt.mnemonic or "?"
+	if ann == "atomic load ptr" or ann == "atomic store ptr" then
+		local want = (ann == "atomic load ptr") and "load" or "store"
+		if M.ptrAccessKind(stmt) ~= want then
+			error("sarcasm: `;! " .. ann .. "` requires a plain 8-byte GPR " .. want
+				.. " instruction: " .. raw)
+		end
+		return (ann == "atomic load ptr") and "atomicload" or "atomicstore"
+	end
+	local base = isa.baseMnemonic(string.lower(stmt.mnemonic))
+	local ops = stmt.operands or {}
+	if ann == "atomic ptr" then
+		if base ~= "cmpxchg" then
+			error("sarcasm: `;! atomic ptr` is only supported on cmpxchg (pointer"
+				.. " compare-exchange): " .. raw)
+		end
+		if not (ops[1] and ops[1].kind == "mem") then
+			error("sarcasm: `;! atomic ptr` requires cmpxchg with a memory destination"
+				.. " (the register form has no capability slot to exchange against): " .. raw)
+		end
+		if #ops ~= 2 or not isa.isGpr(ops[2]) then
+			error("sarcasm: `;! atomic ptr` requires the cmpxchg mem, reg form"
+				.. " (a GPR new-value operand): " .. raw)
+		end
+		local w = M.accessSizeAlign(stmt)
+		if w ~= 8 then
+			error("sarcasm: `;! atomic ptr` requires the 8-byte (q) cmpxchg form"
+				.. " (pointer slots are 8 bytes): " .. raw)
+		end
+		return "cas"
+	end
+	-- `;! load store ptr` / `;! atomic load store ptr`: pointer RMWs.
+	if M.ptrAccessKind(stmt) ~= "rmw" then
+		error("sarcasm: `;! " .. ann .. "` requires a memory-destination"
+			.. " read-modify-write instruction: " .. raw)
+	end
+	if base == "cmpxchg" then
+		error("sarcasm: `;! " .. ann .. "` on cmpxchg; pointer compare-exchange needs"
+			.. " `;! atomic ptr`: " .. raw)
+	end
+	if string.match(string.lower(stmt.mnemonic), "^xadd[bwlq]?$") then
+		error("sarcasm: `;! " .. ann .. "` is not supported on xadd: its source register"
+			.. " is also a destination (it would receive the old pointer value, needing a"
+			.. " pointer def + lower — use a `;! atomic ptr` cmpxchg loop instead): " .. raw)
+	end
+	if not PTR_RMW_OPS[base] then
+		error("sarcasm: `;! " .. ann .. "` is not supported on '" .. string.lower(stmt.mnemonic)
+			.. "' (supported pointer RMWs: add/adc/and/or/sbb/sub/xor, inc/dec/neg/not): " .. raw)
+	end
+	-- Operand shape: the unary forms are mem-only; the binary forms are
+	-- mem, reg|imm. A second MEMORY operand is not encodable in x86 for these
+	-- (a gas error) and would sneak an unchecked heap read into the re-emitted
+	-- register operation — reject it here.
+	if PTR_RMW_OPS[base] and (base == "inc" or base == "dec" or base == "neg" or base == "not") then
+		if #ops ~= 1 then
+			error("sarcasm: `;! " .. ann .. "` on " .. base .. " requires the one-operand"
+				.. " memory form: " .. raw)
+		end
+	elseif #ops ~= 2 or not (isa.isGpr(ops[2]) or ops[2].kind == "imm") then
+		error("sarcasm: `;! " .. ann .. "` requires a GPR register or immediate source"
+			.. " operand (x86 has no mem-to-mem " .. base .. " form): " .. raw)
+	end
+	local w = M.accessSizeAlign(stmt)
+	if w ~= 8 then
+		error("sarcasm: `;! " .. ann .. "` requires the 8-byte (q) form"
+			.. " (pointer slots are 8 bytes): " .. raw)
+	end
+	if ann == "load store ptr" and stmt.lockPrefix then
+		error("sarcasm: `lock` on a `;! load store ptr` RMW is a lie (the sequence is a"
+			.. " non-atomic load+op+store); use `;! atomic load store ptr` for an atomic"
+			.. " pointer RMW: " .. raw)
+	end
+	return (ann == "load store ptr") and "rmw" or "atomicrmw"
+end
 -- a store writes memory when the (dest-first) first operand is the memory operand.
 -- Single-memory-operand FP/x87 instructions break that positional rule: the lone
 -- memory operand can be a source (fldl, faddl, fcoml, fxrstor, ldmxcsr, ...), so
@@ -277,6 +409,28 @@ function M.make(ctx)
 			{ defs = { pColored(destPhys) } }))
 	end
 
+	-- Stack marshalling for a runtime call with a trailing filc_ptr argument past
+	-- the six SysV argument registers (filc_strong_cas_ptr_with_manual_tracking's
+	-- new_value): the words must sit at [rsp]=intval, [rsp+8]=lower AT the call.
+	-- The values are stored into the red zone FIRST (-16/-8(%rsp), clobber-free per
+	-- the SysV ABI) and rsp is then dropped over them — this order keeps every
+	-- temp-using instruction (the two stores, incl. any spill reloads regalloc
+	-- inserts for them) on the UNADJUSTED rsp that the frame layout is computed
+	-- against; only the call itself (whose def/use temps are all precolored,
+	-- never spill-rewritten) executes inside the adjusted window. popStackPtr
+	-- restores rsp right after the call (before fpRestore, whose frame slots are
+	-- also rsp-relative).
+	function cg.pushStackPtr(ivTemp, loTemp)
+		emit(build.insn("mov", { build.memx(build.rp(4), { dispVal = -16 }), rt(ivTemp) },
+			{ uses = { ivTemp } }))
+		emit(build.insn("mov", { build.memx(build.rp(4), { dispVal = -8 }), rt(loTemp) },
+			{ uses = { loTemp } }))
+		emit(build.insn("sub", { build.rp(4), build.imm(16) }, {}))
+	end
+	function cg.popStackPtr()
+		emit(build.insn("add", { build.rp(4), build.imm(16) }, {}))
+	end
+
 	-- effective address + capability selection for a memory operand.
 	function cg.computeAddr(node, mem)
 		-- A symbolic displacement (RIP-relative global access, `sym(%rip)`) cannot be
@@ -327,7 +481,8 @@ function M.make(ctx)
 	local fctx = ctx.frameCtx
 
 	-- FP/SIMD save/restore around sarcasm-injected RETURNING runtime calls (the pollcheck
-	-- slow path, filc_allocate, the ptr-store slow paths). The source program never saw
+	-- slow path, filc_allocate, the ptr-store slow paths, the Phase-2 atomic pointer
+	-- load/store/compare-exchange runtime calls). The source program never saw
 	-- these calls, so its live xmm/ymm/zmm values would be silently clobbered by them:
 	-- SysV makes every FP/SIMD register caller-saved. The Fil-C runtime is compiled
 	-- SSE2-only (pizfix/lib/libpizlo.a contains xmm instructions but zero ymm/zmm), so
@@ -339,9 +494,14 @@ function M.make(ctx)
 	-- emits NOTHING. For x87/mm state this is sound NOT because "an SSE2-only runtime
 	-- cannot clobber x87" — libpizlo.a DOES contain x87 instructions (the fldt/fstpt
 	-- in the zmath long-double wrappers) — but because the only callees these
-	-- injected-call paths can reach (filc_pollcheck_slow, filc_allocate, and the two
+	-- injected-call paths can reach (filc_pollcheck_slow, filc_allocate, the two
 	-- store-barrier slow paths filc_object_ensure_aux_ptr_outline /
-	-- filc_store_barrier_for_lower_slow) never execute those wrappers. k-opmask state
+	-- filc_store_barrier_for_lower_slow, and the Phase-2 atomic pointer operations
+	-- filc_load_ptr_atomic_with_manual_tracking_outline /
+	-- filc_store_ptr_atomic_outline / filc_strong_cas_ptr_with_manual_tracking —
+	-- whose internal ensure-aux/box-allocation/barrier paths are the same
+	-- allocation/barrier code the first four already cover) never execute those
+	-- wrappers. k-opmask state
 	-- genuinely cannot be clobbered by an SSE2-only runtime (it is EVEX-only). If the
 	-- runtime is ever compiled with AVX512, this must be extended to also save
 	-- zmm16-31 and k0-7 (EVEX state an AVX512 build could clobber).
@@ -441,7 +601,7 @@ function M.make(ctx)
 		-- rejected by the frame rewrite; keep a defensive copy here.)
 		if mem and mem.frameSlot then
 			local ann = node.stmt.annotation
-			if ann == "load ptr" or ann == "store ptr" then
+			if ann and sig.PTR_ANNOTATIONS[ann] then
 				error("sarcasm: `;! " .. ann .. "` on a stack-frame access is not supported"
 					.. " (frame slots are virtualized/materialized, not real memory): "
 					.. (node.stmt.raw or "?"))
@@ -548,6 +708,7 @@ function M.make(ctx)
 			operands = newops, opTemp = opT,
 			defTemps = defTemps, useTemps = useTemps,
 			control = "none", fallsThrough = true,
+			lockPrefix = node.stmt.lockPrefix,  -- `lock cmpxchg...` rides through the pin
 		})
 		-- pin-out: every modeled def of a pinned register gets the physical
 		-- register copied out into its fresh web (the reaching def for all
@@ -578,6 +739,42 @@ function M.make(ctx)
 			{ defs = { pColored(a3) } }))
 		table.insert(list, build.insn("call", { build.sym("filc_optimized_access_check_fail", "plt") },
 			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+	end
+
+	-- Fail stub for an alignment failure the optimized-access-check origin cannot
+	-- express (an alignment wider than a word — cmpxchg16b's 16): the origin's
+	-- recorded alignment is word-clamped, so filc_optimized_access_check_fail
+	-- could not attribute an in-bounds, writable, word-aligned-but-not-fully-
+	-- aligned pointer to ANY failure and would hit its "Should not be reached"
+	-- assert (a pas crash, not a clean trap). filc_check_aligned_access_fail
+	-- takes the TRUE alignment as a plain argument and reports it ("alignment
+	-- requirement of 16 bytes not met during write") via the usual filc safety
+	-- panic. Machine-level args: (ptr iv, ptr lower, bytes, alignment, kind,
+	-- ptr_name iv, ptr_name lower) — kind is filc_access_kind (0=read, 1=write);
+	-- the 7th word (ptr_name's lower) is marshalled on the stack at [rsp] AT the
+	-- call, exactly like pushStackPtr (a NULL ptr_name iv makes the runtime
+	-- ignore the name, so the lower's value is never consulted — write 0 anyway).
+	function cg.alignFailStub(list, lbl, ivTemp, loTemp, size, align, isWrite)
+		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
+		local a4, a5, a6 = M.cc.rtArg(4), M.cc.rtArg(5), M.cc.rtArg(6)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(ivTemp) }, { defs = { pColored(a1) }, uses = {ivTemp} }))
+		if loTemp then
+			table.insert(list, build.insn("mov", { build.rp(a2), rt(loTemp) }, { defs = { pColored(a2) }, uses = {loTemp} }))
+		else
+			table.insert(list, build.insn("mov", { build.rp(a2), build.imm(0) }, { defs = { pColored(a2) } }))
+		end
+		table.insert(list, build.insn("mov", { build.rp(a3), build.imm(size) }, { defs = { pColored(a3) } }))
+		table.insert(list, build.insn("mov", { build.rp(a4), build.imm(align) }, { defs = { pColored(a4) } }))
+		table.insert(list, build.insn("mov", { build.rp(a5), build.imm(isWrite and 1 or 0) }, { defs = { pColored(a5) } }))
+		table.insert(list, build.insn("mov", { build.rp(a6), build.imm(0) }, { defs = { pColored(a6) } }))
+		local nameLoSlot = build.memx(build.rp(4), { dispVal = -16 })
+		nameLoSlot.size = 8  -- lets the renderer synthesize the movq suffix for the reg-less form
+		table.insert(list, build.insn("mov", { nameLoSlot, build.imm(0) }, {}))
+		table.insert(list, build.insn("sub", { build.rp(4), build.imm(16) }, {}))
+		table.insert(list, build.insn("call", { build.sym("filc_check_aligned_access_fail", "plt") },
+			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+				pColored(a4), pColored(a5), pColored(a6) } }))
 	end
 
 	return cg

@@ -343,6 +343,23 @@ function x86parse.parseString(text, syntax)
 				if string.sub(mnem, 1, 1) == "." then
 					table.insert(out, { kind = "directive", name = mnem, args = rest, raw = t })
 				else
+					-- `lock` is an instruction PREFIX, not a mnemonic: gas emits it
+					-- as a leading token on the same line (`lock xaddq %rsi, (%rdi)`,
+					-- also `lock;`-separated). Re-split the remainder into the real
+					-- mnemonic + operands and tag the instruction; WHICH instructions
+					-- may carry the prefix is validated in x86_64_isa.classify.
+					-- rep*/xacquire/xrelease stay reject-listed "mnemonics"
+					-- (fp.unsafeReject) — only `lock` gets prefix parsing.
+					local lockPrefix = false
+					if string.lower(mnem) == "lock" then
+						local r2 = (string.gsub(rest, "^%s*;%s*", ""))
+						local m2, rest2 = string.match(r2, "^([%.%w_][%w_.]*)%s*(.*)$")
+						if not m2 then
+							error("sarcasm: `lock` prefix with no following instruction: " .. t)
+						end
+						mnem, rest = m2, trim(rest2 or "")
+						lockPrefix = true
+					end
 					local opsize
 					if syntax == "att" then local _; _, opsize = attMnemonic(mnem) end
 					local ops = {}
@@ -358,7 +375,7 @@ function x86parse.parseString(text, syntax)
 						ops = rev
 					end
 					table.insert(out, { kind = "insn", mnemonic = string.lower(mnem), operands = ops,
-						opsize = opsize, raw = t, syntax = syntax })
+						opsize = opsize, raw = t, syntax = syntax, lockPrefix = lockPrefix or nil })
 				end
 			end
 		end

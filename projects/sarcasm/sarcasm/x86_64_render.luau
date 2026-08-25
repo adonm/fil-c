@@ -182,6 +182,10 @@ function x86_64_render.renderInsn(node, colorNum, syntax)
 	local ops = node.stmt and node.stmt.operands or node.operands or {}
 	local low = string.lower(mnem)
 
+	-- A validated `lock` prefix (parser tag; x86_64_isa.classify allows it only
+	-- on exactly-modeled memory-destination RMWs) re-emits ahead of the mnemonic.
+	local lockPfx = ((node.stmt and node.stmt.lockPrefix) or node.lockPrefix) and "lock " or ""
+
 	-- control-only forms
 	if node.indirect and (low == "call" or low == "jmp") then
 		local tgt = renderOperand(node, ops[1], colorNum, syntax)
@@ -279,14 +283,14 @@ function x86_64_render.renderInsn(node, colorNum, syntax)
 		end
 		table.insert(rendered, s)
 	end
-	if #rendered == 0 then return "\t" .. outMnem end
+	if #rendered == 0 then return "\t" .. lockPfx .. outMnem end
 	-- Operands are stored destination-first (Intel order). AT&T lists them source-first.
 	if syntax == "att" and #rendered >= 2 then
 		local rev = {}
 		for k = #rendered, 1, -1 do table.insert(rev, rendered[k]) end
 		rendered = rev
 	end
-	return "\t" .. outMnem .. "\t" .. table.concat(rendered, ", ")
+	return "\t" .. lockPfx .. outMnem .. "\t" .. table.concat(rendered, ", ")
 end
 
 function x86_64_render.isSelfMove(node, colorNum)

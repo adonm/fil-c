@@ -21,10 +21,49 @@ anything it cannot prove safe rather than passing unsafe code through.
 Input assembly must carry `;!` annotations:
 - on each exported function label: its Fil-C signature, e.g. `hash: ;! unsigned(ptr)`;
 - on each instruction that loads a pointer from memory: `;! load ptr` (`;! store ptr` for stores);
+- on each instruction that atomically loads a pointer from memory:
+  `;! atomic load ptr` (`;! atomic store ptr` for atomic stores) — x86_64 only;
+  these go through the Fil-C runtime (`filc_load_ptr_atomic_with_manual_tracking_outline`
+  / `filc_store_ptr_atomic_outline`), exactly like C11 `_Atomic` pointer accesses
+  compiled by filcc;
+- on `cmpxchgq` with a memory destination: `;! atomic ptr` — a pointer
+  compare-exchange through the runtime
+  (`filc_strong_cas_ptr_with_manual_tracking`; the `lock` prefix is allowed and
+  irrelevant, both forms make the same call). The expected value is the
+  accumulator (compared by raw intval, like the hardware), the old value comes
+  back in the accumulator WITH its capability, and flags are recomputed as
+  (expected − old) so a `je`/`sete` immediately after behaves natively;
+- on a memory-destination RMW over a pointer slot (8-byte add/adc/and/or/sbb/
+  sub/xor, inc/dec/neg/not): `;! load store ptr` — a NON-atomic
+  load-op-store that preserves the slot's capability (Fil-C pointer arithmetic
+  through memory), or `;! atomic load store ptr` — WITHOUT `lock`, an atomic
+  load + op + atomic store (each access atomic; the RMW as a whole is not);
+  WITH `lock`, a real atomic RMW via a runtime compare-exchange loop. Flags
+  are recomputed after the operation so a `jcc`/`setcc` immediately after
+  behaves natively. Caveat for adc/sbb: they read a carry-in that the injected
+  check/load/store sequences clobber — the carry is gone by the time the op
+  runs (deterministically CF=0 for the non-atomic form, indeterminate for the
+  atomic ones), so BOTH the stored result and the recomputed flags reflect a
+  clobbered carry-in, not the program's: adc/sbb are supported for
+  execution-without-trapping, not for carry semantics. xadd and cmpxchg are
+  rejected with these annotations
+  (cmpxchg wants `;! atomic ptr`; xadd's source-register destination has no
+  capability model — use a cmpxchg loop);
 - on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`;
 - on stack allocations: `;! alloca size (x)` on the `sub sp,...` and `;! alloca result (x)`
   on the instruction that yields the pointer (dynamic), or `;! alloca result size=N` for a
   fixed-size buffer. These become GC allocations (`filc_allocate`), not real stack memory.
+
+Annotations are validated, never silently ignored: `;! load ptr` / `;! store ptr`
+require a plain 8-byte GPR load/store of the matching direction (and the
+`;! atomic load ptr` / `;! atomic store ptr` forms are at least as strict); a
+memory-destination RMW (add/xadd/cmpxchg & co with a memory destination)
+annotated with either is rejected (pointer RMWs need `;! load store ptr`);
+the pointer-RMW/atomic annotations require exactly the shapes above (8-byte
+forms only; `;! atomic ptr` only on memory-destination cmpxchg) and are
+rejected on ARM64 (x86_64-only for now) and on
+cmpxchg8b/cmpxchg16b, which cannot operate on pointers; any other
+unrecognized annotation string is a compile-time error.
 
 See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-att/hash.s`
 (AT&T syntax) and `filc/tests/sarcasm-hash-int/hash.s` (Intel syntax), or
@@ -38,9 +77,12 @@ Shared, architecture-independent modules:
 - `lift.luau`    — lifts to a virtual-register IR via reaching-definition **register webs**.
 - `ptrflow.luau` — pointer-flow analysis: which temps are pointers + their `lower` temps.
 - `transform.luau` — the GIMSO transform: intval/lower doubling, invisicap loads and
-  **stores (with aux allocation + FUGC store barriers)**, offset- and
+  **stores (with aux allocation + FUGC store barriers)**, **atomic pointer
+  loads/stores/compare-exchange and pointer RMWs via the Fil-C runtime**,
+  offset- and
   **register-index-aware** access checks, **null-capability trapping** for non-pointer
-  heap accesses, Fil-C calls (marshalling + exception propagation), pollchecks at loop
+  heap accesses, **not-readonly (CanWrite) checks on every heap write**, Fil-C calls
+  (marshalling + exception propagation), pollchecks at loop
   headers, SOV check, frame push/pop, GC roots.
 - `regalloc.luau` — Iterated Register Coalescing (Appel & George) over the GPR file.
 - `emit.luau`    — renders IR with the allocation; synthesizes prologue/epilogue.
@@ -153,7 +195,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   through with a conservative def/use guess: div/idiv (rdx:rax dividend in,
   quotient/remainder out), mul and 1-operand imul (rax in, rdx:rax product
   out), mulx (implicit rdx source), cmpxchg (accumulator RMW + destination
-  RMW), and the cqo/cdq/cwd sign-extends (rax in, rdx out) all name their
+  RMW), cmpxchg8b/cmpxchg16b (the implicit expected-value RMW pair edx:eax
+  resp. rdx:rax plus the implicit new-value source ecx:ebx resp. rcx:rbx —
+  all four pinned), and the cqo/cdq/cwd sign-extends (rax in, rdx out) all name their
   implicit rax/rdx effects to the web analysis; synthesized moves then copy
   the current webs of the implicit-use registers into their physical registers
   before the instruction and back out into fresh webs after it (coalesceable —
@@ -163,17 +207,27 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   cbw/cwde/cltq are rewritten to a renameable movsxx on the rax web. Aligned
   forms (movaps/movdqa/...)
   additionally
-  get an alignment check clamped to 8, exactly like compiled code. What remains
+  get an alignment check clamped to 8, exactly like compiled code. The `lock`
+  prefix is supported exactly where the hardware allows it AND sarcasm models
+  the instruction precisely: on memory-destination read-modify-write
+  instructions (add/adc/and/or/sbb/sub/xor, inc/dec/neg/not, xadd, cmpxchg,
+  cmpxchg8b/cmpxchg16b) — the locked instruction gets the same single
+  write-classified access check as its unlocked form (including the
+  not-readonly CanWrite test) with the prefix re-emitted; `lock` on anything
+  else is rejected at compile time — including on stack-frame accesses (a
+  frame slot is thread-confined: it virtualizes into a register or
+  materializes into the synthesized frame before the `lock` validation runs,
+  so accepting the prefix there would silently drop it). What remains
   rejected is only what cannot be checked: instructions with unknowable memory
   effects (syscall/sysenter, port I/O, hlt, wrmsr/rdmsr, cr/dr moves, `int N`
-  for N≠3, string instructions and rep/lock prefixes), accesses that may not
+  for N≠3, string instructions and the rep/xacquire/xrelease prefixes),
+  accesses that may not
   touch all addressed bytes (gather/scatter, vmaskmov*/maskmov*, AVX512
   {k}-masked memory operands — including the masked forms of
   vexpand*/vcompress*, whose unmasked forms are supported as just described),
   implicit operands the
   checker cannot see or model (pcmpestri/pcmpistri/pcmpestrm/pcmpistrm —
-  implicit rax/rdx/rcx GPRs; cmpxchg8b/cmpxchg16b — implicit
-  edx:eax/ecx:ebx (resp. rdx:rax/rcx:rbx) operand pairs;
+  implicit rax/rdx/rcx GPRs;
   cpuid/rdtsc/rdtscp/xgetbv/rdpkru/wrpkru/monitor/mwait/umwait/tpause —
   implicit GPR reads/writes the def/use model cannot express, cpuid alone
   writing rax/rbx/rcx/rdx, umwait/tpause reading the implicit edx:eax
@@ -229,7 +283,8 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   conservative def/use modeling — a fallback that now covers only
   genuinely-unknown mnemonics: the common compiler-output families
   BMI1/BMI2/ADX/bsf/bsr/xadd/adcx/adox/crc32 have exact entries, and the
-  implicit-register mul/div/cmpxchg class is genuinely modeled as described
+  implicit-register mul/div/cmpxchg/cmpxchg8b/cmpxchg16b class is genuinely
+  modeled as described
   above). Floating-point types are still rejected
   in `;!` signatures — the Fil-C FP ABI is now decoded (see
   `ABI-NOTES-x86.md`); marshalling it is deferred future work. On ARM64, neon
@@ -245,12 +300,35 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
-- **Pointer stores** additionally reject read-only/special objects, ensure the aux
-  capability array exists, and run the FUGC store barrier when marking is active.
+- **Heap writes** (plain stores, memory-destination RMWs incl. locked forms, FP/SIMD
+  stores, movnti) additionally reject read-only/special objects: the access check
+  tests the aux word at `[lower-8]` for ObjectFlagReadonly|ObjectFlagFree (bits
+  49-50), exactly like compiled Fil-C, and traps with `cannot write to read-only
+  object.`
+- **Pointer stores** additionally ensure the aux
+  capability array exists, and run the FUGC store barrier when marking is active
+  (skipped for a null stored lower — a NULL store has no object to barrier,
+  exactly like the runtime's `filc_store_barrier_for_lower`).
+- **Atomic pointer operations** (`;! atomic load ptr`, `;! atomic store ptr`,
+  `;! atomic ptr` on cmpxchg, and the atomic forms of `;! atomic load store
+  ptr`) go through the Fil-C runtime exactly like filcc-compiled C11 atomic
+  pointer accesses: sarcasm emits its usual inline access check first (so traps
+  get good origins — the runtime re-checks internally), then calls
+  `filc_load_ptr_atomic_with_manual_tracking_outline` /
+  `filc_store_ptr_atomic_outline` / `filc_strong_cas_ptr_with_manual_tracking`
+  in plain SysV marshalling (a `filc_ptr` is two consecutive words,
+  intval-then-lower; `filc_strong_cas_ptr_with_manual_tracking`'s `new_value`
+  travels on the stack). Atomically-stored slots are **boxed** (a 16-byte
+  atomic box behind the aux entry, updated with `lock cmpxchg16b`); the plain
+  `;! load ptr` path is box-aware, so plain and atomic accesses to the same
+  slot interoperate. The runtime functions are `nounwind` (failures are fatal
+  filc panics), so no exception check follows these calls; returned lowers are
+  rooted into the frame's GC root slots immediately (the calls that can
+  allocate are GC safepoints).
 
 ## Testing
-All testing is via the Fil-C test suite: the 296 `filc/tests/sarcasm-*` tests (247
-x86_64, 49 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
+All testing is via the Fil-C test suite: the 361 `filc/tests/sarcasm-*` tests (311
+x86_64, 50 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
 test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
 minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
 files via clang. The suite compiles every yolo input with sarcasm, links with Fil-C
@@ -263,15 +341,61 @@ the pinned implicit-register mul/div/cmpxchg family under register pressure
 (`sarcasm-div-att`, `sarcasm-div-int` — cqo/cdq/cwd sign-extension, reg and
 checked-memory divisors, mul/imul products, webs live across the pin), the
 pinned cmpxchg accumulator and dual-RMW xadd (`sarcasm-rmw-pin-att`), the
+pinned four-register cmpxchg8b/cmpxchg16b pairs with success/failure CAS
+paths, mismatch writeback and lock/non-lock forms (`sarcasm-cmpxchg8b-att`/`-int`,
+`sarcasm-cmpxchg16b-att`/`-int`), the `lock` prefix on the modeled
+memory-destination RMWs (`sarcasm-lock-rmw-att`/`-int`, and the
+`sarcasm-oob-lock-xadd-att`/`sarcasm-oob-cmpxchg16b-att` traps), the
+not-readonly CanWrite traps on plain/RMW/FP stores to read-only objects
+(`sarcasm-ro-plain-store-att`/`-int`, `sarcasm-ro-rmw-att`,
+`sarcasm-ro-fp-store-att`), the Phase-2 atomic pointer operations
+(`sarcasm-aptr-loadstore-att`/`-int` — atomic load/store round-trips, mixing
+with the plain forms in both directions, NULL round-trips, and GC-stress
+churn; `sarcasm-aptr-cmpxchg-att`/`-int` — pointer compare-exchange
+success/failure/ZF-consumer paths, the lock form, a null-lower "integer
+guess" expected, and the retry-loop idiom; `sarcasm-aptr-rmw-att`/`-int` and
+`sarcasm-aptr-armw-att`/`-int` — non-atomic and atomic pointer RMWs incl.
+neg/not, with native ZF/CF consumers immediately after and capability
+preservation proven by dereference; `sarcasm-aptr-stress-att` — 4 threads ×
+10000 locked atomic RMWs on one pointer slot; `sarcasm-aptr-fp-att` — xmm
+state preserved across the injected runtime calls), the pointer-alignment
+traps (`sarcasm-misalign-loadptr-att`, `sarcasm-misalign-storeptr-att`,
+`sarcasm-misalign-aloadptr-att`, `sarcasm-misalign-astoreptr-att`,
+`sarcasm-misalign-casptr-att`), the cmpxchg16b 16-byte alignment trap at an
+in-bounds word-aligned-but-not-16-aligned address — reported through the
+dedicated align>8 fail stub (`sarcasm-misalign-cmpxchg16b-att`), the atomic-access OOB/read-only/null-cap
+traps (`sarcasm-oob-aloadptr-att`, `sarcasm-oob-astoreptr-att`,
+`sarcasm-oob-lsptr-att`, `sarcasm-oob-aptr-walk-att`,
+`sarcasm-ro-astore-att`, `sarcasm-ro-casptr-att`, `sarcasm-ro-lsptr-att`,
+`sarcasm-ro-alsptr-att`, `sarcasm-nullcap-aloadptr-att`,
+`sarcasm-nullcap-astoreptr-att`), the
 BMI1/BMI2/ADX/bsf/bsr/xadd/crc32 exact entries (`sarcasm-bmi-att`),
 and every compile-time rejection (`filc/tests/sarcasm-reject-*` — including the
 Intel-syntax AT&T-operand rejections `sarcasm-reject-intel-attmem`,
 `sarcasm-reject-intel-attmem-fp`, and `sarcasm-reject-intel-enqcmd`, and the
 ambiguous unsized narrowing convert `sarcasm-reject-cvt-unsized`, the
 absolute-address (moffs) rejections `sarcasm-reject-absaddr-load` /
-`-absaddr-store` / `-absaddr-num` / `-absaddr-alu`, and the indirect-branch
+`-absaddr-store` / `-absaddr-num` / `-absaddr-alu`, the indirect-branch
 moffs rejections `sarcasm-reject-jmp-indirect-abs` / `-call-indirect-abs` /
-`-jmp-indirect-num`). The 53
+`-jmp-indirect-num`, and the Phase-2 atomic-annotation shape rejections:
+`;! atomic ptr` on non-cmpxchg / register-form cmpxchg / 4-byte cmpxchg
+(`sarcasm-reject-atomicptr-noncmpxchg` / `-regreg` / `-width`),
+`;! atomic load ptr` on a store or a 4-byte load
+(`sarcasm-reject-aloadptr-on-store` / `-width`), `;! atomic store ptr` on a
+load or a 4-byte store (`sarcasm-reject-astoreptr-on-load` / `-width`),
+`;! load store ptr` on a pure load / pure store / cmpxchg / xadd / a
+`lock`ed form / an unsupported op (`sarcasm-reject-lsptr-on-load` /
+`-on-store` / `-cmpxchg` / `-xadd` / `-lock`, and
+`sarcasm-reject-loadstoreptr` on shl), `;! atomic load store ptr` on a
+non-RMW (`sarcasm-reject-alsptr-nonrmw`), and the whole atomic family on
+ARM64 (`sarcasm-reject-atomicptr-arm`). Also: `lock` on stack-frame accesses
+(`sarcasm-reject-lock-stack-mov` / `-mov-intel` / `-add` / `-add-intel` —
+the slot would virtualize/materialize before the `lock` validation runs,
+silently dropping the prefix), cmpxchg8b/cmpxchg16b on stack-frame slots
+(`sarcasm-reject-cmpxchg8b-stack`, `sarcasm-reject-cmpxchg16b-stack` — no
+register form to virtualize into), and `;! atomic ptr` on cmpxchg8b
+(`sarcasm-reject-cmpxchg8b-ptr`, the 8-byte twin of
+`sarcasm-reject-cmpxchg16b-ptr`). The 53
 `filc/tests/sarcasm-fp-*` tests cover the x86_64 FP/SIMD support end-to-end: SSE
 scalar/packed arithmetic, AVX2/AVX512 (incl. embedded broadcast — off the heap
 and off materialized stack slots alike — and opmask registers), MMX, x87,

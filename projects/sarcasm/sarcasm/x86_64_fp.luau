@@ -327,8 +327,6 @@ local REASON_X87STATE = "x87 environment/state-save instructions are not support
 local REASON_XSAVE = "xsave/xrstor state save/restore size is CPU-dependent (cannot prove memory safety)"
 local REASON_GATHER = "gather/scatter instructions touch multiple discrete addresses (cannot prove memory safety)"
 local REASON_MASKMOV = "vector-masked loads/stores may not touch all addressed lanes (cannot prove memory safety)"
-local REASON_CMPXCHG8B = "cmpxchg8b needs implicit edx:eax/ecx:ebx modeling (not yet supported)"
-local REASON_CMPXCHG16B = "cmpxchg16b needs implicit rdx:rax/rcx:rbx modeling (not yet supported)"
 local REASON_ESTRI = "pcmpestri/pcmpistri-family instructions have implicit GPR operands (rax/rdx/rcx) that are not modeled (cannot prove memory safety)"
 local REASON_AMX = "AMX tile instructions have strided, configuration-dependent memory footprints that cannot be bounds-checked (cannot prove memory safety)"
 
@@ -631,8 +629,9 @@ local EXACT = {
 	vpmaskmovq = { reject = REASON_MASKMOV, claim = true },
 	maskmovdqu = { reject = REASON_MASKMOV, claim = true },  -- implicit rdi addressing
 	maskmovq = { reject = REASON_MASKMOV, claim = true },
-	cmpxchg8b = { reject = REASON_CMPXCHG8B, claim = true },
-	cmpxchg16b = { reject = REASON_CMPXCHG16B, claim = true },
+	-- NB: cmpxchg8b/cmpxchg16b are NOT here — they are genuinely MODELED (implicit
+	-- edx:eax/ecx:ebx resp. rdx:rax/rcx:rbx operand pairs pinned through
+	-- emitPinned) in x86_64_isa.classify.
 }
 fp.EXACT = EXACT
 
@@ -1045,7 +1044,10 @@ local STRINGOPS = {
 }
 local STRINGOPS_ZERO_OPERAND = { movsd = true, cmpsd = true }
 
--- prefixes the parser sees as mnemonics (the real instruction trails as operands)
+-- prefixes that still reach here as mnemonics (the real instruction trails as
+-- operands). `lock` is parsed as a prefix TAG by the parser (x86_64_parse) and
+-- validated in x86_64_isa.classify — a "lock" mnemonic only survives here when
+-- the input stacks prefixes (`lock lock xadd`), which stays rejected.
 local PREFIXES = {
 	rep = true, repe = true, repne = true, repz = true, repnz = true,
 	lock = true, xacquire = true, xrelease = true,

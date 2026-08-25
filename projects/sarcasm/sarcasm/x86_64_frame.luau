@@ -46,7 +46,12 @@
 --   * `enter`/`enterq` (packed push-rbp/mov/sub frame setup sarcasm does not model —
 --     passed through it would shift rsp and clobber rbp inside the synthesized frame);
 --   * vector-indexed memory operands (gather/scatter: base or index of xmm-class) —
---     they touch multiple discrete addresses that cannot be bounds-checked.
+--     they touch multiple discrete addresses that cannot be bounds-checked;
+--   * a `lock` prefix on any stack-frame access — the slot is virtualized into a
+--     pseudo-register or materialized into the thread-confined synthesized frame
+--     before classify's lockAllows validation runs, so accepting it would silently
+--     elide the prefix (a locked memory RMW degenerating into an unlocked register
+--     operation); `lock` stays supported on the modeled heap mem-RMWs only.
 --
 -- FP/SIMD registers (xmm-class: xmm/ymm/zmm/mm/st/k) are IN SCOPE: instructions naming
 -- them pass through the frame policy (heap accesses are bounds-checked later by the
@@ -61,6 +66,7 @@
 
 local x86 = require("./x86_64_isa")
 local fp = require("./x86_64_fp")
+local sig = require("./sig")
 
 local x86_64_frame = {}
 
@@ -695,6 +701,20 @@ function x86_64_frame.rewrite(st, ctx)
 			.. " proven safe: " .. (st.raw or m))
 	end
 	if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym then
+		-- A `lock` prefix on a stack-frame access can never be honored: this rewrite
+		-- runs BEFORE classify (which owns the lockAllows validation), and the slot
+		-- is about to be virtualized into a pseudo-register or materialized into the
+		-- thread-confined synthesized frame — either way the emitted instruction
+		-- would silently lose the prefix (a locked memory RMW degenerating into an
+		-- unlocked register operation, e.g. `lock addq $1, -8(%rbp)`), or carry a
+		-- meaningless prefix on thread-confined memory. Reject it, mirroring the
+		-- classify rejection of `lock` on everything but the modeled heap mem-RMWs.
+		if st.lockPrefix then
+			error("sarcasm: lock prefix on a stack-frame access is not supported (frame"
+				.. " slots are thread-confined — virtualized or materialized — so `lock`"
+				.. " there is meaningless; it is only allowed on the modeled"
+				.. " memory-destination RMWs on real memory): " .. (st.raw or m))
+		end
 		-- A stack memory operand carrying an AVX512 {kN} mask decorator: masked-off
 		-- lanes may not touch memory, so the access cannot be bounds-checked. The
 		-- lift's fp.classify fires this same rejection for heap accesses; here the
@@ -746,12 +766,22 @@ function x86_64_frame.rewrite(st, ctx)
 				end
 			end
 		end
-		-- `;! load ptr` / `;! store ptr` operate on REAL memory (invisicap loads/stores);
-		-- a frame slot is virtualized/materialized, not real memory, so the annotation
-		-- can never be honored here. Reject cleanly (used to crash the transform).
-		if st.annotation == "load ptr" or st.annotation == "store ptr" then
+		-- The `;! ... ptr` annotation family operates on REAL memory (invisicap
+		-- loads/stores/RMWs); a frame slot is virtualized/materialized, not real
+		-- memory, so the annotation can never be honored here. Reject cleanly
+		-- (used to crash the transform).
+		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
 			error("sarcasm: `;! " .. st.annotation .. "` on a stack-frame access is not supported"
 				.. " (frame slots are virtualized/materialized, not real memory): " .. (st.raw or m))
+		end
+		-- cmpxchg8b/cmpxchg16b have no register form: a frame slot cannot be
+		-- virtualized for them (a slot pseudo-register is not a memory operand),
+		-- and GPR-only stack slots are never materialized. Reject cleanly instead
+		-- of mis-sizing the slot (the bare mnemonic has no width suffix).
+		if m == "cmpxchg8b" or m == "cmpxchg16b" then
+			error("sarcasm: " .. m .. " on a stack-frame access is not supported (frame slots"
+				.. " are virtualized as registers and " .. m .. " has no register form): "
+				.. (st.raw or m))
 		end
 		-- Replace the stack-slot memory operand in place with a slot pseudo-register of the
 		-- access width, keeping the original mnemonic. This uniformly handles plain moves

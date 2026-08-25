@@ -45,9 +45,48 @@ the remaining work is the marshalling (entry/callsite glue + buffer-CC packing).
 - `filc_pollcheck_slow(rdi=myth, rsi=&origin)`
 - `filc_allocate(rdi=myth, rsi=sizeBytes)` -> `%rax`; usable payload = `%rax + 16`
 - `filc_object_ensure_aux_ptr_outline(rdi=myth, rsi=lower-16)` -> `%rax`
-- `filc_store_barrier_for_lower_slow(rdi=myth, rsi=lower)`
+- `filc_store_barrier_for_lower_slow(rdi=myth, rsi=lower)` — non-null lower
+  only (the inline form guards `marking && lower`; the _slow entrypoint
+  asserts non-null)
 - `filc_cc_args_check_failure(rdi=size, rsi=expected, rdx=0)` / `filc_cc_rets_check_failure`
 - calls use `@PLT`; globals via `leaq sym(%rip), %reg`; return `retq`; indirect `callq *(%rsi)` / `jmpq *%rax`
+
+## Atomic pointer runtime functions (decoded from build/bin/clang -S output)
+The C11 `_Atomic` pointer operations compile to these extern-"C" libpizlo
+entrypoints — plain SysV (NOT the Fil-C dense convention), `nounwind`
+(failures are fatal filc panics: NO exception-flag check after the call,
+unlike pizlonated-function calls). A `filc_ptr` argument is two consecutive
+argument words, **intval first, then lower**; past the sixth integer register
+the remaining words go on the stack in declaration order. A `filc_ptr` result
+comes back as **rax=intval, rdx=lower**. The runtime re-checks every access
+internally (`filc_check_native_access`: null/align8/bounds, +READONLY for
+writes); the compiler (and sarcasm) still emit the inline checks first for
+good trap origins. Pointer ARGUMENTS need no caller GC rooting (the runtime
+protects them itself); a RETURNED lower is rooted into the frame's root slots
+immediately (the allocating calls are GC safepoints).
+- `filc_ptr filc_load_ptr_atomic_with_manual_tracking_outline(filc_ptr slot)`:
+  `rdi=slot.iv, rsi=slot.lower` -> `rax=old.iv, rdx=old.lower`. No myth arg,
+  does not allocate, can only panic. (Internally: check, non-atomic raw-word
+  read, load-load fence, SEQ_CST aux-word read; boxed slots get a 128-bit box
+  load via `lock cmpxchg16b`.)
+- `void filc_store_ptr_atomic_outline(filc_thread* myth, filc_ptr slot,
+  filc_ptr value)`: `rdi=myth, rsi=slot.iv, rdx=slot.lower, rcx=value.iv,
+  r8=value.lower`. Can allocate (creates the 16-byte atomic box / ensures
+  aux) => GC safepoint; runs the store barrier on value internally.
+- `filc_ptr filc_strong_cas_ptr_with_manual_tracking(filc_thread* myth,
+  filc_ptr slot, ptrdiff_t offset, filc_ptr expected, filc_ptr new_value)`:
+  `rdi=myth, rsi=slot.iv, rdx=slot.lower, rcx=offset, r8=expected.iv,
+  r9=expected.lower`, and **`new_value` on the stack: `[rsp]=new.iv,
+  `[rsp+8]=new.lower` at the call** (clang: `pushq new.lower; pushq new.iv;
+  callq; addq $16, %rsp`) -> old value in `rax/rdx`. Can allocate (box
+  creation) => GC safepoint. **Success <=> `old.iv == expected.iv`** — a raw
+  intval comparison (clang: `cmpq expected.iv, old.iv; sete`); the expected's
+  lower is ignored by the comparison, so a null-lower expected is a
+  legitimate "integer guess". The returned old value carries the slot's real
+  lower.
+- (`filc_ptr filc_xchg_ptr_with_manual_tracking(myth, slot, offset, new)`
+  exists too — six register words — but xchg-on-pointers is not currently
+  emitted by sarcasm.)
 
 ## Registers
 16 GPRs, encoding order: rax=0 rcx=1 rdx=2 rbx=3 rsp=4 rbp=5 rsi=6 rdi=7 r8..r15=8..15.

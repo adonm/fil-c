@@ -29,6 +29,7 @@ local FIXED = {
 	mulx = "mulx", mulxl = "mulx", mulxq = "mulx",
 	cmpxchg = "cmpxchg", cmpxchgb = "cmpxchg", cmpxchgw = "cmpxchg",
 	cmpxchgl = "cmpxchg", cmpxchgq = "cmpxchg",
+	cmpxchg8b = "cmpxchg8b", cmpxchg16b = "cmpxchg16b",
 	endbr64 = "nop", nop = "nop", ud2 = "ud2", ret = "ret", retq = "ret", leave = "leave",
 	call = "call", callq = "call", jmp = "jmp", jmpq = "jmp",
 }
@@ -47,6 +48,46 @@ local ALU2 = { add=true, sub=true, ["and"]=true, ["or"]=true, xor=true, sal=true
 	sar=true, shr=true, imul=true, adc=true, sbb=true, ror=true, rol=true }
 local FLAGS_ONLY = { cmp=true, test=true }
 local DST_ONLY = { inc=true, dec=true, neg=true, ["not"]=true }
+
+-- The SDM locked-instruction set restricted to the ALU family (shifts/rotates and
+-- imul are NOT lockable in hardware): add/adc/and/or/sbb/sub/xor.
+local LOCKABLE_ALU = { add=true, adc=true, ["and"]=true, ["or"]=true, sbb=true, sub=true, xor=true }
+
+-- May this instruction carry a `lock` prefix? The prefix is only sound to pass
+-- through on instructions whose memory effects sarcasm models EXACTLY — a
+-- memory-destination read-modify-write in the hardware locked-instruction set:
+-- the lockable ALU mem-RMW family, inc/dec/neg/not, xadd, cmpxchg, and
+-- cmpxchg8b/cmpxchg16b. Everything else (reg-reg forms, mov, FP/SIMD, xchg,
+-- unmodeled mnemonics) keeps the safety proof intact by being rejected.
+function x86.lockAllows(stmt)
+	local ops = stmt.operands or {}
+	if not (ops[1] and ops[1].kind == "mem") then return false end
+	local m = x86.baseMnemonic(stmt.mnemonic)
+	if LOCKABLE_ALU[m] or DST_ONLY[m] or m == "cmpxchg"
+		or m == "cmpxchg8b" or m == "cmpxchg16b" then
+		return true
+	end
+	return string.match(string.lower(stmt.mnemonic), "^xadd[bwlq]?$") ~= nil
+end
+
+-- Is `stmt` a memory-destination read-modify-write instruction (its memory
+-- operand is both read and written)? Used by ptr-annotation validation
+-- (transform): an invisicap `;! load ptr` / `;! store ptr` cannot replace an
+-- RMW (that would silently drop the operation).
+function x86.isMemRmw(stmt)
+	local ops = stmt.operands or {}
+	if not (ops[1] and ops[1].kind == "mem") then return false end
+	local m = x86.baseMnemonic(stmt.mnemonic)
+	if ALU2[m] or DST_ONLY[m] or m == "cmpxchg"
+		or m == "cmpxchg8b" or m == "cmpxchg16b" then
+		return true
+	end
+	local raw = string.lower(stmt.mnemonic)
+	return string.match(raw, "^xadd[bwlq]?$") ~= nil
+		or string.match(raw, "^adcx[lq]?$") ~= nil
+		or string.match(raw, "^adox[lq]?$") ~= nil
+		or string.match(raw, "^crc32[bwlq]?$") ~= nil
+end
 -- condition -> whether it's an unsigned/eq branch we generate; classify only needs control.
 local COND_JMP = { jcc = true }
 
@@ -73,6 +114,18 @@ function x86.classify(insn)
 	local rawMnem = string.lower(insn.mnemonic)
 	local why = fp.unsafeReject(rawMnem, insn)
 	if why then error("sarcasm: " .. why .. ": " .. (insn.raw or rawMnem)) end
+
+	-- `lock` prefix (parsed as a prefix tag by x86_64_parse): allowed only on the
+	-- exactly-modeled memory-destination RMWs (lockAllows). The locked instruction
+	-- then rides the normal checked path (a single write-classified access check,
+	-- including the not-readonly CanWrite test) with the prefix re-emitted by the
+	-- renderer. Anything else is rejected so the safety proof stays intact.
+	if insn.lockPrefix and not x86.lockAllows(insn) then
+		error("sarcasm: lock prefix not allowed on '" .. rawMnem .. "' (lock requires a"
+			.. " memory-destination read-modify-write instruction sarcasm models exactly:"
+			.. " add/adc/and/or/sbb/sub/xor, inc/dec/neg/not, xadd, cmpxchg,"
+			.. " cmpxchg8b/cmpxchg16b): " .. (insn.raw or rawMnem))
+	end
 
 	local m = x86.baseMnemonic(insn.mnemonic)
 	local ops = insn.operands or {}
@@ -260,8 +313,9 @@ function x86.classify(insn)
 		-- CMPXCHG dest, src: the accumulator (al/ax/eax/rax by size) is an
 		-- implicit read-modify-write operand (compared with dest; overwritten
 		-- with dest on mismatch), the explicit dest is an RMW, src a use. The
-		-- accumulator is pinned to physical rax by emitPinned. (cmpxchg8b/16b
-		-- stay rejected by the fp table — they have the paired-register forms.)
+		-- accumulator is pinned to physical rax by emitPinned. (The paired
+		-- double-width forms cmpxchg8b/cmpxchg16b are modeled by the next
+		-- branch.)
 		local w = insn.opsize
 		if not w then
 			for _, o in ops do
@@ -280,6 +334,37 @@ function x86.classify(insn)
 		table.insert(uses, accU); table.insert(defs, accD)
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
 			pin = { uses = { accU }, defs = { accD } } }
+	elseif m == "cmpxchg8b" or m == "cmpxchg16b" then
+		-- CMPXCHG8B m64 / CMPXCHG16B m128: the ONLY encodable operand is memory
+		-- (there is no register form). Implicit operands: the expected value
+		-- edx:eax (resp. rdx:rax) is an implicit read-modify-write PAIR
+		-- (compared with dest; overwritten with the old dest on mismatch) and
+		-- ecx:ebx (resp. rcx:rbx) is the implicit new-value source. All four
+		-- are pinned to their physical registers by codegen's emitPinned,
+		-- exactly like the div/mul/cmpxchg family: the reaching webs of the
+		-- implicit-use registers are copied into the physical registers before
+		-- the instruction and the mismatch-writeback results copied back out
+		-- into fresh webs after it; regalloc colors everything else AROUND the
+		-- fixed rax/rdx/rbx/rcx effects via the precolored temps (rbx needs no
+		-- special treatment — it is an ordinary allocatable callee-saved GPR,
+		-- and the pinned instruction's def/use temps keep any other web from
+		-- being colored into it across the pin).
+		if not (ops[1] and ops[1].kind == "mem") then
+			error("sarcasm: " .. rawMnem .. " requires a memory operand (it has no"
+				.. " register form): " .. (insn.raw or rawMnem))
+		end
+		memRegs(ops[1], uses)
+		-- fresh table per implicit occurrence (see the cqo comment above)
+		local function imp(num, nm)
+			return { kind="reg", rc="gpr", num=num, width=64, name=nm, implicit=true }
+		end
+		local axU, dxU, bxU, cxU = imp(0, "rax"), imp(2, "rdx"), imp(3, "rbx"), imp(1, "rcx")
+		local axD, dxD = imp(0, "rax"), imp(2, "rdx")
+		table.insert(uses, axU); table.insert(uses, dxU)
+		table.insert(uses, bxU); table.insert(uses, cxU)
+		table.insert(defs, axD); table.insert(defs, dxD)
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+			pin = { uses = { axU, dxU, bxU, cxU }, defs = { axD, dxD } } }
 	elseif FLAGS_ONLY[m] then
 		for _, o in ops do useOperand(o) end
 	elseif ALU2[m] then

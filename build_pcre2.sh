@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/pcre2-10.44
+cd projects/pcre2-10.47
 extract_source
 CC="$PWD/../../../build/bin/clang -g -O" ./configure --prefix=$PWD/../../../pizfix \
     --enable-pcre2-16 --enable-pcre2-32 --enable-pcre2grep-libz

@@ -86,6 +86,11 @@ allocation. For fixed sizes, sp-relative address math inside `[base, base+size)`
   with a scalar before a later arg.) Arguments beyond the sixth word go on the stack;
   sarcasm does not marshal stack arguments and rejects such signatures.
 - return: w0 bit0 = exception flag (1=exception); x1 = ret.intval; x2 = ret.lower.
+- FP/vector (neon) classes are NOT decoded here yet: sarcasm currently rejects any
+  instruction naming a neon register, uniformly and cleanly, pending proper ARM64
+  FP/SIMD support (the x86_64 treatment — see ABI-NOTES-x86.md's FP section for
+  what the decoded x86_64 FP ABI looks like). FP types in `;!` signatures are
+  rejected on both architectures.
 
 ## Stack overflow check (prologue, after saving regs, before frame push)
 ```

@@ -17,7 +17,10 @@ function emit.emitFip(out, tr, colorResult, render, syntax)
 	local color = colorResult.color
 	local colorNum = render.makeColorNum(color)
 	local calleeSaved = render.usedCalleeSaved(color)
-	local layout = render.computeLayout(calleeSaved, tr.numRoots, (tr.numSpillSlots or 0) * 8)
+	-- FP frame-slot region sizes are x86_64-only (nil elsewhere; arm64's
+	-- computeLayout ignores the extra args).
+	local layout = render.computeLayout(calleeSaved, tr.numRoots, (tr.numSpillSlots or 0) * 8,
+		tr.fpSaveBytes, tr.fpBytes)
 	local sigName = "pizlonatedFIP" .. tostring(tr.sigDesc.signature) .. "_" .. tr.name
 	local rc = {
 		out = out, tr = tr, layout = layout, colorNum = colorNum,

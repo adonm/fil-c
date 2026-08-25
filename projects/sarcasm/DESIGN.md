@@ -48,8 +48,127 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   each definition to a unique private symbol and rewrites the references at parse time,
   so numeric labels work in branches and loops like any named label. A reference with no
   definition in the requested direction is rejected (`unresolved numeric label
-  reference`).
-- `*_isa.luau`     — instruction semantics: register defs/uses, control flow.
+  reference`). In Intel-syntax mode an AT&T-style parens operand field
+  (disp(base,index,scale)) is rejected outright — "AT&T-style operand in
+  Intel-syntax input (use [bracket] memory operands)": without the explicit
+  check such a field fell through to parseSym and RE-RENDERED verbatim as
+  valid AT&T memory syntax with Intel dest-first operand order applied and NO
+  capability/bounds check — a total check bypass (`movq (%rdi), %rsi` in
+  Intel mode emitted an unchecked 8-byte store). Any field containing parens
+  is rejected (covering the parseSym fallthrough, the numeric-prefix immediate
+  path, and whitespace-dodged forms); the only legitimate parens in an Intel
+  operand are the x87 stack-register name st(N).
+- `*_isa.luau`     — instruction semantics: register defs/uses, control flow. On
+  x86_64 this is also where the implicit-register GPR instructions are MODELED:
+  div/idiv (implicit rdx:rax dividend use, quotient/remainder def), mul and
+  1-operand imul (rax use, rdx:rax product def), mulx (implicit rdx source,
+  not written), cmpxchg (implicit accumulator RMW alongside the explicit
+  destination RMW), and the cqo/cdq/cwd sign-extends (rax use, rdx def) name
+  their implicit rax/rdx effects with implicit def/use operand tables the web
+  analysis connects to the surrounding code; codegen's emitPinned then pins
+  them to the physical registers with synthesized moves AROUND the instruction
+  (the reaching webs of the implicit-use registers are copied into physical
+  rax/rdx before it, the result webs copied back out into fresh webs after it
+  — regalloc coalescing makes the copies free when the user already wrote
+  rax/rdx), and the emitted instruction shows only its explicit operands. An
+  explicit operand naming a pinned register renders as the fixed physical
+  register, keeping it in sync with the pin. cbw/cwde/cltq need no pinning:
+  codegen rewrites them to a renameable movsxx on the rax web.
+- `x86_64_fp.luau` — DONE + TESTED (the sarcasm-fp-* tests). The x86_64 FP/SIMD
+  knowledge module, consulted by the isa classifier (def/use modeling +
+  rejections), the codegen (checked-access width/alignment), and the frame policy
+  (stack-slot widths): per-mnemonic memory access widths/alignments (scalar and
+  packed FP, vector moves, MMX, x87, AES/SHA/PCLMUL/GFNI crypto — SM3/SM4 also
+  have width-table entries but are execution-untested on the current dev
+  hardware —, opmask k moves, fxsave/fxrstor=512; embedded broadcast `{1toN}` =
+  one element; vpbroadcastb/w/d/q memory sources = the exact element width
+  1/2/4/8; exact narrow widths for the truncating stores — vpmovqb/qw/qd/
+  db/dw/wb and the saturating vpmovs*/vpmovus* forms = source vector bytes /
+  element ratio — and for vcvtps2ph/vcvtph2ps (half width on the ph side);
+  sgdt/sidt=10, sldt/str/smsw=2, lss/lfs/lgs = destination size + 2-byte
+  selector; movnti = the source register's width, never a guessed default;
+  vpermi2*/vpermt2* and the unmasked vexpand*/vcompress*/vpexpand*/vpcompress*
+  forms = full vector width; the AVX512-VNNI dot products vpdpbusd(s)/
+  vpdpwssd(s)/vpdpbssd(s) = full vector width (the ss/sd suffix rule would
+  otherwise pin them to 4/8 bytes) and vp4dpwssd(s) = 16 bytes; vdbpsadbw =
+  full vector width; the AVX512-IFMA 52-bit multiply-adds
+  vpmadd52huq/vpmadd52luq = full vector width (exact entries — the digits
+  keep them out of the p-family pattern); the full-width unsigned converts
+  vcvtpd2uqq/vcvttpd2uqq = full vector width (8-byte elements on both
+  sides, like vcvtpd2qq); the ss/sd/ps/pd scalar-width suffix rule EXCLUDES
+  p-stem mnemonics — after the optional 'v', a stem starting with 'p' is
+  the packed-INTEGER family, where a trailing "sd"/"ss"/"ps"/"pd" is part
+  of the NAME, not a scalar suffix — so the whole "sd"-ending packed class
+  (vpabsd/vpmaxsd/vpminsd and the SSE pabsd/pmaxsd/pminsd, the cross-sign
+  VNNI vpdpwusd(s)/vpdpbsud(s)/vpdpwsud(s), vpopcntd, ...) falls through
+  to the p-family pattern at FULL vector width instead of being
+  under-checked at 4/8 bytes, closing that under-check class generically
+  rather than by whack-a-mole entries (scalar FMA keeps its width:
+  vfmadd231sd's stem is "fmadd231" -> 8, as do the true scalar ss/sd
+  forms); the suffix rule also resolves the packed AVX512-FP16 suffix ph
+  to full vector width (like ps/pd), while the SCALAR FP16 sh forms are
+  deliberately NOT matched — a width from the rule would be wrong for the
+  GPR-mixing scalar-half converts (vcvtusi2sh's integer source is m32/m64)
+  and would leave vcvtsh2si's GPR destination unmodeled, so every sh form
+  stays unknown and a memory-operand one rejects cleanly; the widening
+  convert zoo — the
+  vcvtudq2pd/vcvtdq2pd/vcvtps2uqq families = half the destination width, the
+  vcvtph2pd/vcvtph2qq/vcvtph2uqq quarter-widths,
+  vcvtne2ps2bf16 = full width; the NARROWING converts (vcvtpd2ps & siblings —
+  vcvtpd2dq/vcvttpd2dq/vcvtpd2udq/vcvttpd2udq/vcvtuqq2ps/vcvtqq2ps/
+  vcvtneps2bf16, vcvtps2phx, and the pd2ph/dq2ph family) SIZE-DRIVEN, because
+  the destination register class does not determine the memory source width
+  (vcvtpd2ps reads m128 into an xmm, m256 into an xmm, or m512 into a YMM; the
+  ph family reads m128/m256/m512 into an xmm every time — except the
+  vcvtdq2ph/vcvtudq2ph .512 form, whose destination is a YMM like the ps/dq
+  family's): the width comes from
+  the Intel PTR size annotation or the AT&T x/y(/z) source suffix at exact
+  widths (XMMWORD PTR or vcvtpd2psx = 16, vcvtpd2psy = 32, vcvtpd2phz = 64 —
+  the ph-quad family's .512 form shares the xmm destination, so the z suffix
+  is its only gas-encodable sized spelling), a bare unsized memory form is
+  accepted only when the destination class is unambiguous (vcvtpd2ps (%rdi),
+  %ymm0 ⇒ .512 ⇒ m512 — and likewise vcvtdq2ph/vcvtudq2ph with a ymm
+  destination ⇒ m512 = 64: their .512 form has NO z-suffixed spelling
+  (`vcvtdq2phz` does not assemble), so the bare ymm-dest form is its only
+  gas-encodable sized spelling, with the x/y suffixes at 16/32 and ZMMWORD
+  PTR driving the exact width in Intel syntax; the two are AVX512-FP16
+  instructions — this dev machine has no FP16 silicon, so their acceptance
+  is compile-time- and pre-execution-trap-proven) and is otherwise rejected
+  cleanly ("unsized memory
+  operand is ambiguous; use a size suffix or PTR annotation") BEFORE anything
+  gas would fail is rendered, a PTR size that is not a legal source width for
+  the family and a suffix/destination-class combination the ISA does not have
+  are likewise rejected cleanly, and the renderer synthesizes the source-width
+  suffix for a bare mnemonic with a sized (Intel PTR or materialized frame
+  slot) memory operand; lzcnt/tzcnt/popcnt memory sources (incl. the
+  AT&T w/l/q suffixes) = the destination GPR's byte width, and likewise the
+  BMI1/BMI2/bsf/bsr exact entries (shlx/sarx/shrx/andn/bextr/blsi/blsr/
+  blsmsk/bzhi/pdep/pext/rorx first-reg-def/rest-use, bsf/bsr — only the
+  gas-encodable spellings exist, so there are no 16-bit BMI forms), xadd (RMW
+  on BOTH explicit operands), and adcx/adox/crc32 (RMW destination — adcx/adox
+  DO have r/m source forms; crc32's memory width is the crc SOURCE width from
+  the b/w/l/q suffix, source register, or PTR annotation, and an illegal
+  destination/source width combination is rejected cleanly — bare+sized crc32
+  mem forms render with the explicit suffix synthesized), all at the
+  shared/destination operand width), GPR def/use
+  roles of mixed GPR/vector instructions (incl. the vpbroadcastb/w/d/q
+  GPR-source forms, which READ the source GPR — an unmodeled read was a
+  stale-register miscompile — and the vcvtusi2ss/vcvtusi2sd GPR/integer
+  source with the reverse vcvtt*/vcvt*2usi GPR destination, the same
+  stale-register class; the size-driven cvt-int memory forms synthesize the
+  l/q AT&T suffix at render — `vcvtusi2ss QWORD PTR [rdi]` emits
+  `vcvtusi2ssq`), the authoritative-width rule (the resolved
+  ISA-fixed width never defers to an Intel PTR size annotation — a
+  contradicting annotation is REJECTED, on the heap and stack paths alike;
+  only the size-driven widths — the x87 PTR fallback and the cvtsi2ss/sd
+  integer source — take their width from the annotation), and the
+  unsafe-instruction reject list
+  (syscall/port-I/O/privileged/string-ops/prefixes/gather/scatter/vector-masked/
+  xsave/x87-state/cmpxchg8b/cmpxchg16b/pcmpestri-family/implicit-GPR ops —
+  cpuid/rdtsc/rdtscp/xgetbv/rdpkru/wrpkru/monitor/mwait/umwait/tpause
+  —/implicit-memory-operand ops/monitoring-class umonitor (a memory range the
+  checker cannot size)/AMX tiles (a strided, tile-config-dependent
+  footprint)/far control transfers).
 - `*_frame.luau`   — frame policy: drop the input's frame setup/teardown, virtualize
   stack-pointer/frame-pointer-relative slots, reject stack-address escapes.
 - `*_codegen.luau` — per-arch instruction emitters (neutral micro-ops) for the transform.
@@ -159,13 +278,11 @@ executes, and the frame rewrite rejects, with a clean `sarcasm: <file>: <msg>` e
 - `enter`/`enterq` — packed push-rbp/`mov %rsp,%rbp`/`sub $imm,%rsp` frame setup that
   sarcasm does not model; passed through it would shift rsp and clobber rbp inside the
   synthesized Fil-C frame (frame setup must use the canonical three-instruction form);
-- any instruction naming a vector/floating-point (xmm-class: xmm/ymm/zmm, MMX mmN, or
-  x87 stack st/st(N)) register, as an operand or a memory base/index, and any x87 FPU
-  instruction at all (every x87 mnemonic begins with 'f'; ones naming no xmm-class
-  register — `fldz`, `fnstsw %ax` — would otherwise slip past the register check) —
-  sarcasm has no vector register file, so floating-point and vector code is out of
-  scope and rejected rather than passed through to a cryptic assembler failure or a
-  silent miscompile.
+- vector-INDEXED memory operands (gather/scatter: an xmm-class register as the
+  memory base or index) — they touch multiple discrete addresses that cannot be
+  bounds-checked. FP/SIMD registers as VALUES are in scope: instructions naming
+  them pass through the frame policy, and their stack-frame accesses are
+  materialized rather than virtualized (see the FP/SIMD subsection below).
 
 Balanced callee-saved push/pop save/restore pairs ARE permitted anywhere the depth
 analysis stays consistent (e.g. gcc's shrink-wrapped saves behind a conditional
@@ -203,6 +320,136 @@ unaffected). An rsp memory index (`movq (%rdi,%rsp,1), %rax`, which the encoding
 forbids but the parser accepts) is rejected on the same path instead of crashing the
 assembler.
 
+#### x86_64: FP/SIMD registers, materialization, and injected-call saves
+FP/SIMD registers (xmm/ymm/zmm, MMX mmN, x87 st/st(N), opmask k0-k7) are IN SCOPE.
+sarcasm never register-allocates them — it needs no vector registers for the Fil-C
+checks, so their register numbers would only collide with GPR numbers in the web
+analysis — and the calling convention makes none of them callee-save, so no usage
+validation is needed: instructions naming them pass through with their vector
+operands verbatim. Only the GPR operands are modeled in defs/uses — the memory
+base/index, and the GPR halves of mixed GPR/vector instructions (cvtsi2sd, movd,
+pinsrw, cvttsd2si, movmskps, kmov, fnstsw %ax, the GPR source of
+vpbroadcastb/w/d/q, ...) with their correct def/use
+roles. A memory operand of an FP/SIMD instruction is bounds-checked by the
+transform at the width the x86_64_fp.luau knowledge module assigns the mnemonic
+(movss=4, movsd=8, xmm vector=16, ymm=32, zmm=64, MMX=8, x87 tbyte=10,
+fxsave/fxrstor=512, embedded broadcast {1toN}=element width, vpbroadcast
+memory sources at the exact element width 1/2/4/8, truncating stores
+— vpmovqb/qw/qd/db/dw/wb and the saturating vpmovs*/vpmovus* forms — at the
+source vector bytes / element ratio, vcvtps2ph/vcvtph2ps at half width on the
+ph side, the AVX512-VNNI dot products vpdpbusd(s)/vpdpwssd(s)/vpdpbssd(s) at
+full vector width (vp4dpwssd(s)=16), vdbpsadbw at full vector width, the
+AVX512-IFMA vpmadd52huq/vpmadd52luq at full vector width, the full-width
+unsigned vcvtpd2uqq/vcvttpd2uqq at full vector width, the packed-integer
+p-stem class (vpabsd/vpmaxsd/vpminsd & SSE pabsd/pmaxsd/pminsd, cross-sign
+VNNI vpdpwusd(s)/vpdpbsud(s)/vpdpwsud(s), ...) at full vector width —
+p-stems are excluded from the ss/sd/ps/pd scalar-width suffix rule, which
+would otherwise pin them to 4/8; scalar FMA and the true scalar ss/sd forms
+keep their widths —, packed FP16 ph-suffix forms at full vector width
+(scalar sh memory forms reject), the
+widening converts at their exact ratios (vcvtudq2pd/vcvtdq2pd/
+vcvtps2uqq-family = dest/2, vcvtph2pd/vcvtph2qq/vcvtph2uqq = dest/4,
+vcvtne2ps2bf16 = full width), the narrowing converts (vcvtpd2ps & siblings)
+SIZE-DRIVEN (the width comes from the Intel PTR annotation or the AT&T
+x/y(/z) source suffix — x=16, y=32, z=64 for the ph-quad family —, a bare
+unsized memory form is accepted only when the destination class is unambiguous
+(vcvtpd2ps (%rdi), %ymm0 => m512; likewise the AVX512-FP16
+vcvtdq2ph/vcvtudq2ph with a ymm destination => m512 = 64 — their .512 form
+has no z-suffixed spelling, so the bare form is its only gas-encodable
+spelling) and otherwise rejected cleanly, and the
+renderer synthesizes the source suffix for Intel PTR input; see the
+x86_64_fp.luau module entry for the full matrix), lzcnt/tzcnt/popcnt and the
+BMI1/BMI2/bsf/bsr exact entries memory sources at the
+destination GPR's byte width, xadd/adcx/adox memory operands at the shared
+operand width, crc32 memory sources at the crc source width, sgdt/sidt=10,
+sldt/str/smsw=2, lss/lfs/lgs=dest+2,
+...); aligned forms
+(movaps/movdqa-class) also check alignment, clamped to 8 like FilPizlonator's
+buildCheck (the runtime's access-check origin cannot express larger alignments —
+a word-aligned but not vector-aligned address passes the check and then faults in
+hardware, same as compiled code). The resolved width is AUTHORITATIVE over any
+Intel PTR size annotation: the emitted instruction encodes the ISA-fixed width
+regardless (`vmovdqu64 DWORD PTR [mem], zmm0` still stores 64 bytes), so a PTR
+size that CONTRADICTS the resolved width is rejected — on the heap path here
+and on the stack path below — with `PTR size annotation (N bytes) contradicts
+the memory access width (W bytes) of '<mnem>'` (a lying annotation would
+under-check the access or under-size a materialized stack slot — a
+stack-overflow-into-the-caller hole). Only the genuinely size-driven widths
+take the annotation: the unsuffixed x87 memory forms (fld DWORD PTR -> 4,
+QWORD PTR -> 8, TBYTE PTR -> 10), the cvtsi2ss/cvtsi2sd integer memory
+source, and the narrowing converts (vcvtpd2ps & siblings — for those the
+annotation is not a contradiction candidate but the width SOURCE, since the
+destination register class does not determine the memory source width; a PTR
+size that is not a legal source width for the family is rejected cleanly,
+and a bare unsized memory form is accepted only when unambiguous — see the
+width enumeration above). Those size-driven forms also RENDER at the width the annotation
+selected: the emitted AT&T mnemonic carries the encoding suffix (fld QWORD
+PTR -> fldl, fild QWORD PTR -> fildq, fstp TBYTE PTR -> fstpt, cvtsi2ss
+QWORD PTR -> cvtsi2ssq, vcvtusi2sd DWORD PTR -> vcvtusi2sdl, vcvtpd2ps
+XMMWORD PTR -> vcvtpd2psx, crc32 BYTE PTR -> crc32b) — a bare
+rendering would assemble at gas's default width and silently change the
+checked access width. Combinations the ISA does not have (fst TBYTE PTR —
+only fstp has an m80 form; fiadd QWORD PTR) are rejected with `<mnem> has no
+<N>-byte memory form` rather than rendered as a nonexistent instruction.
+movnti's width is likewise NOT annotation- or default-driven: it is
+determined by the source register (%esi -> 4, %rsi -> 8), and a contradicting
+PTR size rejects. The PTR-contradiction rejection is not FP-only: it also
+fires on the GPR heap path (`mov WORD PTR [rdi], rax` stores 8 bytes, not 2)
+and on GPR accesses materialized into an FP-tainted frame cluster (a lying
+annotation would under-size the cluster while the instruction writes past
+it). The legit narrowing exemptions keep working: movzx/movsx/movsxd take
+their check width from the annotation (the source is genuinely narrower than
+the destination register), and no-GPR-operand forms (push/pop/call/jmp,
+mem-only inc/dec/neg/not) have no register-defined width to contradict.
+Full-width two-source permutes (vpermi2*/vpermt2*) and the
+UNMASKED expand/compress forms (vexpand*/vcompress*/vpexpand*/vpcompress*) are
+SUPPORTED at full vector width — with no {k} writemask they touch all lanes,
+a contiguous full-width access; the masked forms reject via the generic {k}
+rule.
+
+A stack-frame access by an FP/SIMD instruction cannot ride the GPR slot
+virtualization (a slot pseudo-register renders as a GPR, not a vector register),
+so analyzeFrame runs an FP TAINT SCAN over the body's stack accesses: intervals
+are sweep-merged into clusters, and every cluster an FP/vector access touches —
+dragging in any GPR access overlapping it (aliasing: the overlapped bytes must
+have exactly one home) — is MATERIALIZED: the instruction is kept and its memory
+operand rewritten to a real disp(%rsp) into a reserved region of sarcasm's
+synthesized frame. Synthesized offsets are chosen so every input-guaranteed
+alignment up to 16 bytes is preserved (entry rsp ≡ 8 mod 16 fixes the residue,
+uniformly for rsp-relative and normalized rbp-relative offsets), so movaps/movdqa
+stack slots work. Materialization preserves AVX512 decorators on the rewritten
+operand: an embedded-broadcast stack access keeps its `{1toN}` (the cluster is
+sized at the broadcast element width, so broadcasts off stack slots read exactly
+one element), and a `{k}`-masked stack access is rejected with the same message
+as a masked heap access. GC root slots keep their ABI-mandated position at the base of
+the frame (the Fil-C GC reads them as frame->lowers[i]); the FP regions — the
+vector-save area and the materialized clusters — sit past the root area, starting
+on a 16-byte boundary (8 bytes of padding when the root count is odd) so the
+clusters' mod-16 alignment residues survive the shift past the roots. FP/SIMD
+stack accesses needing more than 16-byte alignment (vmovdqa32/vmovaps with
+ymm/zmm to the stack) are REJECTED with a message suggesting the unaligned form —
+the ABI guarantees only 16-byte stack alignment and sarcasm rejects dynamic rsp
+alignment.
+
+The runtime calls sarcasm injects invisibly and that RETURN — the pollcheck slow
+path, filc_allocate for `;! alloca`, the ptr-store aux-ensure/barrier slow paths —
+would clobber the program's live xmm state (SysV makes every FP/SIMD register
+caller-saved, and the Fil-C runtime is compiled SSE2-only), so the transform
+wraps them in a save/restore of xmm0-15 (vmovdqu ymm0-15 / vmovdqu64 zmm0-15 when
+the function itself uses wider vector classes — the widest class used covers
+whatever the runtime can clobber) into a reserved frame area above the GC roots.
+x87/MMX state is NOT saved — and the reason is NOT "an SSE2-only runtime
+cannot clobber x87": libpizlo.a DOES contain x87 instructions (the fldt/fstpt
+in the zmath long-double wrappers; ~86 x87 insns in total). The correct
+statement is that the injected runtime-call paths sarcasm wraps
+(filc_pollcheck_slow, filc_allocate, filc_object_ensure_aux_ptr_outline,
+filc_store_barrier_for_lower_slow) never execute those x87 code paths, so the
+program's x87 state survives across them (compiler-generated code never keeps
+x87 values live across such points anyway). k-opmask state, by contrast, is
+genuinely EVEX-only, so an SSE2-only runtime build cannot clobber it (an
+AVX512 runtime build would require extending this to zmm16-31 and k0-7). The
+whole mechanism emits NOTHING for GPR-only functions — zero cost.
+
 ### ptrflow.luau — pointer-flow analysis
 Seeds pointer-ness: function ptr args (from the signature), results of `;! load ptr`,
 call results whose return type is ptr. Forward-propagates through `mov`/`add imm`/
@@ -234,6 +481,11 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
 - fabricate prologue: SOV check + filc_frame push (prev,origin,roots) + callee-saved.
 - roots: store each live-across-safepoint pointer's lower into a frame root slot;
   origin count field = number of root slots.
+- injected RETURNING runtime calls (the pollcheck slow path, filc_allocate, the
+  ptr-store aux-ensure/barrier slow paths) -> wrap in a vector save/restore
+  (x86_64: xmm0-15, or ymm0-15/zmm0-15 when the function uses wider classes): the
+  source program never saw these calls and the Fil-C runtime clobbers xmm
+  registers. A no-op for GPR-only functions (arm64: always — neon is rejected).
 
 ### emit.luau + sarcasm.luau (driver)
 - emit: renders the IR with colors via the per-arch render module; materializes spill
@@ -263,12 +515,16 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   thunk also needs one callee-saved hold register per argument word, and its hold pool
   is 4 registers — the same limit). On arm64 the fixed x2..x7 pairs cap a callsite at 3
   arguments, same as entry signatures. An over-limit call is rejected.
-- Floating-point/vector type classes (float, double, long double) are rejected in ALL
-  `;!` signatures — entry signatures and callsite annotations alike, on both
-  architectures. sarcasm packs and unpacks dense GPRs only while the Fil-C ABI passes
-  and returns FP/vector values in vector registers (which sarcasm rejects wholesale),
-  so an FP-typed signature would silently miscompile the ABI at both ends. The error
-  names the offending type.
+- Floating-point/vector type classes (float, double, long double, the vector
+  classes) are rejected in ALL `;!` signatures — entry signatures and callsite
+  annotations alike, on both architectures. This is deliberately deferred, not
+  fundamental: the Fil-C x86_64 FP ABI is now decoded (see ABI-NOTES-x86.md — FP
+  arguments travel in a separate xmm sequence alongside the dense GPR packing,
+  long double goes on the stack and returns in st(0), and the generic buffer CC
+  gives every argument one 8-byte word regardless of class); the remaining work
+  is the marshalling — entry/callsite glue and buffer-CC packing for the FP
+  classes. Until it lands, an FP-typed signature would silently miscompile the
+  ABI at both ends, so it is rejected; the error names the offending type.
 - Taking the address of the stack frame is rejected (cannot prove safety), whether by
   address arithmetic off the stack register (`add xD, sp, #k` / `leaq 8(%rsp), %rax`),
   by copying it (`movq %rsp, %rax`), or by storing it into a frame slot
@@ -310,42 +566,314 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
 - On ARM64, memory operands on non-load/store instructions are rejected; X86_64 accepts
   them (e.g. `addq (%rsi), %rax`) — on X86_64 any memory operand is modeled as a real,
   bounds-checked access.
+- On ARM64, FP/SIMD (neon) registers are uniformly REJECTED with a clean error, as an
+  operand or a memory base/index. Proper ARM64 FP/SIMD support (the x86_64 treatment:
+  pass-through registers + width-correct checks + materialization) is future work;
+  letting neon through unchecked would be unsound.
 - On X86_64, `enter`/`enterq` is rejected (packed frame setup sarcasm does not model —
-  see the frame section), and floating-point/vector code is out of scope: any
-  instruction naming an xmm-class register (xmm/ymm/zmm/mm/st; operand or memory
-  base/index, AT&T or Intel syntax) or bearing an x87 FPU mnemonic (fld*, fst*, fnst*,
-  fwait, fxsave, ...) is rejected rather than virtualized into garbage or passed
-  through to a cryptic GNU-as failure. Floating-point signature types are rejected on
-  both architectures (see Limitations).
+  see the frame section). FP/SIMD code is IN SCOPE (see the FP/SIMD subsection of the
+  frame section); the only rejected instructions are ones whose memory-safety effects
+  cannot be checked, each with a clean `sarcasm:` error:
+  * system-call instructions (syscall/sysenter/sysexit/sysret) — their effect on
+    memory safety is unknowable;
+  * port I/O (the in/out family), hlt, wrmsr/rdmsr, and mov to/from cr/dr —
+    privileged processor state, or data transfers the checker cannot see;
+  * lgdt/lidt/lldt/ltr/lmsw — privileged descriptor-table/system-register
+    loads. The unprivileged counterparts are SUPPORTED at exact widths:
+    sgdt/sidt = 10 bytes (2-byte limit + 8-byte base), sldt/str/smsw = 2 bytes,
+    and the far-pointer loads lss/lfs/lgs = destination size + 2-byte selector
+    (all previously under- or over-checked);
+  * `int N` for N≠3. int3/`int $3` remain legal — like ud2 they only raise a signal
+    (SIGTRAP/SIGILL), and Fil-C forbids installing handlers for those
+    (is_unsafe_signal_for_handlers in libpas/src/libpas/filc_runtime.c), so a
+    merely-trapping instruction is fine;
+  * string instructions (movs/stos/lods/scas/cmps, including the bare Intel forms)
+    and instruction prefixes (rep/repe/repne/lock/xacquire/xrelease) — implicit
+    rsi/rdi memory effects the checker cannot see or model;
+  * gather/scatter (multiple discrete addresses), vector-masked loads/stores
+    (vmaskmov*/vpmaskmov*/maskmov*), and AVX512 {k}-masked memory operands —
+    masked-off lanes may not touch memory, so neither a
+    full-width check (false traps on valid programs) nor a narrow one (unsound)
+    is correct. The UNMASKED vexpand*/vcompress*/vpexpand*/vpcompress* forms
+    are SUPPORTED at full vector width (with no writemask they touch all
+    lanes — a contiguous full-width access); only their {k}-masked forms hit
+    this rejection, via the generic {k} rule;
+  * the xsave/xrstor family — the state image size is CPU-dependent (fxsave/fxrstor
+    ARE supported: a fixed 512-byte image);
+  * fsave/frstor/fstenv/fldenv — x87 environment/state saves;
+  * cmpxchg8b/cmpxchg16b — need implicit edx:eax/ecx:ebx (resp.
+    rdx:rax/rcx:rbx) operand-pair modeling (not yet supported);
+  * the pcmpestri/pcmpistri family (pcmpestri/pcmpistri/pcmpestrm/pcmpistrm) —
+    implicit GPR operands the def/use model cannot express (the estri forms
+    read rax/rdx as explicit string lengths; pcmpestri/pcmpistri clobber rcx
+    with the index result), so regalloc could silently rename one of those
+    registers;
+  * cpuid/rdtsc/rdtscp/xgetbv/rdpkru/wrpkru/monitor/mwait/umwait/tpause —
+    implicit GPR reads/writes the def/use model cannot express, the same class
+    as the pcmpestri family: cpuid writes rax/rbx/rcx/rdx; rdtsc/rdtscp write
+    rax/rdx (and rcx for rdtscp); xgetbv writes rax/rdx; rdpkru/wrpkru
+    read/write eax/ecx/edx; monitor reads rax/rcx/rdx; mwait reads rax/rcx;
+    umwait/tpause read the implicit edx:eax TSC-deadline pair — unmodeled,
+    regalloc could silently rename one of those registers;
+  * umonitor — has no implicit GPR (its address is the explicit operand), but
+    it arms address-monitoring hardware on a memory range whose extent cannot
+    be bounds-checked;
+  * AMX tile instructions (tileloadd/tilestored/ldtilecfg & co) — a tile
+    load/store touches a strided, palette-configuration-dependent footprint
+    (up to 16 rows x 64 bytes) that cannot be bounds-checked as a single
+    access;
+  * clzero/xlatb — implicit memory operands the checker cannot see (clzero
+    stores the 64-byte cache line addressed by rax; xlatb loads the byte at
+    rbx+al);
+  * lcall/ljmp — an implicit far-return-frame stack push that the frame model
+    cannot see;
+  * memory accesses with symbolic addresses (RIP-relative/global data — not yet
+    supported), and absolute-address (moffs) operands: a bare
+    (non-$-prefixed) symbol operand in AT&T syntax (`movq myglobal, %rax`
+    LOADS from the global; `addq myglobal, %rax` reads it through the
+    absolute address) or a bare AT&T numeric literal (`movq 0x600000, %rax`
+    loads from that address — NOT an immediate move) rejects with "memory
+    access with a symbolic address cannot be bounds-checked (global data
+    access is not yet supported)" (symbolic) / "...with an absolute
+    address..." (numeric); gas's Intel syntax gives a bare symbol the same
+    absolute-moffs reading (proven against gas/objdump: `mov rsi, myglobal`
+    emits an R_X86_64_32S absolute relocation — only a bare NUMBER is an
+    immediate there), so Intel bare symbols reject identically while Intel
+    bare numerics stay immediates. Previously these were UNCHECKED absolute
+    accesses or silent load→immediate rewrites. The rejection fires for
+    every operand position (load, store, ALU source, push/pop), FP/vector
+    forms included, and covers indirect-branch memory operands uniformly:
+    `jmp *myglobal` / `call *myglobal` / `jmp *0x600000` branch THROUGH an
+    absolute memory operand — an un-checkable absolute read of the branch
+    target, not a direct branch to it — and `je *myglobal` has no indirect
+    encoding at all (rendering would silently emit the DIRECT branch), so
+    the `*` indirect marker overrides the code-target exemption below and
+    the operand rejects with the same symbolic/absolute-address messages
+    (previously the marker was silently dropped — a semantic-changing
+    direct branch — or the output failed at gas). Unaffected: direct
+    branches (call/jmp/jcc to symbols and numeric local labels),
+    register-indirect branches (`jmp *%rdi`), and register-based
+    memory-indirect branches (`call *(%rax,%rcx,8)` — bounds-checked like
+    any memory operand). Exempt: bare code-target operands (call/jmp/jcc/
+    loop*/xbegin, incl. numeric local labels), lea (address arithmetic, no
+    dereference — `leaq myglobal, %rax` materializes the address as a
+    value, like the supported `leaq myglobal(%rip), %rax`), $imm, and
+    segment-register moves (%gs & co — the parser does not classify segment
+    registers, so they parse as bare symbols; a mov to/from one is a
+    register move, never an absolute memory operand);
+  * an Intel PTR size annotation that CONTRADICTS the ISA-determined memory
+    access width (`vmovdqu64 DWORD PTR [mem], zmm0` — the emitted instruction
+    encodes the 64-byte width regardless of the annotation) — rejected on the
+    heap and stack paths alike (`PTR size annotation (N bytes) contradicts the
+    memory access width (W bytes) of '<mnem>'`), since a lying annotation
+    would under-size the bounds check or the materialized stack slot. The same
+    rule fires on the GPR heap path (`mov WORD PTR [rdi], rax` stores 8 bytes,
+    not 2 — the width is register-defined) and on GPR accesses materialized
+    into an FP-tainted frame cluster; the legit narrowing exemptions
+    (movzx/movsx/movsxd — the source is genuinely narrower than the
+    destination register — and no-GPR-operand forms like push/pop/call/jmp and
+    mem-only inc/dec/neg/not) take their width from the annotation. The
+    genuinely size-driven widths stay legal: the unsuffixed x87 memory forms
+    (fld DWORD/QWORD/TBYTE PTR) and the cvtsi2ss/cvtsi2sd integer source take
+    their width from the annotation, and movnti's width is
+    source-register-determined (%esi -> 4, %rsi -> 8 — a contradicting PTR
+    size rejects there too). An x87 PTR form the ISA does not have (`fst
+    TBYTE PTR` — only fstp has an m80 form; `fiadd QWORD PTR`) is rejected
+    with `<mnem> has no <N>-byte memory form` rather than rendered as a
+    nonexistent instruction;
+  * unknown mnemonics with memory operands — the access width is
+    undeterminable and a guessed width could under-cover the access (enqcmd's
+    m512 source, an unknown vector load, ...), so the unknown-mnemonic
+    fallback no longer guesses a default-width check: unknown+mem REJECTS.
+    The scalar FP16 sh-suffix forms land here deliberately: vaddsh & co
+    read m16, but a uniform 2-byte rule would mis-model/under-check the
+    GPR-mixing scalar-half converts (vcvtusi2sh's integer source is
+    m32/m64; vcvtsh2si's GPR destination would go unmodeled), so every sh
+    form stays unknown and a memory-operand one rejects cleanly (the PACKED
+    ph-suffix forms ARE supported at full vector width; there is no FP16
+    hardware here to test the scalar forms on anyway).
+    Unknown register-only forms still pass through with the conservative
+    first-register-def/rest-use model — a fallback that now covers only
+    genuinely-unknown register-only mnemonics: the common compiler-output
+    families BMI1/BMI2/ADX/bsf/bsr/xadd/adcx/adox/crc32 have exact
+    width/def-use entries in x86_64_fp.luau, and the implicit-register
+    mul/div/mulx/cmpxchg class is genuinely modeled via the pin mechanism in
+    x86_64_isa.classify (see the `*_isa.luau` module entry), so neither lands
+    in the unknown class;
+  * FP/SIMD stack accesses needing more than 16-byte alignment (see the frame
+    section).
+  Floating-point signature types are rejected on both architectures (see above).
+- On X86_64, an AT&T-style parens operand field in Intel-syntax input is
+  rejected ("AT&T-style operand in Intel-syntax input (use [bracket] memory
+  operands)") — see the `*_parse.luau` module entry; previously a total check
+  bypass.
 - X86_64 output is always AT&T syntax, even when the input is Intel syntax.
+
+### Known pre-existing issues (NOT introduced by the current change)
+
+All of the following reproduce on the unmodified baseline (the tree before
+the current FP/SIMD review-cycle work); they are pre-existing bugs documented
+here, not regressions introduced by this change:
+
+- regalloc can mis-color a function with ≥~13 simultaneously-live webs: the
+  same web is rendered in two different registers at different points,
+  silently corrupting the value. The trigger is a sufficiently large
+  interference graph under coalescing pressure; smaller web counts are
+  unaffected.
+- injected bounds checks clobber EFLAGS: the capability/bounds-check sequence
+  sarcasm emits before a checked memory operand does not preserve the flags
+  register, so an instruction that relies on a carry-in flag set before the
+  access (`stc` then `adcx`/`adcq` through a checked memory operand) observes
+  an indeterminate flag. Register-only flag chains (no checked memory operand
+  between the flag-setter and the flag-consumer) are fine.
+- detect.luau's architecture autodetect falls back to ARM64 for a
+  register-free x86 input (e.g. a lone `rep movsb` with no % registers and
+  no .intel_syntax/PTR/bracket markers): the input is then parsed as arm64
+  and fails later — confusingly — at `as`. Harmless: the input was going
+  to fail anyway (`rep movsb` is a rejected string instruction on the
+  x86_64 path), only the error message is opaque. The same misdetect hits
+  x86 input whose ONLY registers are xmm-class (e.g. a lone `movss
+  myglobal, %xmm0`): the detector keys on GPR markers (%r*/%e*/%rip, bare
+  r*/e* tokens, PTR/brackets), so a register file of pure vector registers
+  is invisible to it. (That input rejects on the x86_64 path too — the
+  symbolic moffs operand — so again only the error message changes.)
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 104 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
-assemble via minilute + sarcasm, `.c` files via clang). For each yolo input the suite
+runs the 296 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
+assemble via minilute + sarcasm, `.c` files via clang) — 247 x86_64 and 49 aarch64
+(every test is `only-on-platform:` exactly one of them). For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
-+ that OOB/null-capability inputs trap. Most behavioral cases are exercised in both
-AT&T and Intel variants (`-att` / `-int` pairs), and the suite additionally covers
-auto-detection, spill-slot packing, pollchecks, GC stress, fixed-alloca region
-redirects (rsp- and rbp-based, via `lea`/`mov` re-derivations), rbp/rsp slot aliasing,
-frame-geometry stability under transient prologue-prefix push/pop pairs
-(`sarcasm-frame-transient-pad`), the `movq %rbp,%rsp` epilogue-teardown path
-(`sarcasm-frame-mov-rbp-teardown`), rbp-relative red-zone spills with the no-cleanup
-leaf epilogue (`sarcasm-frame-rbp-redzone`), dynamic allocas torn down with the
-`movq %rbp,%rsp; popq %rbp; ret` VLA epilogue (`sarcasm-alloca-mov-epilogue-att` /
-`-int`), mid-function stack-pointer-movement rejections
-(`sarcasm-reject-midframe-sp`, `sarcasm-reject-frame-misc`), frame-pointer-as-value
-escape rejections (`sarcasm-reject-rbp-escape`), stack-register slot-store escape
-rejections (`sarcasm-reject-slot-store-escape`), `enter` rejections
-(`sarcasm-reject-enter`), vector/floating-point register rejections
-(`sarcasm-reject-xmm`, including MMX `mmN`), x87 FPU rejections (`sarcasm-reject-x87`:
-`%st(N)` operands in both syntaxes, no-operand `fldz`, `fldl` on a stack slot, and
-`fnstsw %ax`), floating-point signature-type rejections (`sarcasm-reject-fp-sig`:
-entry and callsite, argument and return position), unpaired-pop rejections
-(`sarcasm-reject-unpaired-pop`), stack-register memory-index rejections
-(`sarcasm-reject-sp-index`), and every compile-time rejection listed above that
-applies on x86_64 (`filc/tests/sarcasm-reject-*`; the ARM64-only rejections go
-untested there — every test is `only-on-platform: x86_64`).
++ that OOB/null-capability inputs trap. The suite breaks down as:
+
+- 127 behavioral tests (88 x86_64, 39 aarch64), most exercised in AT&T and Intel
+  variants (`-att` / `-int` pairs, aarch64 singletons as `-arm`): pointer-chasing
+  workloads in several sizes (`sarcasm-hash(-oob)-*`, `sarcasm-t2-*`,
+  `sarcasm-t3valid/t3oob-*`, `sarcasm-medium/large`), null-capability and OOB traps
+  (`sarcasm-nullcap-*`, `sarcasm-*-oob-*`, incl. the movnti store checked at its
+  source-register width — `sarcasm-oob-movnti-att`), the pointer-store capability round-trip
+  (`sarcasm-store(-gcstress)-*`, `sarcasm-ro-store-*`, `sarcasm-ptrret-*`,
+  `sarcasm-nullret-*`), register-indexed access (`sarcasm-regidx(-oob)-*`), RMW
+  memory operands (`sarcasm-rmw-*`), calls and the callsite resolver
+  (`sarcasm-call(-error)-*`, `sarcasm-asmcall-*`, `sarcasm-funcptr-*`,
+  `sarcasm-recurse-*`), dense fast-CC packing (`sarcasm-args3-*`,
+  `sarcasm-densepack-llp-*` and the `-fp-` variants, which route the call through a
+  function POINTER to exercise the generic buffer-CC entrypoint), width/zero-extension
+  slots (`sarcasm-slotw-*`, `sarcasm-zeroext-*`), allocas and stack buffers
+  (`sarcasm-alloca-*`, `sarcasm-stackbuf-*`, including region redirects via `lea`/`mov`
+  re-derivations, the gcc -O0 rbp form, and the `movq %rbp,%rsp; popq %rbp; ret` VLA
+  epilogue), spill-slot packing and frame geometry (`sarcasm-spill(-oob)-*`,
+  `sarcasm-frame-*`: transient prologue-prefix push/pop pairs, the `movq %rbp,%rsp`
+  teardown path, rbp-relative red-zone spills, rbp/rsp slot aliasing), rbp as an
+  ordinary GPR under frame-pointer omission (`sarcasm-rbpgpr-*`), GNU-as numeric local
+  labels (`sarcasm-numlabel(-pollcheck)-*`), far-pointer and descriptor-table
+  accesses at their exact widths (`sarcasm-farptr-*` — lgs m16:16/m16:32;
+  `sarcasm-sidt-*` — the 10-byte sidt store) and their OOB traps
+  (`sarcasm-oob-lfs-*`, `sarcasm-oob-sidt-*`), the legit narrowing exemption from
+  the GPR PTR-contradiction rule (movzx/movsx/movsxd take their check width from
+  the PTR annotation, not the destination register width —
+  `sarcasm-ptr-narrowing-int`), the pinned implicit-register family — div/idiv
+  with cqo/cdq sign-extension under register pressure (webs live across the
+  pin), register and checked-memory divisors, mul/imul rdx:rax products
+  (`sarcasm-div-att`, `sarcasm-div-int`), the pinned cmpxchg accumulator and
+  dual-RMW xadd (`sarcasm-rmw-pin-att`), the BMI1/BMI2 exact entries
+  (`sarcasm-bmi-att`), and pollchecks/GC stress
+  (`sarcasm-pollcheck-*`, `sarcasm-*-gcstress*`).
+- 53 FP/SIMD tests (`sarcasm-fp-*`, all x86_64): SSE scalar arithmetic and
+  comparisons (`sarcasm-fp-sse-arith-att` / `-int`), scalar FP heap loads/stores at
+  8 and 4 bytes (`sarcasm-fp-mem-movsd-att` / `-int`), 16-byte vector heap copies
+  (`sarcasm-fp-mem-movups-att`), an FP reduction loop with xmm live across the
+  pollcheck (`sarcasm-fp-loop-att`), xmm state held live across GC stress
+  (`sarcasm-fp-gcstress-att`), mixed GPR/vector conversions (`sarcasm-fp-cvt-att`:
+  cvtsi2ss/cvtsi2sd l/q, cvttss2si/cvttsd2si l/q, cvtss2sd/cvtsd2ss, movd/movq),
+  half-precision conversions at the exact ph-side width (`sarcasm-fp-cvtph-att`;
+  `sarcasm-fp-cvtph-avx512-att`, `needsAVX512`), AVX2 ymm arithmetic with a
+  broadcast load and a ymm stack spill/reload
+  (`sarcasm-fp-avx2-att`), AVX512 zmm arithmetic, embedded-broadcast `{1to16}` and
+  opmask-register code (`sarcasm-fp-avx512-att`, `needsAVX512`), embedded
+  broadcasts off a materialized stack slot (`sarcasm-fp-bcast-stack-att`,
+  `needsAVX512`), vpbroadcastb/w/d/q memory sources at their exact element
+  widths 1/2/4/8 plus the xmm-source form (`sarcasm-fp-broadcast-att`), the
+  GPR-source broadcast forms — a stale-register miscompile regression
+  (`sarcasm-fp-broadcast-gpr-att`, `needsAVX512`), full-width vpermt2*
+  permutes and an unmasked vpcompressd/vpexpandd round-trip through a
+  materialized stack slot (`sarcasm-fp-avx512-perm-att`, `needsAVX512`),
+  truncating stores at the source-vector-bytes/ratio width
+  (`sarcasm-fp-truncstore-att`, `needsAVX512`), MMX reg-reg and
+  memory forms (`sarcasm-fp-mmx-att`), x87 memory forms and a tbyte stack
+  round-trip (`sarcasm-fp-x87-att`), x87 reg-reg ops with `fnstsw %ax` status-word
+  branching (`sarcasm-fp-x87-misc-att` / `-int`), fxsave/fxrstor and
+  stmxcsr/ldmxcsr (`sarcasm-fp-fxsave-att`), AES-NI key expansion + enc/dec round
+  trip (`sarcasm-fp-aes-att`), pclmulqdq and SHA-NI (`sarcasm-fp-pclmul-att`),
+  GFNI (`sarcasm-fp-gfni-att`; `sarcasm-fp-gfni-avx512-att`, `needsAVX512`),
+  the EVEX unsigned-integer scalar converts — reg forms incl. the stale-GPR-source
+  regression, the reverse vcvtt*/vcvt*2usi family, and the Intel QWORD PTR mem
+  forms rendering vcvtusi2ssq/vcvtusi2sdq (`sarcasm-fp-cvtusi-att`,
+  `needsAVX512`), the widening/narrowing convert zoo at its exact widths
+  (vcvtudq2pd-family = dest/2 — `sarcasm-fp-cvtwid-att`; the vcvtps2uqq-family
+  unsigned widening converts — `sarcasm-fp-cvt-unsigned-att`; the BF16 converts
+  vcvtneps2bf16 = 2x dest and full-width vcvtne2ps2bf16 —
+  `sarcasm-fp-bf16-att`; all `needsAVX512`), the size-driven narrowing
+  converts at their exact x/y/z-suffix and Intel PTR widths plus the
+  unambiguous bare-ymm m512 form (`sarcasm-fp-cvt-narrow-att`,
+  `needsAVX512`), full-width vdbpsadbw
+  (`sarcasm-fp-dbpsad-att`, `needsAVX512`), the AVX512-IFMA
+  vpmadd52luq/vpmadd52huq multiply-adds at full vector width
+  (`sarcasm-fp-ifma-att`, `needsAVX512`), the full-width unsigned
+  vcvtpd2uqq/vcvttpd2uqq converts and the AVX512-FP16
+  vcvtdq2ph/vcvtudq2ph m512-source forms — bare ymm-dest ⇒ 64, the x/y
+  source suffixes at 16/32, Intel ZMMWORD PTR — assembling unconditionally
+  but value-checked only where CPUID reports AVX512-FP16
+  (`sarcasm-fp-cvt-dq2ph-att`, `needsAVX512`), Intel x87 memory forms
+  rendering at
+  the correct AT&T suffix (fld QWORD PTR -> fldl, fstp QWORD PTR -> fstpl;
+  `sarcasm-fp-x87-widths-int`),
+  movsd/movaps spills to materialized frame slots (`sarcasm-fp-stack-spill-att` /
+  `-int` — movaps to the stack at preserved 16-byte alignment), GPR/FP byte
+  aliasing of the same stack bytes (`sarcasm-fp-stack-alias-att`), FP accesses in
+  the red zone (`sarcasm-fp-redzone-att`), and per-width OOB traps:
+  `sarcasm-fp-oob-movss-att` (4), `-movsd-att` (8), `-movdqa-att` (16, aligned),
+  `-ymm-att` (32), `-zmm-att` (64, `needsAVX512`), `-fldt-att` (x87 tbyte, 10),
+  `-mmx-att` (8), `-vstmxcsr-att` (4), `-vnni-att` (vpdpwssd at the full 64-byte
+  vector width, `needsAVX512`), `-cvtuqq2ps-att` (vcvtuqq2ps ymm reading a 2x-dest
+  64-byte source, `needsAVX512`), `-pabsd-att` (vpabsd zmm at the full
+  64-byte vector width — the p-stem ss/sd-rule exclusion, `needsAVX512`),
+  `-pminsd-att` (SSE pminsd xmm at 16, the SSE side of the exclusion,
+  `needsAVX512`), `-vnni-usd-att` (the cross-sign vpdpwusd ymm at 32,
+  `needsAVX512`), `-dq2ph-att` (bare vcvtdq2ph ymm reading a 64-byte m512
+  source, proven by the pre-execution bounds trap — no FP16 silicon needed,
+  `needsAVX512`).
+- 116 rejection tests (`sarcasm-reject-*`, 106 x86_64, 10 aarch64 — the `-arm` ones
+  cover the ARM64-only rejections). Each directory carries exactly ONE `.s` file
+  (compileFailure manifest), so every rejected input is proven rejected
+  individually rather than one file's rejection masking another's. Families:
+  missing/unparseable/over-limit signatures and callsites (`-nosig-*`,
+  `-badsig-*`, `-too-many-args-*`, `-callsite-arity-*`), FP signature types
+  (`-fp-sig-entry-float`, `-fp-sig-entry-double`, `-fp-sig-callsite-arg`,
+  `-fp-sig-callsite-ret`), alloca misuse (`-alloca-*`), out-of-frame stack
+  accesses (`-below-frame-*`, `-caller-frame-*`, `-dispsym-stack*`,
+  `-stack-indexed`), mid-function stack-pointer movement and frame-geometry
+  violations (`-midframe-sp-*`, `-frame-misc-*`, `-unpaired-pop-*`, `-enter*`),
+  stack-address escapes (`-stack-addr-*`, `-rbp-escape-*`, `-sp-index*`,
+  `-slot-store-escape-*`, `-slot-storeptr`), pointer-flow non-convergence
+  (`-ptrflow-nonconverge-*`), unresolved numeric labels
+  (`-numlabel-unresolved-*`), symbolic/global data access (`-global-load*`),
+  absolute-address (moffs) operands (`-absaddr-load`, `-absaddr-store`,
+  `-absaddr-num`, `-absaddr-alu`), indirect-branch moffs operands
+  (`-jmp-indirect-abs`, `-call-indirect-abs`, `-jmp-indirect-num` — the `*`
+  indirect marker overriding the call/jmp code-target exemption),
+  AT&T-style parens operands in Intel-syntax input (`-intel-attmem`,
+  `-intel-attmem-fp`, `-intel-enqcmd`), the ambiguous unsized narrowing
+  convert (`-cvt-unsized`), and
+  the FP/SIMD and unsafe-instruction rejections listed under Limitations
+  (`-syscall`, `-portio`, `-hlt`, `-crmove`, `-intN`, `-stringop-*`,
+  `-lockprefix`, `-gather`, `-scatter`, `-vmaskmov`, `-maskmovdqu`,
+  `-avx512-masked-load`/`-store`, `-avx512-masked-stack`, `-pcmpestri`,
+  `-pcmpistri`, `-clzero`, `-xlatb`, `-lcall`, `-lgdt`, `-xsave`, `-fsave`,
+  `-cmpxchg8b`, `-cmpxchg16b`, `-cpuid`, `-rdtsc`, `-xgetbv`, `-ptrsize-stack`,
+  `-ptrsize-gpr`, `-movnti-width`, `-vec-unknown-mem`, `-aligned-stack`,
+  `-fp-loadptr`, `-tilestored`, `-tileloadd`, `-ldtilecfg`, `-enqcmd`,
+  `-x87-noform`, `-umwait`, `-tpause`, `-umonitor`).
 
 The old in-tree `tests/` harness (host-lute `verify.sh`/`verify-x86.sh` via docker, and
 the `roundtrip-test`/`detect-test`/`cleanup-test` Luau unit tests) has been removed;

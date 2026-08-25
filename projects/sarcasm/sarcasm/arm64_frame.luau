@@ -44,6 +44,21 @@ function arm64_frame.rewrite(st, ctx)
 	local m = string.lower(st.mnemonic)
 	local ops = st.operands
 
+	-- FP/SIMD (neon) registers are not supported on arm64 (runs for EVERY instruction:
+	-- the shared frame preprocessor invokes this rewrite on each non-alloca statement
+	-- before the lift). Without this, an FP instruction would slip through unsoundly:
+	-- `fadd d0, d0, d1` passed through unchecked, `str q0, [sp, #16]` virtualized into
+	-- a GPR slot pseudo-register (invalid asm), and `ldr q0` bounds-checked at 8 bytes
+	-- instead of 16. Uniform rejection is strictly better; ARM64 FP/SIMD support is
+	-- future work (on an ARM64 machine).
+	for _, o in ops do
+		if (o.kind == "reg" and o.rc == "neon") or (o.kind == "mem"
+			and ((o.base and o.base.rc == "neon") or (o.index and o.index.rc == "neon"))) then
+			error("sarcasm: vector/floating-point (neon) registers are not supported: "
+				.. (st.raw or m))
+		end
+	end
+
 	-- sp-relative accesses that fall inside a fixed-size alloca region are redirected to the
 	-- allocation by the transform; pass them through untouched here.
 	local function immVal2(op) return (op and op.kind == "imm") and (op.value or tonumber(op.text) or 0) or nil end

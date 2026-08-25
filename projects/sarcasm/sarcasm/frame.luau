@@ -12,9 +12,11 @@
 --   * a stack access outside the frame [0, frameSize) is a compile-time error.
 --
 -- The per-stmt classification/rewrite is architecture-specific and supplied via `policy`
--- (arm64_frame / x86_64_frame): `policy.analyzeFrame(body) -> frameSize, fpOffset, usesFp`
--- and `policy.rewrite(stmt, ctx)`, where the shared `ctx` provides the slot constructor,
--- region lookup, bounds check, escape rejection, and the output sink.
+-- (arm64_frame / x86_64_frame): `policy.analyzeFrame(body) -> frameSize, fpOffset, usesFp
+-- [, fpInfo]` (fpInfo is x86_64-only: FP/SIMD stack-slot materialization clusters,
+-- forwarded into ctx.fpInfo) and `policy.rewrite(stmt, ctx)`, where the shared `ctx`
+-- provides the slot constructor, region lookup, bounds check, escape rejection, and the
+-- output sink.
 
 local frame = {}
 
@@ -35,7 +37,8 @@ end
 -- Rewrite `body` using the arch `policy`. `regions` are fixed-size alloca regions (their
 -- stack math is redirected to the allocation by the transform, so it passes through here).
 function frame.preprocess(body, regions, policy)
-	local frameSize, fpOffset, usesFp = policy.analyzeFrame(body)
+	-- fpInfo (x86_64 only): FP/SIMD stack-slot materialization clusters (or nil).
+	local frameSize, fpOffset, usesFp, fpInfo = policy.analyzeFrame(body)
 	local out = {}
 	local function emit(n) out[#out + 1] = n end
 
@@ -69,7 +72,7 @@ function frame.preprocess(body, regions, policy)
 	end
 
 	local ctx = {
-		frameSize = frameSize, fpOffset = fpOffset, usesFp = usesFp,
+		frameSize = frameSize, fpOffset = fpOffset, usesFp = usesFp, fpInfo = fpInfo,
 		slotReg = slotReg, immVal = immVal,
 		regionOf = regionOf, checkBounds = checkBounds, rejectEscape = rejectEscape,
 		emit = emit,

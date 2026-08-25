@@ -47,6 +47,12 @@ local function classifyReg(name)
 			local w = (vec == "xmm") and 128 or (vec == "ymm") and 256 or (vec == "zmm") and 512 or 64
 			return { kind = "reg", rc = "xmm", num = tonumber(num), width = w, name = low }
 		end
+		-- AVX512 opmask registers k0-k7 (rc="xmm" class so they pass through unmodeled,
+		-- like vector registers; they never participate in GPR webs).
+		local kn = string.match(low, "^k([0-7])$")
+		if kn then
+			return { kind = "reg", rc = "xmm", num = tonumber(kn), width = 64, name = low }
+		end
 		-- x87 FPU stack registers: st / st(N) / stN (AT&T %st/%st(N); Intel st/st(N)/stN).
 		local stn = string.match(low, "^st%((%d+)%)$") or string.match(low, "^st(%d+)$")
 		if low == "st" or stn then
@@ -72,7 +78,8 @@ function x86parse.regName(num, width)
 end
 
 -- PTR size specifier -> bytes
-local PTRSIZE = { byte = 1, word = 2, dword = 4, qword = 8, xmmword = 16 }
+local PTRSIZE = { byte = 1, word = 2, dword = 4, qword = 8, xmmword = 16,
+	ymmword = 32, zmmword = 64, tbyte = 10, oword = 16 }
 
 local function trim(s) return (string.gsub(s, "^%s*(.-)%s*$", "%1")) end
 
@@ -99,8 +106,43 @@ local function parseSym(text)
 	return { kind = "sym", text = text, reloc = reloc }
 end
 
+-- AVX512 decorator handling -------------------------------------------------
+-- Strip trailing {...} groups off an operand field (`%zmm0{%k1}{z}`, `(%rdi){1to16}`,
+-- `[rdi]{k3}`). Returns the stripped field plus the decorator strings in left-to-right
+-- order.
+local function stripDecos(field)
+	local decos = {}
+	while true do
+		local d = string.match(field, "(%b{})$")
+		if not d then break end
+		table.insert(decos, 1, d)
+		field = string.sub(field, 1, #field - #d)
+	end
+	return field, decos
+end
+
+-- Attach decorators to a parsed operand: `{1toN}` on a memory operand records the
+-- embedded-broadcast factor in op.bcastN; the raw text of every decorator is kept in
+-- op.deco for re-rendering and validation. A mask group written without `%` (Intel
+-- syntax `{k1}`) is normalized to the AT&T spelling `{%k1}` (output is always AT&T).
+local function attachDecos(op, decos)
+	if #decos == 0 then return op end
+	local parts = {}
+	for _, d in decos do
+		local kn = string.match(d, "^{k([0-7])}$")
+		if kn then d = "{%k" .. kn .. "}" end
+		if op.kind == "mem" then
+			local n = string.match(d, "^{1to(%d+)}$")
+			if n then op.bcastN = tonumber(n) end
+		end
+		table.insert(parts, d)
+	end
+	op.deco = table.concat(parts)
+	return op
+end
+
 -- AT&T operand ------------------------------------------------------------
-local function parseAttOperand(field)
+local function parseAttOperandRaw(field)
 	local indirect = false
 	if string.sub(field, 1, 1) == "*" then indirect = true; field = string.sub(field, 2) end
 	if string.sub(field, 1, 1) == "$" then
@@ -139,13 +181,42 @@ local function parseAttOperand(field)
 	end
 	-- bare symbol / label / number
 	if string.match(field, "^-?%d") or string.match(field, "^0[xX]") then
-		return { kind = "imm", text = field, value = tonumber(field) }
+		-- A bare (non-$-prefixed) numeric literal in AT&T syntax is NOT an
+		-- immediate: gas reads it as an absolute (moffs) MEMORY operand
+		-- (`movq 0x600000, %rax` LOADS from that address). Tag it so
+		-- x86_64_isa.classify can reject the absolute access cleanly instead
+		-- of silently rendering it as an immediate move. (Intel syntax is
+		-- different: a bare number there IS an immediate, so the Intel parser
+		-- never sets this tag.) The `*` indirect marker is retained too, so
+		-- `jmp *0x600000` / `call *0x600000` (an indirect branch THROUGH that
+		-- absolute address) classify as the same un-checkable absolute read
+		-- rather than falling through the call/jmp moffs exemption.
+		return { kind = "imm", text = field, value = tonumber(field), absAddr = true,
+			indirect = indirect }
 	end
 	local s = parseSym(field); s.indirect = indirect; return s
 end
 
+local function parseAttOperand(field)
+	local f, decos = stripDecos(field)
+	return attachDecos(parseAttOperandRaw(f), decos)
+end
+
 -- Intel operand -----------------------------------------------------------
-local function parseIntelOperand(field)
+local function parseIntelOperandRaw(field)
+	-- An AT&T-style memory operand (disp(base,index,scale)) is never a valid
+	-- Intel-syntax operand, but without an explicit check it falls through to
+	-- parseSym below and RE-RENDERS verbatim as valid AT&T memory syntax — with
+	-- Intel dest-first operand order applied and NO capability/bounds check (a
+	-- total check-bypass: `movq (%rdi), %rsi` in Intel mode emitted an unchecked
+	-- 8-byte store). Reject any field containing parens — covering the parseSym
+	-- fallthrough, the numeric-prefix immediate path (`8(%rdi)`), and
+	-- whitespace-dodged forms (`( %rdi )`). The ONLY legitimate parens in an
+	-- Intel operand are the x87 stack-register name st(N).
+	if string.find(field, "[()]") and not string.match(string.lower(field), "^st%(%d+%)$") then
+		error("sarcasm: AT&T-style operand in Intel-syntax input"
+			.. " (use [bracket] memory operands): " .. field)
+	end
 	local indirect = false
 	local size = nil
 	-- size specifier: BYTE PTR / WORD PTR / ...
@@ -209,6 +280,11 @@ local function parseIntelOperand(field)
 		return { kind = "imm", text = field, value = tonumber(field) }
 	end
 	return parseSym(field)
+end
+
+local function parseIntelOperand(field)
+	local f, decos = stripDecos(field)
+	return attachDecos(parseIntelOperandRaw(f), decos)
 end
 
 -- Strip an AT&T size suffix (movq->mov, addl->add) when the base mnemonic exists in both.

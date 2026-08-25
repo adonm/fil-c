@@ -16,6 +16,30 @@ registers and instructions differ.
   arguments and rejects signatures needing more than 4 register argument words.
 - return: `%al` bit0 = exception flag; `%rdx` = ret intval; `%rcx` = ret lower.
 
+## Floating-point ABI (decoded from `build/bin/clang -S` output)
+FP-class arguments travel in a SEPARATE xmm sequence, independent of the dense GPR
+packing: the first float/double arg goes in `%xmm0`, the second in `%xmm1`, and so
+on, while int/pointer args pack densely into `%rdx`,`%rcx`,`%r8`,`%r9` as above.
+Verified with `double(double,double,long,double,ptr,float)`: the four FP args land
+in xmm0..xmm3 while the long goes to rdx and the pointer to rcx/r8. A float/double
+result is returned in `%xmm0`. `long double` (x87 80-bit) never touches xmm: it is
+passed ON THE STACK (the callee does `fldt 8(%rsp)` / `fldt 24(%rsp)`) and returned
+in `st(0)`.
+
+In the generic (buffer) calling convention every argument occupies one 8-byte word
+at `myth+128+8*i` regardless of class — float/double args included (loaded/stored
+with `movss`/`movsd`; pointer args keep their lower in the aux buffer at
+`myth+384+8*i` as usual). Exception: a `long double` argument occupies a 16-byte
+slot (loaded with `fldt`; the 2ET thunk re-marshals it onto the stack for the fast
+entrypoint with `fstpt`). The FP result is stored to `128(%rbx)` with a zero lower
+word at `384(%rbx)` — `movsd %xmm0, 128(%rbx); movq $0, 384(%rbx)` for double;
+`fstpt 128(%rbx)` plus zeroed padding and a zeroed 16-byte aux word for
+`long double`.
+
+sarcasm still REJECTS FP/vector type classes in `;!` signatures (entry and
+callsite alike) — this decode is the groundwork for future FP-signature support;
+the remaining work is the marshalling (entry/callsite glue + buffer-CC packing).
+
 ## Runtime-call argument registers (SysV: rdi, rsi, rdx, rcx, r8, r9)
 - `filc_optimized_access_check_fail(rdi=intval, rsi=lower, rdx=&origin)`
 - `filc_pollcheck_slow(rdi=myth, rsi=&origin)`

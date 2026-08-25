@@ -58,8 +58,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- requires frameSize. The analysis is pure; frame.preprocess re-runs it internally.
 	local fctx = nil
 	if framePolicy.analyzeFrame then
-		local fs, fpo, ufp = framePolicy.analyzeFrame(body)
-		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp }
+		-- 4th return (x86_64 only): FP/SIMD stack-slot materialization info.
+		local fs, fpo, ufp, fpinfo = framePolicy.analyzeFrame(body)
+		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo }
 	end
 
 	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size); gcc -O0
@@ -333,19 +334,25 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.store(valIv, effTemp, 0)
 		cg.jump(doneLbl)
 		-- need-aux: filc_object_ensure_aux_ptr_outline(myth, lower-16) -> aux
+		-- (injected returning runtime call, out of the hot line: preserve the function's
+		-- live FP/SIMD state around it — no-op for GPR-only functions)
 		cg.label(needAux)
+		cg.fpSave()
 		local header = allocTemp({ role = "scratch" })
 		cg.subImm(header, baseLo, 16)
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), header)
 		cg.call("filc_object_ensure_aux_ptr_outline", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
 		cg.move(aux, pColored(cc.rtRet))
 		cg.jump(barrier)
 		-- do-barrier: filc_store_barrier_for_lower_slow(myth, lower)
 		cg.label(doBarrier)
+		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), valLo)
 		cg.call("filc_store_barrier_for_lower_slow", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
 		cg.jump(storeLbl)
 		cg.label(doneLbl)
 	end
@@ -358,9 +365,15 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local flags = allocTemp({ role = "scratch" })
 		cg.load(flags, vMyth, 8, 1)
 		cg.testMaskBranch(flags, 0xe, "eq", okLbl, 32)
+		-- Slow path, out of the hot line (the not-taken branch skips it): an injected
+		-- RETURNING runtime call the source program never saw, so its live FP/SIMD
+		-- state must be preserved around it (fpSave/fpRestore are no-ops when the
+		-- function uses no vector registers).
+		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.leaGlobal(cc.rtArg(2), originSym)
 		cg.call("filc_pollcheck_slow", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
 		cg.label(okLbl)
 	end
 
@@ -432,7 +445,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		else
 			cg.moveImm(pColored(cc.rtArg(2)), al.size)
 		end
+		-- Injected returning runtime call: preserve live FP/SIMD state around it
+		-- (no-op for GPR-only functions).
+		cg.fpSave()
 		cg.call("filc_allocate", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		cg.fpRestore()
 		local resultIv = node.defTemps and node.defTemps[1]
 		if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
 		local ret = pColored(cc.rtRet)  -- allocation base; payload = base + 16
@@ -491,13 +508,23 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- arch-specific passthrough lowering (e.g. x86 cltq -> movslq, lea passthrough)
 				elseif loadPtrDefs[node] then
 					local dstIv = node.defTemps[1]
+					-- an FP/vector (or otherwise unmodeled) destination has no temp:
+					-- reject cleanly instead of indexing the lower-temp table with nil.
+					if not dstIv then
+						error("sarcasm: `;! load ptr` requires a modeled (GPR) destination"
+							.. " register: " .. (node.stmt.raw or "?"))
+					end
 					local dstLo = pf.lowerTemp[dstIv]
 					emitPtrLoad(node, mem, dstIv, dstLo)
 					emitRootStore(dstLo)
 				elseif storePtrNodes[node] then
 					local valOp = storeValueOperand(node.stmt, mem)
 					local valIv = valOp and node.opTemp[valOp] or nil
-					local valLo = valIv and pf.lowerTemp[valIv] or nil
+					if not valIv then
+						error("sarcasm: `;! store ptr` requires a modeled (GPR) value"
+							.. " register: " .. (node.stmt.raw or "?"))
+					end
+					local valLo = pf.lowerTemp[valIv]
 					emitPtrStore(node, mem, valIv, valLo)
 				elseif mem then
 					cg.checkMemInsn(node, mem)
@@ -505,9 +532,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					local size, align = cgm.accessSizeAlign(node.stmt)
 					local isWrite = cgm.isStoreInsn(node.stmt)
 					emitAccessCheck(effTemp, capLo, size, align, isWrite)
-					emit(node)
+					-- an implicit-GPR-pinned instruction (x86 div/mul/cmpxchg/...)
+					-- emits its pin moves around itself; the access check above
+					-- rightly precedes the pin-in (checks never touch GPRs)
+					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
 				else
-					emit(node)
+					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
 				end
 			end
 		else
@@ -525,11 +555,47 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local externsList = {}
 	for _, e in calledExterns do table.insert(externsList, e) end
 
+	-- GC root-slot ABI fixup (x86_64 FP/SIMD): the Fil-C GC reads a frame's roots as
+	-- frame->lowers[index] (filc_frame: parent, origin, then lowers[]), so the root
+	-- slots MUST occupy frame offsets [16, 16+8*numRoots). The FP/SIMD regions — the
+	-- vector-save area and the materialized frame-slot clusters, all marked
+	-- frameSlot — were assigned offsets relative to base 16 by analyzeFrame /
+	-- preprocess / codegen before numRoots was known; shift them past the root area
+	-- (and its 16-byte alignment pad, matching computeLayout) now. The shift is a
+	-- multiple of 16, preserving the clusters' mod-16 alignment residues
+	-- (movaps-class accesses). No-op on arm64 (no frameSlot operands) and whenever
+	-- there are no roots.
+	do
+		local shift = 8 * #rootTemps
+		if fctx and fctx.fp and (fctx.fp.bytes + fctx.fp.saveBytes) > 0 and #rootTemps % 2 == 1 then
+			shift += 8
+		end
+		if shift > 0 then
+			local seen = {}
+			local function shiftOps(ops)
+				for _, o in (ops or {}) do
+					if o.kind == "mem" and o.frameSlot and not seen[o] then
+						seen[o] = true
+						o.dispVal = o.dispVal + shift
+					end
+				end
+			end
+			for _, node in out do
+				shiftOps(node.operands)
+				if node.stmt then shiftOps(node.stmt.operands) end
+			end
+		end
+	end
+
 	return {
 		name = name, sigDesc = sigDesc, fipNodes = out, temps = temps, vMyth = vMyth,
 		originSym = originSym, numRoots = #rootTemps, funcLine = funcLine, nextTemp = nextTemp,
 		rootTemps = rootTemps, accessOrigins = accessOrigins, calledExterns = externsList,
 		lf = lf, pf = pf,
+		-- FP/SIMD frame-slot region sizes for the layout (0 on arm64 / when no FP
+		-- stack slot was materialized).
+		fpBytes = (fctx and fctx.fp and fctx.fp.bytes) or 0,
+		fpSaveBytes = (fctx and fctx.fp and fctx.fp.saveBytes) or 0,
 	}
 end
 

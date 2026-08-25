@@ -298,6 +298,13 @@ function M.make(ctx)
 		return false
 	end
 
+	-- FP/SIMD save/restore around injected returning runtime calls: NO-OPs on arm64.
+	-- The shared transform calls these unconditionally; arm64 rejects every neon
+	-- register up front (arm64_frame.rewrite), so no vector state ever needs
+	-- preserving. (ARM64 FP/SIMD support is future work.)
+	function cg.fpSave() end
+	function cg.fpRestore() end
+
 	-- passthrough special-casing: ARM has none (no cltq / lea-with-mem); return false.
 	function cg.lowerSpecial(node, mem) return false end
 	-- a memory operand may only appear on a load/store we model; anything else is unmodeled.

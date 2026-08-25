@@ -293,7 +293,13 @@ local function allocateWithSpilling(tr, target)
 		return nextTemp
 	end
 	local slotOf, numSlots = {}, 0
-	local spillBase = 16 + 8 * (tr.numRoots or 0)
+	-- Spill slots sit above the frame header, the GC root slots, and the (x86_64-only,
+	-- 16-byte-aligned) FP/SIMD region: reserved vector-save area + materialized FP
+	-- frame-slot clusters + its alignment pad. Must match the target render's
+	-- computeLayout (x86_64_render.luau / arm64_render.luau).
+	local numRoots = tr.numRoots or 0
+	local fpPad = (((tr.fpSaveBytes or 0) + (tr.fpBytes or 0)) > 0 and numRoots % 2 == 1) and 8 or 0
+	local spillBase = 16 + 8 * numRoots + fpPad + (tr.fpSaveBytes or 0) + (tr.fpBytes or 0)
 	for _ = 1, 32 do
 		-- spill-cost heuristic: cost ~ number of def/use occurrences, so IRC prefers
 		-- spilling rarely-used temps (a value used once is cheap to reload; a value used
@@ -338,9 +344,10 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
-		-- FP/vector type classes cannot be marshalled through the dense GPR-only CC
-		-- (clang passes/returns them in vector registers, which sarcasm rejects), so an
-		-- FP entry signature would silently miscompile the ABI. Reject it cleanly.
+		-- FP type classes cannot yet be marshalled through the dense GPR-only CC: clang
+		-- passes/returns them in vector registers (supported by sarcasm, but the FP
+		-- marshalling is not yet implemented; the ABI is decoded in ABI-NOTES-x86.md),
+		-- so an FP entry signature would silently miscompile the ABI. Reject it cleanly.
 		sig.checkSupportedClasses(sigDesc)
 		-- Entry-signature arity limits. Both ISAs marshal at most 3 arguments through
 		-- the register CC, and both fast CCs pack argument words DENSELY (a pointer arg

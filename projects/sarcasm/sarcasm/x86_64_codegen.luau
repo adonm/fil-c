@@ -9,6 +9,7 @@ local build = require("./build")
 local isa = require("./x86_64_isa")
 local xparse = require("./x86_64_parse")
 local sig = require("./sig")
+local fp = require("./x86_64_fp")
 
 local M = {}
 
@@ -56,18 +57,53 @@ end
 local WIDTH_LETTER = { b = 1, w = 2, l = 4, q = 8 }
 function M.accessSizeAlign(stmt)
 	local mnem = string.lower(stmt.mnemonic)
+	-- FP/SIMD/x87 instructions get their access width from the knowledge module
+	-- (authoritative — it cleanly rejects an Intel PTR size annotation that
+	-- contradicts the ISA-fixed width).
+	local fw, fa = fp.accessWidth(mnem, stmt.operands or {}, stmt.raw)
+	if fw then
+		-- The access check's alignment is capped at the word size, exactly like the
+		-- Fil-C compiler (FilPizlonator's buildCheck does std::min(Alignment,
+		-- WordSize)): the runtime's optimized-access-check origin cannot express
+		-- larger alignments (filc_runtime.c asserts check_origin->alignment <=
+		-- FILC_WORD_SIZE). A movdqa-class access to an address that is word-aligned
+		-- but not vector-aligned passes the check and then faults in hardware,
+		-- same as compiled code — the bounds check is unaffected.
+		if fa > 8 then fa = 8 end
+		return fw, fa
+	end
+	-- Defense in depth: an FP-class instruction with a memory operand whose width
+	-- is unknowable must never fall back to a default width (fp.classify normally
+	-- already rejected it during the lift).
+	do
+		local hasMem = false
+		for _, op in (stmt.operands or {}) do if op.kind == "mem" then hasMem = true break end end
+		if hasMem and fp.hasFpReg(stmt) then
+			error("sarcasm: cannot determine the memory access width of '" .. mnem
+				.. "' (cannot prove memory safety): " .. (stmt.raw or mnem))
+		end
+	end
 	local zs = string.match(mnem, "^mov[zs]([bw])")  -- movzbl/movswq/... source width letter
 	if zs then local s = WIDTH_LETTER[zs]; return s, s end
 	local mem
 	for _, op in stmt.operands do if op.kind == "mem" then mem = op end end
-	if (mnem == "movzx" or mnem == "movsx") and mem and mem.size then return mem.size, mem.size end
-	local sz = (mem and mem.size) or stmt.opsize
-	if not sz then
-		for _, op in stmt.operands do
-			if op.kind == "reg" and op.rc == "gpr" then sz = math.floor((op.width or 64) / 8); break end
-		end
+	local base = isa.baseMnemonic(mnem)
+	if (base == "movzx" or base == "movsx") and mem and mem.size then return mem.size, mem.size end
+	-- GPR access: the width is register-defined (AT&T suffix / first GPR operand
+	-- width). An Intel PTR size annotation CONTRADICTING that width is a lie — the
+	-- emitted instruction encodes the register width regardless (`mov WORD PTR
+	-- [rdi], rax` stores 8 bytes, not 2) — so reject rather than under-size the
+	-- bounds check. Size-driven (movzx/movsx) and memory-neutral (lea) forms and
+	-- no-GPR-operand forms (push/pop/call/jmp, inc/dec/neg/not mem-only) take
+	-- their width from the annotation/suffix legitimately (gprAccessRegWidth is
+	-- nil for them).
+	local regW = isa.gprAccessRegWidth(stmt)
+	if mem and mem.size and regW and mem.size ~= regW then
+		error("sarcasm: PTR size annotation (" .. tostring(mem.size)
+			.. " bytes) contradicts the memory access width (" .. tostring(regW)
+			.. " bytes) of '" .. mnem .. "': " .. (stmt.raw or mnem))
 	end
-	sz = sz or 8
+	local sz = (mem and mem.size) or regW or 8
 	return sz, sz
 end
 
@@ -107,7 +143,28 @@ function M.isMemInsn(mnem) return true end
 -- `alloca size` size operand: `sub rsp, X` -> X is operands[2] (dest-first).
 function M.allocaSizeOperand(stmt) return stmt.operands[2] end
 -- a store writes memory when the (dest-first) first operand is the memory operand.
-function M.isStoreInsn(stmt) return stmt.operands[1] and stmt.operands[1].kind == "mem" end
+-- Single-memory-operand FP/x87 instructions break that positional rule: the lone
+-- memory operand can be a source (fldl, faddl, fcoml, fxrstor, ldmxcsr, ...), so
+-- decide those from the mnemonic — the stores are exactly the fst*/fist*/fbstp/
+-- fnst*/fxsave/stmxcsr families, plus the unprivileged system-table stores
+-- sgdt/sidt/sldt/str/smsw (all single-memory-operand stores the fp table claims;
+-- vstmxcsr is the VEX alias of stmxcsr and reaches here by name).
+function M.isStoreInsn(stmt)
+	local ops = stmt.operands
+	if ops[1] and ops[1].kind == "mem" and #ops == 1 then
+		local mnem = string.lower(stmt.mnemonic)
+		if fp.lookup(mnem) then
+			return mnem == "fbstp" or mnem == "fxsave" or mnem == "fxsave64"
+				or mnem == "stmxcsr" or mnem == "vstmxcsr"
+				or mnem == "sgdt" or mnem == "sidt"
+				or mnem == "sldt" or mnem == "str" or mnem == "smsw"
+				or string.match(mnem, "^fst") ~= nil
+				or string.match(mnem, "^fist") ~= nil
+				or string.match(mnem, "^fnst") ~= nil
+		end
+	end
+	return ops[1] and ops[1].kind == "mem"
+end
 
 -- x86 conditions for the neutral cmp/test conditions used by the shared transform.
 local JCC = { ult = "jb", uge = "jae", ugt = "ja", ule = "jbe", eq = "je", ne = "jne" }
@@ -222,6 +279,13 @@ function M.make(ctx)
 
 	-- effective address + capability selection for a memory operand.
 	function cg.computeAddr(node, mem)
+		-- A symbolic displacement (RIP-relative global access, `sym(%rip)`) cannot be
+		-- bounds-checked: there is no capability for the target. Reject cleanly
+		-- instead of crashing later in the renderer.
+		if mem.dispSym then
+			error("sarcasm: memory access with a symbolic address cannot be bounds-checked"
+				.. " (global data access is not yet supported): " .. (node.stmt.raw or "?"))
+		end
 		local baseTemp = mem.base and node.opTemp[mem.base] or nil
 		local indexTemp = (mem.index and mem.index.kind == "reg") and node.opTemp[mem.index] or nil
 		local capLo
@@ -261,6 +325,63 @@ function M.make(ctx)
 	-- frame offsets: an rbp-relative displacement d is normalized to frameSize + d (rbp =
 	-- rsp + frameSize when it is the frame pointer).
 	local fctx = ctx.frameCtx
+
+	-- FP/SIMD save/restore around sarcasm-injected RETURNING runtime calls (the pollcheck
+	-- slow path, filc_allocate, the ptr-store slow paths). The source program never saw
+	-- these calls, so its live xmm/ymm/zmm values would be silently clobbered by them:
+	-- SysV makes every FP/SIMD register caller-saved. The Fil-C runtime is compiled
+	-- SSE2-only (pizfix/lib/libpizlo.a contains xmm instructions but zero ymm/zmm), so
+	-- preserving the WIDEST vector class the function itself uses (fpInfo.vecBytes)
+	-- covers whatever the runtime can clobber, and also covers the function's own wider
+	-- state regardless of which subset of it the runtime actually touches.
+	--
+	-- A nil vecBytes (a GPR-only function, or one using only k-opmask/x87/mm registers)
+	-- emits NOTHING. For x87/mm state this is sound NOT because "an SSE2-only runtime
+	-- cannot clobber x87" — libpizlo.a DOES contain x87 instructions (the fldt/fstpt
+	-- in the zmath long-double wrappers) — but because the only callees these
+	-- injected-call paths can reach (filc_pollcheck_slow, filc_allocate, and the two
+	-- store-barrier slow paths filc_object_ensure_aux_ptr_outline /
+	-- filc_store_barrier_for_lower_slow) never execute those wrappers. k-opmask state
+	-- genuinely cannot be clobbered by an SSE2-only runtime (it is EVEX-only). If the
+	-- runtime is ever compiled with AVX512, this must be extended to also save
+	-- zmm16-31 and k0-7 (EVEX state an AVX512 build could clobber).
+	--
+	-- The save area sits above the GC root area of the synthesized frame (reserved by
+	-- x86_64_render.computeLayout); slot i is assigned 16+i*vecBytes(%rsp) here —
+	-- relative to base 16, like the materialized clusters — and transform shifts it
+	-- past the root area once numRoots is known (the frameSlot tag is what the shift
+	-- looks for). The unaligned forms (movdqu/vmovdqu/vmovdqu64) need no alignment
+	-- beyond the frame's guaranteed 16-byte body alignment, and each is exactly the
+	-- ISA level the function's own widest register class already requires
+	-- (SSE2 / AVX / AVX512F). The vector registers render by name (fixed operands;
+	-- the register allocator never models xmm-class registers); the slot base is a
+	-- fixed %rsp operand (4 = rsp).
+	local fpInfo = fctx and fctx.fp
+	local vecBytes = fpInfo and fpInfo.vecBytes or nil
+	local vecSaveMnem, vecClass = nil, nil
+	if vecBytes == 16 then vecSaveMnem, vecClass = "movdqu", "xmm"
+	elseif vecBytes == 32 then vecSaveMnem, vecClass = "vmovdqu", "ymm"
+	elseif vecBytes == 64 then vecSaveMnem, vecClass = "vmovdqu64", "zmm" end
+	local function vecSaveInsn(isRestore, i)
+		local vreg = { kind = "reg", rc = "xmm", num = i, width = vecBytes * 8, name = vecClass .. i }
+		local slot = build.memx(build.rp(4), { dispVal = 16 + i * vecBytes })
+		-- Synthesized-frame slot: transform shifts its dispVal past the GC root area
+		-- (roots must occupy [16, 16+8*numRoots) for the Fil-C GC).
+		slot.frameSlot = true
+		if isRestore then
+			return build.insn(vecSaveMnem, { vreg, slot }, {})
+		end
+		return build.insn(vecSaveMnem, { slot, vreg }, {})
+	end
+	function cg.fpSave()
+		if not vecSaveMnem then return end  -- no vector state the runtime could clobber
+		for i = 0, 15 do emit(vecSaveInsn(false, i)) end
+	end
+	function cg.fpRestore()
+		if not vecSaveMnem then return end
+		for i = 0, 15 do emit(vecSaveInsn(true, i)) end
+	end
+
 	local function stackOff(base, disp)
 		if not base then return nil end
 		if base.rc == "sp" then return disp end
@@ -268,6 +389,11 @@ function M.make(ctx)
 		return nil  -- not a stack base (e.g. rbp as an ordinary GPR with frame-pointer omission)
 	end
 	function cg.regionRedirect(node, regionOf)
+		-- A materialized FP frame-slot operand (disp(%rsp) into sarcasm's synthesized
+		-- frame) is NOT an input-frame access; its positive offset can numerically
+		-- coincide with an alloca-region frame offset. Never redirect/reject it.
+		local fsmem = M.memOperand(node.stmt)
+		if fsmem and fsmem.frameSlot then return false end
 		local m = isa.baseMnemonic(string.lower(node.stmt.mnemonic))
 		local ops = node.stmt.operands
 		if m == "lea" then
@@ -306,16 +432,135 @@ function M.make(ctx)
 
 	-- passthrough special-casing: cltq -> renameable movslq on the rax web; lea does not
 	-- access memory (its [mem] is an address computation), so pass it through unchecked.
+	-- Memory-neutral hints (prefetch*) also pass through with no access check.
 	function cg.lowerSpecial(node, mem)
+		-- A materialized FP frame-slot operand is a real disp(%rsp) into sarcasm's
+		-- own synthesized frame: the access is always in-bounds (the frame contains
+		-- its own slots), so it needs no access check — pass the instruction
+		-- through untouched. (`;! load/store ptr` on a stack access was already
+		-- rejected by the frame rewrite; keep a defensive copy here.)
+		if mem and mem.frameSlot then
+			local ann = node.stmt.annotation
+			if ann == "load ptr" or ann == "store ptr" then
+				error("sarcasm: `;! " .. ann .. "` on a stack-frame access is not supported"
+					.. " (frame slots are virtualized/materialized, not real memory): "
+					.. (node.stmt.raw or "?"))
+			end
+			emit(node); return true
+		end
 		local base = isa.baseMnemonic(node.stmt.mnemonic)
+		local fpe = fp.lookup(string.lower(node.stmt.mnemonic))
+		if fpe and fpe.noCheck then emit(node); return true end
+		-- fnstsw/fstsw with a register destination write ONLY %ax (the encoding is
+		-- hardwired): pin the access to physical rax and copy out, rather than
+		-- letting regalloc rename the operand into an invalid `fnstsw %dx`.
+		if (base == "fnstsw" or base == "fstsw") and node.stmt.operands[1]
+			and node.stmt.operands[1].kind == "reg" and node.stmt.operands[1].rc == "gpr" then
+			local t = node.defTemps and node.defTemps[1]
+			emit(build.insn(node.stmt.mnemonic, { build.rp(0, 16) }, { defs = { pColored(0) } }))
+			if t then cg.move(t, pColored(0), true) end
+			return true
+		end
 		if base == "cltq" then
 			local t = node.defTemps and node.defTemps[1]
 			if t then emit(build.insn("movslq", { rt(t, 64), rt(t, 32) }, { defs = {t}, uses = {t} })) else emit(node) end
+			return true
+		elseif base == "cbw" then
+			local t = node.defTemps and node.defTemps[1]
+			if t then emit(build.insn("movsbw", { rt(t, 16), rt(t, 8) }, { defs = {t}, uses = {t} })) else emit(node) end
+			return true
+		elseif base == "cwde" then
+			local t = node.defTemps and node.defTemps[1]
+			if t then emit(build.insn("movswl", { rt(t, 32), rt(t, 16) }, { defs = {t}, uses = {t} })) else emit(node) end
 			return true
 		elseif base == "lea" then
 			emit(node); return true
 		end
 		return false
+	end
+
+	-- Implicit-GPR pinning (div/idiv/mul/1-op imul, mulx, cmpxchg, cqo/cdq/cwd).
+	-- These instructions read and/or write physical rax/rdx beyond what their
+	-- explicit operands say; classify names those effects with implicit def/use
+	-- operand tables (recorded in node.c.pin), so the lift's web analysis
+	-- connects them to the surrounding code. We then pin the implicit registers
+	-- to the physical registers with synthesized moves AROUND the instruction —
+	-- exactly the way the fnstsw->rax pin and the calling-convention boundary
+	-- copies work: before the instruction, copy the CURRENT webs of the
+	-- implicit-use registers into their physical registers; after it, copy the
+	-- physical registers back out into the fresh webs that the lift made the
+	-- reaching defs for subsequent reads of rax/rdx. The instruction keeps only
+	-- its explicit operands in the emitted text; its def/use temp lists (what
+	-- regalloc sees) reference the precolored physical temps for the implicit
+	-- registers, so the register allocator colors everything else AROUND the
+	-- fixed rax/rdx effects. Regalloc coalescing makes the pin moves free in
+	-- the common case (the user just wrote rax/rdx).
+	--
+	-- An explicit operand that NAMES a pinned register (cmpxchg %rsi, %rax;
+	-- mulxq %rsi, %rdx, %rax; idiv %rdx) is rendered as the FIXED physical
+	-- register: renaming it would desync it from the implicit pin (its web's
+	-- value flows through the physical register via the pin-in/pin-out copies,
+	-- so the semantics stay correct either way).
+	--
+	-- Called by the transform wherever a plain node would be emitted (with or
+	-- without a preceding access check); returns false for unpinned nodes.
+	function cg.emitPinned(node)
+		local c = node.c
+		local pin = c and c.pin
+		if not pin then return false end
+		local pinnedNums = {}
+		for _, r in (pin.uses or {}) do pinnedNums[r.num] = true end
+		for _, r in (pin.defs or {}) do pinnedNums[r.num] = true end
+		-- private opTemp copy (spill rewriting mutates it in place)
+		local opT = {}
+		for k, v in (node.opTemp or {}) do opT[k] = v end
+		-- pin-in: every modeled use of a pinned register (an implicit table or an
+		-- explicit operand naming the register) gets its reaching web copied into
+		-- the physical register. (Same-web duplicates collapse: the lift keys use
+		-- webs by register number.)
+		local moved = {}
+		for _, r in (c.uses or {}) do
+			if pinnedNums[r.num] and not moved[r.num] then
+				moved[r.num] = true
+				local t = opT[r]
+				if t then cg.move(pColored(r.num), t, true) end
+			end
+		end
+		-- the pinned instruction itself
+		local defTemps, useTemps, newops = {}, {}, {}
+		for _, o in (node.stmt.operands or {}) do
+			if o.kind == "reg" and o.rc == "gpr" and pinnedNums[o.num] then
+				table.insert(newops, build.rp(o.num, o.width))
+			else
+				table.insert(newops, o)
+			end
+		end
+		for _, r in (c.uses or {}) do
+			local t = pinnedNums[r.num] and pColored(r.num) or opT[r]
+			if t then table.insert(useTemps, t) end
+		end
+		for _, r in (c.defs or {}) do
+			local t = pinnedNums[r.num] and pColored(r.num) or opT[r]
+			if t then table.insert(defTemps, t) end
+		end
+		emit({
+			kind = "insn", synth = true, mnemonic = node.stmt.mnemonic,
+			operands = newops, opTemp = opT,
+			defTemps = defTemps, useTemps = useTemps,
+			control = "none", fallsThrough = true,
+		})
+		-- pin-out: every modeled def of a pinned register gets the physical
+		-- register copied out into its fresh web (the reaching def for all
+		-- subsequent reads of that register).
+		local outDone = {}
+		for _, r in (c.defs or {}) do
+			local t = opT[r]
+			if pinnedNums[r.num] and t and not outDone[t] then
+				outDone[t] = true
+				cg.move(t, pColored(r.num), true)
+			end
+		end
+		return true
 	end
 	function cg.checkMemInsn(node, mem) end  -- x86: any memory operand is a real access
 

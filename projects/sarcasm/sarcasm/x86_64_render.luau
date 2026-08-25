@@ -7,6 +7,7 @@
 
 local x86 = require("./x86_64_isa")
 local x86parse = require("./x86_64_parse")
+local fp = require("./x86_64_fp")
 
 local x86_64_render = {}
 
@@ -16,7 +17,61 @@ local SUFFIX = { [8] = "b", [16] = "w", [32] = "l", [64] = "q" }
 local SUFFIXABLE = {
 	mov=true, add=true, sub=true, ["and"]=true, ["or"]=true, xor=true, cmp=true, test=true,
 	shl=true, shr=true, sal=true, sar=true, imul=true, inc=true, dec=true, neg=true, ["not"]=true,
+	-- the one-operand mul/div family: an Intel PTR-sized memory form (`div QWORD
+	-- PTR [rdi]`) carries its width only in mem.size, and a bare AT&T rendering
+	-- would assemble as the l-default — synthesize the suffix like cmp/test.
+	div=true, idiv=true, mul=true,
 }
+
+-- xadd/cmpxchg ALWAYS render with an explicit size suffix: gas cannot infer the
+-- width of `xadd (%rdi), %rsi` / `cmpxchg (%rdi), %rsi` (the memory operand
+-- comes first) and rejects the bare form — including when the input was legal
+-- Intel syntax (`xadd [rdi], rsi`). The width comes from the register operand
+-- (always present: xadd/cmpxchg are r/m, r) or the memory size.
+local FORCE_SUFFIX = { xadd = true, cmpxchg = true }
+
+-- Bare (unsuffixed) x87 mnemonic + a sized memory operand -> the suffixed AT&T
+-- mnemonic encoding that size. gas's default width for an unsuffixed x87 mnemonic
+-- (fld -> flds) silently changes the access width of a PTR-sized Intel memory form
+-- (`fld QWORD PTR [rdi]` must render fldl; rendered bare it assembles to a 4-byte
+-- flds while being bounds-checked at 8 — a silent width-changing miscompile).
+-- Combinations the ISA does not have (fst with a tbyte operand, fiadd with a qword,
+-- ...) are rejected cleanly. Form matrix verified against `as`: the float family
+-- has m32/m64 forms (plus m80 for fld/fstp only); the int family has m16/m32 forms
+-- (plus m64 for fild/fistp/fisttp only).
+local X87_MEM_FORM = {}
+for _, m in { "fadd", "fsub", "fsubr", "fmul", "fdiv", "fdivr", "fcom", "fcomp" } do
+	X87_MEM_FORM[m] = { [4] = m .. "s", [8] = m .. "l" }
+end
+for _, m in { "fiadd", "fisub", "fisubr", "fimul", "fidiv", "fidivr", "ficom", "ficomp" } do
+	X87_MEM_FORM[m] = { [2] = m .. "s", [4] = m .. "l" }
+end
+X87_MEM_FORM.fld = { [4] = "flds", [8] = "fldl", [10] = "fldt" }
+X87_MEM_FORM.fst = { [4] = "fsts", [8] = "fstl" }            -- fst has no tbyte form
+X87_MEM_FORM.fstp = { [4] = "fstps", [8] = "fstpl", [10] = "fstpt" }
+X87_MEM_FORM.fild = { [2] = "filds", [4] = "fildl", [8] = "fildq" }
+X87_MEM_FORM.fist = { [2] = "fists", [4] = "fistl" }         -- fist has no qword form
+X87_MEM_FORM.fistp = { [2] = "fistps", [4] = "fistpl", [8] = "fistpq" }
+X87_MEM_FORM.fisttp = { [2] = "fisttps", [4] = "fisttpl", [8] = "fisttpq" }
+
+-- The integer-source cvt family has the same gas-default-width trap: a bare AT&T
+-- `cvtsi2ss (%rdi), %xmm0` assembles as m32 (cvtsi2ssl). When an Intel PTR size
+-- selected the m32/m64 form, synthesize the suffix so the emitted encoding matches
+-- the bounds-checked width (the fp table's cvtIntW width function is
+-- annotation-driven). A PTR size that is not a real form (e.g. WORD PTR) is
+-- rejected cleanly rather than under-checked.
+local CVT_INT_MEM_FORM = {
+	cvtsi2ss = { [4] = "cvtsi2ssl", [8] = "cvtsi2ssq" },
+	cvtsi2sd = { [4] = "cvtsi2sdl", [8] = "cvtsi2sdq" },
+	vcvtusi2ss = { [4] = "vcvtusi2ssl", [8] = "vcvtusi2ssq" },
+	vcvtusi2sd = { [4] = "vcvtusi2sdl", [8] = "vcvtusi2sdq" },
+}
+
+-- Bare `crc32` with a sized (Intel PTR, or materialized frame slot) memory
+-- source: gas would otherwise default the width from the destination register,
+-- silently changing the crc source width (`crc32 eax, BYTE PTR [rdi]` must read
+-- 1 byte, not 4). Synthesize the suffix that encodes the annotation.
+local CRC32_MEM_FORM = { crc32 = { [1] = "crc32b", [2] = "crc32w", [4] = "crc32l", [8] = "crc32q" } }
 
 local function regName(num, width) return x86parse.regName(num, width) end
 x86_64_render.regName = regName
@@ -30,12 +85,20 @@ local function physOf(node, op, colorNum)
 	return nil
 end
 
-local function renderOperand(node, op, colorNum, syntax)
+local function renderOperandRaw(node, op, colorNum, syntax)
 	local function numOf(o)
 		if o.fixedNum ~= nil then return o.fixedNum end
 		if o.tempRef ~= nil then return colorNum and colorNum(o.tempRef) end
 		if node.opTemp then local t = node.opTemp[o]; if t ~= nil then return colorNum and colorNum(t) end end
 		return nil
+	end
+	-- name for a memory base/index register: the allocated physical register, or the
+	-- original name when the operand was never modeled (e.g. a raw %rsp base passed
+	-- through by a memory-neutral instruction).
+	local function baseRegName(o)
+		local n = numOf(o)
+		if n ~= nil then return regName(n, 64) end
+		return (o and o.name) or "?"
 	end
 	if op.kind == "reg" then
 		if op.rc == "rip" then return syntax == "att" and "%rip" or "rip" end
@@ -65,15 +128,15 @@ local function renderOperand(node, op, colorNum, syntax)
 			end
 			if ripBase then return dtext .. "(%rip)" end
 			if op.index then
-				local b = op.base and ("%" .. regName(numOf(op.base), 64)) or ""
-				return dtext .. "(" .. b .. ",%" .. regName(numOf(op.index), 64) .. "," .. tostring(op.scale or 1) .. ")"
+				local b = op.base and ("%" .. baseRegName(op.base)) or ""
+				return dtext .. "(" .. b .. ",%" .. baseRegName(op.index) .. "," .. tostring(op.scale or 1) .. ")"
 			end
-			return dtext .. "(%" .. regName(numOf(op.base), 64) .. ")"
+			return dtext .. "(%" .. baseRegName(op.base) .. ")"
 		else
 			if ripBase then return "[rip + " .. disp .. "]" end
 			local parts = {}
-			if op.base then table.insert(parts, regName(numOf(op.base), 64)) end
-			if op.index then table.insert(parts, regName(numOf(op.index), 64) .. "*" .. tostring(op.scale or 1)) end
+			if op.base then table.insert(parts, baseRegName(op.base)) end
+			if op.index then table.insert(parts, baseRegName(op.index) .. "*" .. tostring(op.scale or 1)) end
 			if disp ~= "" then table.insert(parts, disp) end
 			if op.dispVal and op.dispVal ~= 0 then
 				table.insert(parts, (op.dispVal < 0 and tostring(op.dispVal)) or ("+" .. tostring(op.dispVal)))
@@ -89,12 +152,23 @@ local function renderOperand(node, op, colorNum, syntax)
 	end
 	return "?"
 end
+
+-- AVX512 decorators ({%k1}{z}, {1to16}, ...) ride along on the operand and are
+-- re-rendered verbatim after the register/memory text.
+local function renderOperand(node, op, colorNum, syntax)
+	local s = renderOperandRaw(node, op, colorNum, syntax)
+	if op.deco then s = s .. op.deco end
+	return s
+end
 x86_64_render.renderOperand = renderOperand
 
 -- operation size (bytes) for a synthesized instruction (widest reg, or mem.size).
+-- Lifted nodes carry their operands in node.stmt.operands (only synthesized nodes
+-- have node.operands), so look at both — this is what sizes the AT&T suffix of a
+-- reg-less lifted form (e.g. a materialized `movl $5, O(%rsp)` frame-slot store).
 local function opSize(node, colorNum)
 	local w = nil
-	for _, op in (node.operands or {}) do
+	for _, op in ((node.stmt and node.stmt.operands) or node.operands or {}) do
 		if op.kind == "reg" and op.rc ~= "rip" then w = math.max(w or 0, op.width or 64)
 		elseif op.kind == "mem" and op.size then w = math.max(w or 0, op.size * 8) end
 	end
@@ -120,7 +194,34 @@ function x86_64_render.renderInsn(node, colorNum, syntax)
 	local outMnem = mnem
 	local base = x86.baseMnemonic(mnem)
 	if syntax == "att" then
-		if (base == "movzx" or base == "movsx") and string.match(low, "^mov[zs][bwlq][bwlq]$") then
+		local sizedForm = X87_MEM_FORM[low] or CVT_INT_MEM_FORM[low] or CRC32_MEM_FORM[low]
+		if sizedForm then
+			-- Bare x87 / cvt-int mnemonic with a sized (Intel PTR, or materialized
+			-- frame slot) memory operand: emit the suffix encoding that size (see
+			-- the table comments). Already-suffixed input (fldl, cvtsi2ssq) is not
+			-- table-keyed and stays untouched.
+			local memsz = nil
+			for _, op in ops do
+				if op.kind == "mem" and op.size then memsz = op.size break end
+			end
+			if memsz then
+				local f = sizedForm[memsz]
+				if not f then
+					error("sarcasm: " .. low .. " has no " .. tostring(memsz)
+						.. "-byte memory form: " .. (node.stmt and node.stmt.raw or mnem))
+				end
+				outMnem = f
+			end
+		elseif FORCE_SUFFIX[low] then
+			-- xadd/cmpxchg: gas cannot infer the width of a bare mnemonic (see the
+			-- table comment) — always render an explicit size suffix.
+			local w = 0
+			for _, op in ops do
+				if op.kind == "reg" and op.rc ~= "rip" then w = math.max(w, op.width or 64)
+				elseif op.kind == "mem" and op.size then w = math.max(w, op.size * 8) end
+			end
+			outMnem = low .. (SUFFIX[w > 0 and w or 64] or "q")
+		elseif (base == "movzx" or base == "movsx") and string.match(low, "^mov[zs][bwlq][bwlq]$") then
 			outMnem = low  -- already a full AT&T form (movzbl, movslq, ...): render verbatim
 		elseif base == "movzx" or base == "movsx" then
 			local letter = string.match(low, "^mov[zs]([bw])")
@@ -144,6 +245,17 @@ function x86_64_render.renderInsn(node, colorNum, syntax)
 			local hasReg = false
 			for _, op in ops do if op.kind == "reg" and op.rc ~= "rip" then hasReg = true; break end end
 			if not hasReg then outMnem = low .. (SUFFIX[opSize(node, colorNum)] or "q") end
+		end
+		-- Bare narrowing convert with a sized memory operand: gas needs the
+		-- source-width suffix (vcvtpd2psx/y, vcvtpd2phz, ...) — the bare rendering
+		-- is ambiguous and fails assembly.
+		if outMnem == mnem then
+			local memsz = nil
+			for _, op in ops do
+				if op.kind == "mem" and op.size then memsz = op.size break end
+			end
+			local ns = memsz and fp.narrowSuffix(low, memsz)
+			if ns then outMnem = low .. ns end
 		end
 	end
 
@@ -194,15 +306,30 @@ function x86_64_render.isSelfMove(node, colorNum)
 end
 
 -- Frame layout -----------------------------------------------------------
-local function computeLayout(calleeSaved, numRoots, spillBytes)
+-- [0,16) prev+origin; [16, 16+8*numRoots) the GC root slots — this placement is an
+-- ABI requirement: the Fil-C GC reads a frame's roots as frame->lowers[index], i.e.
+-- immediately after the parent+origin header (filc_runtime.h's filc_frame). Then the
+-- reserved vector-save area and the materialized FP/SIMD frame-slot clusters (whose
+-- analyzeFrame-assigned offsets are relative to base 16 and get shifted past the root
+-- area by transform once numRoots is known), then regalloc spill slots. The FP/SIMD
+-- region starts on a 16-byte boundary (8 bytes of padding after the root slots when
+-- numRoots is odd) so the clusters' mod-16 alignment residues (movaps-class
+-- accesses) survive the shift. The alignment modulus stays 16 (body rsp ≡ 0 mod 16);
+-- aligned >16-byte stack accesses are rejected by the frame rewrite.
+local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes)
 	spillBytes = spillBytes or 0
+	fpSaveBytes = fpSaveBytes or 0
+	fpBytes = fpBytes or 0
 	local p = #calleeSaved
-	local base = 16 + 8 * numRoots + spillBytes  -- prev+origin+roots(+spills)
+	local rootBase = 16
+	local fpPad = ((fpSaveBytes + fpBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes
+	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+spills)
 	-- Maintain 16-byte alignment at call sites: (8 retaddr + 8*p pushes + N) % 16 == 0.
 	local target = ((p % 2) == 0) and 8 or 0
 	local N = base
 	while (N % 16) ~= target do N += 1 end
-	return { total = N, rootBase = 16, spillBase = 16 + 8 * numRoots, pushed = calleeSaved }
+	return { total = N, rootBase = rootBase, spillBase = spillBase, pushed = calleeSaved }
 end
 x86_64_render.computeLayout = computeLayout
 

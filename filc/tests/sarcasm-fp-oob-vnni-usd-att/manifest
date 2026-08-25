@@ -1,0 +1,11 @@
+return:
+  failure
+use-sarcasm:
+  true
+only-on-platform:
+  x86_64
+needsAVX512:
+  true
+output-includes:
+  - filc safety error
+  - cannot read 32 bytes

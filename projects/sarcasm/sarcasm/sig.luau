@@ -112,12 +112,14 @@ local CLASS_NAME = {
 	[TYPE_LONGDOUBLE] = "long double", [TYPE_PTR] = "ptr",
 }
 
--- Floating-point/vector type classes cannot be marshalled: sarcasm packs and unpacks
--- dense GPRs only, while the Fil-C ABI passes and returns FP/vector values in vector
--- registers (which sarcasm rejects wholesale). An FP-typed signature would therefore
--- silently miscompile the ABI at BOTH ends (entry unpacking and callsite packing), so
--- reject it wherever a signature is consumed. `where` optionally prefixes a context
--- (e.g. "call to 'foo'"). Raises a clean sarcasm: error naming the offending type.
+-- Floating-point type classes are not yet supported in signatures. sarcasm packs and
+-- unpacks dense GPRs only, while the Fil-C ABI passes and returns FP values in vector
+-- registers (which sarcasm itself supports) — the FP ABI marshalling (the fast-CC xmm
+-- register sequence plus the buffer-CC glue) is simply not yet implemented. An
+-- FP-typed signature would therefore silently miscompile the ABI at BOTH ends (entry
+-- unpacking and callsite packing), so reject it wherever a signature is consumed.
+-- `where` optionally prefixes a context (e.g. "call to 'foo'"). Raises a clean
+-- sarcasm: error naming the offending type.
 function sig.checkSupportedClasses(sd, where)
 	local function check(t)
 		if t ~= TYPE_INT and t ~= TYPE_PTR then

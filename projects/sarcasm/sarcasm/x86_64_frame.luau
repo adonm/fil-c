@@ -45,13 +45,22 @@
 --     established frame pointer, and mid-function `movq %rsp,%rbp`;
 --   * `enter`/`enterq` (packed push-rbp/mov/sub frame setup sarcasm does not model —
 --     passed through it would shift rsp and clobber rbp inside the synthesized frame);
---   * any instruction naming a vector/floating-point (xmm-class: xmm/ymm/zmm/mm/st)
---     register — sarcasm has no vector register file, so these cannot be virtualized,
---     bounds-checked, or modeled — and any x87 FPU instruction at all (every x87
---     mnemonic begins with 'f'; ones that name no xmm-class register, like `fldz` or
---     `fnstsw %ax`, would otherwise slip past the register check).
+--   * vector-indexed memory operands (gather/scatter: base or index of xmm-class) —
+--     they touch multiple discrete addresses that cannot be bounds-checked.
+--
+-- FP/SIMD registers (xmm-class: xmm/ymm/zmm/mm/st/k) are IN SCOPE: instructions naming
+-- them pass through the frame policy (heap accesses are bounds-checked later by the
+-- transform using the x86_64_fp knowledge module's widths). Stack-frame accesses by
+-- FP instructions cannot ride the GPR slot virtualization (a slot pseudo-register is
+-- not a vector register), so analyzeFrame runs an FP TAINT SCAN over the body's stack
+-- accesses: every stack range an FP/vector instruction touches — plus any GPR range
+-- overlapping it (aliasing) — is MATERIALIZED into a reserved region of sarcasm's
+-- synthesized frame, i.e. the instruction is kept and its memory operand rewritten to
+-- a real disp(%rsp) whose offset preserves the input's guaranteed alignment. All other
+-- stack slots virtualize into pseudo-registers as before.
 
 local x86 = require("./x86_64_isa")
+local fp = require("./x86_64_fp")
 
 local x86_64_frame = {}
 
@@ -61,6 +70,27 @@ local WIDTH_LETTER = { b = 1, w = 2, l = 4, q = 8 }  -- AT&T size suffix -> byte
 -- actually establishes it as a frame pointer (`mov %rsp,%rbp`). With frame-pointer omission
 -- (the -O2 default), rbp is just an ordinary callee-saved GPR holding values.
 local function isStackReg(op, usesRbp) return op and op.kind == "reg" and (op.rc == "sp" or (usesRbp and op.name == "rbp")) end
+
+-- Is this instruction an FP/SIMD/x87 use of memory (vs an ordinary GPR access)? The
+-- knowledge module "claims" its own mnemonics even without an xmm-class operand
+-- (ldmxcsr, movnti, cvtsi2sd, ...); claim=false entries (movq, the ss/sd/ps/pd and
+-- p-family patterns, ...) only engage when an xmm-class register is actually present.
+-- Memory-neutral hints (prefetch*) are not FP uses: they need no slot at all.
+local function isFpInsn(fpe, st)
+	if fpe and fpe.noCheck then return false end
+	return fp.hasFpReg(st) or (fpe ~= nil and fpe.claim ~= false)
+end
+
+-- GPR stack-access width in bytes: an Intel PTR size when present, the movz*/movs*
+-- source letter, a trailing AT&T [bwlq] suffix, default 8. (FP accesses are sized by
+-- the fp knowledge module instead.)
+local function gprStackWidth(m, mem)
+	if mem.size then return mem.size end
+	local zs = string.match(m, "^mov[zs]([bwlq])")   -- movzwl -> source letter 'w'
+	if zs then return WIDTH_LETTER[zs] end
+	local suf = string.match(m, "([bwlq])$")
+	return (suf and WIDTH_LETTER[suf]) or 8
+end
 local function immVal(op) if op and op.kind == "imm" then return op.value or tonumber(op.text) or 0 end return 0 end
 
 local function isAlloca(st)
@@ -418,7 +448,121 @@ function x86_64_frame.analyzeFrame(body)
 		end
 	end
 
-	return frameSize, 0, usesRbp
+	-- FP/SIMD stack-slot taint scan. FP/vector instructions cannot ride the GPR slot
+	-- virtualization (their operands are real vector registers, not temps — the slot
+	-- pseudo-register would render as garbage), so every stack range an FP
+	-- instruction touches is MATERIALIZED: the instruction is kept and its memory
+	-- operand is rewritten to a real disp(%rsp) into a reserved region of sarcasm's
+	-- synthesized frame (see rewrite). GPR accesses overlapping an FP-touched range
+	-- are materialized too (aliasing: the overlapped bytes must have exactly one
+	-- home). This scan computes the tainted clusters and assigns their synthesized
+	-- offsets; rewrite's fpInfo.lookup(off, w) then maps each materialized access
+	-- to its final offset.
+	local intervals = {}
+	for _, st in body do
+		if st.kind == "insn" and not isAlloca(st) then  -- alloca machinery owns its accesses
+			local mem
+			for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
+			-- Mirror exactly the rewrite's stack-mem gate: stack base, no symbolic
+			-- displacement, no index register (the rewrite rejects those cleanly).
+			-- Heap/global accesses are irrelevant here.
+			if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym and not mem.index then
+				local m = string.lower(st.mnemonic)
+				local fpe = fp.lookup(m)
+				if not (fpe and fpe.noCheck) then  -- prefetch: memory-neutral, needs no slot
+					-- Normalized rsp-relative frame offset: EXACTLY the rewrite's formula.
+					local off = (mem.dispVal or 0)
+					if mem.base.rc ~= "sp" then off = frameSize + off end
+					local isFP = isFpInsn(fpe, st)
+					local w, areq = nil, 1
+					if isFP then
+						-- The knowledge module's width is AUTHORITATIVE for FP/SIMD
+						-- (broadcast decorators, ISA-fixed vector widths, and the
+						-- size-driven x87/PTR forms all resolved inside); a raw
+						-- Intel mem.size must never under-size the slot, and
+						-- accessWidth cleanly rejects a contradicting PTR
+						-- annotation. nil: the rewrite produces the clean error.
+						local fw, fa = fp.accessWidth(m, st.operands, st.raw)
+						w = fw
+						if fa and fa > 1 then areq = math.min(fa, 16) end  -- cap at 16
+					else
+						w = gprStackWidth(m, mem)
+					end
+					if w then
+						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq })
+					end
+				end
+			end
+		end
+	end
+	-- Sweep-merge strictly-overlapping intervals into clusters; a cluster is TAINTED
+	-- iff any member is an FP access (this is the aliasing guarantee: a GPR range
+	-- overlapping an FP range joins the cluster and is materialized with it).
+	table.sort(intervals, function(x, y) return x.lo < y.lo end)
+	local tainted = {}
+	do
+		local cur = nil
+		for _, iv in intervals do
+			if cur and iv.lo < cur.hi then
+				if iv.hi > cur.hi then cur.hi = iv.hi end
+				if iv.fp then cur.fp = true end
+				if iv.areq > cur.areq then cur.areq = iv.areq end
+			else
+				cur = { lo = iv.lo, hi = iv.hi, fp = iv.fp, areq = iv.areq }
+				table.insert(tainted, cur)
+			end
+		end
+		-- drop untainted clusters
+		for i = #tainted, 1, -1 do
+			if not tainted[i].fp then table.remove(tainted, i) end
+		end
+	end
+
+	-- Widest xmm-class operand width/8 anywhere in the function (16/32/64): sizes
+	-- the reserved vector-save area above the materialized clusters.
+	local vecBytes = nil
+	for _, st in body do
+		if st.kind == "insn" then
+			local vb = fp.widestVecBytes(st.operands or {})
+			if vb and (not vecBytes or vb > vecBytes) then vecBytes = vb end
+		end
+	end
+	local saveBytes = vecBytes and 16 * vecBytes or 0
+	local base0 = 16 + saveBytes
+	local cursor = base0
+	for _, c in tainted do
+		local areq = math.max(c.areq, 1)
+		-- The synthesized offset must preserve every input-guaranteed alignment. An
+		-- input access with normalized offset off has address entry_rsp - D0 + off,
+		-- and entry_rsp ≡ 8 (mod 16) (SysV: rsp+8 is 16-aligned at the call), so an
+		-- input access aligned to areq (areq ≤ 16) has off ≡ D0 - 8 (mod areq) —
+		-- the SAME identity for rsp-relative and normalized rbp-relative offsets.
+		-- The output address is body_rsp + finalBase + (off - c.lo) with body_rsp
+		-- ≡ 0 (mod 16) (computeLayout), so finalBase ≡ c.lo - (D0 - 8) (mod areq)
+		-- maps every input-aligned access to an output-aligned address.
+		local residue = ((c.lo - D0 + 8) % areq + areq) % areq
+		local delta = ((residue - cursor % areq) % areq + areq) % areq
+		c.finalBase = cursor + delta
+		cursor = c.finalBase + (c.hi - c.lo)
+	end
+	local fpBytes = cursor - base0
+
+	local fpInfo = {
+		clusters = tainted,
+		bytes = fpBytes,
+		saveBytes = saveBytes,
+		vecBytes = vecBytes,
+		-- finalOff for a materialized access, or nil when it hits no tainted cluster.
+		lookup = function(off, w)
+			for _, c in tainted do
+				if off >= c.lo and off + w <= c.hi then
+					return c.finalBase + (off - c.lo)
+				end
+			end
+			return nil
+		end,
+	}
+	return frameSize, 0, usesRbp, fpInfo
 end
 
 function x86_64_frame.rewrite(st, ctx)
@@ -438,28 +582,16 @@ function x86_64_frame.rewrite(st, ctx)
 			.. " push %rbp / mov %rsp,%rbp / sub $imm,%rsp frame setup): " .. (st.raw or m))
 	end
 
-	-- sarcasm has no vector/floating-point register file: an instruction naming an
-	-- xmm-class register (as an operand or a memory base/index) cannot be virtualized,
-	-- bounds-checked, or even modeled — passing it through silently miscompiles or dies
-	-- later with a cryptic assembler error. Reject it cleanly.
+	-- Vector-indexed memory (gather/scatter: an xmm-class register as the memory base
+	-- or index) touches multiple discrete addresses that cannot be bounds-checked.
+	-- Reject it cleanly. (The x86_64_fp table also hard-rejects the gather/scatter
+	-- mnemonics; this catches any vector-indexed form regardless of mnemonic.)
 	for _, o in ops do
-		if (o.kind == "reg" and o.rc == "xmm") or (o.kind == "mem"
-			and ((o.base and o.base.rc == "xmm") or (o.index and o.index.rc == "xmm"))) then
-			error("sarcasm: vector/floating-point (xmm) registers are not supported: "
-				.. (st.raw or m))
+		if o.kind == "mem"
+			and ((o.base and o.base.rc == "xmm") or (o.index and o.index.rc == "xmm")) then
+			error("sarcasm: vector-indexed memory access (gather/scatter) is not supported"
+				.. " (cannot prove memory safety): " .. (st.raw or m))
 		end
-	end
-
-	-- x87 FPU instructions that never name an xmm-class register escape the check above:
-	-- `fldz` has no operands at all, and `fnstsw %ax` writes a plain GPR. Every x87/FPU
-	-- mnemonic begins with 'f' (fld*, fst*, fist*, fi*, fcom*, fnst*, fwait,
-	-- fxsave/fxrstor, ...) and no non-floating-point x86 mnemonic does, so reject the
-	-- whole class here: sarcasm has no x87 register stack to virtualize or model, and
-	-- passing one through would silently miscompile or die later with a cryptic
-	-- assembler error (e.g. "invalid instruction suffix" on a virtualized slot form).
-	if string.sub(m, 1, 1) == "f" then
-		error("sarcasm: x87 FPU instructions are not supported (floating-point is out of"
-			.. " scope): " .. (st.raw or m))
 	end
 
 	-- Post-prologue enforcement (annotations from analyzeFrame; see the file header). The
@@ -563,6 +695,22 @@ function x86_64_frame.rewrite(st, ctx)
 			.. " proven safe: " .. (st.raw or m))
 	end
 	if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym then
+		-- A stack memory operand carrying an AVX512 {kN} mask decorator: masked-off
+		-- lanes may not touch memory, so the access cannot be bounds-checked. The
+		-- lift's fp.classify fires this same rejection for heap accesses; here the
+		-- frame rewrite runs FIRST (and materializes the operand below), so reject
+		-- it at the same point, with the same message (defense in depth).
+		for _, o in ops do
+			if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
+				error("sarcasm: AVX512 mask-register ({k}) memory accesses are not supported"
+					.. " (masked-off lanes may not touch memory; cannot prove memory safety): "
+					.. (st.raw or m))
+			end
+		end
+		-- Memory-neutral hints (prefetch*) need no bounds check and no slot: the real
+		-- stack address is always safe to hint at (a prefetch can never fault).
+		local fpEntry = fp.lookup(m)
+		if fpEntry and fpEntry.noCheck then emit(st); return end
 		-- A stack access is only keyable to a frame slot when rsp provably sits at the
 		-- post-prologue frame base; anything else (mid-function push/sub region, dynamic
 		-- alloca aftermath, unbalanced merge) is unprovable: reject. (nil depth = dead code.)
@@ -598,16 +746,47 @@ function x86_64_frame.rewrite(st, ctx)
 				end
 			end
 		end
+		-- `;! load ptr` / `;! store ptr` operate on REAL memory (invisicap loads/stores);
+		-- a frame slot is virtualized/materialized, not real memory, so the annotation
+		-- can never be honored here. Reject cleanly (used to crash the transform).
+		if st.annotation == "load ptr" or st.annotation == "store ptr" then
+			error("sarcasm: `;! " .. st.annotation .. "` on a stack-frame access is not supported"
+				.. " (frame slots are virtualized/materialized, not real memory): " .. (st.raw or m))
+		end
 		-- Replace the stack-slot memory operand in place with a slot pseudo-register of the
 		-- access width, keeping the original mnemonic. This uniformly handles plain moves
 		-- (movq), zero/sign-extending loads (movzwl/movsbl/...), and other reg<->slot forms:
 		-- e.g. `movzwl 40(%rsp), %r14d` -> `movzwl %<slot:16>, %r14d`. The slot is keyed by
 		-- byte offset, so a 64-bit store and a 16-bit reload of the same offset share one web.
-		local wb = mem.size
+		-- FP/SIMD/x87 instructions get their width from the knowledge module (the AT&T
+		-- suffix convention does not apply to them: movsd is 8, movss 4, fldt 10, ...).
+		-- That width is AUTHORITATIVE: a raw Intel mem.size must never under-size the
+		-- slot — the emitted instruction keeps its true (wider) width and would
+		-- overflow the materialized frame region into the caller's stack. accessWidth
+		-- itself cleanly rejects a PTR annotation contradicting the ISA-fixed width
+		-- (the size-driven x87/PTR forms take the annotation as their width). GPR
+		-- instructions keep the mem.size-first behavior.
+		local isFP = isFpInsn(fpEntry, st)
+		local alignReq = 1
+		local fw, fa = fp.accessWidth(m, ops, st.raw)
+		local wb
+		if isFP then
+			wb = fw
+			if fa and fa > 1 then alignReq = fa end
+		else
+			wb = mem.size or fw
+		end
 		if not wb then
-			local zs = string.match(m, "^mov[zs]([bwlq])")   -- movzwl -> source letter 'w'
-			if zs then wb = WIDTH_LETTER[zs]
-			else local suf = string.match(m, "([bwlq])$"); wb = (suf and WIDTH_LETTER[suf]) or 8 end
+			-- An FP-class access whose width is unknowable can neither be
+			-- materialized nor virtualized soundly (a guessed width could
+			-- under-cover the access). Reject cleanly. (Reject-listed entries
+			-- fall through to the default width: the lift's fp.classify
+			-- produces their more precise error.)
+			if isFP and not (fpEntry and fpEntry.reject) then
+				error("sarcasm: cannot determine the memory access width of '" .. m
+					.. "' (cannot prove memory safety): " .. (st.raw or m))
+			end
+			wb = gprStackWidth(m, mem)
 		end
 		-- Bounds-check against the input frame (mirrors arm64's per-access checkBounds).
 		-- rsp-relative offsets address the frame [0, frameSize) plus the 128-byte SysV red
@@ -619,6 +798,53 @@ function x86_64_frame.rewrite(st, ctx)
 		-- proven safe: reject (a virtualized slot would silently fabricate garbage reads /
 		-- dead writes).
 		ctx.checkBounds(off, wb, ops[1] == mem, st.raw, -128)
+		-- Aligned >16-byte stack accesses cannot be materialized at their required
+		-- alignment: the synthesized frame (like the SysV ABI at entry) guarantees
+		-- only 16-byte body-rsp alignment. Reject cleanly; the unaligned forms
+		-- (vmovdqu/vmovups/...) encode no alignment promise and work fine.
+		if isFP and alignReq > 16 then
+			error("sarcasm: aligned 32/64-byte stack accesses are not supported (the stack is only"
+				.. " guaranteed 16-byte aligned); use the unaligned form (e.g. vmovdqu/vmovups): "
+				.. (st.raw or m))
+		end
+		-- An FP/SIMD-touched stack range is MATERIALIZED into sarcasm's synthesized
+		-- frame (see analyzeFrame's taint scan): keep the instruction and rewrite its
+		-- memory operand to a real disp(%rsp). GPR accesses overlapping the range
+		-- land here too (aliasing). The rc="sp" base keeps the operand out of the
+		-- register-web analysis (classify's isGpr skips it); the renderer's
+		-- baseRegName fallback renders it as %rsp. size=wb lets the renderer
+		-- synthesize AT&T suffixes for reg-less forms (e.g. `movl $5, O(%rsp)`).
+		local final = ctx.fpInfo and ctx.fpInfo.lookup(off, wb)
+		if final then
+			-- A GPR access materialized into an FP-tainted cluster becomes a real
+			-- disp(%rsp) memory access: a lying Intel PTR annotation that
+			-- contradicts the register-defined access width would under-size the
+			-- cluster while the materialized instruction writes past it (into the
+			-- GC root slots / spill slots). Reject it, mirroring the heap path
+			-- (x86_64_codegen.accessSizeAlign). Virtualized GPR slots keep the
+			-- mem.size-first behavior (no real memory is accessed).
+			if not isFP then
+				local regW = x86.gprAccessRegWidth(st)
+				if regW and mem.size and mem.size ~= regW then
+					error("sarcasm: PTR size annotation (" .. tostring(mem.size)
+						.. " bytes) contradicts the memory access width (" .. tostring(regW)
+						.. " bytes) of '" .. m .. "': " .. (st.raw or m))
+				end
+			end
+			-- AVX512 decorators ({1toN} embedded broadcast) MUST ride along on the
+			-- materialized operand: the slot was sized by the DECORATED access width
+			-- (fp.accessWidth applies bcastN), so dropping the decorator would emit a
+			-- full-width vector access to an element-sized slot. ({kN} masks were
+			-- rejected above, so only broadcast/plain decorators can reach here.)
+			local mat = { kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				scale = 1, dispVal = final, size = wb, frameSlot = true,
+				deco = mem.deco, bcastN = mem.bcastN }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = st.annotation })
+			return
+		end
 		local slot = ctx.slotReg(off, wb * 8)
 		local newops = {}
 		for _, o in ops do table.insert(newops, (o == mem) and slot or o) end
@@ -635,7 +861,7 @@ function x86_64_frame.rewrite(st, ctx)
 	-- The region base is only known relative to the post-prologue frame base: reject when
 	-- rsp is perturbed/unknown here.
 	if b == "mov" and ops[2] and ops[2].rc == "sp" and ops[1] and ops[1].kind == "reg"
-		and ops[1].rc ~= "sp" and ctx.regionOf(0) then
+		and ops[1].rc == "gpr" and ctx.regionOf(0) then
 		if not st.x86_prologue and d ~= nil and d ~= D0 then
 			error("sarcasm: reading the stack pointer while it is perturbed or unknown"
 				.. " cannot be proven safe: " .. (st.raw or m))

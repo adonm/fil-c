@@ -170,10 +170,10 @@ rm -rf pizlonated-sudo
 hash -r
 cp -rv etc/sudoers /etc
 
-tar -xf pcre2-10.44.tar.bz2
-cd pcre2-10.44
+tar -xf pcre2-10.47.tar.bz2
+cd pcre2-10.47
 ./configure --prefix=/usr                       \
-            --docdir=/usr/share/doc/pcre2-10.44 \
+            --docdir=/usr/share/doc/pcre2-10.47 \
             --enable-unicode                    \
             --disable-jit                       \
             --enable-pcre2-16                   \
@@ -185,7 +185,7 @@ cd pcre2-10.44
 make
 make install
 cd ..
-rm -rf pcre2-10.44
+rm -rf pcre2-10.47
 hash -r
 
 tar -xf wget-1.24.5.tar.gz

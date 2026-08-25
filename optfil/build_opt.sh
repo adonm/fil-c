@@ -194,14 +194,14 @@ cd build
 export PATH=/opt/fil/bin:$PATH
 hash -r
 
-tar -xf $FILCSRC/pizlix/zlib-1.3.1.tar.gz
-cd zlib-1.3.1
+tar -xf $FILCSRC/pizlix/zlib-1.3.2.tar.gz
+cd zlib-1.3.2
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
 rm -fv /opt/fil/lib/libz.a
 cd ..
-rm -rf zlib-1.3.1
+rm -rf zlib-1.3.2
 hash -r
 
 tar -xf $FILCSRC/projects/binutils-2.43.1/pizlonated-binutils.tar.gz

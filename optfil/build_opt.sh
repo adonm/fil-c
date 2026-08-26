@@ -507,14 +507,14 @@ cd ..
 rm -rf pizlonated-libuv
 hash -r
 
-tar -xf $FILCSRC/pizlix/audit-userspace-4.1.2.tar.gz
-cd audit-userspace-4.1.2
+tar -xf $FILCSRC/projects/audit-userspace-4.2.1/pizlonated-audit.tar.gz
+cd pizlonated-audit
 autoreconf -f --install
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ CC_FOR_BUILD=/opt/fil/bin/filcc ./configure --prefix=/opt/fil --without-io_uring --without-python3 --disable-zos-remote
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf audit-userspace-4.1.2
+rm -rf pizlonated-audit
 hash -r
 
 tar -xf $FILCSRC/projects/keyutils-1.6.3/pizlonated-keyutils.tar.gz

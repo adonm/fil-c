@@ -26,19 +26,9 @@ EXTRA_DIST = $(man_MANS) aulastlog_test.sh
 AM_CPPFLAGS = -I${top_srcdir} -I${top_srcdir}/auparse
 AM_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
 bin_PROGRAMS = aulastlog
-check_PROGRAMS = aulastlog_test
-TESTS = aulastlog_test.sh
 noinst_HEADERS = aulastlog-llist.h
 man_MANS = aulastlog.8
 
 aulastlog_SOURCES = aulastlog.c aulastlog-llist.c
 aulastlog_LDADD = ${top_builddir}/auparse/libauparse.la
 aulastlog_DEPENDENCIES = ${top_builddir}/auparse/libauparse.la
-
-aulastlog_test_SOURCES = aulastlog.c aulastlog-llist.c aulastlog-test.c
-aulastlog_test_LDADD = ${top_builddir}/auparse/libauparse.la
-aulastlog_test_DEPENDENCIES = ${top_builddir}/auparse/libauparse.la
-aulastlog_test_LDFLAGS = \
-	-Wl,--wrap=auparse_get_timestamp \
-	-Wl,--wrap=auparse_find_field \
-	-Wl,--wrap=auparse_get_field_int

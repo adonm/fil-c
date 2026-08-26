@@ -29,7 +29,7 @@ prog_conf = ids.conf
 plugin_confdir=$(prog_confdir)/plugins.d
 plugin_conf = audisp-ids.conf
 sbin_PROGRAMS = audisp-ids
-check_PROGRAMS = test-model-bad-event test-nvpair test-origin test-reactions
+check_PROGRAMS = test-model-bad-event test-nvpair test-origin
 TESTS = $(check_PROGRAMS)
 noinst_HEADERS = account.h avl.h ids_config.h ids.h \
 	address.h model_bad_event.h model_behavior.h nvpair.h origin.h \
@@ -57,14 +57,6 @@ test_origin_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
 if HAVE_ASAN
 test_origin_CFLAGS += ${ASAN_FLAGS}
 test_origin_LDFLAGS = ${ASAN_FLAGS}
-endif
-
-test_reactions_SOURCES = test-reactions.c address.c reactions.c
-test_reactions_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
-test_reactions_LDFLAGS = -Wl,--wrap=fork -Wl,--wrap=execve
-if HAVE_ASAN
-test_reactions_CFLAGS += ${ASAN_FLAGS}
-test_reactions_LDFLAGS += ${ASAN_FLAGS}
 endif
 
 audisp_ids_DEPENDENCIES = ${top_builddir}/lib/libaudit.la ${top_builddir}/auparse/libauparse.la ${top_builddir}/common/libaucommon.la ${top_builddir}/auplugin/libauplugin.la

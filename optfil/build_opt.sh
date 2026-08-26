@@ -524,7 +524,7 @@ cd ..
 rm -rf pizlonated-keyutils
 hash -r
 
-tar -xf $FILCSRC/projects/libsepol-3.9/pizlonated-sepol.tar.gz
+tar -xf $FILCSRC/projects/libsepol-3.11/pizlonated-sepol.tar.gz
 cd pizlonated-sepol
 make -j `nproc` CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ DESTDIR=/opt/fil PREFIX=/
 make -j `nproc` CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ DESTDIR=/opt/fil PREFIX=/ install
@@ -532,7 +532,7 @@ cd ..
 rm -rf pizlonated-sepol
 hash -r
 
-tar -xf $FILCSRC/projects/libselinux-3.9/pizlonated-selinux.tar.gz
+tar -xf $FILCSRC/projects/libselinux-3.11/pizlonated-selinux.tar.gz
 cd pizlonated-selinux
 make -j `nproc` CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ DESTDIR=/opt/fil PREFIX=/
 make -j `nproc` CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ DESTDIR=/opt/fil PREFIX=/ install

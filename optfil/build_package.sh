@@ -54,8 +54,8 @@ cd /opt/fil
 rm -rf binutils
 mkdir -v binutils
 cd binutils
-tar -xf $FILCSRC/pizlix/binutils-2.43.1.tar.xz
-cd binutils-2.43.1
+tar -xf $FILCSRC/pizlix/binutils-2.47.tar.xz
+cd binutils-2.47
 mkdir -v build
 cd build
 ../configure --prefix=/opt/fil/binutils \
@@ -71,8 +71,8 @@ cd build
 make -j `nproc` tooldir=/opt/fil/binutils
 make -j `nproc` tooldir=/opt/fil/binutils install
 cd ../..
-test -d binutils-2.43.1
-rm -rf binutils-2.43.1
+test -d binutils-2.47
+rm -rf binutils-2.47
 cd ..
 test -d binutils
 test -d ../fil

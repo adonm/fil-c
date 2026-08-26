@@ -204,7 +204,7 @@ cd ..
 rm -rf zlib-1.3.2
 hash -r
 
-tar -xf $FILCSRC/projects/binutils-2.43.1/pizlonated-binutils.tar.gz
+tar -xf $FILCSRC/projects/binutils-2.47/pizlonated-binutils.tar.gz
 cd pizlonated-binutils
 mkdir -v build
 cd build

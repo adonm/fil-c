@@ -24,7 +24,7 @@
 struct string_tuple
 {
   const char *key;
-  intptr_t value;
+  void *value;
 };
 
 typedef struct string_tuple string_tuple_t;
@@ -50,7 +50,7 @@ extern void htab_print_statistics (FILE *f, const char *name, htab_t table);
 /* Inline string hash table functions.  */
 
 static inline string_tuple_t *
-string_tuple_alloc (htab_t table, const char *key, intptr_t value)
+string_tuple_alloc (htab_t table, const char *key, void *value)
 {
   string_tuple_t *tuple = table->alloc_f (1, sizeof (*tuple));
   tuple->key = key;
@@ -63,7 +63,7 @@ str_hash_find (htab_t table, const char *key)
 {
   string_tuple_t needle = { key, 0 };
   string_tuple_t *tuple = htab_find (table, &needle);
-  return tuple != NULL ? (void *) tuple->value : NULL;
+  return tuple != NULL ? tuple->value : NULL;
 }
 
 static inline intptr_t
@@ -71,7 +71,7 @@ str_hash_find_int (htab_t table, const char *key)
 {
   string_tuple_t needle = { key, 0 };
   string_tuple_t *tuple = htab_find (table, &needle);
-  return tuple != NULL ? tuple->value : -1;
+  return tuple != NULL ? (intptr_t) tuple->value : -1;
 }
 
 static inline void *
@@ -83,7 +83,7 @@ str_hash_find_n (htab_t table, const char *key, size_t n)
   string_tuple_t needle = { tmp, 0 };
   string_tuple_t *tuple = htab_find (table, &needle);
   free (tmp);
-  return tuple != NULL ? (void *) tuple->value : NULL;
+  return tuple != NULL ? tuple->value : NULL;
 }
 
 static inline void
@@ -96,7 +96,7 @@ str_hash_delete (htab_t table, const char *key)
 static inline void **
 str_hash_insert_int (htab_t table, const char *key, intptr_t value, int replace)
 {
-  string_tuple_t *elt = string_tuple_alloc (table, key, value);
+  string_tuple_t *elt = string_tuple_alloc (table, key, (void *) value);
   void **slot = htab_insert (table, elt, replace);
   if (slot && !replace && table->free_f)
     table->free_f (elt);
@@ -106,7 +106,11 @@ str_hash_insert_int (htab_t table, const char *key, intptr_t value, int replace)
 static inline void **
 str_hash_insert (htab_t table, const char *key, const void *value, int replace)
 {
-  return str_hash_insert_int (table, key, (intptr_t) value, replace);
+  string_tuple_t *elt = string_tuple_alloc (table, key, (void *) value);
+  void **slot = htab_insert (table, elt, replace);
+  if (slot && !replace && table->free_f)
+    table->free_f (elt);
+  return slot;
 }
 
 static inline htab_t

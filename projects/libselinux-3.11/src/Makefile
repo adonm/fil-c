@@ -94,7 +94,8 @@ CFLAGS ?= -O -Wall -W -Wundef -Wformat-y2k -Wformat-security -Winit-self -Wmissi
 
 override CFLAGS += $(LFS_CFLAGS)
 
-LD_SONAME_FLAGS=-soname,$(LIBSO),--version-script=libselinux.map,-z,defs,-z,relro
+LD_SONAME_FLAGS=-soname,$(LIBSO),-z,defs,-z,relro
+EXTRA_LFLAGS=--version-script=libselinux.map
 
 ifeq ($(OS), Darwin)
 override CFLAGS += -I/opt/local/include
@@ -166,7 +167,7 @@ $(LIBA): $(OBJS)
 	$(RANLIB) $@
 
 $(LIBSO): $(LOBJS)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -fPIC -shared -o $@ $^ $(PCRE_LDLIBS) $(FTS_LDLIBS) -ldl -Wl,$(LD_SONAME_FLAGS)$(EXTRA_LD_FLAGS:%=,%)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -fPIC -shared -o $@ $^ $(PCRE_LDLIBS) $(FTS_LDLIBS) -ldl -Wl,$(LD_SONAME_FLAGS)$(EXTRA_LD_FLAGS:%=,%) $(EXTRA_LFLAGS)
 	ln -sf $@ $(TARGET)
 
 $(LIBPC): $(LIBPC).in ../VERSION

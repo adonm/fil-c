@@ -23,7 +23,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/xz-5.6.2 pizlonated-xz
 ./package-source.sh projects/m4-1.4.19 pizlonated-m4
 ./package-source.sh projects/pkgconf-2.3.0 pizlonated-pkgconf
-./package-source.sh projects/binutils-2.43.1 pizlonated-binutils
+./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/gmp-6.3.0 pizlonated-gmp
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
 ./package-source.sh projects/libxcrypt-4.4.36 pizlonated-libxcrypt

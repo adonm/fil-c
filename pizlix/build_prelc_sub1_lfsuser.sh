@@ -26,8 +26,8 @@ env
 
 cd $LFS/sources
 
-tar -xf binutils-2.43.1.tar.xz
-cd binutils-2.43.1
+tar -xf binutils-2.47.tar.xz
+cd binutils-2.47
 mkdir -v build
 cd build
 ../configure --prefix=$LFS/tools \
@@ -42,7 +42,7 @@ cd build
 make
 make install
 cd ../..
-rm -rf binutils-2.43.1
+rm -rf binutils-2.47
 
 # Idea: What if I did this shit:
 #
@@ -351,9 +351,9 @@ rm -v $LFS/yolo/lib/liblzma.la
 cd ..
 rm -rf xz-5.6.2
 
-tar -xf binutils-2.43.1.tar.xz
-cd binutils-2.43.1
-sed '6009s/$add_dir//' -i ltmain.sh
+tar -xf binutils-2.47.tar.xz
+cd binutils-2.47
+sed '6031s/$add_dir//' -i ltmain.sh
 mkdir -v build
 cd build
 ../configure \
@@ -372,7 +372,7 @@ make
 make DESTDIR=$LFS install
 rm -v $LFS/yolo/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.{a,la}
 cd ../..
-rm -rf binutils-2.43.1
+rm -rf binutils-2.47
 
 tar -xf gcc-14.2.0.tar.xz
 cd gcc-14.2.0

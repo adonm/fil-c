@@ -237,7 +237,6 @@ mkdir -v build
 cd build
 ../configure --prefix=/usr \
     --sysconfdir=/etc \
-    --enable-gold \
     --enable-ld=default \
     --enable-plugins \
     --enable-shared \

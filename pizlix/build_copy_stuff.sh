@@ -33,7 +33,7 @@ cp -v \
     automake-1.17.tar.xz \
     bash-5.2.32.tar.gz \
     bc-6.7.6.tar.xz \
-    binutils-2.43.1.tar.xz \
+    binutils-2.47.tar.xz \
     bison-3.8.2.tar.xz \
     bzip2-1.0.8-install_docs-1.patch \
     bzip2-1.0.8.tar.gz \

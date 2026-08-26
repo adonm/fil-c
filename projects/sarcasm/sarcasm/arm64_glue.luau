@@ -215,6 +215,20 @@ function glue.accessOrigin(out, sym: string, size: number, align: number, funcNa
 	table.insert(out, "")
 end
 
+-- A plain 16-byte filc_origin record for the masked-access fail stubs (only
+-- x86_64 has masked memory accesses; emitted for API symmetry with x86_64_glue).
+function glue.maskedOrigin(out, sym: string, funcName: string, dbg)
+	table.insert(out, "\t.type\t" .. sym .. ",@object")
+	table.insert(out, "\t.section\t.data.rel.ro,\"aw\",@progbits")
+	table.insert(out, "\t.p2align\t3, 0x0")
+	table.insert(out, sym .. ":")
+	table.insert(out, "\t.xword\t.Lfilc_function_origin_" .. funcName)
+	table.insert(out, "\t.word\t" .. tostring(dbg and dbg.line or 0))
+	table.insert(out, "\t.word\t0")
+	table.insert(out, "\t.size\t" .. sym .. ", 16")
+	table.insert(out, "")
+end
+
 -- The direct-call alias pizlonatedFI<sig>_<name> = pizlonatedFIP<sig>_<name>.
 function glue.alias(out, name: string, signature: number)
 	table.insert(out, "\t.globl\tpizlonatedFI" .. tostring(signature) .. "_" .. name)

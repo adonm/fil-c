@@ -386,8 +386,16 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		end
 		glue.foAndOrigins(out, fn.name, sigDesc.signature, tr.numRoots, fnDbg)
 		for _, ao in tr.accessOrigins do
-			glue.accessOrigin(out, ao.sym, ao.size, ao.align, fn.name, ao.write,
-				debug and { line = ao.line or 0 } or nil)
+			if ao.maskedOrigin then
+				-- AVX512 {k}-masked / AVX2 vector-masked fail-site origin: a
+				-- plain 16-byte filc_origin (the masked fail functions take a
+				-- filc_origin*, not an optimized-access-check origin).
+				glue.maskedOrigin(out, ao.sym, fn.name,
+					debug and { line = ao.line or 0 } or nil)
+			else
+				glue.accessOrigin(out, ao.sym, ao.size, ao.align, fn.name, ao.write,
+					debug and { line = ao.line or 0 } or nil)
+			end
 		end
 		glue.alias(out, fn.name, sigDesc.signature)
 		definedFI["pizlonatedFI" .. sigDesc.signature .. "_" .. fn.name] = true

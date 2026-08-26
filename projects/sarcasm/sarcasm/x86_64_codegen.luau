@@ -10,6 +10,7 @@ local isa = require("./x86_64_isa")
 local xparse = require("./x86_64_parse")
 local sig = require("./sig")
 local fp = require("./x86_64_fp")
+local regalloc = require("./regalloc")
 
 local M = {}
 
@@ -274,6 +275,38 @@ function M.ptrAtomicShape(ann, stmt)
 	end
 	return (ann == "load store ptr") and "rmw" or "atomicrmw"
 end
+-- AVX512 {k}-masked / AVX2 vector-masked memory access detection. Returns the
+-- fp.maskedAccessInfo metadata (elem/lanes/vecsize/contiguous/extract) plus the
+-- mask source for THIS instruction — { maskReg = 1-7 } for a {%kN} writemask,
+-- { maskVecOp = <operand> } for the AVX2 vmaskmov/vpmaskmov mask vector — or nil
+-- when the instruction is not a supported masked access (an unmasked form, a
+-- broadcast memory operand — which rides the plain element-width check — or an
+-- unsupported masked form, which fp.classify already rejected during the lift).
+function M.maskedAccessInfo(stmt)
+	local mnem = string.lower(stmt.mnemonic)
+	local ops = stmt.operands or {}
+	local mi = fp.maskedAccessInfo(mnem, ops)
+	if not mi then return nil end
+	if mi.extract == "k" then
+		local maskReg = nil
+		for _, o in ops do
+			if o.deco then
+				local kn = string.match(o.deco, "{%%?k([0-7])}")
+				if kn then maskReg = tonumber(kn) break end
+			end
+		end
+		if not maskReg then return nil end  -- unmasked form: plain full-width check
+		mi.maskReg = maskReg
+		return mi
+	end
+	-- movmsk-extract forms (vmaskmovps/pd, vpmaskmovd/q): inherently masked; the
+	-- mask is the (dest-first) second operand's vector register, present on both
+	-- the load form (dest, mask, mem) and the store form (mem, mask, src).
+	if not M.memOperand(stmt) then return nil end
+	mi.maskVecOp = ops[2]
+	return mi
+end
+
 -- a store writes memory when the (dest-first) first operand is the memory operand.
 -- Single-memory-operand FP/x87 instructions break that positional rule: the lone
 -- memory operand can be a source (fldl, faddl, fcoml, fxrstor, ldmxcsr, ...), so
@@ -486,60 +519,245 @@ function M.make(ctx)
 	-- these calls, so its live xmm/ymm/zmm values would be silently clobbered by them:
 	-- SysV makes every FP/SIMD register caller-saved. The Fil-C runtime is compiled
 	-- SSE2-only (pizfix/lib/libpizlo.a contains xmm instructions but zero ymm/zmm), so
-	-- preserving the WIDEST vector class the function itself uses (fpInfo.vecBytes)
-	-- covers whatever the runtime can clobber, and also covers the function's own wider
-	-- state regardless of which subset of it the runtime actually touches.
+	-- only xmm0-15 state can ever be at risk — ymm/zmm bits above 128, zmm16-31,
+	-- k0-7, mm and x87 state are all unreachable for it.
 	--
-	-- A nil vecBytes (a GPR-only function, or one using only k-opmask/x87/mm registers)
-	-- emits NOTHING. For x87/mm state this is sound NOT because "an SSE2-only runtime
-	-- cannot clobber x87" — libpizlo.a DOES contain x87 instructions (the fldt/fstpt
-	-- in the zmath long-double wrappers) — but because the only callees these
-	-- injected-call paths can reach (filc_pollcheck_slow, filc_allocate, the two
-	-- store-barrier slow paths filc_object_ensure_aux_ptr_outline /
-	-- filc_store_barrier_for_lower_slow, and the Phase-2 atomic pointer operations
-	-- filc_load_ptr_atomic_with_manual_tracking_outline /
-	-- filc_store_ptr_atomic_outline / filc_strong_cas_ptr_with_manual_tracking —
-	-- whose internal ensure-aux/box-allocation/barrier paths are the same
-	-- allocation/barrier code the first four already cover) never execute those
-	-- wrappers. k-opmask state
-	-- genuinely cannot be clobbered by an SSE2-only runtime (it is EVEX-only). If the
-	-- runtime is ever compiled with AVX512, this must be extended to also save
-	-- zmm16-31 and k0-7 (EVEX state an AVX512 build could clobber).
+	-- Save/restore is LIVENESS- AND WIDTH-AWARE: cg.fpSave/fpRestore below emit
+	-- PLACEHOLDER nodes (kind "fpsave"/"fprestore"), and cg.expandFpSaves — called
+	-- from transformFunction AFTER the whole body is emitted but BEFORE the
+	-- frameSlot numRoots shift — runs a backward per-vector-register WIDTH
+	-- liveness over the emitted node stream and replaces each placeholder with
+	-- exactly the movs the analysis proves live at that point: a register live
+	-- only in its low 32 bits is saved with movss, 64 bits with movsd, 128 with
+	-- movdqu, 256 with vmovdqu, 512 with vmovdqu64; a register dead across the
+	-- call emits nothing. The width semantics come from fp.vecEffects
+	-- (x86_64_fp): each instruction reports, per vector register, a use width
+	-- and a "provided width" — the width up to which it PROVIDES values
+	-- (written or architecturally zeroed), with bits above flowing through
+	-- from before. E.g. a movss LOAD provides 16 bytes (writes 4, zeroes
+	-- [4,16)), so a later 16-byte read (movaps store) sees the movss's zeros
+	-- — liveness records 16 bytes live, and the save/restore preserves the
+	-- zeros; an addsd provides 8 (the low qword result) while the upper bytes
+	-- flow through. User calls (the pizlonatedFI* thunks) KILL all vector
+	-- state (SysV: values live across a call were already broken in the source
+	-- program); the injected filc_* runtime calls are TRANSPARENT (the
+	-- placeholder pair around them preserves the state).
 	--
-	-- The save area sits above the GC root area of the synthesized frame (reserved by
-	-- x86_64_render.computeLayout); slot i is assigned 16+i*vecBytes(%rsp) here —
-	-- relative to base 16, like the materialized clusters — and transform shifts it
-	-- past the root area once numRoots is known (the frameSlot tag is what the shift
-	-- looks for). The unaligned forms (movdqu/vmovdqu/vmovdqu64) need no alignment
-	-- beyond the frame's guaranteed 16-byte body alignment, and each is exactly the
-	-- ISA level the function's own widest register class already requires
-	-- (SSE2 / AVX / AVX512F). The vector registers render by name (fixed operands;
-	-- the register allocator never models xmm-class registers); the slot base is a
-	-- fixed %rsp operand (4 = rsp).
+	-- A nil vecBytes (a GPR-only function, or one using only k-opmask/x87/mm
+	-- registers) emits NOTHING — same zero-cost behavior as before. For x87/mm
+	-- state this is sound NOT because "an SSE2-only runtime cannot clobber
+	-- x87" — libpizlo.a DOES contain x87 instructions (the fldt/fstpt in the
+	-- zmath long-double wrappers) — but because the only callees these
+	-- injected-call paths can reach (filc_pollcheck_slow, filc_allocate, the
+	-- two store-barrier slow paths filc_object_ensure_aux_ptr_outline /
+	-- filc_store_barrier_for_lower_slow, and the Phase-2 atomic pointer
+	-- operations filc_load_ptr_atomic_with_manual_tracking_outline /
+	-- filc_store_ptr_atomic_outline / filc_strong_cas_ptr_with_manual_tracking
+	-- — whose internal ensure-aux/box-allocation/barrier paths are the same
+	-- allocation/barrier code the first four already cover) never execute
+	-- those wrappers. k-opmask state genuinely cannot be clobbered by an
+	-- SSE2-only runtime (it is EVEX-only). If the runtime is ever compiled
+	-- with AVX512, this must be extended to also save zmm16-31 and k0-7 (EVEX
+	-- state an AVX512 build could clobber).
+	--
+	-- The save area sits above the GC root area of the synthesized frame
+	-- (reserved by x86_64_render.computeLayout) at the ORIGINAL 16*vecBytes
+	-- reservation — the optimization only elides/narrows the movs, never the
+	-- reservation; slot i stays at 16+i*vecBytes(%rsp) here — relative to base
+	-- 16, like the materialized clusters — and transform shifts it past the
+	-- root area once numRoots is known (the frameSlot tag is what the shift
+	-- looks for). The unaligned forms (movss/movsd/movdqu/vmovdqu/vmovdqu64)
+	-- need no alignment beyond the frame's guaranteed 16-byte body alignment,
+	-- and each is at or below the ISA level the function's own widest register
+	-- class already requires (a live 32-byte width implies the function uses
+	-- ymm registers, so vecBytes is 32 and AVX encodings are fair game;
+	-- likewise 64/AVX512F). The vector registers render by name (fixed
+	-- operands; the register allocator never models xmm-class registers); the
+	-- slot base is a fixed %rsp operand (4 = rsp).
 	local fpInfo = fctx and fctx.fp
 	local vecBytes = fpInfo and fpInfo.vecBytes or nil
-	local vecSaveMnem, vecClass = nil, nil
-	if vecBytes == 16 then vecSaveMnem, vecClass = "movdqu", "xmm"
-	elseif vecBytes == 32 then vecSaveMnem, vecClass = "vmovdqu", "ymm"
-	elseif vecBytes == 64 then vecSaveMnem, vecClass = "vmovdqu64", "zmm" end
-	local function vecSaveInsn(isRestore, i)
-		local vreg = { kind = "reg", rc = "xmm", num = i, width = vecBytes * 8, name = vecClass .. i }
-		local slot = build.memx(build.rp(4), { dispVal = 16 + i * vecBytes })
-		-- Synthesized-frame slot: transform shifts its dispVal past the GC root area
-		-- (roots must occupy [16, 16+8*numRoots) for the Fil-C GC).
-		slot.frameSlot = true
-		if isRestore then
-			return build.insn(vecSaveMnem, { vreg, slot }, {})
-		end
-		return build.insn(vecSaveMnem, { slot, vreg }, {})
-	end
 	function cg.fpSave()
-		if not vecSaveMnem then return end  -- no vector state the runtime could clobber
-		for i = 0, 15 do emit(vecSaveInsn(false, i)) end
+		if not vecBytes then return end  -- no vector state the runtime could clobber
+		emit({ kind = "fpsave" })
 	end
 	function cg.fpRestore()
-		if not vecSaveMnem then return end
-		for i = 0, 15 do emit(vecSaveInsn(true, i)) end
+		if not vecBytes then return end
+		emit({ kind = "fprestore" })
+	end
+
+	-- Post-transform expansion (x86_64 only; the arm64 backend has no such
+	-- hook — its fpSave/fpRestore are no-ops and emit no placeholders).
+	-- Replaces every fpsave/fprestore placeholder in `out` (spliced in place)
+	-- with the exact vector save/restore movs the width-liveness analysis
+	-- proves live at that point. Runs pre-regalloc; the expanded movs carry
+	-- no temps (named fixed operands), exactly like the old unconditional
+	-- save/restore did.
+	function cg.expandFpSaves(out, _fctx)
+		local any = false
+		for _, node in out do
+			if node.kind == "fpsave" or node.kind == "fprestore" then any = true break end
+		end
+		if not any then return end
+		if not vecBytes then
+			-- No vector state: placeholders expand to nothing (fpSave above
+			-- already emits none in that case; this is belt-and-braces).
+			for i = #out, 1, -1 do
+				if out[i].kind == "fpsave" or out[i].kind == "fprestore" then table.remove(out, i) end
+			end
+			return
+		end
+
+		-- CFG-shaped instruction list parallel to `out` (mirrors the
+		-- control-flow reading in sarcasm.luau's buildRaInsns/packSpillSlots):
+		-- labels define blocks; branch/call/ret control comes from
+		-- node.control or the lifted classification node.c. The per-node
+		-- vector effect is memoized here (uses/defs width maps from
+		-- fp.vecEffects, or a kill/transparent tag for calls).
+		local insns = {}
+		for idx, node in out do
+			if node.kind == "label" then
+				table.insert(insns, { isLabelDef = node.name, fallsThrough = true })
+			elseif node.kind == "insn" then
+				local control = node.control or (node.c and node.c.control) or "none"
+				local targets = node.targets or (node.c and node.c.targets)
+				local ft = node.fallsThrough
+				if ft == nil then ft = node.c and node.c.fallsThrough end
+				if ft == nil then ft = true end
+				local d = { targets = targets, fallsThrough = ft }
+				if control == "call" or control == "indcall" then
+					-- Injected filc_* runtime calls are TRANSPARENT: the
+					-- placeholder pair around them preserves the state, so
+					-- liveness flows straight through. Every other call —
+					-- synth calls to the pizlonatedFI* user thunks, or a
+					-- passthrough user call that rode the lift — clobbers
+					-- every caller-saved vector register (all of them, per
+					-- SysV): a value "live" across such a call was already
+					-- broken in the source program, so killing is sound and
+					-- precise.
+					local sym = node.operands and node.operands[1]
+					local txt = (sym and sym.kind == "sym") and sym.text or ""
+					if not node.stmt and string.sub(txt, 1, 5) == "filc_" then
+						d.transparent = true
+					else
+						d.killAll = true
+					end
+				elseif node.stmt then
+					d.uses, d.defs = fp.vecEffects(node.stmt)
+				end
+				table.insert(insns, d)
+			else
+				-- fpsave/fprestore placeholders, prologue/epilogue/rootstore/
+				-- raw: plain fall-through nodes, no vector effect.
+				table.insert(insns, { fallsThrough = true })
+			end
+		end
+
+		-- Backward width-liveness: state = vector reg num -> live width in
+		-- bytes (4/8/16/32/64); join at merges = per-register max. Transfer
+		-- (backward over an instruction): a def with providedWidth p kills
+		-- liveness at or below p (the instruction supplies those bytes
+		-- itself); bytes above p flow through. A use at width u adds liveness:
+		--   live[n] = max(u, live[n] > p and live[n] or 0)
+		-- — an RMW (addsd reads AND writes xmm0) thereby counts its own read.
+		local function applyNode(d, live)
+			if d.killAll then
+				for n in pairs(live) do live[n] = nil end
+				return
+			end
+			if d.transparent or not d.uses then return end
+			for n, p in pairs(d.defs) do
+				if (live[n] or 0) <= p then live[n] = nil end
+			end
+			for n, u in pairs(d.uses) do
+				if (live[n] or 0) < u then live[n] = u end
+			end
+		end
+
+		local blocks = regalloc.buildCFG(insns)
+		local liveIn, liveOut = {}, {}
+		for bi in ipairs(blocks) do liveIn[bi] = {}; liveOut[bi] = {} end
+		local function stateEq(a, b)
+			for n, w in pairs(a) do if b[n] ~= w then return false end end
+			for n, w in pairs(b) do if a[n] ~= w then return false end end
+			return true
+		end
+		local changed = true
+		while changed do
+			changed = false
+			for bi = #blocks, 1, -1 do
+				local b = blocks[bi]
+				local newOut = {}
+				for _, s in b.succ do
+					for n, w in pairs(liveIn[s]) do
+						if (newOut[n] or 0) < w then newOut[n] = w end
+					end
+				end
+				local live = {}
+				for n, w in pairs(newOut) do live[n] = w end
+				for k = #b.insns, 1, -1 do applyNode(insns[b.insns[k]], live) end
+				if not stateEq(newOut, liveOut[bi]) or not stateEq(live, liveIn[bi]) then
+					changed = true
+					liveOut[bi] = newOut
+					liveIn[bi] = live
+				end
+			end
+		end
+		-- per-node live-after (backward within block)
+		local liveAfterNode = {}
+		for bi, b in blocks do
+			local live = {}
+			for n, w in pairs(liveOut[bi]) do live[n] = w end
+			for k = #b.insns, 1, -1 do
+				liveAfterNode[b.insns[k]] = live
+				local nl = {}
+				for n, w in pairs(live) do nl[n] = w end
+				live = nl
+				applyNode(insns[b.insns[k]], live)
+			end
+		end
+
+		-- Expand each placeholder from its local liveness state (the pair
+		-- around an injected call naturally agrees: only GPR marshalling movs
+		-- and the transparent call intervene). Only xmm0-15 are ever saved —
+		-- the SSE2-only runtime cannot touch zmm16-31.
+		local SAVE_FORM = { [4] = "movss", [8] = "movsd", [16] = "movdqu",
+			[32] = "vmovdqu", [64] = "vmovdqu64" }
+		local SAVE_CLASS = { [4] = "xmm", [8] = "xmm", [16] = "xmm", [32] = "ymm", [64] = "zmm" }
+		local function emitPairMovs(isRestore, live, into)
+			for n = 0, 15 do
+				local w = live[n]
+				if w then
+					local mnem = SAVE_FORM[w]
+					if not mnem or w > vecBytes then
+						error("sarcasm: internal error: bad live vector width "
+							.. tostring(w) .. " (vecBytes " .. tostring(vecBytes) .. ")")
+					end
+					local vreg = { kind = "reg", rc = "xmm", num = n, width = w * 8, name = SAVE_CLASS[w] .. n }
+					local slot = build.memx(build.rp(4), { dispVal = 16 + n * vecBytes })
+					-- Synthesized-frame slot: transform shifts its dispVal
+					-- past the GC root area (roots must occupy
+					-- [16, 16+8*numRoots) for the Fil-C GC).
+					slot.frameSlot = true
+					if isRestore then
+						table.insert(into, build.insn(mnem, { vreg, slot }, {}))
+					else
+						table.insert(into, build.insn(mnem, { slot, vreg }, {}))
+					end
+				end
+			end
+		end
+		local expanded = {}
+		for idx, node in out do
+			if node.kind == "fpsave" then
+				emitPairMovs(false, liveAfterNode[idx] or {}, expanded)
+			elseif node.kind == "fprestore" then
+				emitPairMovs(true, liveAfterNode[idx] or {}, expanded)
+			else
+				table.insert(expanded, node)
+			end
+		end
+		for i = #out, 1, -1 do out[i] = nil end
+		for _, node in expanded do table.insert(out, node) end
 	end
 
 	local function stackOff(base, disp)
@@ -639,7 +857,9 @@ function M.make(ctx)
 		return false
 	end
 
-	-- Implicit-GPR pinning (div/idiv/mul/1-op imul, mulx, cmpxchg, cqo/cdq/cwd).
+	-- Implicit-GPR pinning (div/idiv/mul/1-op imul, mulx, cmpxchg, cqo/cdq/cwd,
+	-- and the zero-operand implicit-only family cpuid/rdtsc/rdtscp/xgetbv/
+	-- rdpkru/wrpkru/monitor/mwait).
 	-- These instructions read and/or write physical rax/rdx beyond what their
 	-- explicit operands say; classify names those effects with implicit def/use
 	-- operand tables (recorded in node.c.pin), so the lift's web analysis
@@ -725,6 +945,28 @@ function M.make(ctx)
 	end
 	function cg.checkMemInsn(node, mem) end  -- x86: any memory operand is a real access
 
+	-- Extract the lane-enable mask of a supported masked memory access into a GPR
+	-- temp, truncated to exactly the access's lane count (info.lanes), for the
+	-- mask-refined bounds slow paths. The mask registers (k0-7 / the mask vector)
+	-- are never modeled by the web analysis — they ride the instruction verbatim —
+	-- so this reads the architectural mask directly at the access. (kmovw zero-
+	-- extends its 16-bit result; kmovd/kmovq cover the 32/64-lane forms. N<16
+	-- needs an explicit AND. The vmovmsk forms yield exactly N sign bits.)
+	function cg.maskToGpr(dstTemp, info)
+		if info.maskReg then
+			local N = info.lanes
+			local mnem = (N <= 16) and "kmovw" or (N <= 32) and "kmovd" or "kmovq"
+			local kop = { kind = "reg", rc = "xmm", num = info.maskReg,
+				name = "k" .. info.maskReg, width = 16 }
+			emit(build.insn(mnem, { rt(dstTemp, (N == 64) and 64 or 32), kop },
+				{ defs = { dstTemp } }))
+			if N < 16 then cg.andImmInPlace(dstTemp, (2 ^ N) - 1) end
+		else
+			local mnem = info.movmskPd and "vmovmskpd" or "vmovmskps"
+			emit(build.insn(mnem, { rt(dstTemp, 32), info.maskVecOp }, { defs = { dstTemp } }))
+		end
+	end
+
 	-- one access-check-fail stub, appended to `list` (arch-specific arg regs + rip origin).
 	function cg.failStub(list, lbl, ivTemp, loTemp, acoSym)
 		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
@@ -775,6 +1017,50 @@ function M.make(ctx)
 		table.insert(list, build.insn("call", { build.sym("filc_check_aligned_access_fail", "plt") },
 			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
 				pColored(a4), pColored(a5), pColored(a6) } }))
+	end
+
+	-- Fail stub for a mask-refined bounds failure of a supported AVX512 {k}-masked
+	-- or AVX2 vmaskmov/vpmaskmov access: marshals the runtime's dedicated masked
+	-- fail function — exactly the calls the Fil-C compiler emits for the masked
+	-- intrinsics (FilPizlonator's lowerIntrinsicAccess), and noreturn like every
+	-- fail stub (no exception check, no vector save: it panics).
+	--   fixed-position: filc_masked_read/write_check_fail(iv, lower, mask, vecsize, origin)
+	--   contiguous:     filc_expand_read/compress_write_check_fail(iv, lower, mask,
+	--                     elemsize, vecsize, origin)
+	-- (a filc_ptr is two consecutive argument words, intval then lower; the mask
+	-- is the truncated lane-enable value the slow path computed).
+	function cg.maskedFailStub(list, lbl, ivTemp, loTemp, maskTemp, info, isWrite, originSym)
+		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
+		local a4, a5, a6 = M.cc.rtArg(4), M.cc.rtArg(5), M.cc.rtArg(6)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(ivTemp) },
+			{ defs = { pColored(a1) }, uses = {ivTemp} }))
+		table.insert(list, build.insn("mov", { build.rp(a2), rt(loTemp) },
+			{ defs = { pColored(a2) }, uses = {loTemp} }))
+		table.insert(list, build.insn("mov", { build.rp(a3), rt(maskTemp) },
+			{ defs = { pColored(a3) }, uses = {maskTemp} }))
+		local sym
+		if info.contiguous then
+			table.insert(list, build.insn("mov", { build.rp(a4), build.imm(info.elem) },
+				{ defs = { pColored(a4) } }))
+			table.insert(list, build.insn("mov", { build.rp(a5), build.imm(info.vecsize) },
+				{ defs = { pColored(a5) } }))
+			table.insert(list, build.insn("lea", { build.rp(a6), build.memx({ kind = "reg", rc = "rip" },
+				{ dispSym = originSym }) }, { defs = { pColored(a6) } }))
+			sym = isWrite and "filc_compress_write_check_fail" or "filc_expand_read_check_fail"
+			table.insert(list, build.insn("call", { build.sym(sym, "plt") },
+				{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+					pColored(a4), pColored(a5), pColored(a6) } }))
+		else
+			table.insert(list, build.insn("mov", { build.rp(a4), build.imm(info.vecsize) },
+				{ defs = { pColored(a4) } }))
+			table.insert(list, build.insn("lea", { build.rp(a5), build.memx({ kind = "reg", rc = "rip" },
+				{ dispSym = originSym }) }, { defs = { pColored(a5) } }))
+			sym = isWrite and "filc_masked_write_check_fail" or "filc_masked_read_check_fail"
+			table.insert(list, build.insn("call", { build.sym(sym, "plt") },
+				{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+					pColored(a4), pColored(a5) } }))
+		end
 	end
 
 	return cg

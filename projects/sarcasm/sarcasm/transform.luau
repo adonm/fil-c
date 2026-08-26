@@ -380,12 +380,150 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local upper = allocTemp({ role = "scratch" })
 		cg.load(upper, capLo, -16, 8)             -- upper = [lower-16]
 		if size > 1 then
-			local hi = allocTemp({ role = "scratch" })
-			cg.addImm(hi, effTemp, size)          -- hi = eff + size
-			cg.cmpBranch(hi, upper, "ugt", lbl)   -- eff+size > upper
+			-- Overflow-free upper-bound form, exactly like the compiler
+			-- (FilPizlonator's buildCheck comment: "Ptr <= Upper - Size" is an
+			-- "overflow-free way of saying Ptr + Size <= Upper"). The naive
+			-- `hi = eff + size; hi ugt upper` WRAPS for eff in
+			-- [2^64 - size, 2^64) (reachable: pointer base + a huge index via
+			-- lea), letting the check pass so the CPU faults on the wild
+			-- address — a SIGSEGV instead of a clean filc trap. Real uppers
+			-- are < 2^48, so upper - size never wraps, and any eff that large
+			-- fails the compare.
+			local upperMinusSize = allocTemp({ role = "scratch" })
+			cg.subImm(upperMinusSize, upper, size)      -- upperMinusSize = upper - size
+			cg.cmpBranch(effTemp, upperMinusSize, "ugt", lbl)  -- eff > upper - size
 		else
 			cg.cmpBranch(effTemp, upper, "uge", lbl)  -- eff >= upper
 		end
+	end
+
+	-- AVX512 {k}-masked / AVX2 vmaskmov-vpmaskmov heap access check (x86_64 only —
+	-- the codegen surfaces cgm.maskedAccessInfo for the supported forms). This is
+	-- EXACTLY the check algorithm the Fil-C compiler emits for the masked
+	-- intrinsics (FilPizlonator's lowerIntrinsicAccess, verified against clang
+	-- output): for a fixed-position access of N lanes x E bytes (V = N*E the full
+	-- footprint), flight ptr (eff, lower), upper at [lower-16]:
+	--   1. ValidObject: lower == 0 fails EVEN when the mask is zero (the runtime
+	--      reports "cannot access pointer with null object." via a size=0 origin).
+	--   2. Stores: CanWrite (aux flags at [lower-8], the uniform
+	--      READONLY|FREE mask, like every sarcasm store).
+	--   3. Fast path: eff < lower -> below-slow; eff > upper - V -> above-slow
+	--      (upper - V is overflow-free, like the plain check's upper - size);
+	--      else execute with no mask work.
+	--   4. Below-slow: mask == 0 -> execute (masked-off lanes touch nothing).
+	--      Fixed-position: i = cttz(mask); fail iff eff < lower - i*E (the first
+	--      enabled lane must be in bounds; on success rejoin the upper check —
+	--      the tail lanes may still be out, e.g. an object smaller than V).
+	--      Contiguous (expand/compress): always fail (the access starts at eff).
+	--   5. Above-slow: mask == 0 -> execute. Fixed-position: h = index of the
+	--      highest set mask bit; fail iff eff > upper - (h+1)*E. Contiguous:
+	--      c = popcount(mask); fail iff eff > upper - c*E.
+	--   6. Fail: the runtime's dedicated masked fail functions
+	--      (filc_masked_read/write_check_fail, resp. filc_expand_read /
+	--      filc_compress_write_check_fail) — "masked read not in bounds (even
+	--      accounting for the mask)." & co.
+	local maskedCounter = 0
+	local function emitMaskedAccessCheck(effTemp, capLo, info, align, isWrite)
+		maskedCounter += 1
+		local tag = name .. "_" .. maskedCounter
+		local E, N, V = info.elem, info.lanes, info.vecsize
+		-- ValidObject + CanWrite share ONE size=0 origin: the runtime then
+		-- reports "cannot access pointer with null object." (resp. "cannot
+		-- access pointer to free object." / "cannot write to read-only
+		-- object."), exactly like filcc's masked path.
+		if capLo == nil then
+			cg.jump(failLabelFor(effTemp, nil, 0, 1, isWrite))
+			return
+		end
+		local lbl = failLabelFor(effTemp, capLo, 0, 1, isWrite)
+		cg.branchZero(capLo, lbl)                                 -- ValidObject
+		if align > 1 then
+			-- Aligned forms (vmovdqa32/64, vmovaps/pd): keep the plain path's
+			-- alignment check (clamped to 8 by accessSizeAlign, exactly like
+			-- the unmasked forms). It needs its own size=V origin: a size=0
+			-- origin could not attribute the failure (the runtime would hit
+			-- its "Should not be reached" assert). Conservative when the mask
+			-- is zero (hardware suppresses even alignment faults there).
+			local aLbl = failLabelFor(effTemp, capLo, V, align, isWrite)
+			cg.testMaskBranch(effTemp, align - 1, "ne", aLbl)
+		end
+		if isWrite then
+			-- CanWrite, same aux-flags test as every store (see emitAccessCheck).
+			local auxword = allocTemp({ role = "scratch" })
+			cg.load(auxword, capLo, -8, 8)
+			cg.testMaskBranch(auxword, "0x6000000000000", "ne", lbl)
+		end
+		local upperL = ".Lmaskupper_" .. tag
+		local belowL = ".Lmaskbelow_" .. tag
+		local aboveL = ".Lmaskabove_" .. tag
+		local execL  = ".Lmaskexec_" .. tag
+		-- The mask-refined bounds failures go to the runtime's dedicated masked
+		-- fail function (a new fail-stub kind), with a generic 16-byte filc_origin
+		-- (maskedOrigin record; the size/vector details travel as call arguments).
+		failCounter += 1
+		local failL = ".Lmaskfail_" .. name .. "_" .. failCounter
+		local mko = ".Lfilc_mko_" .. name .. "_" .. failCounter
+		table.insert(accessOrigins, { sym = mko, maskedOrigin = true, line = curLine })
+		local maskT = allocTemp({ role = "mask" })
+		-- fast path
+		cg.cmpBranch(effTemp, capLo, "ult", belowL)
+		cg.label(upperL)
+		local upper = allocTemp({ role = "scratch" })
+		cg.load(upper, capLo, -16, 8)
+		local upperMinusV = allocTemp({ role = "scratch" })
+		cg.subImm(upperMinusV, upper, V)               -- overflow-free (real upper < 2^48)
+		cg.cmpBranch(effTemp, upperMinusV, "ugt", aboveL)
+		cg.jump(execL)
+		-- E is always a power of two (1/2/4/8), so lane-extent multiplies are shifts.
+		local shE = ({ [1] = 0, [2] = 1, [4] = 2, [8] = 3 })[E]
+		-- below-slow
+		cg.label(belowL)
+		cg.maskToGpr(maskT, info)
+		cg.branchZero(maskT, execL)
+		if info.contiguous then
+			cg.jump(failL)
+		else
+			local i = allocTemp({ role = "scratch" })
+			emit(build.insn("tzcntq", { build.rt(i), build.rt(maskT) },
+				{ defs = { i }, uses = { maskT } }))
+			if shE > 0 then
+				emit(build.insn("shl", { build.rt(i), build.imm(shE) }, { defs = { i }, uses = { i } }))
+			end
+			local bound = allocTemp({ role = "scratch" })
+			cg.subReg(bound, capLo, i)                 -- lower - i*E (overflow-free)
+			cg.cmpBranch(effTemp, bound, "ult", failL)
+			cg.jump(upperL)
+		end
+		-- above-slow
+		cg.label(aboveL)
+		cg.maskToGpr(maskT, info)
+		cg.branchZero(maskT, execL)
+		if info.contiguous then
+			local c = allocTemp({ role = "scratch" })
+			emit(build.insn("popcntq", { build.rt(c), build.rt(maskT) },
+				{ defs = { c }, uses = { maskT } }))
+			if shE > 0 then
+				emit(build.insn("shl", { build.rt(c), build.imm(shE) }, { defs = { c }, uses = { c } }))
+			end
+			local bound = allocTemp({ role = "scratch" })
+			cg.subReg(bound, upper, c)                 -- upper - c*E (overflow-free)
+			cg.cmpBranch(effTemp, bound, "ugt", failL)
+			cg.jump(execL)
+		else
+			local h = allocTemp({ role = "scratch" })
+			emit(build.insn("bsrq", { build.rt(h), build.rt(maskT) },
+				{ defs = { h }, uses = { maskT } }))
+			cg.addImm(h, h, 1)                         -- h+1 lanes through the top
+			if shE > 0 then
+				emit(build.insn("shl", { build.rt(h), build.imm(shE) }, { defs = { h }, uses = { h } }))
+			end
+			local bound = allocTemp({ role = "scratch" })
+			cg.subReg(bound, upper, h)                 -- upper - (h+1)*E (overflow-free)
+			cg.cmpBranch(effTemp, bound, "ugt", failL)
+			cg.jump(execL)
+		end
+		cg.label(execL)
+		cg.maskedFailStub(failStubs, failL, effTemp, capLo, maskT, info, isWrite, mko)
 	end
 
 	-- invisicap pointer load: load (dstIv, dstLo) from the address of `mem`.
@@ -430,8 +568,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.testMaskBranch(auxword, "0x6000000000000", "ne", lbl)   -- read-only/special reject
 		local upper = allocTemp({ role = "scratch" })
 		cg.load(upper, baseLo, -16, 8)
-		local hi = allocTemp({ role = "scratch" })
-		cg.addImm(hi, effTemp, 8); cg.cmpBranch(hi, upper, "ugt", lbl)  -- upper bound
+		-- Same overflow-free upper-bound form as emitAccessCheck (upper - 8,
+		-- never eff + 8: eff + 8 wraps for eff in [2^64-8, 2^64)).
+		local upperMinus8 = allocTemp({ role = "scratch" })
+		cg.subImm(upperMinus8, upper, 8); cg.cmpBranch(effTemp, upperMinus8, "ugt", lbl)  -- upper bound
 		local offInObj = allocTemp({ role = "offobj" })
 		cg.subReg(offInObj, effTemp, baseLo)
 		local aux = allocTemp({ role = "aux" })
@@ -914,7 +1054,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					local effTemp, capLo = cg.computeAddr(node, mem)
 					local size, align = cgm.accessSizeAlign(node.stmt)
 					local isWrite = cgm.isStoreInsn(node.stmt)
-					emitAccessCheck(effTemp, capLo, size, align, isWrite)
+					-- AVX512 {k}-masked / AVX2 vmaskmov memory operands get the
+					-- mask-aware check (x86_64 only; nil everywhere else).
+					local minfo = cgm.maskedAccessInfo and cgm.maskedAccessInfo(node.stmt)
+					if minfo then
+						emitMaskedAccessCheck(effTemp, capLo, minfo, align, isWrite)
+					else
+						emitAccessCheck(effTemp, capLo, size, align, isWrite)
+					end
 					-- an implicit-GPR-pinned instruction (x86 div/mul/cmpxchg/...)
 					-- emits its pin moves around itself; the access check above
 					-- rightly precedes the pin-in (checks never touch GPRs)
@@ -934,6 +1081,17 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		emit(build.insn("ret", {}, { control = "return", fallsThrough = false }))
 	end
 	for _, s in failStubs do emit(s) end
+
+	-- FP/SIMD save/restore expansion (x86_64 only): cg.fpSave/fpRestore
+	-- emitted PLACEHOLDER nodes around the injected returning runtime calls;
+	-- expand them now into the exact vector save/restore movs the
+	-- post-transform width-liveness analysis proves live at each site. Runs
+	-- BEFORE the frameSlot numRoots shift below so the expanded movs'
+	-- frameSlot operands are shifted with everything else, and pre-regalloc
+	-- (the movs carry no temps — regalloc never sees xmm-class registers, and
+	-- no placeholder node kind ever leaks past this point). arm64 has no such
+	-- hook (its fpSave/fpRestore are no-ops).
+	if cg.expandFpSaves then cg.expandFpSaves(out, fctx) end
 
 	local externsList = {}
 	for _, e in calledExterns do table.insert(externsList, e) end

@@ -124,7 +124,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   too (byte aliasing is preserved), and materialization preserves AVX512
   decorators: `{1toN}` embedded broadcasts keep working on stack slots (the
   slot is sized at the broadcast element width), while `{k}`-masked stack
-  accesses hit the same rejection as heap ones. FP/SIMD stack accesses needing
+  accesses stay rejected (a virtualized slot is a pseudo-register the masked
+  vector instruction cannot take, and masked-off lanes may not touch memory).
+  FP/SIMD stack accesses needing
   more than 16-byte alignment (e.g. `vmovdqa32` with ymm/zmm) are rejected —
   the ABI guarantees only 16-byte stack alignment; use the unaligned form.
 - **FP/SIMD (X86_64)** is in scope: xmm0-31/ymm/zmm, MMX mmN, x87 st/st(N), and
@@ -190,19 +192,41 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   access), and vpermi2*/vpermt2*
   two-source permutes and the UNMASKED vexpand*/vcompress*/vpexpand*/vpcompress*
   forms are supported at full vector width (with no writemask they touch all
-  lanes — a contiguous full-width access). The implicit-register GPR
+  lanes — a contiguous full-width access). AVX512 `{k}`-masked and AVX2
+  vector-masked memory operands are SUPPORTED on the vector moves
+  (vmovdqu8/16/32/64, vmovups/upd, the aligned vmovdqa32/64 and vmovaps/pd),
+  the truncating/saturating vpmov stores, the expand loads
+  (vexpand*/vpexpand*) and compress stores (vcompress*/vpcompress*), and
+  vmaskmovps/pd + vpmaskmovd/q: they get the exact mask-aware check the Fil-C
+  compiler emits for the masked intrinsics — ValidObject (even for a zero
+  mask), CanWrite for stores, then a full-width fast path refined by the mask
+  in the slow paths (a zero mask executes; otherwise the enabled-lane extents
+  are checked with cttz/highest-set-bit, or popcount for the contiguous
+  expand/compress forms), with failures reported by the runtime's dedicated
+  masked fail functions ("masked read not in bounds (even accounting for the
+  mask)." & co). The implicit-register GPR
   instructions are genuinely MODELED via pin-in/pin-out copies, not passed
   through with a conservative def/use guess: div/idiv (rdx:rax dividend in,
   quotient/remainder out), mul and 1-operand imul (rax in, rdx:rax product
   out), mulx (implicit rdx source), cmpxchg (accumulator RMW + destination
   RMW), cmpxchg8b/cmpxchg16b (the implicit expected-value RMW pair edx:eax
   resp. rdx:rax plus the implicit new-value source ecx:ebx resp. rcx:rbx —
-  all four pinned), and the cqo/cdq/cwd sign-extends (rax in, rdx out) all name their
+  all four pinned), the cqo/cdq/cwd sign-extends (rax in, rdx out), and the
+  zero-explicit-operand implicit-only family — cpuid (eax/ecx in;
+  eax/ebx/ecx/edx out), rdtsc (eax/edx out), rdtscp (eax/edx/ecx out), xgetbv
+  (ecx in; eax/edx out), rdpkru (ecx in; eax/edx out), wrpkru
+  (eax/ecx/edx in), monitor (rax/rcx/rdx in), mwait (eax/ecx in) — all name their
   implicit rax/rdx effects to the web analysis; synthesized moves then copy
   the current webs of the implicit-use registers into their physical registers
   before the instruction and back out into fresh webs after it (coalesceable —
   free when the user already wrote rax/rdx), and the emitted instruction shows
-  only its explicit operands. Intel PTR-sized memory forms of the family
+  only its explicit operands. (monitor's implicit rax address is not a memory
+  access — MONITOR reads/writes no memory — so there is nothing to
+  bounds-check; a wild address can only fault, an uncatchable-signal safe halt
+  the safety model accepts. rdpkru/wrpkru and monitor/mwait are
+  feature/OS-gated by the CPU and kernel, not by sarcasm: rdpkru #UDs unless
+  the OS enabled protection keys, and monitor/mwait commonly #UD in userspace
+  even with the CPUID feature bit set — probe before use.) Intel PTR-sized memory forms of the family
   render with the AT&T suffix synthesized (div QWORD PTR [rdi] → divq), and
   cbw/cwde/cltq are rewritten to a renameable movsxx on the rax web. Aligned
   forms (movaps/movdqa/...)
@@ -222,17 +246,17 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   effects (syscall/sysenter, port I/O, hlt, wrmsr/rdmsr, cr/dr moves, `int N`
   for N≠3, string instructions and the rep/xacquire/xrelease prefixes),
   accesses that may not
-  touch all addressed bytes (gather/scatter, vmaskmov*/maskmov*, AVX512
-  {k}-masked memory operands — including the masked forms of
-  vexpand*/vcompress*, whose unmasked forms are supported as just described),
+  touch all addressed bytes (gather/scatter, maskmovdqu/maskmovq — their
+  implicit DS:rdi memory destination cannot be bounds-checked — and the
+  {k}-masked forms of anything outside the supported masked set above:
+  masked ALU memory sources, {%k0}, and {k}-masked stack-frame accesses),
   implicit operands the
   checker cannot see or model (pcmpestri/pcmpistri/pcmpestrm/pcmpistrm —
   implicit rax/rdx/rcx GPRs;
-  cpuid/rdtsc/rdtscp/xgetbv/rdpkru/wrpkru/monitor/mwait/umwait/tpause —
-  implicit GPR reads/writes the def/use model cannot express, cpuid alone
-  writing rax/rbx/rcx/rdx, umwait/tpause reading the implicit edx:eax
-  TSC-deadline pair; umonitor — monitoring-class hardware armed on a memory
-  range the checker cannot size; clzero/xlatb — implicit memory operands;
+  umwait/tpause — implicit edx:eax TSC-deadline reads the signature
+  marshalling does not yet model; umonitor — monitoring-class hardware armed
+  on a memory range the checker cannot size; clzero/xlatb — implicit memory
+  operands;
   lcall/ljmp — the implicit far-return-frame stack push), AMX tile
   instructions (tileloadd/tilestored/ldtilecfg & co — a strided,
   tile-configuration-dependent footprint that cannot be checked as a single
@@ -327,7 +351,7 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   allocate are GC safepoints).
 
 ## Testing
-All testing is via the Fil-C test suite: the 361 `filc/tests/sarcasm-*` tests (311
+All testing is via the Fil-C test suite: the 517 `filc/tests/sarcasm-*` tests (467
 x86_64, 50 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
 test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
 minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
@@ -343,12 +367,40 @@ checked-memory divisors, mul/imul products, webs live across the pin), the
 pinned cmpxchg accumulator and dual-RMW xadd (`sarcasm-rmw-pin-att`), the
 pinned four-register cmpxchg8b/cmpxchg16b pairs with success/failure CAS
 paths, mismatch writeback and lock/non-lock forms (`sarcasm-cmpxchg8b-att`/`-int`,
-`sarcasm-cmpxchg16b-att`/`-int`), the `lock` prefix on the modeled
+`sarcasm-cmpxchg16b-att`/`-int`), the zero-operand implicit-register family —
+cpuid vendor/max-leaf, rdtsc/rdtscp monotonicity with a stable TSC_AUX,
+xgetbv(0) XCR0 (`sarcasm-implicit-att`/`-int`), feature-probed rdpkru/wrpkru
+(`sarcasm-pku-att`/`-int`) and monitor/mwait (`sarcasm-monitor-att`/`-int` —
+both skip cleanly where the CPU/OS does not allow them), and six/eleven webs
+live across a cpuid forcing coloring-around and spill/reload across the
+pinned rax/rbx/rcx/rdx plus the move-free pin-in/out coalescing case
+(`sarcasm-implicit-pin-att`/`-int`), the `lock` prefix on the modeled
 memory-destination RMWs (`sarcasm-lock-rmw-att`/`-int`, and the
 `sarcasm-oob-lock-xadd-att`/`sarcasm-oob-cmpxchg16b-att` traps), the
 not-readonly CanWrite traps on plain/RMW/FP stores to read-only objects
 (`sarcasm-ro-plain-store-att`/`-int`, `sarcasm-ro-rmw-att`,
-`sarcasm-ro-fp-store-att`), the Phase-2 atomic pointer operations
+`sarcasm-ro-fp-store-att`), the eff+size overflow-hole regressions
+(`sarcasm-wrap-oob-read-att`/`-int`, `-write-att`, `-read16-att` — an
+effective address in [2^64 - size, 2^64) now traps cleanly instead of
+wrapping the upper-bound check and SIGSEGVing), the AVX512 `{k}`-masked and
+AVX2 vector-masked access suite (`sarcasm-masked-*`, `sarcasm-vmaskmov-*`,
+`needsAVX512` where AVX512 is used): in-bounds masked loads/stores with
+all-ones/sparse/zero masks, merge and `{z}` forms
+(`sarcasm-masked-move-att`/`-int`), success-by-masking below/above the
+object and the zero-mask survives (`sarcasm-masked-slowpath-att`),
+expand/compress popcount-fit successes incl. the byte-element N=64 forms
+(`sarcasm-masked-expand-att`/`-int`), truncating masked stores
+(`sarcasm-masked-trunc-att`), the AVX2 sign-bit-mask forms
+(`sarcasm-vmaskmov-att`), the aligned masked forms
+(`sarcasm-masked-aligned-att`), and the traps: completely-OOB masked
+load/store, partially-OOB with ENABLED lanes out below/above, the
+null-capability mask==0 load ("cannot access pointer with null object"),
+the read-only masked store, expand-above/compress-below, the
+truncating-store trap, the vmaskmov trap, and the misaligned aligned-form
+trap (`sarcasm-masked-oob-*`, `sarcasm-masked-nullcap-att`,
+`sarcasm-masked-ro-store-att`, `sarcasm-masked-expand-oob-att`,
+`sarcasm-masked-compress-oob-att`, `sarcasm-masked-trunc-oob-att`,
+`sarcasm-vmaskmov-oob-att`, `sarcasm-masked-aligned-oob-att`), the Phase-2 atomic pointer operations
 (`sarcasm-aptr-loadstore-att`/`-int` — atomic load/store round-trips, mixing
 with the plain forms in both directions, NULL round-trips, and GC-stress
 churn; `sarcasm-aptr-cmpxchg-att`/`-int` — pointer compare-exchange
@@ -395,7 +447,7 @@ silently dropping the prefix), cmpxchg8b/cmpxchg16b on stack-frame slots
 (`sarcasm-reject-cmpxchg8b-stack`, `sarcasm-reject-cmpxchg16b-stack` — no
 register form to virtualize into), and `;! atomic ptr` on cmpxchg8b
 (`sarcasm-reject-cmpxchg8b-ptr`, the 8-byte twin of
-`sarcasm-reject-cmpxchg16b-ptr`). The 53
+`sarcasm-reject-cmpxchg16b-ptr`). The 61
 `filc/tests/sarcasm-fp-*` tests cover the x86_64 FP/SIMD support end-to-end: SSE
 scalar/packed arithmetic, AVX2/AVX512 (incl. embedded broadcast — off the heap
 and off materialized stack slots alike — and opmask registers), MMX, x87,
@@ -419,7 +471,12 @@ vpbroadcastb/w/d/q at their exact element widths
 (memory and GPR sources), full-width vpermi2*/vpermt2* permutes and unmasked
 expand/compress, fxsave/fxrstor, mixed GPR/vector
 conversions, FP stack-slot materialization and GPR/vector slot aliasing, xmm
-save/restore across pollchecks under GC stress, and per-width OOB traps
+save/restore across pollchecks under GC stress, the width- and liveness-aware
+form of that save/restore (`sarcasm-fp-live-*`: movsd/movss-only saves around
+pollchecks and filc_allocate, dead-register sites with no saves at all,
+mixed-width zmm/ymm/xmm state under FUGC churn, the movss-load zeroed-upper
+case, and mixed liveness across the atomic-pointer runtime calls), and
+per-width OOB traps
 (movss/movsd/movdqa/ymm/zmm/fldt/mmx/vstmxcsr/vnni/cvtuqq2ps, plus the
 p-stem class — `sarcasm-fp-oob-pabsd-att` (vpabsd zmm at the full 64 bytes),
 `sarcasm-fp-oob-pminsd-att` (SSE pminsd xmm at 16),
@@ -430,6 +487,38 @@ needed)). Most behavioral cases are exercised in both
 AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
+
+Trap coverage is systematic in the `sarcasm-tm-*` matrix (121 tests, all AT&T-syntax
+x86_64 `return: failure` tests trapping in every subrun mode — default, scribble,
+stop-the-world, release — and asserting the exact first-line `filc safety error`
+message): the six fault categories — below-bounds, above-bounds,
+above-bounds-overflow (an effective address near 2^64, so eff+size wraps a naive
+upper-bound check), use-after-free, special object (direct access of a
+`zweak_new()` object), and null capability (an integer address) — crossed with
+every access width 1/2/4/8/10/16/32/64 in both load and store directions
+(movb/movw/movl/movq GPR forms, the x87 fldt/fstpt tbyte, movdqu xmm, vmovdqu
+ymm, vmovdqu64 zmm — the zmm cells are `needsAVX512`): the 96 core cells. Extras
+round out the interesting instructions: fxsave's 512-byte store in all six
+categories (fxrstor in three), 6-byte lfs far-pointer loads, the
+cmpxchg16b/cmpxchg8b locked-RMW paths (below/UAF/special/null-cap/overflow),
+AVX512 `{k}`-masked vmovdqu32 loads and stores on freed and special objects, and
+embedded-broadcast `{1to16}` element checks below/above. Masked-cell message
+attribution is subtle: a masked LOAD from a freed or special object falls to the
+mask-refined bounds slow path and reports "masked read not in bounds (even
+accounting for the mask)." — the masked fail function has no free/special
+distinction; a masked STORE to a FREED object trips the CanWrite aux-flags test
+(READONLY|FREE) BEFORE the bounds slow path and therefore reports "cannot access
+pointer to free object." (a size=0 origin — exactly like the Fil-C compiler's
+masked-store check), while a masked store to a SPECIAL object passes CanWrite
+(special is not in the READONLY|FREE mask) and reports "masked write not in
+bounds ...". The pre-existing non-matrix trap tests are unaffected and
+complementary: `sarcasm-oob-*`/`sarcasm-fp-oob-*` cover above-bounds widths,
+straddles and exotic instructions in both syntaxes, `sarcasm-nullcap-*` the
+null-capability forms, `sarcasm-wrap-oob-*` the eff+size overflow-hole
+regressions, `sarcasm-ro-*` the read-only CanWrite traps, and
+`sarcasm-masked-*`/`sarcasm-vmaskmov-*` the masked success/trap forms — the
+matrix adds the missing categories (below-bounds, use-after-free, special) and
+makes the width coverage systematic.
 
 The old in-tree `tests/` harness (host-lute `verify.sh`/`verify-x86.sh` via docker,
 plus the Luau unit tests) has been removed; its coverage now lives in

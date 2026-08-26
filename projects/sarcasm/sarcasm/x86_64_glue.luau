@@ -189,6 +189,22 @@ function glue_x86.accessOrigin(out, sym, size, align, funcName, isWrite, dbg)
 	table.insert(out, "")
 end
 
+-- A plain 16-byte filc_origin record for the masked-access fail stubs (the
+-- runtime's filc_masked_read/write_check_fail and filc_expand/compress fail
+-- functions take a filc_origin*, not the 32-byte optimized-access-check origin).
+-- Carries the access's line when -g is on, like accessOrigin's generic origin.
+function glue_x86.maskedOrigin(out, sym, funcName, dbg)
+	table.insert(out, "\t.type\t" .. sym .. ",@object")
+	table.insert(out, "\t.section\t.data.rel.ro,\"aw\",@progbits")
+	table.insert(out, "\t.p2align\t3, 0x0")
+	table.insert(out, sym .. ":")
+	table.insert(out, "\t.quad\t.Lfilc_function_origin_" .. funcName)
+	table.insert(out, "\t.long\t" .. tostring(dbg and dbg.line or 0))
+	table.insert(out, "\t.long\t0")
+	table.insert(out, "\t.size\t" .. sym .. ", 16")
+	table.insert(out, "")
+end
+
 function glue_x86.alias(out, name, signature)
 	table.insert(out, "\t.globl\tpizlonatedFI" .. tostring(signature) .. "_" .. name)
 	table.insert(out, "\t.type\tpizlonatedFI" .. tostring(signature) .. "_" .. name .. ",@function")

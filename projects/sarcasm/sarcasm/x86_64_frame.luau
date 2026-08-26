@@ -715,15 +715,20 @@ function x86_64_frame.rewrite(st, ctx)
 				.. " there is meaningless; it is only allowed on the modeled"
 				.. " memory-destination RMWs on real memory): " .. (st.raw or m))
 		end
-		-- A stack memory operand carrying an AVX512 {kN} mask decorator: masked-off
-		-- lanes may not touch memory, so the access cannot be bounds-checked. The
-		-- lift's fp.classify fires this same rejection for heap accesses; here the
-		-- frame rewrite runs FIRST (and materializes the operand below), so reject
-		-- it at the same point, with the same message (defense in depth).
+		-- A stack memory operand carrying an AVX512 {kN} mask decorator. On HEAP
+		-- accesses the supported masked forms (vector moves, truncating stores,
+		-- expand/compress) now get a mask-aware bounds check from the transform
+		-- (fp.maskedAccessInfo), but on a STACK slot the frame rewrite runs FIRST
+		-- and would virtualize/materialize the operand: a virtualized slot is a
+		-- pseudo-register the masked vector instruction cannot take, and a
+		-- materialized slot would need the mask-aware lane structure accounted
+		-- for in the cluster sizing. Neither is modeled, so reject all {k}-masked
+		-- stack accesses, like the unsupported masked heap forms.
 		for _, o in ops do
 			if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
-				error("sarcasm: AVX512 mask-register ({k}) memory accesses are not supported"
-					.. " (masked-off lanes may not touch memory; cannot prove memory safety): "
+				error("sarcasm: AVX512 mask-register ({k}) stack-frame memory accesses are not"
+					.. " supported (masked-off lanes may not touch memory; use an unmasked or"
+					.. " heap form; cannot prove memory safety): "
 					.. (st.raw or m))
 			end
 		end

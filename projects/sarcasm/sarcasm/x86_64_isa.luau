@@ -365,6 +365,69 @@ function x86.classify(insn)
 		table.insert(defs, axD); table.insert(defs, dxD)
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
 			pin = { uses = { axU, dxU, bxU, cxU }, defs = { axD, dxD } } }
+	elseif m == "cpuid" or m == "rdtsc" or m == "rdtscp" or m == "xgetbv"
+		or m == "rdpkru" or m == "wrpkru" or m == "monitor" or m == "mwait" then
+		-- Zero-explicit-operand instructions whose ONLY register effects are
+		-- implicit GPRs, modeled with the same pin mechanism as the
+		-- div/mul/cmpxchg family (fresh table per implicit occurrence — see the
+		-- cqo comment above): codegen's emitPinned copies the reaching webs of
+		-- the implicit uses into the physical registers before the instruction
+		-- and the physical results back out into fresh webs after it, and
+		-- regalloc colors everything else AROUND the fixed registers (rbx is an
+		-- ordinary allocatable callee-saved GPR — cpuid's implicit rbx def
+		-- needs no special treatment). The instruction renders as the bare
+		-- mnemonic. Effects modeled (SDM Vol. 2B):
+		--   cpuid:   uses eax (leaf) + ecx (sub-leaf); defs eax/ebx/ecx/edx.
+		--   rdtsc:   defs eax/edx (edx:eax = TSC). No uses.
+		--   rdtscp:  defs eax/edx/ecx (edx:eax = TSC, ecx = TSC_AUX). No uses.
+		--   xgetbv:  uses ecx (XCR index); defs eax/edx.
+		--   rdpkru:  uses ecx (must be 0); defs eax (PKRU) + edx (zeroed).
+		--   wrpkru:  uses eax (PKRU value) + ecx (=0) + edx (=0). No defs.
+		--   monitor: uses rax (64-bit address) + ecx (extensions) + edx (hints).
+		--            No defs, and NO memory operand: MONITOR does not access
+		--            memory, so there is nothing to bounds-check (a wild
+		--            address can only fault — an uncatchable signal and a safe
+		--            halt, which the safety model accepts).
+		--   mwait:   uses eax (hints) + ecx (extensions). No defs.
+		-- (umwait/tpause stay rejected: their implicit EDX:EAX TSC-deadline use
+		-- pairs an explicit operand with implicit ones in a way the signature
+		-- marshalling does not yet model.)
+		if #ops ~= 0 then
+			error("sarcasm: " .. rawMnem .. " takes no explicit operands (gas's"
+				.. " operand decorations like `monitor %rax, %ecx, %edx` are not"
+				.. " supported; write the bare mnemonic): " .. (insn.raw or rawMnem))
+		end
+		-- fresh table per implicit occurrence (see the cqo comment above)
+		local function imp(num, nm, w)
+			return { kind="reg", rc="gpr", num=num, width=w, name=nm, implicit=true }
+		end
+		local pinUses, pinDefs = {}, {}
+		local function u(num, nm, w)
+			local r = imp(num, nm, w)
+			table.insert(uses, r); table.insert(pinUses, r)
+		end
+		local function d(num, nm, w)
+			local r = imp(num, nm, w)
+			table.insert(defs, r); table.insert(pinDefs, r)
+		end
+		if m == "cpuid" then
+			u(0, "rax", 32); u(1, "rcx", 32)
+			d(0, "rax", 32); d(3, "rbx", 32); d(1, "rcx", 32); d(2, "rdx", 32)
+		elseif m == "rdtsc" then
+			d(0, "rax", 32); d(2, "rdx", 32)
+		elseif m == "rdtscp" then
+			d(0, "rax", 32); d(2, "rdx", 32); d(1, "rcx", 32)
+		elseif m == "xgetbv" or m == "rdpkru" then
+			u(1, "rcx", 32); d(0, "rax", 32); d(2, "rdx", 32)
+		elseif m == "wrpkru" then
+			u(0, "rax", 32); u(1, "rcx", 32); u(2, "rdx", 32)
+		elseif m == "monitor" then
+			u(0, "rax", 64); u(1, "rcx", 32); u(2, "rdx", 32)
+		else  -- mwait
+			u(0, "rax", 32); u(1, "rcx", 32)
+		end
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+			pin = { uses = pinUses, defs = pinDefs } }
 	elseif FLAGS_ONLY[m] then
 		for _, o in ops do useOperand(o) end
 	elseif ALU2[m] then

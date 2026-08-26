@@ -28,10 +28,10 @@
 set -e
 set -x
 
-cd projects/binutils-2.43.1
+cd projects/binutils-2.47
 extract_source
 mkdir build
 cd build
-CC=$PWD/../../../../build/bin/clang CXX=$PWD/../../../../build/bin/clang++ ../configure --prefix=$PWD/../../../../pizfix --enable-gold --enable-ld=default --enable-plugins --enable-shared --disable-werror --enable-64-bit-bfd --enable-new-dtags --with-system-zlib --enable-default-hash-style=gnu --disable-gprofng
+CC=$PWD/../../../../build/bin/clang CXX=$PWD/../../../../build/bin/clang++ ../configure --prefix=$PWD/../../../../pizfix --enable-ld=default --enable-plugins --enable-shared --disable-werror --enable-64-bit-bfd --enable-new-dtags --with-system-zlib --enable-default-hash-style=gnu --disable-gprofng
 make -j $NCPU
 make -j $NCPU install

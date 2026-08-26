@@ -1,0 +1,50 @@
+# Makefile.am --
+# Copyright 2025 Red Hat Inc.
+# All Rights Reserved.
+#
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public
+# License along with this program; see the file COPYING.lib. If not, write to
+# the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor
+# Boston, MA 02110-1335, USA.
+#
+# Authors:
+#   Steve Grubb <sgrubb@redhat.com>
+
+AM_CPPFLAGS = -D_GNU_SOURCE -I${top_srcdir} -I${top_srcdir}/audisp \
+	-I${top_srcdir}/common -I${top_srcdir}/src -I${top_srcdir}/lib
+AM_CFLAGS = -D_GNU_SOURCE -Wno-pointer-sign ${WFLAGS}
+AM_LDFLAGS =
+if HAVE_ASAN
+AM_CFLAGS += ${ASAN_FLAGS}
+AM_LDFLAGS += ${ASAN_FLAGS}
+endif
+check_PROGRAMS = audisp-queue-test audisp-llist-test pconfig-alloc-test \
+	audisp-dispatch-io-test
+TESTS = $(check_PROGRAMS)
+
+audisp_queue_test_SOURCES = test-queue.c
+audisp_queue_test_LDADD = ${top_builddir}/audisp/libqueue.la \
+	${top_builddir}/common/libaucommon.la -lpthread
+
+audisp_llist_test_SOURCES = test-audispd-llist.c
+audisp_llist_test_LDADD = ${top_builddir}/audisp/libdisp.la \
+	${top_builddir}/common/libaucommon.la
+
+pconfig_alloc_test_SOURCES = pconfig_alloc_test.c
+
+audisp_dispatch_io_test_SOURCES = test-audispd-io.c \
+	${top_srcdir}/audisp/audispd-pconfig.c \
+	${top_srcdir}/audisp/audispd-llist.c
+audisp_dispatch_io_test_LDADD = ${top_builddir}/audisp/libqueue.la \
+	${top_builddir}/common/libaucommon.la ${top_builddir}/lib/libaudit.la \
+	-lpthread

@@ -1,0 +1,85 @@
+# Makefile.am --
+# Copyright 2021 Steve Grubb
+# All Rights Reserved.
+# This library is free software; you can redistribute it and/or
+# modify it under the terms of the GNU Lesser General Public
+# License as published by the Free Software Foundation; either
+# version 2.1 of the License, or (at your option) any later version.
+#
+# This library is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; see the file COPYING. If not, write to the
+# Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor 
+# Boston, MA 02110-1335, USA.
+#
+# Authors:
+#   Steve Grubb <sgrubb@redhat.com>
+#
+
+CONFIG_CLEAN_FILES = *.loT *.rej *.orig
+EXTRA_DIST = audisp-ids.conf ids.conf TODO README.md
+SUBDIRS = rules
+AM_CPPFLAGS = -I${top_srcdir} -I${top_srcdir}/lib -I${top_srcdir}/auparse -I${top_srcdir}/common -I${top_srcdir}/auplugin
+prog_confdir = $(sysconfdir)/audit
+prog_conf = ids.conf
+plugin_confdir=$(prog_confdir)/plugins.d
+plugin_conf = audisp-ids.conf
+sbin_PROGRAMS = audisp-ids
+check_PROGRAMS = test-model-bad-event test-nvpair test-origin test-reactions
+TESTS = $(check_PROGRAMS)
+noinst_HEADERS = account.h avl.h ids_config.h ids.h \
+	address.h model_bad_event.h model_behavior.h nvpair.h origin.h \
+	reactions.h session.h timer-services.h
+
+test_nvpair_SOURCES = test-nvpair.c nvpair.c
+test_nvpair_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
+if HAVE_ASAN
+test_nvpair_CFLAGS += ${ASAN_FLAGS}
+test_nvpair_LDFLAGS = ${ASAN_FLAGS}
+endif
+
+test_model_bad_event_SOURCES = test-model-bad-event.c address.c avl.c \
+	model_bad_event.c origin.c
+test_model_bad_event_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
+test_model_bad_event_LDADD = ${top_builddir}/auparse/libauparse.la \
+	${top_builddir}/lib/libaudit.la
+if HAVE_ASAN
+test_model_bad_event_CFLAGS += ${ASAN_FLAGS}
+test_model_bad_event_LDFLAGS = ${ASAN_FLAGS}
+endif
+
+test_origin_SOURCES = test-origin.c address.c avl.c origin.c
+test_origin_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
+if HAVE_ASAN
+test_origin_CFLAGS += ${ASAN_FLAGS}
+test_origin_LDFLAGS = ${ASAN_FLAGS}
+endif
+
+test_reactions_SOURCES = test-reactions.c address.c reactions.c
+test_reactions_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
+test_reactions_LDFLAGS = -Wl,--wrap=fork -Wl,--wrap=execve
+if HAVE_ASAN
+test_reactions_CFLAGS += ${ASAN_FLAGS}
+test_reactions_LDFLAGS += ${ASAN_FLAGS}
+endif
+
+audisp_ids_DEPENDENCIES = ${top_builddir}/lib/libaudit.la ${top_builddir}/auparse/libauparse.la ${top_builddir}/common/libaucommon.la ${top_builddir}/auplugin/libauplugin.la
+audisp_ids_SOURCES = account.c address.c avl.c ids.c ids_config.c \
+	model_bad_event.c model_behavior.c nvpair.c origin.c reactions.c session.c \
+	timer-services.c
+audisp_ids_CFLAGS = -D_GNU_SOURCE ${WFLAGS}
+audisp_ids_LDADD = ${top_builddir}/lib/libaudit.la \
+	${top_builddir}/auparse/libauparse.la ${top_builddir}/common/libaucommon.la  ${top_builddir}/auplugin/libauplugin.la
+
+install-data-hook:
+	mkdir -p -m 0750 ${DESTDIR}${plugin_confdir}
+	$(INSTALL_DATA) -D -m 640 ${srcdir}/$(plugin_conf) ${DESTDIR}${plugin_confdir}
+	$(INSTALL_DATA) -D -m 640 ${srcdir}/$(prog_conf) ${DESTDIR}${prog_confdir}
+
+uninstall-hook:
+	rm ${DESTDIR}${plugin_confdir}/$(plugin_conf)
+	rm ${DESTDIR}${prog_confdir}/$(prog_conf)

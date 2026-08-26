@@ -1,0 +1,474 @@
+/* reactions.c --
+ * Copyright 2021,2025-26 Steve Grubb.
+ * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; see the file COPYING. If not, write to the
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor
+ * Boston, MA 02110-1335, USA.
+ *
+ * Authors:
+ *   Steve Grubb <sgrubb@redhat.com>
+ *
+ */
+
+#include "config.h"
+#include <stdio.h>
+#include <stdio_ext.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <syslog.h>
+#include <time.h>  // nanosleep
+#include <errno.h>
+#include <pwd.h>
+#include <string.h>
+#include "ids.h"
+#include "ids_config.h"
+#include "reactions.h"
+#include "session.h"
+#include "timer-services.h"
+#include "account.h"
+#include "common.h"
+//#include "auparse.h"
+
+// Returns 0 on success and 1 on failure
+static int safe_exec(const char *exe, ...)
+{
+	char **argv;
+	va_list ap;
+	unsigned int i;
+	int pid;
+	struct sigaction sa;
+	sigset_t nmask, omask;
+
+	if (exe == NULL) {
+		syslog(LOG_ALERT,
+			"Safe_exec passed NULL for program to execute");
+		return 1;
+	}
+
+	sigemptyset(&nmask);
+	sigaddset(&nmask, SIGCHLD);
+	if (sigprocmask(SIG_BLOCK, &nmask, &omask) < 0) {
+		syslog(LOG_ALERT,
+			"Audit IDS failed to block SIGCHLD for %s", exe);
+		return 1;
+	}
+
+	pid = fork();
+	if (pid < 0) {
+		syslog(LOG_ALERT,
+			"Audit IDS failed to fork doing safe_exec");
+		sigprocmask(SIG_SETMASK, &omask, NULL);
+		return 1;
+	}
+	if (pid) {       /* Parent */
+		int status;
+		int rc;
+
+		do {
+			rc = waitpid(pid, &status, 0);
+		} while (rc < 0 && errno == EINTR);
+		sigprocmask(SIG_SETMASK, &omask, NULL);
+		if (rc < 0) {
+			syslog(LOG_ALERT,
+				"Audit IDS waitpid failed for %s", exe);
+			return 1;
+		}
+		if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+			return 0;
+
+		syslog(LOG_ALERT, "Audit IDS %s exited abnormally", exe);
+		return 1;
+	}
+
+	/* Child */
+	sigprocmask(SIG_SETMASK, &omask, NULL);
+	sigfillset (&sa.sa_mask);
+	sigprocmask (SIG_UNBLOCK, &sa.sa_mask, 0);
+#ifdef HAVE_CLOSE_RANGE
+	close_range(3, ~0U, 0); /* close all past stderr */
+#else
+	for (i=3; i<24; i++)     /* Arbitrary number */
+		close(i);
+#endif
+
+	va_start(ap, exe);
+	/* The sentinel must be char * because va_arg retrieves char *. */
+	for (i = 1; va_arg(ap, char *) != NULL; i++);
+	va_end(ap);
+	argv = alloca((i + 1) * sizeof(char *));
+
+	va_start(ap, exe);
+	argv[0] = (char *) exe;
+	for (i = 1; (argv[i] = (char *) va_arg(ap, char *)) != NULL; i++);
+	va_end(ap);
+
+	execve(exe, argv, NULL);
+	syslog(LOG_ALERT, "Audit IDS failed to exec %s", exe);
+	_exit(EXIT_FAILURE); // Avoid running the atexit handlers.
+}
+
+static void minipause(void)
+{
+	struct timespec ts;
+	ts.tv_sec = 0;
+	ts.tv_nsec = 120 * 1000 * 1000; // 120 milliseconds
+	nanosleep(&ts, NULL);
+}
+
+int kill_process(pid_t pid)
+{
+	if (pid <= 0)
+		return 1;
+
+	if (debug)
+		my_printf("reaction kill -KILL %d", pid);
+
+	return kill(pid, SIGKILL);
+}
+
+int kill_session(int session)
+{
+	char ses[16];
+
+	// Do not kill session -1 or the system will die
+	if (session < 0)
+		return 1;
+
+	snprintf(ses, sizeof(ses), "%d", session);
+	if (debug)
+		my_printf("reaction killall -d %s", ses);
+	return safe_exec("/usr/bin/killall", "-d", ses, (char *)NULL);
+}
+
+static int  uid_min = -1;
+static void read_uid_min(void)
+{
+	FILE *f;
+	char buf[100];
+	int uid = -1;
+
+	if (uid_min > 0)
+		return;
+
+	f = fopen("/etc/login.defs", "r");
+	if (f == NULL)
+		return;
+	__fsetlocking(f, FSETLOCKING_BYCALLER);
+	while (fgets(buf, sizeof(buf), f)) {
+		if (memcmp(buf, "UID_MIN", 7) == 0) {
+			if (sscanf(buf, "UID_MIN %d", &uid) == 1) {
+				if (uid != -1) {
+					uid_min = uid;
+					if (debug)
+						my_printf("uid_min set to %d",
+							uid_min);
+				}
+			}
+			break;
+		}
+	}
+	fclose(f);
+}
+
+/* returns 0 if user account and 1 on anything else */
+static int verify_acct(const char *acct)
+{
+	struct passwd *pw;
+
+	if (acct == NULL)
+		return 1;
+
+	// Make sure valid acct
+	errno = 0;
+	pw = getpwnam(acct);
+	if (pw == NULL || errno)
+		return 1;
+
+	// Make sure not a daemon
+	if (strstr(pw->pw_shell, "nologin"))
+		return 1;
+	if (uid_min < 0) {
+		read_uid_min();
+		if (uid_min < 0)
+			return 1;
+	}
+	if ((int)pw->pw_uid < uid_min)
+		return 1;
+
+	return 0;
+}
+
+int restricted_role(const char *acct)
+{
+	int rc;
+
+	if (verify_acct(acct))
+		return 1;
+
+	// Restrict to guest user
+	rc = safe_exec("/usr/sbin/semanage", "login", "-m", "-s",
+		"guest_u", acct, (char *)NULL);
+	if (rc)
+		return rc;
+
+	// Need to force a logout of all sessions for the user
+	return safe_exec("/usr/bin/killall", "--user", acct, (char *)NULL);
+}
+
+int force_password_reset(const char *acct)
+{
+	if (verify_acct(acct))
+		return 1;
+
+	return safe_exec("/usr/bin/chage", "-d", "0", acct, (char *)NULL);
+}
+
+int lock_account(const char *acct)
+{
+	if (verify_acct(acct))
+		return 1;
+
+	return safe_exec("/usr/bin/passwd", "-l", acct, (char *)NULL);
+}
+
+int unlock_account(const char *acct)
+{
+	if (verify_acct(acct))
+		return 1;
+
+	return safe_exec("/usr/bin/passwd", "-u", acct, (char *)NULL);
+}
+
+int lock_account_timed(const char *acct, unsigned long length)
+{
+	int rc = lock_account(acct);
+
+	if (rc)
+		return rc;
+
+	return add_timer_job(UNLOCK_ACCOUNT, acct, length);
+}
+
+/*
+ * change_ip_address_rule - add or remove an IPv4 or IPv6 firewall rule
+ * Args:
+ *   address - source address to match
+ *   add     - nonzero to add a rule, zero to remove it
+ * Rtns:
+ *   0 on success, 1 on validation or command failure
+ */
+static int change_ip_address_rule(const ids_address_t *address, int add)
+{
+	char addr[INET6_ADDRSTRLEN];
+
+	if (!ids_address_format(address, addr, sizeof(addr)))
+		return 1;
+
+#ifdef USE_NFTABLES
+	const char *operation = add ? "add" : "delete";
+	const char *protocol = address->family == AF_INET ? "ip" : "ip6";
+
+	if (debug)
+		my_printf("reaction /sbin/nft %s rule inet filter "
+			  "input %s saddr %s drop", operation, protocol, addr);
+	minipause();
+	return safe_exec("/usr/sbin/nft", operation, "rule", "inet", "filter",
+			"input", protocol, "saddr", addr, "drop",
+			(char *)NULL);
+#else
+	const char *operation = add ? "-I" : "-D";
+	const char *exe = address->family == AF_INET ?
+		"/usr/sbin/iptables" : "/usr/sbin/ip6tables";
+
+	if (debug)
+		my_printf("reaction %s %s INPUT -s %s -j DROP", exe,
+			  operation, addr);
+	minipause();
+	return safe_exec(exe, operation, "INPUT", "-s", addr, "-j", "DROP",
+			(char *)NULL);
+#endif
+}
+
+int block_ip_address(const ids_address_t *address)
+{
+	return change_ip_address_rule(address, 1);
+}
+
+int block_ip_address_timed(const ids_address_t *address,
+	unsigned long length)
+{
+	char addr[INET6_ADDRSTRLEN];
+	int rc;
+
+	if (!ids_address_format(address, addr, sizeof(addr)))
+		return 1;
+
+	rc = block_ip_address(address);
+	if (rc)
+		return rc;
+
+	return add_timer_job(UNBLOCK_ADDRESS, addr, length);
+}
+
+static void block_address(unsigned int reaction, const char *reason)
+{
+	unsigned time_out = config.block_address_time;
+	int res;
+	char addr[INET6_ADDRSTRLEN];
+	char buf[128];
+	origin_data_t *o = current_origin();
+
+	if (o == NULL ||
+		!ids_address_format(&o->address, addr, sizeof(addr)))
+		return;
+
+	if (debug)
+		my_printf("Blocking address %s b/c %s", addr, reason);
+
+	if (reaction == REACTION_BLOCK_ADDRESS)
+		res = block_ip_address(&o->address);
+	else
+		res = block_ip_address_timed(&o->address, time_out);
+
+	if (res == 0) {
+		o->blocked = 1;
+		if (reaction == REACTION_BLOCK_ADDRESS) {
+			snprintf(buf, sizeof(buf), "daddr=%.45s reason=%s",
+				      addr, reason);
+			log_audit_event(AUDIT_RESP_ORIGIN_BLOCK, buf, 1);
+		} else {
+			snprintf(buf, sizeof(buf),
+				      "daddr=%.45s reason=%s time_out=%u",
+				      addr, reason, time_out/MINUTES);
+			log_audit_event(AUDIT_RESP_ORIGIN_BLOCK_TIMED, buf, 1);
+		}
+	}
+}
+
+int unblock_ip_address(const char *addr)
+{
+	ids_address_t address;
+
+	if (!ids_address_parse(addr, &address))
+		return 1;
+	return change_ip_address_rule(&address, 0);
+}
+
+int system_reboot(void)
+{
+	return safe_exec("/sbin/init", "6", (char *)NULL);
+}
+
+int system_single_user(void)
+{
+	return safe_exec("/sbin/init", "1", (char *)NULL);
+}
+
+int system_halt(void)
+{
+	return safe_exec("/sbin/init", "0", (char *)NULL);
+}
+
+/*
+ * do_reaction - run the requested reactions for a triggering event
+ * Args:
+ *   answer  - bit mask of reactions to run
+ *   reason  - reason included in reaction audit events
+ *   session - triggering session, or NULL for an origin-only event
+ * Rtns:
+ *   void
+ */
+void do_reaction(unsigned int answer, const char *reason,
+	const session_data_t *session)
+{
+//my_printf("Answer: %u", answer);
+	unsigned int num = 0;
+	const char *acct = session ? session->acct : NULL;
+
+	do {
+		unsigned int tmp = 1 << num;
+		if (answer & tmp) {
+			switch (tmp) {
+				// FIXME: Need to add audit events for these
+				case REACTION_IGNORE:
+					break;
+				// FIXME: do these reactions
+				case REACTION_LOG:
+				case REACTION_EMAIL:
+					break;
+				case REACTION_TERMINATE_PROCESS:
+					{/*
+					auparse_first_record(au);
+					if (auparse_find_field(au, "pid")) {
+					    int pid = auparse_get_field_int(au);
+					    kill_process(pid);
+					}
+					*/}
+					break;
+				case REACTION_TERMINATE_SESSION:
+					if (session)
+						kill_session(session->session);
+					break;
+				case REACTION_RESTRICT_ROLE:
+					{
+					if (acct)
+						restricted_role(acct);
+					}
+					break;
+				case REACTION_PASSWORD_RESET:
+					{
+					if (acct)
+						force_password_reset(acct);
+					}
+					break;
+				case REACTION_LOCK_ACCOUNT_TIMED:
+					{
+					if (acct)
+						lock_account_timed(acct,
+						config.lock_account_time);
+					}
+					break;
+				case REACTION_LOCK_ACCOUNT:
+					{
+					if (acct)
+						lock_account(acct);
+					}
+					break;
+				case REACTION_BLOCK_ADDRESS_TIMED:
+				case REACTION_BLOCK_ADDRESS:
+					block_address(tmp, reason);
+					break;
+				case REACTION_SYSTEM_REBOOT:
+					system_reboot();
+					break;
+				case REACTION_SYSTEM_SINGLE_USER:
+					system_single_user();
+					break;
+				case REACTION_SYSTEM_HALT:
+					system_halt();
+					break;
+				default:
+					if (debug)
+					    my_printf("Unknown reaction: %X",
+							    tmp);
+					break;
+			}
+		}
+		num++;
+	} while (num < 32);
+}

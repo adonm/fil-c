@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+srcdir="@srcdir@"
+top_builddir="@top_builddir@"
+use_python3="@use_python3@"
+# copy logs when build dir != srcdir
+if [ "$srcdir" != "." ]; then
+    cp "$srcdir"/test*.log .
+fi
+LC_ALL=C ./auparse_test > auparse_test.cur
+diff -u "$srcdir"/auparse_test.ref auparse_test.cur
+./auparselol_test -f test3.log --check | sort > auparse_test.cur
+sed -f "$srcdir"/auditd_raw.sed test3.log | sort > auparse_test.raw
+diff -u auparse_test.raw auparse_test.cur
+if [ "$use_python3" = "yes" ]; then
+    audit_builddir="$top_builddir"/bindings/swig/python3
+    audit_libdir="$audit_builddir"/.libs
+    audit_module=""
+
+    for candidate in "$audit_libdir"/_audit*.so; do
+        if [ -f "$candidate" ]; then
+            audit_module="$candidate"
+            break
+        fi
+    done
+
+    if [ -z "$audit_module" ]; then
+        echo "Could not locate Python audit module in $audit_libdir" >&2
+        exit 1
+    fi
+
+    cp "$audit_module" "$audit_builddir"
+    PYTHONPATH="$top_builddir"/bindings/python/python3/.libs/ \
+    PYTHONDONTWRITEBYTECODE=1 \
+    LD_LIBRARY_PATH="$top_builddir"/auparse/.libs \
+    srcdir=$srcdir "$srcdir"/auparse_test.py | sed "s,$srcdir/test,test," > auparse_test.cur
+    diff -u "$srcdir"/auparse_test.ref.py auparse_test.cur
+fi
+./lookup_test
+# databuf_test is built but not run

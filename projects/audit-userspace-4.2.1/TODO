@@ -1,0 +1,16 @@
+Future roadmap (subject to change):
+===================================
+4.2.x
+* Copy audisp-remote persistence method to audisp/queue.c
+* Multi-thread audisp-remote
+* Look into lazy parsing of audit records in auparse
+* Basic HIDS based on reactive audit component
+
+4.3
+* If searching user/group doesn't map to uid/gid, do translated string search
+* Support multiple time streams when searching
+* audisp-remote, add config to say what home network is so laptops don't try if their not on a network that can reach the server.
+
+Someday...
+* Container support
+* Rewrite swig based python

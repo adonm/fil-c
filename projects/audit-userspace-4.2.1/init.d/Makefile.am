@@ -1,0 +1,95 @@
+# Makefile.am--
+# Copyright 2004-2025 Red Hat Inc.
+# All Rights Reserved.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; see the file COPYING. If not, write to the
+# Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor 
+# Boston, MA 02110-1335, USA.
+#
+# Authors:
+#   Steve Grubb <sgrubb@redhat.com>
+#
+
+CONFIG_CLEAN_FILES = *.rej *.orig
+CLEANFILES = $(BUILT_SOURCES)
+EXTRA_DIST = auditd.service.in audit-rules.service.in augenrules.in \
+	auditd.conf auditd.cron audit-tmpfiles.conf \
+	libaudit.conf auditd.condrestart \
+	auditd.reload auditd.restart auditd.resume \
+	auditd.rotate auditd.state auditd.stop \
+	audit-stop.rules audit.bash_completion
+libconfig = libaudit.conf
+initdir = $(prefix)/lib/systemd/system
+legacydir = $(libexecdir)/initscripts/legacy-actions/auditd
+bashcompdir = $(datadir)/bash-completion/completions
+
+auditdir = $(sysconfdir)/audit
+auditrdir = $(auditdir)/rules.d
+dist_audit_DATA = auditd.conf audit-stop.rules
+sbin_SCRIPTS = augenrules
+
+BUILT_SOURCES = auditd.service audit-rules.service augenrules
+%.service: %.service.in Makefile
+	$(AM_V_GEN)sed \
+		-e 's![@]runstatedir[@]!$(runstatedir)!' \
+		-e 's![@]sbindir[@]!$(sbindir)!' \
+		-e 's![@]sysconfdir[@]!$(sysconfdir)!' \
+		$< > $@
+
+install-data-hook:
+	$(INSTALL_DATA) -D -m 640 ${srcdir}/${libconfig} ${DESTDIR}${sysconfdir}
+	mkdir -p ${DESTDIR}$(prefix)/lib/tmpfiles.d/
+	$(INSTALL_DATA) -m 640 ${srcdir}/audit-tmpfiles.conf ${DESTDIR}$(prefix)/lib/tmpfiles.d/audit.conf
+
+install-exec-hook:
+	mkdir -p ${DESTDIR}${initdir}
+	mkdir -p ${DESTDIR}${bashcompdir}
+	$(INSTALL_SCRIPT) -D -m 644 ${builddir}/auditd.service ${DESTDIR}${initdir}
+	$(INSTALL_SCRIPT) -D -m 644 ${builddir}/audit-rules.service ${DESTDIR}${initdir}
+	chmod 0755 $(DESTDIR)$(sbindir)/augenrules
+	$(INSTALL_DATA) -D -m 644 ${srcdir}/audit.bash_completion \
+		${DESTDIR}${bashcompdir}/auditctl
+	cd ${DESTDIR}${bashcompdir} && \
+		ln -sf auditctl ausearch && \
+		ln -sf auditctl aureport && \
+		ln -sf auditctl augenrules
+if INSTALL_LEGACY_ACTIONS
+	mkdir -p ${DESTDIR}${legacydir}
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.rotate ${DESTDIR}${legacydir}/rotate
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.resume ${DESTDIR}${legacydir}/resume
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.reload ${DESTDIR}${legacydir}/reload
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.state ${DESTDIR}${legacydir}/state
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.stop ${DESTDIR}${legacydir}/stop
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.restart ${DESTDIR}${legacydir}/restart
+	$(INSTALL_SCRIPT) -D -m 750 ${srcdir}/auditd.condrestart ${DESTDIR}${legacydir}/condrestart
+endif
+
+uninstall-hook:
+	rm ${DESTDIR}${sysconfdir}/${libconfig}
+	rm ${DESTDIR}${initdir}/auditd.service
+	rm ${DESTDIR}${initdir}/audit-rules.service
+if INSTALL_LEGACY_ACTIONS
+	rm ${DESTDIR}${legacydir}/rotate
+	rm ${DESTDIR}${legacydir}/resume
+	rm ${DESTDIR}${legacydir}/reload
+	rm ${DESTDIR}${legacydir}/state
+	rm ${DESTDIR}${legacydir}/stop
+	rm ${DESTDIR}${legacydir}/restart
+	rm ${DESTDIR}${legacydir}/condrestart
+endif
+	rm ${DESTDIR}$(prefix)/lib/tmpfiles.d/audit.conf
+	rm ${DESTDIR}${bashcompdir}/auditctl
+	rm ${DESTDIR}${bashcompdir}/ausearch
+	rm ${DESTDIR}${bashcompdir}/aureport
+	rm ${DESTDIR}${bashcompdir}/augenrules

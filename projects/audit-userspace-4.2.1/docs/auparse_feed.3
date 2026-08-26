@@ -1,0 +1,165 @@
+.TH "AUPARSE_FEED" "3" "Sept 2023" "Red Hat" "Linux Audit API"
+.SH NAME
+auparse_feed \- feed data into parser
+.SH "SYNOPSIS"
+.B #include <auparse.h>
+.sp
+.nf
+.BI "int auparse_feed(auparse_state_t *" au, const char *" data, size_t" data_len);"
+.fi
+
+.TP
+.I au
+The audit parse state
+.TP
+.I data
+a buffer of data to feed into the parser, it is
+.I data_len
+bytes long. The data is copied in the parser, upon return the caller may free or reuse the data buffer.
+.TP
+.I data_len
+number of bytes in
+.I data
+
+.SH "DESCRIPTION"
+
+.I auparse_feed
+supplies new data for the parser to consume.
+.I auparse_init()
+must have been called with a source type of AUSOURCE_FEED and a NULL pointer.
+.I auparse_add_callback()
+must be called before feeding data so that complete events have a consumer.
+.br
+.sp
+The parser consumes as much data
+as it can invoking a user supplied callback specified with
+.I auparse_add_callback
+with a cb_event_type of
+.I AUPARSE_CB_EVENT_READY
+each time the parser recognizes a complete event in the data stream. Data not fully parsed will persist and be
+prepended to the next feed data. After all data has been feed to the parser
+.I auparse_flush_feed
+should be called to signal the end of input data and flush any pending parse data through the parsing system.
+Malformed feed records are rejected and are not passed to the callback.
+If malformed records are found, parsing continues for the rest of the
+available feed data before
+.I auparse_feed
+returns an error.
+
+.SH "RETURN VALUE"
+
+Returns \-1 if an error occurs; otherwise, 0 for success.
+When \-1 is returned,
+.I errno
+is set to indicate the error. The value of
+.I errno
+is meaningful only after an error return; callers should not assume it is
+cleared after a successful call.
+Applications that may run with libauparse from before audit-4.1.5 should set
+.I errno
+to 0 before calling
+.I auparse_feed.
+If
+.I auparse_feed
+returns \-1 and
+.I errno
+is still 0, the runtime library is using the older error behavior and did not
+set
+.I errno.
+Clearing
+.I errno
+first avoids treating a pre-existing value as if it were set by
+.I auparse_feed.
+
+.SH "ERRORS"
+
+.TP
+.B EINVAL
+The parser state is invalid, the parser was not initialized with
+.B AUSOURCE_FEED,
+the input arguments are invalid, or no callback has been registered.
+
+.TP
+.B ENOMEM
+Memory allocation failed while buffering or parsing feed data.
+
+.TP
+.B EBADMSG
+A malformed feed record was found. The malformed record was rejected and was
+not passed to the callback. Parsing continues for the rest of the available
+feed data before this error is returned.
+
+.TP
+.B EIO
+An internal parser failure occurred without a more specific error code.
+
+.SH "EXAMPLE"
+.nf
+void
+auparse_callback(auparse_state_t *au, auparse_cb_event_t cb_event_type,
+                 void *user_data)
+{
+    int *event_cnt = (int *)user_data;
+
+    if (cb_event_type == AUPARSE_CB_EVENT_READY) {
+        if (auparse_first_record(au) <= 0) return;
+        printf("event: %d\\n", *event_cnt);
+        printf("records:%d\\n", auparse_get_num_records(au));
+        do {
+            printf("fields:%d\\n", auparse_get_num_fields(au));
+            printf("type=%d ", auparse_get_type(au));
+            const au_event_t *e = auparse_get_timestamp(au);
+            if (e == NULL) return;
+            printf("event time: %lu.%u:%lu\\n",
+                    (long unsigned)e\->sec, e\->milli, e\->serial);
+            auparse_first_field(au);
+            do {
+                printf("%s=%s (%s)\\n", auparse_get_field_name(au),
+                       auparse_get_field_str(au),
+                       auparse_interpret_field(au));
+            } while (auparse_next_field(au) > 0);
+            printf("\\n");
+
+        } while(auparse_next_record(au) > 0);
+        (*event_cnt)++;
+    }
+}
+
+main(int argc, char **argv)
+{
+    char *filename = argv[1];
+    FILE *fp;
+    char buf[256];
+    size_t len;
+    int *event_cnt = malloc(sizeof(int));
+
+    au = auparse_init(AUSOURCE_FEED, 0);
+    auparse_set_eoe_timeout(2);
+
+    *event_cnt = 1;
+    auparse_add_callback(au, auparse_callback, event_cnt, free);
+
+    if ((fp = fopen(filename, "r")) == NULL) {
+        fprintf(stderr, "could not open '%s', %s\\n", filename, strerror(errno));
+        return 1;
+    }
+
+    while ((len = fread(buf, 1, sizeof(buf), fp))) {
+        auparse_feed(au, buf, len);
+    }
+    auparse_flush_feed(au);
+    auparse_destroy(au);
+}
+.fi
+
+.SH "SEE ALSO"
+
+.BR auparse_add_callback (3),
+.BR auparse_flush_feed (3),
+.BR auparse_feed_age_events (3),
+.BR auparse_feed_has_data (3),
+.BR auparse_metrics (3)
+
+
+.SH AUTHOR
+John Dennis

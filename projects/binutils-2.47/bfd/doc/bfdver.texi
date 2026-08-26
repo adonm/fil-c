@@ -1,0 +1,4 @@
+@set VERSION 2.47
+@set VERSION_PACKAGE (GNU Binutils) 
+@set UPDATED July 2026
+@set BUGURL @uref{https://sourceware.org/bugzilla/}

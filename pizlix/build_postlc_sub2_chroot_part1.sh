@@ -377,8 +377,8 @@ cd pizlonated-sed
 make
 make html
 make install
-install -d -m755 /usr/share/doc/sed-4.9
-install -m644 doc/sed.html /usr/share/doc/sed-4.9
+install -d -m755 /usr/share/doc/sed-4.10
+install -m644 doc/sed.html /usr/share/doc/sed-4.10
 cd ..
 rm -rf pizlonated-sed
 hash -r

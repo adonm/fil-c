@@ -318,15 +318,15 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf patch-2.7.6
 
-tar -xf sed-4.9.tar.xz
-cd sed-4.9
+tar -xf sed-4.10.tar.xz
+cd sed-4.10
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(./build-aux/config.guess)
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf sed-4.9
+rm -rf sed-4.10
 
 tar -xf tar-1.35.tar.xz
 cd tar-1.35

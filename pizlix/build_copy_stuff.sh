@@ -97,7 +97,7 @@ cp -v \
     python-3.12.5-docs-html.tar.bz2 \
     Python-3.12.5.tar.xz \
     readline-8.2.13.tar.gz \
-    sed-4.9.tar.xz \
+    sed-4.10.tar.xz \
     setuptools-72.2.0.tar.gz \
     shadow-4.16.0.tar.xz \
     sysklogd-2.6.1.tar.gz \

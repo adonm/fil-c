@@ -338,18 +338,18 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf tar-1.35
 
-tar -xf xz-5.6.2.tar.xz
-cd xz-5.6.2
+tar -xf xz-5.8.3.tar.xz
+cd xz-5.8.3
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(build-aux/config.guess) \
     --disable-static \
-    --docdir=/yolo/share/doc/xz-5.6.2
+    --docdir=/yolo/share/doc/xz-5.8.3
 make
 make DESTDIR=$LFS install
 rm -v $LFS/yolo/lib/liblzma.la
 cd ..
-rm -rf xz-5.6.2
+rm -rf xz-5.8.3
 
 tar -xf binutils-2.47.tar.xz
 cd binutils-2.47

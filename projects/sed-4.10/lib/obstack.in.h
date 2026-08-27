@@ -447,8 +447,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_INDEX_T __len = length;					      \
-       if (obstack_room (__o) < __len)					      \
-         _obstack_newchunk (__o, __len);				      \
+       _obstack_newchunk (__o, __len);				      \
        obstack_blank_fast (__o, __len);					      \
        (void) 0; })
 
@@ -563,8 +562,7 @@ extern int obstack_exit_failure;
 
 # define obstack_blank(h, length)					      \
   ((h)->temp.tempint = (length),					      \
-   ((obstack_room (h) < (h)->temp.tempint)				      \
-   ? (_obstack_newchunk ((h), (h)->temp.tempint), 0) : 0),		      \
+   _obstack_newchunk ((h), (h)->temp.tempint),			      \
    obstack_blank_fast (h, (h)->temp.tempint),				      \
    (void) 0)
 

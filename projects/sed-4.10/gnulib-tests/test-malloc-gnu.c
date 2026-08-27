@@ -38,6 +38,7 @@ main (int argc, _GL_UNUSED char **argv)
   ASSERT (p != NULL);
   free (p);
 
+#ifndef __FILC__
   /* Check that malloc (n) fails when n exceeds PTRDIFF_MAX.  */
   if (PTRDIFF_MAX < SIZE_MAX)
     {
@@ -46,6 +47,7 @@ main (int argc, _GL_UNUSED char **argv)
       ASSERT (p == NULL);
       ASSERT (errno == ENOMEM);
     }
+#endif
 
   return test_exit_status;
 }

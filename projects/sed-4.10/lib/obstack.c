@@ -36,7 +36,6 @@
 # define __alignof__(type) alignof (type)
 #endif
 
-#include <stdckdint.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -70,16 +69,6 @@ int obstack_exit_failure = EXIT_FAILURE;
 struct obstack *_obstack_compat = NULL;
 compat_symbol (libc, _obstack_compat, _obstack, GLIBC_2_0);
 #endif
-
-/* Set *R to the least multiple of MASK + 1 that is not less than SIZE.
-   MASK + 1 must be a power of 2.  Return true (setting *R = 0)
-   if the result overflows, false otherwise.  */
-static bool
-align_chunk_size_up (_OBSTACK_CHUNK_SIZE_T *r, size_t mask,
-                     _OBSTACK_CHUNK_SIZE_T size)
-{
-  return ckd_add (r, mask & -size, size);
-}
 
 /* Call functions with either the traditional malloc/free calling
    interface, or the mmalloc/mfree interface (that adds an extra first
@@ -119,30 +108,13 @@ _obstack_begin_worker (struct obstack *h,
   if (alignment == 0)
     alignment = __alignof__ (max_align_t);
 
-  /* The minimum size to request from the allocator, such that the
-     result is guaranteed to have enough room to start with the struct
-     _obstack_chunk sans contents, followed by minimal padding, up to
-     but possibly not including the start of an aligned object.
-     This value is zero if no size is large enough.  */
-  _OBSTACK_CHUNK_SIZE_T aligned_prefix_size;
-  bool v = align_chunk_size_up (&aligned_prefix_size, alignment - 1,
-                                offsetof (struct _obstack_chunk, contents));
-
-  _OBSTACK_CHUNK_SIZE_T size = chunk_size;
-  if (size < aligned_prefix_size)
-    {
-      size = aligned_prefix_size;
-
-      /* For speed in the typical case, allocate at least a "good" size.  */
-      int good_size = 4000;
-      if (size < good_size)
-        size = good_size;
-    }
-
-  h->chunk_size = size;
   h->alignment_mask = alignment - 1;
 
-  chunk = h->chunk = v ? NULL : call_chunkfun (h, size);
+  _OBSTACK_CHUNK_SIZE_T size
+    = sizeof (struct _obstack_chunk) + h->alignment_mask;
+  h->chunk_size = size;
+
+  chunk = h->chunk = call_chunkfun (h, size);
   if (!chunk)
     (*obstack_alloc_failed_handler) ();
   h->next_free = h->object_base = __PTR_ALIGN ((char *) chunk, chunk->contents,
@@ -197,21 +169,17 @@ _obstack_newchunk (struct obstack *h, _OBSTACK_INDEX_T length)
   size_t obj_size = h->next_free - h->object_base;
 
   /* Compute size for new chunk.  */
-  _OBSTACK_CHUNK_SIZE_T s, new_size;
-  bool v = length < 0;
-  v |= ckd_add (&s, obj_size, length);
-  v |= align_chunk_size_up (&s, h->alignment_mask, s);
-  v |= ckd_add (&s, s,
-                (offsetof (struct _obstack_chunk, contents)
-                 + h->alignment_mask));
-  if (ckd_add (&new_size, s, (obj_size >> 3) + 100))
-    new_size = s;
-  if (new_size < h->chunk_size)
-    new_size = h->chunk_size;
+  size_t new_size;
+  if (obj_size)
+    new_size = 2 * (obj_size + length);
+  else
+    new_size = length;
+  new_size += sizeof (struct _obstack_chunk) + h->alignment_mask;
 
   /* Allocate and initialize the new chunk.  */
-  struct _obstack_chunk *new_chunk =
-    v ? NULL : call_chunkfun (h, new_size);
+  struct _obstack_chunk *new_chunk = NULL;
+  if (new_size >= length && new_size >= obj_size)
+    new_chunk = call_chunkfun (h, new_size);
   if (!new_chunk)
     (*obstack_alloc_failed_handler)();
   h->chunk = new_chunk;

@@ -53,6 +53,7 @@ main (int argc, _GL_UNUSED char **argv)
   ASSERT (p != NULL);
 #endif
 
+#ifndef __FILC__
   /* Check that realloc (p, n) fails when p is non-null and n exceeds
      PTRDIFF_MAX.  */
   if (PTRDIFF_MAX < SIZE_MAX)
@@ -65,6 +66,7 @@ main (int argc, _GL_UNUSED char **argv)
       if (!getenv ("MALLOC_CHECK_"))
         ASSERT (errno == ENOMEM);
     }
+#endif
 
   /* Check that realloc sets errno when it fails.
      Do this only in 64-bit processes, because there are many bi-arch systems

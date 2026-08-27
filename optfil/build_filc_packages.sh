@@ -65,7 +65,7 @@ rm -rf pizlonated-user-glibc
 cd ../..
 
 ./package-source.sh projects/libxcrypt-4.4.36 pizlonated-libxcrypt
-./package-source.sh projects/xz-5.6.2 pizlonated-xz
+./package-source.sh projects/xz-5.8.3 pizlonated-xz
 ./package-source.sh projects/pkgconf-2.3.0 pizlonated-pkgconf
 ./package-source.sh projects/bash-5.2.32 pizlonated-bash
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl

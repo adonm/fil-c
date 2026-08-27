@@ -1,0 +1,10 @@
+return:
+  success
+use-sarcasm:
+  true
+only-on-platform:
+  aarch64
+needsLSE:
+  true
+output-includes:
+  - "lse arm ok"

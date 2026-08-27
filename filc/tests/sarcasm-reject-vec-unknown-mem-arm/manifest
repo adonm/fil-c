@@ -1,0 +1,11 @@
+return:
+
+  compileFailure
+
+use-sarcasm:
+
+  true
+
+only-on-platform:
+
+  aarch64

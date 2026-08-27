@@ -9,11 +9,19 @@
 --                         annotation = <string?>, raw = <string> }
 --
 -- Operands are structured:
---   { kind = "reg",  name = "x0", rc = "gpr"|"neon"|"sp"|"zr", width = 32|64|..., shift = <shift?> }
+--   { kind = "reg",  name = "x0", rc = "gpr"|"neon"|"sve"|"sp"|"zr", width = 32|64|..., shift = <shift?> }
 --   { kind = "imm",  text = "5381", value = <number?> }
 --   { kind = "sym",  text = "foo+16", reloc = <string?> }   -- reloc e.g. "lo12","got","got_lo12"
 --   { kind = "mem",  base = <reg>, index = <operand?>, writeback = "pre"|"post"|nil,
 --                    shift = <shift?>, text = <original> }
+--   { kind = "reglist", regs = {<neon reg>...}, lane = <number?>, text = <original> }
+--
+-- NEON register operands carry their arrangement/element qualification:
+--   v0.16b / v3.2d -> { kind="reg", rc="neon", arrangement = { lanes = 16|nil, elem = "b" } }
+--   v0.d[1]        -> { kind="reg", rc="neon", element = { elem = "d", index = 1 } }
+--   b0/h0/s0/d0/q0/v0 (bare) -> rc="neon", width in BITS (8/16/32/64/128)
+-- SVE registers (z0-31, p0-15, bare or .b/.h/.s/.d-qualified, predicates with /z or /m)
+-- parse as rc="sve" so the ISA layer can reject them cleanly.
 -- A shift is { op = "lsl"|"lsr"|"asr"|"ror"|"uxtb"|... , amount = <number?>, amountText = <string?> }
 
 local numlabel = require("./numlabel")
@@ -43,6 +51,37 @@ local function classifyReg(tok: string)
 	if low == "wzr" then
 		return { kind = "reg", name = "wzr", rc = "zr", width = 32 }
 	end
+	-- gcc-style aliases: fp = x29 (frame pointer), lr = x30 (link register).
+	if low == "fp" then
+		return { kind = "reg", name = "x29", rc = "gpr", width = 64, num = 29 }
+	end
+	if low == "lr" then
+		return { kind = "reg", name = "x30", rc = "gpr", width = 64, num = 30 }
+	end
+	-- NEON lane-qualified vector register: v0.16b, v3.4s, v12.2d, v0.1q.
+	local vn, lanes, elem = string.match(low, "^v(%d+)%.(%d*)([bhsdq])$")
+	if vn and tonumber(vn) <= 31 then
+		return { kind = "reg", name = low, rc = "neon", width = 128, num = tonumber(vn),
+			arrangement = { lanes = (lanes ~= "" and tonumber(lanes) or nil), elem = elem } }
+	end
+	-- NEON single-element reference: v0.b[3], v0.d[1], v4.h[0].
+	local en, eelem, eidx = string.match(low, "^v(%d+)%.([bhsdq])%[(%d+)%]$")
+	if en and tonumber(en) <= 31 then
+		return { kind = "reg", name = low, rc = "neon", width = 128, num = tonumber(en),
+			element = { elem = eelem, index = tonumber(eidx) } }
+	end
+	-- SVE scalable vector / predicate registers (parsed so the ISA layer can reject
+	-- them cleanly): z0-z31 bare or .b/.h/.s/.d-qualified, p0-p15 bare, qualified,
+	-- or with a /z or /m predication suffix.
+	local zn = string.match(low, "^z(%d+)$") or string.match(low, "^z(%d+)%.[bhsdq]$")
+	if zn and tonumber(zn) <= 31 then
+		return { kind = "reg", name = low, rc = "sve", width = 128, num = tonumber(zn) }
+	end
+	local pn = string.match(low, "^p(%d+)$") or string.match(low, "^p(%d+)%.[bhsdq]$")
+		or string.match(low, "^p(%d+)/[zm]$") or string.match(low, "^p(%d+)%.[bhsdq]/[zm]$")
+	if pn and tonumber(pn) <= 15 then
+		return { kind = "reg", name = low, rc = "sve", width = 32, num = tonumber(pn) }
+	end
 	local prefix, num = string.match(low, "^([a-z]+)(%d+)$")
 	if prefix and num then
 		local n = tonumber(num)
@@ -51,7 +90,9 @@ local function classifyReg(tok: string)
 		elseif prefix == "w" and n <= 30 then
 			return { kind = "reg", name = low, rc = "gpr", width = 32, num = n }
 		elseif (prefix == "v" or prefix == "q" or prefix == "d" or prefix == "s" or prefix == "h" or prefix == "b") and n <= 31 then
-			return { kind = "reg", name = low, rc = "neon", width = 128, num = n }
+			local bits = (prefix == "b") and 8 or (prefix == "h") and 16
+				or (prefix == "s") and 32 or (prefix == "d") and 64 or 128
+			return { kind = "reg", name = low, rc = "neon", width = bits, num = n }
 		end
 	end
 	return nil
@@ -69,7 +110,7 @@ end
 -- Operand tokenization ----------------------------------------------------
 
 -- Split an operand string into top-level comma-separated fields, respecting
--- [] and () nesting.
+-- [], () and {} (NEON structure lists) nesting.
 local function splitTopLevel(s: string): { string }
 	local out = {}
 	local depth = 0
@@ -78,10 +119,10 @@ local function splitTopLevel(s: string): { string }
 	local n = #s
 	while i <= n do
 		local c = string.sub(s, i, i)
-		if c == "[" or c == "(" then
+		if c == "[" or c == "(" or c == "{" then
 			depth += 1
 			table.insert(cur, c)
-		elseif c == "]" or c == ")" then
+		elseif c == "]" or c == ")" or c == "}" then
 			depth -= 1
 			table.insert(cur, c)
 		elseif c == "," and depth == 0 then
@@ -118,12 +159,41 @@ local function parseShift(field: string)
 	return { op = op, amount = amount, amountText = amountText }
 end
 
+-- Parse a NEON/SVE structure-list operand field: `{v0.16b, v1.16b}` (full
+-- structures), `{v0.b}[3]` / `{v0.h, v1.h}[1]` (single-element with a lane
+-- index). Returns a reglist operand, or nil if malformed.
+local function parseRegList(field: string)
+	local inner, rest = string.match(field, "^(%b{})%s*(.-)%s*$")
+	if not inner then return nil end
+	local body = string.sub(inner, 2, -2)
+	local regs = {}
+	for part in string.gmatch(body .. ",", "(.-),") do
+		local r = classifyReg((string.gsub(part, "^%s*(.-)%s*$", "%1")))
+		if not r or (r.rc ~= "neon" and r.rc ~= "sve") then return nil end
+		table.insert(regs, r)
+	end
+	if #regs == 0 then return nil end
+	local lane = string.match(rest, "^%[(%d+)%]$")
+	if rest ~= "" and not lane then return nil end
+	return { kind = "reglist", regs = regs, lane = lane and tonumber(lane) or nil, text = field }
+end
+
 -- Parse a single (non-memory, non-shift) operand field.
 local function parseSimple(field: string)
 	-- register?
 	local reg = classifyReg(field)
 	if reg then
 		return reg
+	end
+	-- NEON/SVE structure list ({v0.16b, v1.16b} / {v0.b}[3]): the only legal
+	-- operand starting with '{' in A64 assembly, so a malformed one is an error,
+	-- not a symbol (silently treating it as a symbol would hide the access width).
+	if string.sub(field, 1, 1) == "{" then
+		local rl = parseRegList(field)
+		if not rl then
+			error("sarcasm: malformed register list operand '" .. field .. "'")
+		end
+		return rl
 	end
 	-- immediate: #num, num, 0x..., -num
 	local imm = string.match(field, "^#(.+)$")
@@ -243,6 +313,63 @@ local function stripLineComment(s: string): string
 	return s
 end
 
+-- Remove comments from the whole text before line splitting: `/* ... */` (inline and
+-- multi-line) and `//` to end of line, neither of which may appear inside a
+-- double-quoted string (`.asciz "a // b"` keeps its slashes). `#` is NOT a comment
+-- here -- on arm64 it introduces an immediate. A comment is replaced by a single space
+-- (comments act as token separators in GAS); newlines inside block comments are kept so
+-- statement line numbers still match the source.
+local function stripComments(text: string): string
+	local out = {}
+	local i, n = 1, #text
+	local state = "code" -- code | str | line | block
+	while i <= n do
+		local c = string.sub(text, i, i)
+		local d = string.sub(text, i + 1, i + 1)
+		if state == "code" then
+			if c == '"' then
+				state = "str"
+				table.insert(out, c)
+			elseif c == "/" and d == "/" then
+				state = "line"
+				table.insert(out, " ")
+				i += 1
+			elseif c == "/" and d == "*" then
+				state = "block"
+				table.insert(out, " ")
+				i += 1
+			else
+				table.insert(out, c)
+			end
+		elseif state == "str" then
+			table.insert(out, c)
+			if c == "\\" then
+				local e = string.sub(text, i + 1, i + 1)
+				if e ~= "" then table.insert(out, e); i += 1 end
+			elseif c == '"' then
+				state = "code"
+			elseif c == "\n" then
+				state = "code" -- unterminated string; resync at the line boundary
+			end
+		elseif state == "line" then
+			if c == "\n" then
+				state = "code"
+				table.insert(out, c)
+			end
+		else -- block
+			if c == "*" and d == "/" then
+				state = "code"
+				i += 1
+			elseif c == "\n" then
+				table.insert(out, c)
+			end
+		end
+		i += 1
+	end
+	return table.concat(out)
+end
+parse.stripComments = stripComments
+
 -- Split off a ;! annotation (returns code, annotation-or-nil).
 local function splitAnnotation(s: string): (string, string?)
 	local idx = string.find(s, ";!", 1, true)
@@ -331,6 +458,8 @@ function parse.parseString(text: string)
 	local out = {}
 	-- normalize CRLF
 	text = (string.gsub(text, "\r\n", "\n"))
+	-- strip C/C++ comments (string-literal aware) before line splitting
+	text = stripComments(text)
 	local lineNo = 0
 	for line in (text .. "\n"):gmatch("(.-)\n") do
 		lineNo += 1

@@ -53,6 +53,9 @@ local function renderOperand(op, numOf): string
 			end
 		end
 		return inner
+	elseif op.kind == "reglist" then
+		-- NEON structure lists pass through verbatim ({v0.16b, v1.16b} / {v0.b}[3]).
+		return op.text
 	end
 	return "?"
 end
@@ -156,9 +159,20 @@ function arm64_render.usedCalleeSaved(color)
 	return calleeSaved
 end
 
-function arm64_render.computeLayout(calleeSaved, numRoots, spillBytes)
+-- Layout: [prev+origin][GC roots][pad?][vector-save area][FP clusters][spills]
+-- followed by the callee-saved pairs at the top. The vector-save area
+-- (fpSaveBytes — 16 bytes per v-register when the function uses NEON, else 0)
+-- reserves the slots the injected-call FP/SIMD save/restore writes; it must
+-- match the spillBase computation in sarcasm.luau EXACTLY (roots, the odd-root
+-- 8-byte pad, then the FP regions). fpBytes is x86_64-only (materialized FP
+-- clusters; arm64 virtualizes NEON slots instead) and is always 0 here.
+function arm64_render.computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes)
 	spillBytes = spillBytes or 0
-	local frameData = align16(16 + 8 * numRoots + spillBytes)  -- prev+origin+roots(+spills)
+	fpSaveBytes = fpSaveBytes or 0
+	fpBytes = fpBytes or 0
+	local fpPad = ((fpSaveBytes + fpBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	local fpRegion = fpPad + fpSaveBytes + fpBytes
+	local frameData = align16(16 + 8 * numRoots + fpRegion + spillBytes)
 	local saveList = { "x29", "x30" }                          -- fp/lr first (top), then callee-saved
 	for _, r in calleeSaved do table.insert(saveList, r) end
 	local numSlots = math.ceil(#saveList / 2)
@@ -172,7 +186,7 @@ function arm64_render.computeLayout(calleeSaved, numRoots, spillBytes)
 	end
 	return {
 		total = total, fpOff = total - 16, pairs = pairs, frameData = frameData,
-		rootBase = 16, spillBase = 16 + 8 * numRoots,
+		rootBase = 16, spillBase = 16 + 8 * numRoots + fpRegion,
 	}
 end
 

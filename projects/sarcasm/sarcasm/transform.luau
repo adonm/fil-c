@@ -6,8 +6,10 @@
 -- pointer RMWs via the Fil-C runtime, calls, pollchecks, allocations) live here ONCE; the
 -- actual instructions are produced through a per-arch codegen `cg` (arm64_codegen /
 -- x86_64_codegen), so the safety-critical logic is single-source across ISAs. (The
--- atomic pointer operations are x86_64-only: the arm64 backend rejects their
--- annotations during shape validation, so those sequences are unreachable there.)
+-- atomic pointer operations are shared: both backends implement their annotations —
+-- x86_64 with cmpxchg/movq forms and SysV marshalling, arm64 with cas/LSE forms and
+-- AAPCS64 marshalling — except `;! load store ptr`, which arm64 rejects for lack of
+-- a non-atomic memory-destination RMW instruction.)
 --
 -- transformFunction(name, sigDesc, body, backend) where backend = { cg = <codegen module>,
 -- frame = <frame module> }.
@@ -45,6 +47,127 @@ local function storeValueOperand(stmt, mem)
 		if op.kind == "reg" and op ~= mem then return op end
 	end
 	return nil
+end
+
+-- Directives that EMIT data (or define symbols/macros as values). sarcasm compiles
+-- functions only: such content — whether inside a function body (literal pools, jump
+-- tables) or between functions (data sections) — cannot be given a capability
+-- automatically, so it is rejected rather than silently dropped. Shared with the
+-- driver-level top-level scan in sarcasm.luau. (Enforced on arm64 only — see
+-- strictBodyValidation / the arch gate in sarcasm.luau.)
+local DATA_DIRECTIVES = {}
+for _, d in {
+	".word", ".xword", ".quad", ".long", ".int", ".short", ".hword",
+	".2byte", ".4byte", ".8byte", ".byte", ".ascii", ".asciz", ".string",
+	".zero", ".space", ".fill", ".float", ".single", ".double", ".inst",
+	".dc", ".dc.b", ".dc.l", ".dc.s", ".dc.w", ".dc.x", ".dcb", ".dcb.b",
+	".dcb.l", ".dcb.s", ".dcb.w", ".dcb.x", ".ds", ".skip",
+	".equ", ".set", ".macro", ".comm", ".common", ".lcomm",
+} do DATA_DIRECTIVES[d] = true end
+transform.DATA_DIRECTIVES = DATA_DIRECTIVES
+
+-- Validate a function's RAW body before the frame pass runs (the frame pass rewrites
+-- stack accesses, stripping annotations from the statements it virtualizes, so
+-- annotation validation must see the original statements). ARM64-only (gated on
+-- cgm.strictBodyValidation — the x86_64 backend deliberately keeps its historical
+-- acceptance of unannotated calls, tail branches and looser annotation placement):
+--  * unannotated `bl`/`call` and any `blr`/`br`/indirect call or jump are rejected
+--    (raw calls are not marshalled and indirect targets are unprovable);
+--  * `b`/cond-branch to a non-local target is a tail call — not yet supported;
+--  * every `;!` annotation must be a recognized form (alloca family, a ptr
+--    annotation with a valid instruction shape, or a callsite signature on a call);
+--  * a `;!` annotation on a mid-body label, an empty line, or a directive is
+--    rejected (only the function-entry label carries the signature — any other
+--    non-instruction annotation would be silently dropped);
+--  * data-emitting directives inside the body are rejected;
+--  * arch-specific forged-address instructions (adrp/adr/ldr-literal) are rejected.
+local function validateBody(body, cgm)
+	local localLabels = {}
+	for _, st in body do
+		if st.kind == "label" then localLabels[st.name] = true end
+	end
+	for _, st in body do
+		if st.kind == "blank" then
+			-- an annotation all alone on its line is a typo (the annotation belongs on
+			-- the instruction's own line) — silently dropping it could skip a barrier.
+			if st.annotation then
+				error("sarcasm: ;! annotation '" .. st.annotation
+					.. "' on an otherwise-empty line (annotations go on the instruction's own line)")
+			end
+		elseif st.kind == "label" then
+			-- The function-entry label (body[1]) carries the ;! signature. An annotation
+			-- on any other label would be silently ignored (annotations are consumed from
+			-- instructions only), so reject it like the blank-line case.
+			if st.annotation and st ~= body[1] then
+				error("sarcasm: ;! annotation '" .. st.annotation .. "' on a label ('" .. st.name
+					.. "') inside a function body is not supported (only the function-entry label"
+					.. " carries the ;! signature; instruction annotations go on the instruction's"
+					.. " own line)")
+			end
+		elseif st.kind == "directive" then
+			if DATA_DIRECTIVES[st.name] then
+				error("sarcasm: data in a function body is not supported (literal pools,"
+					.. " jump tables and constants cannot be made memory-safe automatically): directive '"
+					.. st.name .. "'")
+			end
+			if st.annotation then
+				error("sarcasm: ;! annotation '" .. st.annotation .. "' on a directive ('"
+					.. st.name .. "') is not supported")
+			end
+		elseif st.kind == "insn" then
+			local c = cgm.classify(st)
+			local ann = st.annotation
+			local raw = st.raw or st.mnemonic
+			if c.control == "call" then
+				if not ann then
+					local callee = st.operands and st.operands[1] and st.operands[1].text or "?"
+					error("sarcasm: call to '" .. callee .. "' has no ;! signature annotation"
+						.. " (annotate the callsite, e.g. `" .. string.lower(st.mnemonic) .. " "
+						.. callee .. " ;! int(ptr)`): " .. raw)
+				end
+			elseif c.control == "indcall" then
+				error("sarcasm: indirect call through a raw register cannot be made memory-safe"
+					.. " (indirect calls must go through function-pointer values): " .. raw)
+			elseif c.control == "indirect" then
+				error("sarcasm: indirect branch through a raw register cannot be made memory-safe"
+					.. " (computed goto / switch jump tables are not supported): " .. raw)
+			elseif (c.control == "branch" or c.control == "condbranch") and c.targets then
+				for _, t in c.targets do
+					if not localLabels[t] then
+						error("sarcasm: branch to '" .. t .. "' leaves the function"
+							.. " (a tail call); tail calls are not yet supported: " .. raw)
+					end
+				end
+			end
+			if ann then
+				if parseAlloca(ann) then
+					-- alloca family: validated/consumed by the transform below
+				elseif ann == "load ptr" then
+					cgm.validatePtrAccess(st, "load")
+				elseif ann == "store ptr" then
+					cgm.validatePtrAccess(st, "store")
+				elseif sig.PTR_ANNOTATIONS[ann] then
+					-- atomic/pointer-RMW family: the per-arch shape validator runs;
+					-- the transform's annotation walk re-validates later.
+					if cgm.ptrAtomicShape then cgm.ptrAtomicShape(ann, st) end
+				elseif c.control == "call" then
+					-- callsite signature: parse now to reject malformed sigs early
+					-- (the transform re-parses via callSigOf when marshalling).
+					sig.parseSignature(ann)
+				elseif string.find(ann, "%(") then
+					error("sarcasm: signature annotation '" .. ann
+						.. "' on a non-call instruction is not supported: " .. raw)
+				elseif ann == "" then
+					error("sarcasm: empty ;! annotation: " .. raw)
+				else
+					error("sarcasm: unrecognized ;! annotation '" .. ann
+						.. "' (expected 'load ptr', 'store ptr', 'alloca ...', or a callsite"
+						.. " signature like 'int(ptr)'): " .. raw)
+				end
+			end
+			if cgm.checkForgedAddress then cgm.checkForgedAddress(st) end
+		end
+	end
 end
 
 function transform.transformFunction(name, sigDesc, body, backend)
@@ -93,6 +216,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			if spOff >= r.base and spOff < r.base + r.size then return r end
 		end
 		return nil
+	end
+
+	-- Reject unannotated/indirect calls, tail calls, unknown/misplaced annotations,
+	-- in-body data, and forged addresses BEFORE any rewriting (see validateBody).
+	-- ARM64-only: cgm.strictBodyValidation is set by the arm64 backend; x86_64 has
+	-- no such flag and keeps its historical acceptance exactly.
+	if cgm.strictBodyValidation then
+		validateBody(body, cgm)
 	end
 
 	body = framePass.preprocess(body, allocaRegions, framePolicy)
@@ -159,7 +290,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- operation). Both are now clean compile-time errors.
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
 	local callPtrDefs = {}
-	-- Phase 2 (x86_64-only): atomic pointer operations and pointer RMWs.
+	-- Atomic pointer operations and pointer RMWs (x86_64 cmpxchg/movq forms;
+	-- arm64 cas/LSE forms — `;! load store ptr` excepted, arm64-only rejection).
 	local atomicLoadPtrDefs, atomicStorePtrNodes = {}, {}
 	local atomicCasPtrDefs, loadStorePtrNodes, atomicRmwPtrNodes = {}, {}, {}
 	local sizeNames = {}
@@ -199,9 +331,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					end
 					if ann == "load ptr" then loadPtrDefs[node] = true else storePtrNodes[node] = true end
 				else
-					-- Phase 2 annotations: the per-arch shape validator returns the
-					-- sequence kind (raising the shape errors); the arm64 backend
-					-- rejects all five with a "not supported on ARM64" error.
+					-- atomic/pointer-RMW annotations: the per-arch shape validator
+					-- returns the sequence kind (raising the shape errors).
 					if not cgm.ptrAtomicShape then
 						error("sarcasm: `;! " .. ann .. "` is not supported on this target: " .. raw)
 					end
@@ -235,6 +366,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	for n in pairs(loadPtrDefs) do ptrSeedDefs[n] = true end
 	for n in pairs(atomicLoadPtrDefs) do ptrSeedDefs[n] = true end
 	for n in pairs(atomicCasPtrDefs) do ptrSeedDefs[n] = true end
+	if cgm.atomicRmwPlan then
+		-- arm64: the LSE pointer-RMW's old-value destination register (ldadd's
+		-- Wt / swp's Wt) receives the slot's old value — a genuine pointer
+		-- (old.iv, old.lo), exactly like an `;! atomic load ptr` result. Seed it
+		-- the same way so ptrflow allocates its lower temp. (x86_64's annotated
+		-- RMWs have no destination register; nothing is seeded there.)
+		for n in pairs(atomicRmwPtrNodes) do ptrSeedDefs[n] = true end
+	end
 
 	local pf = ptrflow.analyze(lf,
 		{ argPtrTemps = argPtrTemps, loadPtrDefs = ptrSeedDefs, allocaResultDefs = allocaResultDefs,
@@ -280,6 +419,57 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	local cg = cgm.make({ emit = emit, allocTemp = allocTemp, pColored = pColored, pf = pf, temps = temps,
 		frameCtx = fctx })
+
+	-- Condition-flag (NZCV) liveness at instrumentation points. The instrumented
+	-- sequences (access checks, invisicap loads/stores, pollchecks, allocations) write
+	-- the condition flags (cmp/tst); gcc -O2 routinely leaves flags live across a
+	-- memory instruction (`cmp; ldr; adcs`), so an inserted flag write would corrupt
+	-- the program's pending condition. Scan forward from the insertion point: if the
+	-- next flag-relevant instruction is a USE (csel/b.cond/adcs/...) the flags are
+	-- live and the sequence must be bracketed by a save/restore; if it is a DEF
+	-- (cmp/subs) the incoming flags are dead; calls clobber the flags per the ABI
+	-- (no valid code reads them across a call); at a basic-block end (label, branch,
+	-- return, or the end of the function) conservatively assume live-out — a flag
+	-- consumer in a successor block (e.g. the b.cond terminating THIS block) counts.
+	--
+	-- ARM64-ONLY: the capability is keyed off cg.saveFlags (mrs/msr nzcv), which only
+	-- the arm64 codegen provides (x86_64 has no flag save/restore — EFLAGS clobbering
+	-- there is the documented known issue — so on x86 flagsLiveFrom is constant-false
+	-- and withFlagSave is a plain passthrough, keeping x86 output byte-identical).
+	local nodeIndex = {}
+	for i, nd in lf.nodes do nodeIndex[nd] = i end
+	local flagLiveCache = {}
+	local flagCapable = (cgm.flagUse and cgm.flagDef and cg.saveFlags and cg.restoreFlags) and true or false
+	local function flagsLiveFrom(i)
+		if not flagCapable then return false end
+		if flagLiveCache[i] ~= nil then return flagLiveCache[i] end
+		local res = true   -- conservative default (end of function = live-out)
+		local j = i
+		while j <= #lf.nodes do
+			local nd = lf.nodes[j]
+			if nd.kind == "insn" then
+				local ctrl = nd.c and nd.c.control or "none"
+				if cgm.flagUse(nd.stmt) then res = true; break
+				elseif cgm.flagDef(nd.stmt) then res = false; break
+				elseif ctrl == "call" or ctrl == "indcall" then res = false; break
+				elseif ctrl ~= "none" then res = true; break
+				end
+			elseif nd.kind == "label" then
+				res = true; break
+			end
+			j += 1
+		end
+		flagLiveCache[i] = res
+		return res
+	end
+	-- Run f() emitting an instrumented sequence, bracketed by a flag save/restore iff
+	-- the program's flags are live at the sequence's insertion point.
+	local function withFlagSave(live, f)
+		if not live then f(); return end
+		local t = cg.saveFlags()
+		f()
+		cg.restoreFlags(t)
+	end
 
 	-- GC root slots
 	local rootTemps, loToSlot = {}, {}
@@ -613,6 +803,31 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.label(doneLbl)
 	end
 
+	-- Pre/post-index writeback for annotated pointer accesses. The invisicap sequence
+	-- replaces the load/store wholesale, so the base register's `base += index` side
+	-- effect must be re-applied explicitly (e.g. `ldr x0, [x0], #8 ;! load ptr` walking
+	-- an array). Only the intval temp advances; the lower (capability) is unchanged —
+	-- it is the same object. The effective address used for the access is already
+	-- correct (old base for post-index, base+index for pre-index via computeAddr), so
+	-- a single add/sub after the sequence covers both forms. (x86_64 has no writeback
+	-- addressing modes, so this is a no-op there.)
+	local function emitWriteback(node, mem)
+		if not mem or not mem.writeback then return end
+		local baseT = node.opTemp[mem.base]
+		if not baseT then
+			error("sarcasm: writeback base of an annotated pointer access has no usable value: "
+				.. (node.stmt and node.stmt.raw or "?"))
+		end
+		local amt = (mem.index and mem.index.kind == "imm")
+			and (mem.index.value or tonumber(mem.index.text)) or nil
+		if not amt then
+			error("sarcasm: annotated pointer access with a non-immediate writeback index"
+				.. " is not supported: " .. (node.stmt and node.stmt.raw or "?"))
+		end
+		if amt > 0 then cg.addImm(baseT, baseT, amt)
+		elseif amt < 0 then cg.subImm(baseT, baseT, -amt) end
+	end
+
 	-- pollcheck: myth flags at [myth+8], bits 0xe.
 	local pollCounter = 0
 	local function emitPollcheck()
@@ -633,19 +848,20 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.label(okLbl)
 	end
 
-	-- Phase 2 (x86_64): atomic pointer operations and pointer RMWs, via the Fil-C
-	-- runtime — exactly the calls filcc emits for C11 atomic pointer operations
-	-- (verified against build/bin/clang output; see ABI-NOTES-x86.md). The callees
-	-- are nounwind runtime entrypoints in plain SysV: a filc_ptr argument is two
-	-- consecutive argument words (intval first, then lower), a filc_ptr result comes
-	-- back as rax=intval, rdx=lower — so there is NO exception-flag check after
-	-- these calls (unlike pizlonated-function calls). Returned lowers are rooted
+	-- Atomic pointer operations and pointer RMWs, via the Fil-C runtime — exactly
+	-- the calls filcc emits for C11 atomic pointer operations (verified against
+	-- build/bin/clang output; see ABI-NOTES-x86.md). The callees are nounwind
+	-- runtime entrypoints: a filc_ptr argument is two consecutive argument words
+	-- (intval first, then lower), a filc_ptr result comes back as two words
+	-- (x86_64 SysV: rax=intval, rdx=lower; arm64 AAPCS64: x0=intval, x1=lower) —
+	-- so there is NO exception-flag check after these calls (unlike
+	-- pizlonated-function calls). Returned lowers are rooted
 	-- immediately (a safepoint may run before the next use); pointer ARGUMENTS need
 	-- no caller rooting (the runtime protects them itself). Each sequence emits the
 	-- usual inline access check first (null-cap -> align -> CanWrite -> lower ->
 	-- upper) so a trap gets sarcasm's origin; the runtime re-checks internally.
 	--
-	-- EFLAGS: a flag consumer (jcc/setcc) immediately after the annotated
+	-- EFLAGS (x86_64): a flag consumer (jcc/setcc) immediately after the annotated
 	-- instruction must see the flags the NATIVE instruction would produce, but the
 	-- injected sequences clobber EFLAGS. The RMW/CAS paths therefore keep the
 	-- pre-op value (and the source operand) live in webs and re-execute the
@@ -653,14 +869,21 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- moves and root stores in between don't touch flags). A consumer that does
 	-- NOT immediately follow still sees clobbered flags — the same documented
 	-- caveat as the injected bounds checks everywhere else.
+	-- NZCV (arm64): only `;! atomic ptr` (cas) has a flag contract — NZCV is
+	-- recomputed as (expected − old) as the last flag-affecting step, mirroring
+	-- the x86 cmpxchg form so a following b.eq/cset behaves natively. The native
+	-- arm64 forms (ldar/stlr/ldapr, the LSE RMWs) write NO flags, so their
+	-- sequences instead PRESERVE the program's live NZCV around themselves
+	-- (withFlagSave at the dispatch; constant-false on x86_64, which keeps its
+	-- EFLAGS behavior and byte-identical output).
 	local function marshalResultPtr(dstIv, dstLo)
 		cg.move(dstIv, pColored(cc.rtRet))
 		cg.move(dstLo, pColored(cc.rtRetLo))
 		emitRootStore(dstLo)
 	end
 
-	-- filc_load_ptr_atomic_with_manual_tracking_outline(slot) -> old (rax=iv, rdx=lo).
-	-- No myth arg, does not allocate, can only panic.
+	-- filc_load_ptr_atomic_with_manual_tracking_outline(slot) -> old (rtRet=iv,
+	-- rtRetLo=lo). No myth arg, does not allocate, can only panic.
 	local function emitAtomicLoadCall(effTemp, capLoTemp)
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), effTemp)
@@ -686,11 +909,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- filc_strong_cas_ptr_with_manual_tracking(myth, slot, 0, expected, new) -> old.
-	-- new_value travels on the STACK ([rsp]=iv, [rsp+8]=lower at the call; see
-	-- codegen's pushStackPtr). Can allocate => GC safepoint. Success <=> returned
-	-- old.iv == expected.iv (a raw-intval comparison; the runtime compares intvals
-	-- only). The expected's lower may be null ("integer guess") — the comparison
-	-- ignores it.
+	-- Can allocate => GC safepoint. Success <=> returned old.iv == expected.iv (a
+	-- raw-intval comparison; the runtime compares intvals only). The expected's
+	-- lower may be null ("integer guess") — the comparison ignores it.
+	-- new_value marshalling is arch-specific: on x86_64 (SysV, six argument
+	-- registers) it travels on the STACK ([rsp]=iv, [rsp+8]=lower at the call;
+	-- see codegen's pushStackPtr); on arm64 (AAPCS64) all eight argument words
+	-- fit in x0..x7, so it marshals in registers (cg.casNewInRegs).
 	local function emitAtomicCasCall(effTemp, capLoTemp, expIv, expLo, newIv, newLo)
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
@@ -699,12 +924,42 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.moveZero(pColored(cc.rtArg(4)))          -- offset = 0
 		cg.move(pColored(cc.rtArg(5)), expIv)
 		cg.move(pColored(cc.rtArg(6)), expLo)
-		cg.pushStackPtr(newIv, newLo)
-		cg.call("filc_strong_cas_ptr_with_manual_tracking",
+		local casUses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)),
+			pColored(cc.rtArg(4)), pColored(cc.rtArg(5)), pColored(cc.rtArg(6)) }
+		if cg.casNewInRegs then
+			cg.move(pColored(cc.rtArg(7)), newIv)
+			cg.move(pColored(cc.rtArg(8)), newLo)
+			table.insert(casUses, pColored(cc.rtArg(7)))
+			table.insert(casUses, pColored(cc.rtArg(8)))
+		else
+			cg.pushStackPtr(newIv, newLo)
+		end
+		cg.call("filc_strong_cas_ptr_with_manual_tracking", casUses, cg.callerSavedClobbers())
+		if not cg.casNewInRegs then cg.popStackPtr() end
+		cg.fpRestore()
+	end
+
+	-- filc_xchg_ptr_with_manual_tracking(myth, slot, 0, new) -> old: the exact
+	-- primitive filcc emits for C11 atomic_exchange (FilPizlonator's AtomicRMW
+	-- Xchg case — a direct call, no pollcheck; the runtime retries a weak CAS
+	-- internally and barriers the new value itself). Can allocate (the retry
+	-- path creates the atomic box) => GC safepoint. Six argument words (myth,
+	-- slot.iv, slot.lower, offset, new.iv, new.lower) — they fit in argument
+	-- registers on BOTH ABIs (x86_64 SysV has six; the CAS call above needs
+	-- the stack only for words seven and eight). Currently only reached from
+	-- the arm64 LSE swp lowering (x86_64 has no swp).
+	local function emitAtomicXchgCall(effTemp, capLoTemp, newIv, newLo)
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), vMyth)
+		cg.move(pColored(cc.rtArg(2)), effTemp)
+		cg.move(pColored(cc.rtArg(3)), capLoTemp)
+		cg.moveZero(pColored(cc.rtArg(4)))          -- offset = 0
+		cg.move(pColored(cc.rtArg(5)), newIv)
+		cg.move(pColored(cc.rtArg(6)), newLo)
+		cg.call("filc_xchg_ptr_with_manual_tracking",
 			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)),
 				pColored(cc.rtArg(4)), pColored(cc.rtArg(5)), pColored(cc.rtArg(6)) },
 			cg.callerSavedClobbers())
-		cg.popStackPtr()
 		cg.fpRestore()
 	end
 
@@ -848,11 +1103,114 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		emitRmwFlags(node, oldIv, srcT, srcImmOp, unary)
 	end
 
+	-- `;! atomic load store ptr` on ARM64: an LSE atomic RMW (ldadd/ldset/ldeor/
+	-- ldclr/swp, or the st<op> no-result aliases) on a pointer slot.
+	--
+	-- ldadd/ldset/ldeor/ldclr (and the st<op> aliases): the native instruction
+	-- is already a single atomic RMW, so the faithful lowering is the runtime
+	-- compare-exchange loop — exactly the x86 `lock` form's shape (inline
+	-- checks once before the loop; per iteration a pollcheck, an atomic load,
+	-- the op re-executed on the intval as a register operation, and
+	-- filc_strong_cas_ptr_with_manual_tracking with expected = current old and
+	-- new = old.iv OP src carrying the SAME lower — the capability rides
+	-- through: Fil-C pointer arithmetic through memory).
+	--
+	-- swp is the exception: its "op" is a plain move of the SOURCE, so the new
+	-- value is not derived from the old one and must carry the SOURCE's
+	-- capability — a source pointer into a DIFFERENT object stored with the
+	-- old value's lower would trap on first dereference. swp therefore lowers
+	-- to a single filc_xchg_ptr_with_manual_tracking call (the exact primitive
+	-- filcc emits for C11 atomic_exchange) with new = (src.iv, src's OWN
+	-- lower); a non-pointer source has no lower temp and gets a null
+	-- capability (mirroring emitAtomicPtrStore — storing an integer into a
+	-- pointer slot is legal; it just can't be dereferenced afterwards).
+	--
+	-- Either way the old-value destination register (ldadd's Wt / swp's Wt)
+	-- receives the old value AS A POINTER (old.iv, old.lo, rooted — exactly
+	-- like an `;! atomic load ptr` result); the st<op> forms have no
+	-- destination. NZCV is preserved across the whole sequence (the native
+	-- instruction writes no flags — the dispatch below brackets the emission
+	-- withFlagSave when the program's flags are live).
+	local lseRmwCounter = 0
+	local function emitAtomicLoadStorePtrLse(node, mem)
+		local m = string.lower(node.stmt.mnemonic)
+		local plan = cgm.atomicRmwPlan(m)
+		local ops = node.stmt.operands
+		-- operand roles (swp and the ld<op> forms agree: ops[1] = source,
+		-- ops[2] = old-value destination); the st<op> aliases have no
+		-- old-value destination.
+		local srcOp = ops[1]
+		local dstOp = (plan.kind == "st") and nil or ops[2]
+		local srcT = srcOp and node.opTemp[srcOp] or nil
+		if not srcT then
+			error("sarcasm: `;! atomic load store ptr` source register has no temp: "
+				.. (node.stmt.raw or "?"))
+		end
+		local dstT = dstOp and node.opTemp[dstOp] or nil
+		local effTemp, capLo = cg.computeAddr(node, mem)
+		emitAccessCheck(effTemp, capLo, 8, 8, true)
+		-- a null capability trapped above; keep the (unreachable) fall-through
+		-- well-formed with a null-lower marshal temp
+		local capLoArg = capLo
+		if not capLoArg then capLoArg = allocTemp({ role = "nullcap" }); cg.moveZero(capLoArg) end
+		local oldIv = allocTemp({ role = "alspold" })
+		local oldLo = allocTemp({ role = "alsplo" })
+		if plan.alu == "mov" then
+			-- swp: the new value IS the source operand, so it carries the
+			-- SOURCE's capability (a null capability for a non-pointer
+			-- source) — never the old value's lower. One runtime exchange
+			-- call, no CAS loop (filcc's C11 atomic_exchange shape).
+			local newLo = pf.lowerTemp[srcT]
+			if not newLo then newLo = allocTemp({ role = "nullnew" }); cg.moveZero(newLo) end
+			emitAtomicXchgCall(effTemp, capLoArg, srcT, newLo)
+			marshalResultPtr(oldIv, oldLo)
+		else
+			local newIv = allocTemp({ role = "alspnew" })
+			lseRmwCounter += 1
+			local loopTop = ".Llcasloop_" .. name .. "_" .. lseRmwCounter
+			cg.label(loopTop)
+			-- a safepoint on every iteration (a contended CAS loop must not starve
+			-- the GC's stop-the-world; filcc's atomic-RMW loops pollcheck too)
+			emitPollcheck()
+			emitAtomicLoadCall(effTemp, capLoArg)
+			marshalResultPtr(oldIv, oldLo)
+			-- new = old OP src (the annotated op re-executed as a register
+			-- operation on the intval), carrying the SAME lower as old.
+			emit(build.insn(plan.alu, { build.rt(newIv), build.rt(oldIv), build.rt(srcT) },
+				{ defs = { newIv }, uses = { oldIv, srcT } }))
+			emitAtomicCasCall(effTemp, capLoArg, oldIv, oldLo, newIv, oldLo)
+			local casIv = allocTemp({ role = "alspcas" })
+			cg.move(casIv, pColored(cc.rtRet))
+			cg.cmpBranch(oldIv, casIv, "ne", loopTop)   -- mismatch: retry
+		end
+		-- the old-value destination receives the old value AS A POINTER (old.iv,
+		-- old.lo — seeded in ptrflow, like an `;! atomic load ptr` result); the
+		-- lower rides the final iteration's marshal temps.
+		if dstT then
+			cg.move(dstT, oldIv)
+			local dstLo = pf.lowerTemp[dstT]
+			if dstLo then
+				cg.move(dstLo, oldLo)
+				emitRootStore(dstLo)
+			end
+		end
+	end
+
 	-- `;! atomic load store ptr`: WITHOUT `lock`, an atomic load, the op, and an
 	-- atomic store (each access atomic; the RMW as a whole is not). WITH `lock`, a
-	-- compare-exchange loop through the runtime — a real atomic RMW.
+	-- compare-exchange loop through the runtime — a real atomic RMW. (x86_64; the
+	-- arm64 LSE form lowers to emitAtomicLoadStorePtrLse above.)
 	local alrmwCounter = 0
 	local function emitAtomicLoadStorePtr(node, mem)
+		if cgm.atomicRmwPlan then
+			-- arm64: the LSE RMW is already atomic, so only the compare-exchange
+			-- loop lowering exists; NZCV is preserved across it (the native
+			-- instruction writes no flags).
+			withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+				emitAtomicLoadStorePtrLse(node, mem)
+			end)
+			return
+		end
 		local srcT, srcImmOp, unary = rmwSource(node)
 		local effTemp, capLo = cg.computeAddr(node, mem)
 		emitAccessCheck(effTemp, capLo, 8, 8, true)
@@ -990,7 +1348,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if node.kind == "label" then
 			if node.name ~= name and not string.match(node.name, "^%.LF[BE]") then
 				emit(node)
-				if loopHeaderLabels[node.name] then emitPollcheck() end
+				if loopHeaderLabels[node.name] then
+					withFlagSave(flagsLiveFrom(nodeIndex[node] + 1), emitPollcheck)
+				end
 			end
 		elseif node.kind == "other" then
 			-- drop directives
@@ -998,7 +1358,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			local c = node.c
 			curLine = (node.stmt and node.stmt.line) or curLine
 			if allocaNodes[node] then
-				emitAlloca(node, allocaNodes[node])
+				withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+					emitAlloca(node, allocaNodes[node])
+				end)
 			elseif c.control == "return" then
 				if not sigDesc.isVoid then
 					local retTemp
@@ -1026,7 +1388,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
-					emitPtrLoad(node, mem, dstIv, dstLo)
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitPtrLoad(node, mem, dstIv, dstLo)
+						emitWriteback(node, mem)
+					end)
 					emitRootStore(dstLo)
 				elseif storePtrNodes[node] then
 					local valOp = storeValueOperand(node.stmt, mem)
@@ -1036,11 +1401,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local valLo = pf.lowerTemp[valIv]
-					emitPtrStore(node, mem, valIv, valLo)
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitPtrStore(node, mem, valIv, valLo)
+						emitWriteback(node, mem)
+					end)
 				elseif atomicLoadPtrDefs[node] then
-					emitAtomicPtrLoad(node, mem)
+					-- arm64: ldar/ldapr write no flags — preserve the program's
+					-- live NZCV around the injected check+call (x86_64:
+					-- flagsLiveFrom is constant-false, so this wrap is a plain
+					-- passthrough and the output is unchanged).
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitAtomicPtrLoad(node, mem)
+					end)
 				elseif atomicStorePtrNodes[node] then
-					emitAtomicPtrStore(node, mem)
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitAtomicPtrStore(node, mem)
+					end)
 				elseif atomicCasPtrDefs[node] then
 					-- bypasses emitPinned entirely: the runtime call needs no
 					-- physical rax pinning (see emitAtomicPtrCas)
@@ -1060,7 +1436,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					if minfo then
 						emitMaskedAccessCheck(effTemp, capLo, minfo, align, isWrite)
 					else
-						emitAccessCheck(effTemp, capLo, size, align, isWrite)
+						withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+							emitAccessCheck(effTemp, capLo, size, align, isWrite)
+						end)
 					end
 					-- an implicit-GPR-pinned instruction (x86 div/mul/cmpxchg/...)
 					-- emits its pin moves around itself; the access check above
@@ -1082,16 +1460,17 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 	for _, s in failStubs do emit(s) end
 
-	-- FP/SIMD save/restore expansion (x86_64 only): cg.fpSave/fpRestore
-	-- emitted PLACEHOLDER nodes around the injected returning runtime calls;
-	-- expand them now into the exact vector save/restore movs the
-	-- post-transform width-liveness analysis proves live at each site. Runs
-	-- BEFORE the frameSlot numRoots shift below so the expanded movs'
-	-- frameSlot operands are shifted with everything else, and pre-regalloc
-	-- (the movs carry no temps — regalloc never sees xmm-class registers, and
-	-- no placeholder node kind ever leaks past this point). arm64 has no such
-	-- hook (its fpSave/fpRestore are no-ops).
-	if cg.expandFpSaves then cg.expandFpSaves(out, fctx) end
+	-- FP/SIMD save/restore expansion: cg.fpSave/fpRestore emitted PLACEHOLDER
+	-- nodes around the injected returning runtime calls; expand them now into
+	-- the exact vector save/restore movs the post-transform width-liveness
+	-- analysis proves live at each site. Runs BEFORE the frameSlot numRoots
+	-- shift below so the expanded movs' frameSlot operands are shifted with
+	-- everything else, and pre-regalloc (the movs carry no temps — regalloc
+	-- never sees vector-class registers, and no placeholder node kind ever
+	-- leaks past this point). The third argument is the final GC root count
+	-- (arm64's hook computes its slot base from it directly; x86_64's hook
+	-- ignores it — it tags slots frameSlot and rides the shift below instead).
+	if cg.expandFpSaves then cg.expandFpSaves(out, fctx, #rootTemps) end
 
 	local externsList = {}
 	for _, e in calledExterns do table.insert(externsList, e) end

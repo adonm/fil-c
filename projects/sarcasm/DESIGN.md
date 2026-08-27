@@ -83,7 +83,18 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   only fault, an uncatchable-signal safe halt the safety model accepts. An
   explicit operand naming a pinned register renders as the fixed physical
   register, keeping it in sync with the pin. cbw/cwde/cltq need no pinning:
-  codegen rewrites them to a renameable movsxx on the rax web.
+  codegen rewrites them to a renameable movsxx on the rax web. On arm64 this
+  is where the NEON/FP semantics live: per-mnemonic def/use classification
+  (the VEC_PURE_WRITE / VEC_DST_READ / lane-insert families, fmov's
+  GPR<->vector roles, the safe unknown-mnemonic default — read all NEON
+  operands, provide nothing), vecEffects for the width-liveness vector
+  saves, the NZCV flag-use/flag-def tables (adcs/sbcs are load-bearing
+  read+write), the SVE/SVE2 rejection, and the LSE_KIND table classifying
+  the LSE RMW / cas / casp / load-store-exclusive families — including the
+  cas/casp pin modeling (the compare register — and casp's data pair — are
+  architectural read-modify-writes pinned to their written physical
+  registers, the arm64 counterpart of x86_64's cmpxchg accumulator; the
+  hardware encodes a pair as one even register number).
 - `x86_64_fp.luau` — DONE + TESTED (the sarcasm-fp-* tests). The x86_64 FP/SIMD
   knowledge module, consulted by the isa classifier (def/use modeling +
   rejections), the codegen (checked-access width/alignment), and the frame policy
@@ -185,8 +196,17 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   checker cannot size)/AMX tiles (a strided, tile-config-dependent
   footprint)/far control transfers).
 - `*_frame.luau`   — frame policy: drop the input's frame setup/teardown, virtualize
-  stack-pointer/frame-pointer-relative slots, reject stack-address escapes.
+  stack-pointer/frame-pointer-relative slots, reject stack-address escapes. (arm64
+  also virtualizes NEON/FP stack slots into the raw-byte GPR slot webs — including
+  the AAPCS callee-saved d8-d15 writeback save/restore forms — and derives the
+  frame geometry used to normalize x29-relative alloca bases/offsets into the
+  sp-relative coordinate space; see the arm64 NEON subsection of the frame
+  section and the alloca-redirect NOTE below.)
 - `*_codegen.luau` — per-arch instruction emitters (neutral micro-ops) for the transform.
+  (arm64: DONE — includes the checked-access width/alignment model: NEON
+  single-/multi-structure sizing with arrangement validation, pair forms, the
+  LSE/LLSC/exclusive atomics at natural alignment, and the liveness/width-aware
+  vector save/restore expansion around injected runtime calls.)
 - `*_render.luau`  — render IR back to assembly with colors; synthesize the Fil-C
   prologue/epilogue/frame layout. (x86_64 always emits AT&T output.)
 - `*_glue.luau`    — getter/FO/2ET/origins/access-origin/alias link & run, plus the weak
@@ -205,16 +225,19 @@ coincides with dense packing when every arg before k is a pointer; it was ported
 dense packing after verifying pizlonated clang's aarch64 output (e.g.
 `long(long,long,ptr)` puts arg1 in x3 and arg2's intval/lower in x4/x5).
 
-NOTE (arm64 alloca region redirect): the x86_64 `regionRedirect` mov branch
-(`movq %rsp, %rd` re-deriving a region pointer) was fixed to redirect to
-`buffer + (0 - region.base)` instead of `buffer + 0` — the old form was correct only
-for a region based at sp+0. arm64's `regionRedirect` mov branch (`mov xD, sp`) has the
-identical base-0 assumption (`cg.move(rd, r.ptrTemp, true)`): it is correct only when
-the region's base is 0 and should become `cg.addImm(rd, r.ptrTemp, -r.base)`. arm64
-also does not recognize x29-based alloca bases or normalize x29-relative offsets in
-region/slot math the way x86_64 now does for rbp (see x86_64_frame.rewrite /
-x86_64_codegen.allocaRegionBase / stackOff in cg.regionRedirect). A future arm64
-session should port these fixes.
+NOTE (arm64 alloca region redirect): DONE on arm64, mirroring the x86_64 fixes.
+The `regionRedirect` mov branch (`mov xD, sp` re-deriving a region pointer)
+redirects to `buffer + (0 - region.base)` via `cg.addImm(rd, r.ptrTemp, -r.base)`
+— the old `cg.move` form was correct only for a region based at sp+0. arm64 also
+recognizes x29-based alloca bases and normalizes x29-relative offsets in
+region/slot math the way x86_64 does for rbp: arm64_frame.analyzeFrame derives
+the frame geometry (frameSize, fpOffset, usesFp — x29 = sp + fpOffset when x29
+is the frame pointer; it may be an ordinary GPR, see sarcasm-rbpgpr-arm),
+arm64_codegen.allocaRegionBase maps an `add xD, x29, #imm` alloca base into the
+sp-relative coordinate space, and stackOff in cg.regionRedirect normalizes
+x29-relative re-derivations the same way. Pinned by
+`filc/tests/sarcasm-alloca-redirect-arm` (both region-base forms crossed with
+both re-derivation forms in `mov x29, sp` frame-pointer functions).
 
 ## Core stages
 
@@ -510,6 +533,63 @@ AVX512 runtime build would require extending this to zmm16-31 and k0-7). The
 whole mechanism emits NOTHING for GPR-only functions — zero cost (fpSave/
 fpRestore emit no placeholders at all, and expandFpSaves is a no-op scan).
 
+#### arm64: NEON/FP registers, slot virtualization, and injected-call saves
+NEON/FP registers are IN SCOPE on arm64 (Phase 2). As on x86_64 they pass
+through verbatim — sarcasm never register-allocates them (regalloc never
+models NEON), so instructions naming them keep their vector operands
+unchanged and only their GPR operands (memory base/index, the GPR halves of
+fmov/scvtf/ucvtf/dup & co) are modeled in defs/uses. The differences from
+x86_64 are in the frame policy and the save discipline:
+
+- **Frame slots VIRTUALIZE instead of materializing.** x86_64 materializes an
+  FP-touched stack range into a real frame region because its vector ISA
+  needs aligned memory operands; arm64's NEON scalar/pair loads and stores
+  are just byte movers, so a NEON stack slot virtualizes into the same
+  raw-byte GPR slot webs the GPR mechanism uses, via explicit GPR<->vector
+  moves: `str q0, [sp, #16]` -> `fmov xslot16, d0 ; fmov xslot24, v0.d[1]`
+  (the FMOV vector-element encoding only exists for the top half, so the low
+  64 bits move as the d register), `str s0` -> `fmov wslot, s0`, a narrow
+  `str b0`/`str h0` -> `umov` + `bfi` (preserving the neighboring bytes,
+  like memory), and a scalar load zeroes the register's upper bits exactly
+  like the ldr it replaces. Pairs (stp/ldp/stnp/ldnp of s/d/q) virtualize
+  per element, and the AAPCS callee-saved NEON prologue/epilogue writeback
+  forms (`str d8, [sp, #-32]!` / `ldr d8, [sp], #32`, `stp d8, d9, ...`) —
+  which CANNOT be dropped like the GPR stp/ldp boilerplate, since the
+  caller's d8-d15 values must round-trip — virtualize at their
+  final-sp-relative offset (tracked via a cumulative sp adjustment, since
+  the writeback's own sp update is frame setup we drop). The forms that
+  cannot be virtualized on a frame base — multi-structure ld2-4/st2-4, the
+  replicate loads ld1r-4r, and lane-indexed single-element forms — are
+  rejected cleanly (`sarcasm-reject-neon-frame-ld2-arm`,
+  `sarcasm-reject-neon-frame-lane-arm`); on a heap base they are modeled
+  memory accesses at their exact width (N structures x register width, or
+  N x element for lane/replicate forms; arrangement qualifiers validated so
+  a malformed register list never under-checks).
+- **Width-liveness vector saves.** AAPCS64 makes v0-v7 and v16-v31 fully
+  caller-saved and only the low 64 bits of v8-v15 callee-saved, and the
+  Fil-C runtime is built with a full NEON toolchain — so sarcasm's injected
+  RETURNING runtime calls (pollcheck slow path, filc_allocate, the ptr-store
+  aux-ensure/barrier slow paths) are bracketed by saves, and user calls kill
+  caller-saved vector state (v8-v15 degrade to their callee-saved low 8
+  bytes). Mirroring the x86_64 design, fpSave/fpRestore emit placeholder
+  nodes and expandFpSaves runs a backward per-vector-register WIDTH
+  liveness (semantics from arm64_isa.vecEffects: NEON loads supply their
+  full registers, lane loads merge, stores read only the stored bytes, the
+  lane-insert ins/element-fmov destinations read the untouched lanes, and
+  an unknown mnemonic — e.g. the SHA/SM3/SM4 crypto families — reads every
+  NEON operand at its width and provides nothing, a safe default that never
+  under-saves): a v-reg live only in its low 4 bytes saves as sN, 8 as dN,
+  16 as qN, a dead one saves nothing, and v8-v15 save only when live at
+  MORE than 8 bytes. The save area is 16 bytes per v0..v31 slot past the GC
+  root area, reserved regardless of elision; a GPR-only function emits
+  NOTHING (vecSaveBytes == 0).
+- **SVE/SVE2 is rejected** (arm64_isa.checkSve, run on every instruction):
+  z0-31/p0-15 registers in any operand position (including structure lists
+  and memory base/index) and the SVE-only mnemonic family (rdvl/addvl/
+  inc*/dec*/cnt*/while*/ptrue/...) error with "SVE is not yet supported
+  (NEON/AdvSIMD only)" — variable-width vector state cannot be modeled by
+  the fixed 16-byte slot/save machinery.
+
 ### ptrflow.luau — pointer-flow analysis
 Seeds pointer-ness: function ptr args (from the signature), results of `;! load ptr`
 (likewise `;! atomic load ptr` and the `;! atomic ptr` cmpxchg's accumulator def),
@@ -599,9 +679,78 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   value (needing a pointer def + rooted lower — and its use/def web union
   would mis-seed the delta value as a pointer); cmpxchg with them is rejected
   (use `;! atomic ptr`); shifts/rotates/imul are rejected (not
-  capability-preserving); all five Phase-2 annotations are rejected on ARM64
-  (the runtime functions exist there but the marshalling/flag sequences are
-  x86_64-only for now) and on cmpxchg8b/cmpxchg16b.
+  capability-preserving); all five Phase-2 annotations are rejected on
+  cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64).
+- ARM64 atomics (Phase 3). Non-pointer atomics are modeled directly as single
+  checked memory accesses, needing no annotation (like x86_64's lock-prefixed
+  RMWs on non-pointers): the LSE family (swp/ldadd/ldclr/ldeor/ldset/ldsmax/
+  ldsmin/ldumax/ldumin + the st<op> no-result aliases, all widths and a/l/al
+  ordering variants), cas/casp (+variants), and the exclusive family (ldxr/
+  stxr/ldaxr/stlxr +b/h, ldxp/stxp/ldaxp/stlxp). Checks: full bounds + CanWrite
+  on every write + NATURAL alignment (the ARM ARM requires it for these — the
+  ldxp/stxp/casp pair forms fault on anything less in practice, and single-word
+  forms do on some cores — so an unaligned atomic gets the deterministic filc
+  alignment trap, never a hardware-dependent fault). Register modeling:
+  swp/ld<op>'s old-value destination is a def, the source a use; stxr/stxp's
+  status register is a def; cas's compare register is an architectural
+  read-modify-write modeled with the pin mechanism (implicit use+def operand
+  tables, like x86_64's cmpxchg accumulator) so regalloc keeps both sides in
+  the written physical register; casp's compare AND data pairs are both
+  pinned (the hardware encodes a pair as one even register number, so all
+  four explicit registers must render at their written numbers). The
+  annotated pointer forms mirror the x86_64 contracts with arm64 shapes and
+  AAPCS64 marshalling (a filc_ptr is two consecutive argument words, and all
+  of filc_strong_cas_ptr_with_manual_tracking's eight argument words fit in
+  x0..x7 — no stack marshalling; filc_xchg_ptr_with_manual_tracking's six
+  fit too; results arrive x0=intval, x1=lower):
+  - `;! atomic load ptr` on ldr/ldur/ldar/ldapr xN -> access-check(8, align 8)
+    + filc_load_ptr_atomic_with_manual_tracking_outline(slot). `;! atomic
+    store ptr` on str/stur/stlr xN -> access-check(8, align 8, CanWrite) +
+    filc_store_ptr_atomic_outline(myth, slot, value). (No writeback forms —
+    no atomic encoding has one.)
+  - `;! atomic ptr` on cas/casa/casl/casal xA, xB, [xM] (64-bit only;
+    casb/cash/casp rejected like cmpxchg8b/16b) -> access-check(8, align 8,
+    CanWrite) + filc_strong_cas_ptr_with_manual_tracking(myth, slot, 0,
+    expected, new). The pin tables let the transform find the compare
+    register's use (expected) and def (old result, pointer-seeded, lower
+    rooted) webs without emitPinned. NZCV is recomputed as (expected − old)
+    against a private pre-call copy of the expected intval, so a following
+    b.eq/cset behaves like x86_64's cmpxchg flags.
+  - `;! atomic load store ptr` on a 64-bit LSE RMW (ldadd/ldset/ldeor/ldclr/
+    swp + variants, and the st<op> aliases): the instruction is already a
+    single atomic RMW. For ldadd/ldset/ldeor/ldclr (and the st<op> aliases)
+    the lowering is the runtime compare-exchange loop (the x86_64 `lock`
+    form's analog): inline checks once before the loop; per iteration a
+    pollcheck, an atomic load, the op re-executed as a register ALU
+    operation on the intval (ldadd->add, ldset->orr, ldeor->eor,
+    ldclr->bic), and the CAS call with new = (old.iv OP src, SAME lower) —
+    the capability rides through: Fil-C pointer arithmetic through memory.
+    swp is the exception (its plan ALU is "mov"): the new value IS the
+    source operand, not a function of the old value, so stamping it with
+    the old value's lower would store a SOURCE pointer into a DIFFERENT
+    object with the OLD object's capability (the next dereference traps
+    "cannot read pointer with ptr >= upper"). swp therefore lowers to a
+    single filc_xchg_ptr_with_manual_tracking(myth, slot, 0, new) call —
+    the exact primitive filcc emits for C11 atomic_exchange (a direct call,
+    no pollcheck; the runtime retries a weak CAS internally) — with new =
+    (src.iv, src's OWN lower); a non-pointer source has no lower temp and
+    is marshalled with a null capability (mirroring `;! atomic store ptr`:
+    storing an integer into a pointer slot is legal, it just can't be
+    dereferenced afterwards). The old-value destination register (ldadd's
+    Wt / swp's Wt) is pointer-seeded and receives (old.iv, old.lo) rooted —
+    exactly like an `;! atomic load ptr` result (the st<op> forms have
+    none). NZCV is PRESERVED across the whole sequence (withFlagSave): the
+    native LSE forms write no flags, so there is nothing to recompute. The
+    min/max forms are rejected (no single capability-preserving ALU op);
+    sub-word forms are rejected (pointer slots are 8 bytes).
+  - `;! load store ptr` (the non-atomic form) is rejected on arm64: no
+    non-atomic memory-destination RMW instruction exists — write the ldr/op/
+    str sequence with separate `;! load ptr` / `;! store ptr` annotations.
+  - Flags: the annotated ldar/stlr/ldapr and LSE RMW forms write no NZCV, so
+    their injected check+call sequences are bracketed by withFlagSave when
+    the program's flags are live (constant-false on x86_64, which keeps its
+    EFLAGS behavior and byte-identical output); only the annotated cas has a
+    flag contract (the recompute above).
 - non-ptr load/store through a ptr temp -> access-check(size, align) then the raw ld/st.
   Every heap WRITE (plain stores, memory-destination RMWs incl. locked forms,
   xadd/cmpxchg/cmpxchg8b/16b, FP/SIMD stores, movnti) additionally gets the
@@ -694,7 +843,10 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   ptr-store aux-ensure/barrier slow paths) -> wrap in a vector save/restore
   (x86_64: xmm0-15, or ymm0-15/zmm0-15 when the function uses wider classes): the
   source program never saw these calls and the Fil-C runtime clobbers xmm
-  registers. A no-op for GPR-only functions (arm64: always — neon is rejected).
+  registers. A no-op for GPR-only functions. (arm64 uses the same mechanism:
+  v0-v31 with 16-byte slots, width-liveness narrowing sN/dN/qN saves and the
+  AAPCS64 v8-v15 callee-saved-low-64 rule — see the arm64 NEON subsection of
+  the frame section.)
 
 ### emit.luau + sarcasm.luau (driver)
 - emit: renders the IR with colors via the per-arch render module; materializes spill
@@ -775,10 +927,17 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
 - On ARM64, memory operands on non-load/store instructions are rejected; X86_64 accepts
   them (e.g. `addq (%rsi), %rax`) — on X86_64 any memory operand is modeled as a real,
   bounds-checked access.
-- On ARM64, FP/SIMD (neon) registers are uniformly REJECTED with a clean error, as an
-  operand or a memory base/index. Proper ARM64 FP/SIMD support (the x86_64 treatment:
-  pass-through registers + width-correct checks + materialization) is future work;
-  letting neon through unchecked would be unsound.
+- On ARM64, NEON/FP (AdvSIMD) is IN SCOPE (see the arm64 NEON subsection of the
+  frame section): b/h/s/d/q/v registers and structure lists pass through, heap
+  accesses are checked at exact widths, frame slots virtualize into the GPR slot
+  webs. What remains rejected: SVE/SVE2 (z/p registers in any operand position
+  and the SVE-only mnemonics — "SVE is not yet supported (NEON/AdvSIMD only)");
+  the NEON forms that cannot be virtualized on a FRAME base (multi-structure
+  ld2-4/st2-4, the replicate loads ld1r-4r, and lane-indexed single-element
+  forms — on a heap base they are supported at exact widths); NEON structure
+  pre-index writeback (no such encoding in the modeled subset); and a memory
+  operand on any mnemonic sarcasm does not model as a load/store (prfm & co).
+  FP/vector types in `;!` signatures stay rejected on both architectures.
 - On X86_64, `enter`/`enterq` is rejected (packed frame setup sarcasm does not model —
   see the frame section). FP/SIMD code is IN SCOPE (see the FP/SIMD subsection of the
   frame section); the only rejected instructions are ones whose memory-safety effects
@@ -963,13 +1122,13 @@ here, not regressions introduced by this change:
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 517 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
-assemble via minilute + sarcasm, `.c` files via clang) — 467 x86_64 and 50 aarch64
+runs the 728 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
+assemble via minilute + sarcasm, `.c` files via clang) — 467 x86_64 and 261 aarch64
 (every test is `only-on-platform:` exactly one of them). For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
 + that OOB/null-capability inputs trap. The suite breaks down as:
 
-- 317 behavioral tests (278 x86_64, 39 aarch64), most exercised in AT&T and Intel
+- 442 behavioral tests (278 x86_64, 164 aarch64), most exercised in AT&T and Intel
   variants (`-att` / `-int` pairs, aarch64 singletons as `-arm`): pointer-chasing
   workloads in several sizes (`sarcasm-hash(-oob)-*`, `sarcasm-t2-*`,
   `sarcasm-t3valid/t3oob-*`, `sarcasm-medium/large`), null-capability and OOB traps
@@ -1077,7 +1236,29 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   traps, and `sarcasm-masked-*`/`sarcasm-vmaskmov-*` the masked success/trap
   forms — the matrix adds the missing categories (below-bounds,
   use-after-free, special) and makes the width coverage systematic.
-- 61 FP/SIMD tests (`sarcasm-fp-*`, all x86_64): SSE scalar arithmetic and
+  The aarch64 behavioral tests add the arm64-specific surface: the atomics —
+  the LSE RMW family (`sarcasm-lse-arm`, `needsLSE`), cas/casp
+  (`sarcasm-cas-arm`, `sarcasm-casp-misalign-arm`), the load/store-exclusive
+  family incl. a hand-written ldxr/stxr CAS retry loop (`sarcasm-llsc-arm`),
+  the natural-alignment/OOB/read-only/null-cap atomic traps
+  (`sarcasm-atomic-misalign-arm`, `sarcasm-atomic-oob-arm`,
+  `sarcasm-atomic-ro-arm`, `sarcasm-nullcap-atomic-arm`), and the annotated
+  pointer atomics (`sarcasm-aptr-*-arm` — the x86_64 Phase-2 suite's arm64
+  mirror: atomic load/store round-trips, pointer cas incl. the
+  NZCV-recompute consumer, the LSE-form atomic RMW annotations, misalignment
+  traps, and a multi-threaded stress) —, the adcs/sbcs flag-liveness case
+  (`sarcasm-adcs-arm`), the x29-based fixed-alloca region redirect crossed
+  with both re-derivation forms (`sarcasm-alloca-redirect-arm`), and the
+  `sarcasm-tm-*-arm` trap matrix (73 tests: the six fault categories crossed
+  with the 1/2/4/8 GPR widths, the 16-byte NEON ldr/str q forms, and LSE
+  swp/stxr cells, asserting the exact first-line `filc safety error`
+  message). Extension-dependent aarch64 tests carry `needsARMCrypto` /
+  `needsLSE` / `needsFP16` manifest keys, gated by hwcap probes
+  (`filc/tests/has_armcrypto.c`, `filc/tests/has_lse.c`,
+  `filc/tests/has_fp16.c` — HWCAP_FPHP for the scalar ARMv8.2-FP16
+  arithmetic in `sarcasm-fp-half-arm`) run-tests compiles and runs at
+  startup — the arm64 analog of the `needsAVX512` cpuid probe.
+- 78 FP/SIMD tests (`sarcasm-fp-*`, 61 x86_64, 17 aarch64): SSE scalar arithmetic and
   comparisons (`sarcasm-fp-sse-arith-att` / `-int`), scalar FP heap loads/stores at
   8 and 4 bytes (`sarcasm-fp-mem-movsd-att` / `-int`), 16-byte vector heap copies
   (`sarcasm-fp-mem-movups-att`), an FP reduction loop with xmm live across the
@@ -1140,8 +1321,24 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   `needsAVX512`), `-vnni-usd-att` (the cross-sign vpdpwusd ymm at 32,
   `needsAVX512`), `-dq2ph-att` (bare vcvtdq2ph ymm reading a 64-byte m512
   source, proven by the pre-execution bounds trap — no FP16 silicon needed,
-  `needsAVX512`).
-- 139 rejection tests (`sarcasm-reject-*`, 128 x86_64, 11 aarch64 — the `-arm` ones
+  `needsAVX512`). The 17 aarch64 FP/SIMD tests cover the arm64 NEON support:
+  scalar/pair/structure heap copies at exact widths (`sarcasm-neon-arm` — q,
+  s/h/b scalars, q pairs; `sarcasm-fp-ldmulti-arm` — multi-structure
+  ld2-4/st2-4 off the heap), NEON arithmetic and the scalar/vector
+  conversions (`sarcasm-fp-arith-arm`, `sarcasm-fp-cvt-arm`,
+  `sarcasm-fpconv-arm`, the fp16 forms `sarcasm-fp-half-arm`), frame-slot
+  virtualization with the AAPCS callee-saved d8/d9 writeback pair form and
+  GPR/vector slot aliasing (`sarcasm-fp-frame-arm`), the width- and
+  liveness-aware vector saves around injected pollcheck/filc_allocate/
+  ptr-store-barrier/atomic runtime calls (`sarcasm-fp-live-alloca-arm`,
+  `sarcasm-fp-live-barrier-arm`, `sarcasm-fp-live-atomic-arm`,
+  `sarcasm-fp-gcstress-arm`), the ARMv8 crypto known-answer tests
+  (`sarcasm-fp-crypto-arm`, `needsARMCrypto` — AES-128 FIPS-197 KAT,
+  SHA-256 of "abc", pmull/pmull2 against a C carryless multiply), and the
+  per-width OOB traps (`sarcasm-fp-oob-bh-arm`/`-s-arm`/`-d-arm`/`-q-arm`/
+  `-pair-arm`/`-ld2-arm`/`-st4-arm`, `sarcasm-neon-oob-arm`,
+  `sarcasm-half-oob-arm`).
+- 208 rejection tests (`sarcasm-reject-*`, 128 x86_64, 80 aarch64 — the `-arm` ones
   cover the ARM64-only rejections). Each directory carries exactly ONE `.s` file
   (compileFailure manifest), so every rejected input is proven rejected
   individually rather than one file's rejection masking another's. Families:
@@ -1182,7 +1379,21 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   validation rejections (`-storeptr-on-load`, `-loadptr-on-store`,
   `-rmw-storeptr`, `-loadptr-reg`, `-unknown-annotation`, `-loadstoreptr`,
   `-cmpxchg8b-ptr` — a ptr-family annotation on cmpxchg8b, the 8-byte twin of
-  `-cmpxchg16b-ptr`).
+  `-cmpxchg16b-ptr`). The arm64 rejection families: the atomic-annotation
+  shape rejections (`-atomicptr-arm` — `;! atomic ptr` on casp;
+  `-atomicptr-casb-arm`; `-aptr-aload-on-store-arm` / `-astore-on-load-arm` /
+  `-armw-nonrmw-arm` / `-armw-minmax-arm` / `-aptr-writeback-arm`;
+  `-badptr-ann-arm-*` — a ptr annotation on a non-annotatable arm64 shape;
+  `-atomic-spbase-arm` — an atomic with a stack-pointer base), the NEON
+  frame-base forms that cannot be virtualized (`-neon-frame-ld2-arm`,
+  `-neon-frame-lane-arm`), a ptr annotation on a NEON access
+  (`-neon-ptr-ann-arm`), a memory operand on a non-load/store NEON mnemonic
+  (`-vec-unknown-mem-arm`), SVE (`-sve-arm-add` / `-gather` / `-ptrue`),
+  `;! load store ptr` on arm64 (`-loadstoreptr-arm` — no non-atomic
+  memory-destination RMW exists), pointer authentication (`-pac-arm-*`),
+  supervisor calls and hlt (`-svc-arm-*`), and the
+  frame/alloca/escape classes shared with x86_64 in their arm64 spelling
+  (`-alloca-*-arm`, `-badframe-arm`, `-badmem-arm`, `-badaddr-arm-*`).
 
 The old in-tree `tests/` harness (host-lute `verify.sh`/`verify-x86.sh` via docker, and
 the `roundtrip-test`/`detect-test`/`cleanup-test` Luau unit tests) has been removed;

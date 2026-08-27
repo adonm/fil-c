@@ -22,19 +22,23 @@ Input assembly must carry `;!` annotations:
 - on each exported function label: its Fil-C signature, e.g. `hash: ;! unsigned(ptr)`;
 - on each instruction that loads a pointer from memory: `;! load ptr` (`;! store ptr` for stores);
 - on each instruction that atomically loads a pointer from memory:
-  `;! atomic load ptr` (`;! atomic store ptr` for atomic stores) — x86_64 only;
+  `;! atomic load ptr` (`;! atomic store ptr` for atomic stores);
   these go through the Fil-C runtime (`filc_load_ptr_atomic_with_manual_tracking_outline`
   / `filc_store_ptr_atomic_outline`), exactly like C11 `_Atomic` pointer accesses
-  compiled by filcc;
-- on `cmpxchgq` with a memory destination: `;! atomic ptr` — a pointer
+  compiled by filcc. x86_64 shapes: the plain `movq` forms. arm64 shapes:
+  `ldr`/`ldur`/`ldar`/`ldapr` for the load, `str`/`stur`/`stlr` for the store
+  (64-bit GPRs; no writeback — no atomic form has one);
+- on `cmpxchgq` with a memory destination (x86_64) resp. `cas`/`casa`/`casl`/`casal`
+  with x-registers (arm64): `;! atomic ptr` — a pointer
   compare-exchange through the runtime
-  (`filc_strong_cas_ptr_with_manual_tracking`; the `lock` prefix is allowed and
-  irrelevant, both forms make the same call). The expected value is the
-  accumulator (compared by raw intval, like the hardware), the old value comes
-  back in the accumulator WITH its capability, and flags are recomputed as
-  (expected − old) so a `je`/`sete` immediately after behaves natively;
+  (`filc_strong_cas_ptr_with_manual_tracking`; on x86_64 the `lock` prefix is
+  allowed and irrelevant, both forms make the same call). The expected value is the
+  accumulator (x86_64) resp. the compare register (arm64) — compared by raw intval,
+  like the hardware; the old value comes back in the same register WITH its
+  capability, and flags are recomputed as (expected − old) so a `je`/`sete`
+  (x86_64) or `b.eq`/`cset` (arm64) immediately after behaves natively;
 - on a memory-destination RMW over a pointer slot (8-byte add/adc/and/or/sbb/
-  sub/xor, inc/dec/neg/not): `;! load store ptr` — a NON-atomic
+  sub/xor, inc/dec/neg/not — x86_64 only): `;! load store ptr` — a NON-atomic
   load-op-store that preserves the slot's capability (Fil-C pointer arithmetic
   through memory), or `;! atomic load store ptr` — WITHOUT `lock`, an atomic
   load + op + atomic store (each access atomic; the RMW as a whole is not);
@@ -48,7 +52,24 @@ Input assembly must carry `;!` annotations:
   execution-without-trapping, not for carry semantics. xadd and cmpxchg are
   rejected with these annotations
   (cmpxchg wants `;! atomic ptr`; xadd's source-register destination has no
-  capability model — use a cmpxchg loop);
+  capability model — use a cmpxchg loop). On **arm64**:
+  `;! load store ptr` is rejected (no non-atomic memory-destination RMW exists —
+  write the load, op and store annotated `;! load ptr` / `;! store ptr`), and
+  `;! atomic load store ptr` annotates a 64-bit LSE RMW (ldadd/ldset/ldeor/
+  ldclr/swp and the stadd-class aliases, incl. the a/l/al ordering variants):
+  the instruction is already atomic, so ldadd/ldset/ldeor/ldclr lower to the
+  runtime compare-exchange loop with a per-iteration pollcheck (the x86
+  `lock` form's analog); the op is re-executed on the loaded intval with the
+  SAME lower (Fil-C pointer arithmetic through memory). swp is the exception:
+  its new value IS the source operand, so it lowers to a single
+  filc_xchg_ptr_with_manual_tracking call (the exact primitive filcc emits
+  for C11 atomic_exchange) and the new value carries the SOURCE's capability
+  — a cross-object exchange stays dereference-able, while an integer source
+  gets a null capability (storing it is legal; it just can't be dereferenced
+  afterwards). Either way the old-value destination register (ldadd's Wt /
+  swp's Wt) receives the old value WITH its capability, exactly like an
+  `;! atomic load ptr` result. The native LSE forms write no flags, so NZCV
+  is preserved across the sequence rather than recomputed;
 - on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`;
 - on stack allocations: `;! alloca size (x)` on the `sub sp,...` and `;! alloca result (x)`
   on the instruction that yields the pointer (dynamic), or `;! alloca result size=N` for a
@@ -60,9 +81,10 @@ require a plain 8-byte GPR load/store of the matching direction (and the
 memory-destination RMW (add/xadd/cmpxchg & co with a memory destination)
 annotated with either is rejected (pointer RMWs need `;! load store ptr`);
 the pointer-RMW/atomic annotations require exactly the shapes above (8-byte
-forms only; `;! atomic ptr` only on memory-destination cmpxchg) and are
-rejected on ARM64 (x86_64-only for now) and on
-cmpxchg8b/cmpxchg16b, which cannot operate on pointers; any other
+forms only; `;! atomic ptr` only on memory-destination cmpxchg resp. 64-bit cas)
+and are rejected on
+cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64), which cannot operate
+on pointers; any other
 unrecognized annotation string is a compile-time error.
 
 See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-att/hash.s`
@@ -129,6 +151,15 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   FP/SIMD stack accesses needing
   more than 16-byte alignment (e.g. `vmovdqa32` with ymm/zmm) are rejected —
   the ABI guarantees only 16-byte stack alignment; use the unaligned form.
+  On ARM64 a NEON/FP stack slot instead **virtualizes** into the same raw-byte
+  GPR slot webs the GPR mechanism uses, via explicit GPR<->vector moves (a
+  slot is just bytes: `str q0, [sp, #16]` becomes two `fmov`s out of the q
+  register, a narrow `str b0`/`str h0` an extract+`bfi` preserving the
+  neighboring bytes, pairs virtualize per element, and the AAPCS callee-saved
+  d8-d15 prologue/epilogue writeback forms round-trip through slots at their
+  final-sp-relative offset); the NEON forms that cannot be virtualized on a
+  frame base — multi-structure ld2-4/st2-4, the replicate loads ld1r-4r, and
+  lane-indexed single-element forms — are rejected.
 - **FP/SIMD (X86_64)** is in scope: xmm0-31/ymm/zmm, MMX mmN, x87 st/st(N), and
   opmask k0-k7 registers and their instructions are supported. sarcasm has no
   vector register file, so FP/SIMD registers pass through exactly as written —
@@ -311,8 +342,7 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   modeled as described
   above). Floating-point types are still rejected
   in `;!` signatures — the Fil-C FP ABI is now decoded (see
-  `ABI-NOTES-x86.md`); marshalling it is deferred future work. On ARM64, neon
-  registers are uniformly rejected pending proper FP/SIMD support. Three known
+  `ABI-NOTES-x86.md`); marshalling it is deferred future work. Three known
   PRE-EXISTING issues (all reproduced on the unmodified baseline, NOT
   introduced by the current change) are documented in DESIGN.md's Limitations:
   a regalloc mis-coloring at ≥~13 simultaneously-live webs, injected
@@ -321,6 +351,37 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   x86 input — or input whose only registers are xmm-class (a lone `movss
   myglobal, %xmm0`; the detector keys on GPR markers) — (the input then
   fails later at `as` — confusing but harmless).
+- **FP/SIMD (ARM64)** is in scope: the NEON/FP registers (the b/h/s/d/q scalar
+  forms, v-register and arrangement forms, and structure register lists) pass
+  through exactly as written — sarcasm has no vector register file and never
+  needs one for the Fil-C checks (regalloc never models NEON). Their memory
+  operands get the usual capability+bounds check at the exact width: the
+  scalar forms at 1/2/4/8/16 bytes (b/h/s/d/q), register pairs (ldp/stp/
+  ldnp/stnp, incl. the GPR pairs) at two elements, and the single- and
+  multi-structure family (ld1-4/st1-4 and the replicate loads ld1r-4r) at
+  N-structures times the register width — or N times the element width for
+  the lane-indexed and replicate forms — with the arrangement qualifiers
+  validated (only legal 8/16-byte register shapes; mixed or unsized
+  arrangements rejected) so a malformed structure list can never under-check.
+  Alignment follows pizlonated clang's own demands: none at 8 bytes or fewer,
+  8-byte for wider accesses. NEON/FP frame slots virtualize into the GPR slot
+  webs (see the frame bullet above). Because the Fil-C runtime is compiled
+  with a full NEON toolchain, sarcasm's injected RETURNING runtime calls (the
+  pollcheck slow path, filc_allocate, the ptr-store aux/barrier slow paths)
+  are bracketed by **liveness- and width-aware vector saves**: a backward
+  per-register width-liveness over the emitted stream saves exactly the live
+  state (a register live only in its low 4 bytes saves as sN, 8 as dN, 16 as
+  qN; a dead register saves nothing; v8-v15 save only when live at more than
+  8 bytes — AAPCS64 makes their low 64 bits callee-saved, and the C callee
+  preserves those itself). User calls kill caller-saved vector state as
+  usual. The ARMv8 crypto instructions (aese/aesd/aesmc/aesimc, the SHA-1/
+  SHA-256/SHA-512/SHA-3/SM3/SM4 families, pmull/pmull2) are register-only
+  forms that pass through with the conservative unknown-mnemonic def/use
+  model (execution-tested for AES/SHA-256/pmull behind the `needsARMCrypto`
+  probe). Still rejected: SVE/SVE2 (z/p registers and the SVE-only mnemonics,
+  cleanly), any memory operand on a non-load/store mnemonic (prfm & co —
+  its memory effect cannot be modeled), and FP/vector types in `;!`
+  signatures (like x86_64).
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
@@ -334,25 +395,41 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   (skipped for a null stored lower — a NULL store has no object to barrier,
   exactly like the runtime's `filc_store_barrier_for_lower`).
 - **Atomic pointer operations** (`;! atomic load ptr`, `;! atomic store ptr`,
-  `;! atomic ptr` on cmpxchg, and the atomic forms of `;! atomic load store
+  `;! atomic ptr` on cmpxchg/cas, and the atomic forms of `;! atomic load store
   ptr`) go through the Fil-C runtime exactly like filcc-compiled C11 atomic
   pointer accesses: sarcasm emits its usual inline access check first (so traps
   get good origins — the runtime re-checks internally), then calls
   `filc_load_ptr_atomic_with_manual_tracking_outline` /
   `filc_store_ptr_atomic_outline` / `filc_strong_cas_ptr_with_manual_tracking`
-  in plain SysV marshalling (a `filc_ptr` is two consecutive words,
-  intval-then-lower; `filc_strong_cas_ptr_with_manual_tracking`'s `new_value`
-  travels on the stack). Atomically-stored slots are **boxed** (a 16-byte
-  atomic box behind the aux entry, updated with `lock cmpxchg16b`); the plain
+  in the platform C marshalling (a `filc_ptr` is two consecutive words,
+  intval-then-lower; x86_64 SysV spills
+  `filc_strong_cas_ptr_with_manual_tracking`'s `new_value` to the stack, while
+  arm64 AAPCS64 marshals all eight argument words in x0–x7). Atomically-stored
+  slots are **boxed** (a 16-byte atomic box behind the aux entry, updated with
+  `lock cmpxchg16b` on x86_64); the plain
   `;! load ptr` path is box-aware, so plain and atomic accesses to the same
   slot interoperate. The runtime functions are `nounwind` (failures are fatal
   filc panics), so no exception check follows these calls; returned lowers are
   rooted into the frame's GC root slots immediately (the calls that can
   allocate are GC safepoints).
+- **Non-pointer atomics** (arm64): the LSE RMW family (swp/ldadd/ldclr/ldeor/
+  ldset/ldsmax/ldsmin/ldumax/ldumin and the st<op> aliases, all widths and
+  ordering variants), `cas`/`casp` (+variants), and the load/store-exclusive
+  family (ldxr/stxr/ldaxr/stlxr +b/h, ldxp/stxp/ldaxp/stlxp) are modeled
+  directly as single checked memory accesses — full bounds, CanWrite on every
+  write, and NATURAL alignment (the ARM ARM requires it for these, so an
+  unaligned one traps cleanly rather than faulting hardware-dependently). No
+  annotation is needed (like x86_64's lock-prefixed RMWs on non-pointers).
+  `cas`'s compare register is an architectural read-modify-write and is pinned
+  to its written physical register (same mechanism as x86_64's cmpxchg
+  accumulator); `casp`'s compare and data pairs are pinned likewise (the
+  hardware encodes a pair as one even register number). A hand-written
+  ldxr/stxr CAS retry loop works unchanged (the back-edge pollcheck is
+  inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 517 `filc/tests/sarcasm-*` tests (467
-x86_64, 50 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
+All testing is via the Fil-C test suite: the 728 `filc/tests/sarcasm-*` tests (467
+x86_64, 261 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
 test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
 minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
 files via clang. The suite compiles every yolo input with sarcasm, links with Fil-C
@@ -439,8 +516,14 @@ load or a 4-byte store (`sarcasm-reject-astoreptr-on-load` / `-width`),
 `lock`ed form / an unsupported op (`sarcasm-reject-lsptr-on-load` /
 `-on-store` / `-cmpxchg` / `-xadd` / `-lock`, and
 `sarcasm-reject-loadstoreptr` on shl), `;! atomic load store ptr` on a
-non-RMW (`sarcasm-reject-alsptr-nonrmw`), and the whole atomic family on
-ARM64 (`sarcasm-reject-atomicptr-arm`). Also: `lock` on stack-frame accesses
+non-RMW (`sarcasm-reject-alsptr-nonrmw`), and the arm64 atomic-annotation
+shape rejections (`sarcasm-reject-atomicptr-arm` — `;! atomic ptr` on casp,
+the double-width CAS that cannot update an invisicap pair atomically;
+`sarcasm-reject-atomicptr-casb-arm` on the sub-word casb;
+`sarcasm-reject-aptr-aload-on-store-arm` / `-astore-on-load-arm` /
+`-armw-nonrmw-arm` / `-armw-minmax-arm` — the direction/shape mismatches and
+the unsupported min/max RMW ops; `sarcasm-reject-aptr-writeback-arm` — an
+annotated atomic with a writeback memory operand no atomic encoding has). Also: `lock` on stack-frame accesses
 (`sarcasm-reject-lock-stack-mov` / `-mov-intel` / `-add` / `-add-intel` —
 the slot would virtualize/materialize before the `lock` validation runs,
 silently dropping the prefix), cmpxchg8b/cmpxchg16b on stack-frame slots
@@ -487,6 +570,38 @@ needed)). Most behavioral cases are exercised in both
 AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
+
+The 261 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
+the same pointer/trap/call/alloca core as x86_64, plus the arm64-specific
+surface — the NEON/FP support (17 `sarcasm-fp-*-arm` tests and
+`sarcasm-neon-arm`): scalar, pair and structure loads/stores at their exact
+widths (`sarcasm-neon-arm`, `sarcasm-fp-ldmulti-arm`), NEON arithmetic,
+conversions and fp16 (`sarcasm-fp-arith-arm`, `sarcasm-fp-cvt-arm`,
+`sarcasm-fpconv-arm`, `sarcasm-fp-half-arm`), frame-slot virtualization incl.
+the AAPCS callee-saved d8-d15 writeback forms and GPR/vector slot aliasing
+(`sarcasm-fp-frame-arm`), the width- and liveness-aware vector saves around
+injected pollcheck/filc_allocate/atomic runtime calls
+(`sarcasm-fp-live-*-arm`, `sarcasm-fp-gcstress-arm`), the ARMv8 crypto
+known-answer tests (`sarcasm-fp-crypto-arm` — AES-128 FIPS-197 KAT, SHA-256
+of "abc", pmull/pmull2 against a C carryless multiply), and per-width OOB
+traps (`sarcasm-fp-oob-*-arm`, `sarcasm-neon-oob-arm`,
+`sarcasm-half-oob-arm`); the atomics: the LSE RMW family
+(`sarcasm-lse-arm`), cas/casp (`sarcasm-cas-arm`,
+`sarcasm-casp-misalign-arm`), the load/store-exclusive family incl. a
+hand-written ldxr/stxr CAS retry loop (`sarcasm-llsc-arm`), the
+natural-alignment/OOB/read-only/null-cap atomic traps
+(`sarcasm-atomic-misalign-arm`, `sarcasm-atomic-oob-arm`,
+`sarcasm-atomic-ro-arm`, `sarcasm-nullcap-atomic-arm`), and the annotated
+pointer atomics (`sarcasm-aptr-*-arm`, mirroring the x86_64 Phase-2 suite);
+and the fixed-alloca region redirect off both sp and x29
+(`sarcasm-alloca-redirect-arm`). Trap coverage is made systematic by the
+`sarcasm-tm-*-arm` matrix (73 tests: the six fault categories crossed with
+the GPR widths 1/2/4/8, the 16-byte NEON ldr/str q forms, and LSE swp/stxr
+cells). Two manifest keys gate extension-dependent aarch64 tests:
+`needsARMCrypto` and `needsLSE` — probed when run-tests starts by compiling
+and running `filc/tests/has_armcrypto.c` resp. `filc/tests/has_lse.c`
+(Linux hwcap-bit probes, the arm64 analog of the x86_64 `needsAVX512` cpuid
+probe; a missing extension skips the test cleanly).
 
 Trap coverage is systematic in the `sarcasm-tm-*` matrix (121 tests, all AT&T-syntax
 x86_64 `return: failure` tests trapping in every subrun mode — default, scribble,

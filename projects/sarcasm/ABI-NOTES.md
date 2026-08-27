@@ -52,6 +52,25 @@ Fail path: `filc_optimized_access_check_fail(intval, lower, &origin)` (x0,x1,x2)
    `filc_store_barrier_for_lower_slow(myth, vlower)`.
 5. `[aux + offset] = vlower`  (store lower); `[pintval] = vintval` (store intval).
 
+### Atomic pointer operations (runtime calls, verified against clang aarch64 output)
+Exactly the calls filcc emits for C11 `_Atomic` pointer accesses. A `filc_ptr` is two
+consecutive argument words (intval, then lower); a `filc_ptr` result comes back
+`x0`=intval, `x1`=lower. The callees are `nounwind` (failures are fatal filc panics),
+so NO exception-flag check follows them; returned lowers are rooted immediately.
+- `filc_load_ptr_atomic_with_manual_tracking_outline(slot)` — x0=slot.iv, x1=slot.lo
+  (no myth; does not allocate; can only panic).
+- `filc_store_ptr_atomic_outline(myth, slot, value)` — x0=myth, x1=slot.iv,
+  x2=slot.lo, x3=value.iv, x4=value.lo. Can allocate (creates the 16-byte atomic
+  box / ensures aux) => GC safepoint; barriers value internally.
+- `filc_strong_cas_ptr_with_manual_tracking(myth, slot, 0, expected, new)` — all
+  eight argument words marshal in REGISTERS: x0=myth, x1=slot.iv, x2=slot.lo,
+  x3=0 (offset), x4=expected.iv, x5=expected.lo, x6=new.iv, x7=new.lo (AAPCS64 —
+  no stack marshalling, unlike SysV). Returns old (x0=iv, x1=lo). Success <=>
+  old.iv == expected.iv (raw-intval comparison; the runtime ignores expected's
+  lower — a null-lower expected is a legitimate "integer guess").
+sarcasm emits its usual inline access check (null-cap -> align 8 -> CanWrite for
+writers -> lower -> upper) before each call, so a trap gets sarcasm's origin.
+
 ## Stack allocations (`filc_allocate`)
 Fil-C turns stack buffers / `alloca` into GC allocations.
 - `filc_allocate(myth /*x0*/, sizeBytes /*x1*/)` returns the object base in `x0`; the
@@ -86,11 +105,25 @@ allocation. For fixed sizes, sp-relative address math inside `[base, base+size)`
   with a scalar before a later arg.) Arguments beyond the sixth word go on the stack;
   sarcasm does not marshal stack arguments and rejects such signatures.
 - return: w0 bit0 = exception flag (1=exception); x1 = ret.intval; x2 = ret.lower.
-- FP/vector (neon) classes are NOT decoded here yet: sarcasm currently rejects any
-  instruction naming a neon register, uniformly and cleanly, pending proper ARM64
-  FP/SIMD support (the x86_64 treatment — see ABI-NOTES-x86.md's FP section for
-  what the decoded x86_64 FP ABI looks like). FP types in `;!` signatures are
-  rejected on both architectures.
+- FP/vector (neon) classes are NOT decoded here yet: FP types in `;!` signatures
+  are rejected on both architectures (see ABI-NOTES-x86.md's FP section for what
+  the decoded x86_64 FP ABI looks like; arm64 marshalling is deferred the same
+  way). NEON registers in instruction BODIES are fully supported, though: they
+  pass through verbatim (sarcasm never register-allocates them), their heap
+  accesses get the standard capability+bounds check at exact widths, and their
+  frame slots virtualize into the GPR slot webs. The AAPCS64 vector discipline
+  that makes this work: v0-v7 and v16-v31 are fully caller-saved (and the Fil-C
+  runtime itself is built with a full NEON toolchain, so sarcasm's injected
+  runtime calls can clobber them), while v8-v15's low 64 bits are callee-saved
+  (the C callee preserves those itself, so only their upper halves are at risk
+  across an injected call). sarcasm therefore brackets its injected RETURNING
+  runtime calls (pollcheck slow path, filc_allocate, the ptr-store
+  aux-ensure/barrier slow paths) with liveness- and width-aware vector saves —
+  a v-reg live only in its low 4/8/16 bytes saves as sN/dN/qN, a dead one saves
+  nothing, v8-v15 save only when live at more than 8 bytes — and treats user
+  calls as killing caller-saved vector state. The AAPCS callee-saved d8-d15
+  prologue/epilogue spill forms in the input virtualize through slot webs like
+  any other frame slot, so the caller's vector values round-trip exactly.
 
 ## Stack overflow check (prologue, after saving regs, before frame push)
 ```

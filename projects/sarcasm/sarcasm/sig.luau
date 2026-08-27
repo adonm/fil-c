@@ -138,11 +138,12 @@ sig.TYPE_PTR = TYPE_PTR
 -- The `;! ... ptr` annotation family (exact strings, matched against the whole
 -- annotation). `load ptr` / `store ptr` annotate a plain 8-byte GPR pointer
 -- load/store; `atomic load ptr` / `atomic store ptr` their runtime atomic
--- forms; `atomic ptr` a cmpxchg pointer compare-exchange; `load store ptr` and
--- `atomic load store ptr` annotate pointer read-modify-write operations
--- (non-atomic resp. atomic, the latter either per-access or, with `lock`, a
--- compare-exchange loop). Shape validation lives in the per-arch backend
--- (ptrAccessKind / ptrAtomicShape); the atomic/RMW forms are x86_64-only.
+-- forms; `atomic ptr` a pointer compare-exchange (cmpxchg on x86_64, cas on
+-- arm64); `load store ptr` and `atomic load store ptr` annotate pointer
+-- read-modify-write operations (non-atomic resp. atomic, the latter either
+-- per-access or, with `lock`, a compare-exchange loop — on arm64 the atomic
+-- form lowers on an LSE RMW and `load store ptr` is rejected). Shape validation
+-- lives in the per-arch backend (ptrAccessKind / ptrAtomicShape).
 sig.PTR_ANNOTATIONS = {
 	["load ptr"] = true,
 	["store ptr"] = true,

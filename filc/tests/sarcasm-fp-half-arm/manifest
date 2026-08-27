@@ -1,0 +1,10 @@
+return:
+  success
+use-sarcasm:
+  true
+only-on-platform:
+  aarch64
+needsFP16:
+  true
+output-includes:
+  - "half 12 42"

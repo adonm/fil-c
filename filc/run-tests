@@ -77,6 +77,27 @@ raise unless $?.exited?
 raise unless $?.exitstatus == 0 or $?.exitstatus == 1
 $hasAVX512 = $?.exitstatus == 0
 
+# Check if we have ARM crypto
+raise unless system("clang -O3 -g -o filc/tests/has_armcrypto filc/tests/has_armcrypto.c")
+system("filc/tests/has_armcrypto > filc/tests/has_armcrypto.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasARMCrypto = $?.exitstatus == 0
+
+# Check if we have ARM LSE atomics
+raise unless system("clang -O3 -g -o filc/tests/has_lse filc/tests/has_lse.c")
+system("filc/tests/has_lse > filc/tests/has_lse.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasLSE = $?.exitstatus == 0
+
+# Check if we have ARMv8.2 FP16 (scalar half-precision)
+raise unless system("clang -O3 -g -o filc/tests/has_fp16 filc/tests/has_fp16.c")
+system("filc/tests/has_fp16 > filc/tests/has_fp16.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasFP16 = $?.exitstatus == 0
+
 # Check if we're using glibc
 $hasGLIBC = (Pathname.new($pizfix) + "lib" + "libc.so.6666").exist?
 
@@ -132,6 +153,24 @@ $testDirectory.each_entry {
     if manifest["needsAVX512"] and not $hasAVX512
         if $verbose
             puts "Skipping #{testName}, requires AVX512"
+        end
+        next
+    end
+    if manifest["needsARMCrypto"] and not $hasARMCrypto
+        if $verbose
+            puts "Skipping #{testName}, requires ARM crypto"
+        end
+        next
+    end
+    if manifest["needsLSE"] and not $hasLSE
+        if $verbose
+            puts "Skipping #{testName}, requires ARM LSE"
+        end
+        next
+    end
+    if manifest["needsFP16"] and not $hasFP16
+        if $verbose
+            puts "Skipping #{testName}, requires ARMv8.2 FP16"
         end
         next
     end

@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/libevent-2.1.12
+cd projects/libevent-2.1.13
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

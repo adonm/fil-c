@@ -34,6 +34,7 @@ void *(*volatile my_malloc) (size_t) = malloc;
 int
 main ()
 {
+#ifndef __FILC__
   /* Check that malloc sets errno when it fails.
      Do this only in 64-bit processes, because there are many bi-arch systems
      nowadays where a 32-bit process can actually allocate 2 GiB of RAM.  */
@@ -50,12 +51,13 @@ main ()
       p = malloc (SIZE_MAX / 3);
       ASSERT (p == NULL);
       ASSERT (errno == ENOMEM);
-
-      return test_exit_status;
     }
   else
     {
       fputs ("Skipping test: size_t is not 64-bits wide\n", stderr);
       return 77;
     }
+#endif
+
+  return test_exit_status;
 }

@@ -68,6 +68,7 @@ main (int argc, _GL_UNUSED char **argv)
     }
 #endif
 
+#ifndef __FILC__
   /* Check that realloc sets errno when it fails.
      Do this only in 64-bit processes, because there are many bi-arch systems
      nowadays where a 32-bit process can actually allocate 2 GiB of RAM.  */
@@ -85,6 +86,7 @@ main (int argc, _GL_UNUSED char **argv)
       ASSERT (r == NULL);
       ASSERT (errno == ENOMEM);
     }
+#endif
 
   free (p);
   return test_exit_status;

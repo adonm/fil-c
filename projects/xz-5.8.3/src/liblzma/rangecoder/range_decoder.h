@@ -47,7 +47,8 @@
 #	if defined(__x86_64__) && !defined(__ILP32__) \
 			&& !defined(__arm64ec__) && !defined(_M_ARM64EC) \
 			&& !defined(__NVCOMPILER) \
-			&& (defined(__GNUC__) || defined(__clang__))
+			&& (defined(__GNUC__) || defined(__clang__)) \
+                        && !defined(__PIZLONATOR_WAS_HERE__)
 #		define LZMA_RANGE_DECODER_CONFIG 0x1F0
 #	else
 #		define LZMA_RANGE_DECODER_CONFIG 0

@@ -26,12 +26,12 @@ EXTRA_DIST += liblzma_generic.map liblzma_linux.map validate_map.sh
 if COND_SYMVERS_GENERIC
 liblzma_la_LDFLAGS += \
 	$(LINKER_FLAG_UNDEFINED_VERSION) \
-	-Wl,--version-script=$(top_srcdir)/src/liblzma/liblzma_generic.map
+	-XCClinker --version-script=$(top_srcdir)/src/liblzma/liblzma_generic.map
 endif
 if COND_SYMVERS_LINUX
 liblzma_la_LDFLAGS += \
 	$(LINKER_FLAG_UNDEFINED_VERSION) \
-	-Wl,--version-script=$(top_srcdir)/src/liblzma/liblzma_linux.map
+	-XCClinker --version-script=$(top_srcdir)/src/liblzma/liblzma_linux.map
 endif
 
 liblzma_la_SOURCES += ../common/tuklib_physmem.c

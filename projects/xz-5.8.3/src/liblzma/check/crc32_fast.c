@@ -22,6 +22,8 @@
 #	include "crc32_loongarch.h"
 #endif
 
+#include <stdfil.h>
+
 
 #ifdef CRC32_GENERIC
 
@@ -177,6 +179,10 @@ extern LZMA_API(uint32_t)
 lzma_crc32(const uint8_t *buf, size_t size, uint32_t crc)
 {
 #if defined(CRC32_GENERIC) && defined(CRC32_ARCH_OPTIMIZED)
+        if (!zinbounds(zmkptr(buf, (uintptr_t)buf & -16)) ||
+            !zinbounds(zmkptr(buf, (((uintptr_t)buf + size + 15) & -16) - 1)))
+                return lzma_crc32_generic(buf, size, crc);
+
 /*
 #ifndef HAVE_FUNC_ATTRIBUTE_CONSTRUCTOR
 	// See crc32_dispatch(). This would be the alternative which uses

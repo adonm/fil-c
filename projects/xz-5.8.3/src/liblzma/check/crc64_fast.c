@@ -18,6 +18,8 @@
 #	include "crc_x86_clmul.h"
 #endif
 
+#include <stdfil.h>
+
 
 #ifdef CRC64_GENERIC
 
@@ -147,6 +149,10 @@ extern LZMA_API(uint64_t)
 lzma_crc64(const uint8_t *buf, size_t size, uint64_t crc)
 {
 #if defined(CRC64_GENERIC) && defined(CRC64_ARCH_OPTIMIZED)
+        if (!zinbounds(zmkptr(buf, (uintptr_t)buf & -16)) ||
+            !zinbounds(zmkptr(buf, (((uintptr_t)buf + size + 15) & -16) - 1)))
+                return lzma_crc64_generic(buf, size, crc);
+
 	return crc64_func(buf, size, crc);
 
 #elif defined(CRC64_ARCH_OPTIMIZED)

@@ -782,7 +782,7 @@ cd ..
 rm -rf pizlonated-procps
 hash -r
 
-tar -xf $FILCSRC/projects/libevent-2.1.12/pizlonated-libevent.tar.gz
+tar -xf $FILCSRC/projects/libevent-2.1.13/pizlonated-libevent.tar.gz
 cd pizlonated-libevent
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure  --prefix=/opt/fil --sysconfdir=/etc
 make -j `nproc`

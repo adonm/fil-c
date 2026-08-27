@@ -832,6 +832,39 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
 - calls (`;! sig` on the call insn) -> marshal args into the Fil-C CC registers, call the
   callsite thunk `pizlonatedFI<sig>_foo`, test the exception flag (propagate on throw),
   read results. Emits one weak/hidden callsite thunk per distinct called extern.
+- indirect calls (`call *%reg ;! sig(...)`, x86_64 only — arm64's validateBody
+  rejects every indirect call) -> filcc's exact indirect-call sequence for the
+  flight pointer (P = target intval temp, L = its lower temp): L==0 -> fail;
+  aux = [L-8] must satisfy (aux & 0x780000000000000) == 0x80000000000000
+  (special type FUNCTION); P must equal aux & 0xFFFFFFFFFFFF (the canonical
+  entrypoint); then the signature word at [L+16] dispatches: a match calls
+  the fast entrypoint at [L+0] with the direct call's fast-CC marshalling
+  (rdi=myth, rsi=L, dense args; pointer args as iv,lower pairs), a mismatch
+  runs an INLINED generic (buffer-CC) call through [L+8] — the arguments are
+  stored into my_thread's CC buffer (data words at 128(myth), aux/lower words
+  at 384(myth), zeroed aux for scalars), rdx = argument byte size, and after
+  the call the returned ret_size in rdx is checked (else
+  filc_cc_rets_check_failure) and the result unmarshalled from the buffer
+  into the fast-CC return registers — exactly the callsite thunk's L_generic
+  mismatch path, so (unlike filcc, which calls the weak pizlonated1ET<sig>
+  thunk there) sarcasm has no link dependency on pizlonated1ET<sig>, which
+  exists only when some C compilation unit contains an indirect callsite with
+  that signature. Both paths rejoin at the direct call's exception-flag test
+  and result unpacking (a pointer result's lower comes from rcx and is rooted
+  immediately). All failure edges share one stub:
+  filc_check_function_call_fail(rdi=P, rsi=L). The target register's web must
+  be a known pointer value (ptrflow must know its lower) — a pointer
+  argument, a `;! load ptr` result, or a ptr-returning call's result;
+  anything else is a compile-time error, as are an UNANNOTATED indirect call
+  (historically emitted raw with no checks and not even caller-saved clobber
+  modeling — a correctness bug) and ANY memory-operand indirect call (`call
+  *mem` — the loaded value has no capability; load the function pointer into
+  a register first, e.g. via `;! load ptr`). The lift models the yolo
+  argument registers as uses and the result register as a def for an
+  annotated indirect call exactly like a direct one, and the renderer emits
+  the AT&T `*` for indirect call/jmp operands (a passthrough `jmp *%rax`
+  previously lost the marker — clang's integrated assembler rejects the
+  star-less form).
 - loops (back-edges from the CFG) -> insert a pollcheck at the loop header.
 - alloca annotations (`;! alloca size (x)` / `;! alloca result (x)`, or `;! alloca result
   size=N`) -> a GC allocation via filc_allocate, not real stack memory.
@@ -876,6 +909,17 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   thunk also needs one callee-saved hold register per argument word, and its hold pool
   is 4 registers — the same limit). On arm64 the fixed x2..x7 pairs cap a callsite at 3
   arguments, same as entry signatures. An over-limit call is rejected.
+- Indirect calls: on arm64 ALL indirect calls are rejected (validateBody —
+  "indirect call through a raw register cannot be made memory-safe"). On
+  x86_64 a register-indirect call is supported when it carries a `;!`
+  callsite signature and its target register's web is a known pointer value
+  (see the transform section's indirect-call bullet for the emitted check and
+  dispatch sequence); rejected are: an unannotated register-indirect call
+  ("indirect call has no ;! signature annotation"), ANY memory-indirect call
+  `call *mem`, annotated or not ("indirect call through a memory operand
+  cannot be made memory-safe (load the function pointer into a register
+  first...)"), and an annotated call whose target web is not pointer-typed
+  ("indirect call target must be a function pointer value...").
 - Floating-point/vector type classes (float, double, long double, the vector
   classes) are rejected in ALL `;!` signatures — entry signatures and callsite
   annotations alike, on both architectures. This is deliberately deferred, not
@@ -1034,8 +1078,9 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     direct branch — or the output failed at gas). Unaffected: direct
     branches (call/jmp/jcc to symbols and numeric local labels),
     register-indirect branches (`jmp *%rdi`), and register-based
-    memory-indirect branches (`call *(%rax,%rcx,8)` — bounds-checked like
-    any memory operand). Exempt: bare code-target operands (call/jmp/jcc/
+    memory-indirect branches (`jmp *(%rax,%rcx,8)` — bounds-checked like
+    any memory operand; memory-indirect CALLS are instead rejected — see the
+    indirect-call bullets). Exempt: bare code-target operands (call/jmp/jcc/
     loop*/xbegin, incl. numeric local labels), lea (address arithmetic, no
     dereference — `leaq myglobal, %rax` materializes the address as a
     value, like the supported `leaq myglobal(%rip), %rax`), $imm, and

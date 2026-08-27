@@ -27,6 +27,7 @@ M.ALLOCATABLE = isa.ALLOCATABLE
 -- rdx=lower (plain SysV: two consecutive integer return words).
 M.cc = {
 	myth = isa.CC.myth, retFlag = isa.CC.retFlag, retIv = isa.CC.retIv, retLo = isa.CC.retLo,
+	fo = isa.CC.fo,                               -- rsi (callee function-object lower at a call)
 	argIv = isa.CC.argIv, argLo = isa.CC.argLo,
 	yoloArg = function(k) return isa.SYSV[k] end,
 	rtArg = function(k) return isa.SYSV[k] end,   -- runtime-call arg registers

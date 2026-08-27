@@ -59,7 +59,13 @@ function lift.liftFunction(body, opts)
 					table.insert(c.uses, { kind = "reg", rc = "gpr", num = rn, width = 64, name = "x" .. rn, retReg = true })
 				end
 			end
-			if c.control == "call" and opts.callInfo then
+			-- Annotated calls — direct AND register-indirect (x86_64 supports
+			-- annotated indirect calls; an unannotated indirect call yields no
+			-- callInfo and is rejected by the transform's annotation walk) — get
+			-- their yolo argument registers modeled as uses and the yolo result
+			-- register as a def, so the marshalling at the call reads/writes the
+			-- right webs.
+			if (c.control == "call" or c.control == "indcall") and opts.callInfo then
 				local ci = opts.callInfo(st)
 				if ci then
 					for _, rn in (ci.argRegs or {}) do

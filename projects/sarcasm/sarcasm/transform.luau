@@ -238,7 +238,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			-- Per-arch callsite arity validation (the argument marshal has a finite
 			-- number of CC registers). Raises a clean sarcasm: error when over limit.
 			if cgm.checkCallsiteSig then
-				local callee = stmt.operands and stmt.operands[1] and stmt.operands[1].text or "?"
+				-- a direct call names a symbol; an indirect call's target register
+				-- has a register name instead of a symbol text.
+				local op1 = stmt.operands and stmt.operands[1]
+				local callee = (op1 and (op1.text or op1.name)) or "?"
 				cgm.checkCallsiteSig(cs, callee)
 			end
 			callSigCache[stmt] = cs
@@ -290,6 +293,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- operation). Both are now clean compile-time errors.
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
 	local callPtrDefs = {}
+	-- x86_64 annotated register-indirect calls (`call *%reg ;! sig(...)`); arm64
+	-- rejects every indirect call in validateBody before this walk ever runs.
+	local indcallNodes = {}
 	-- Atomic pointer operations and pointer RMWs (x86_64 cmpxchg/movq forms;
 	-- arm64 cas/LSE forms — `;! load store ptr` excepted, arm64-only rejection).
 	local atomicLoadPtrDefs, atomicStorePtrNodes = {}, {}
@@ -346,6 +352,28 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				end
 			elseif node.c.control == "call" and ann then
 				callNodes[node] = ann
+				local cs = callSigOf(node.stmt)
+				if cs and cs.retIsPtr then callPtrDefs[node] = true end
+			elseif node.c.control == "indcall" then
+				-- Indirect calls (x86_64-only in practice — arm64's validateBody
+				-- rejects every indirect call before the lift; see
+				-- strictBodyValidation). A MEMORY-indirect call (`call *mem`) can
+				-- never be made memory-safe: the loaded value carries no
+				-- capability. A register-indirect call is supported exactly like an
+				-- annotated direct call, but only when it carries a callsite
+				-- signature — an unannotated one would get no callee-is-a-function
+				-- checks (and historically didn't even model the caller-saved
+				-- clobbers or the result redefinition).
+				if cgm.memOperand(node.stmt) then
+					error("sarcasm: indirect call through a memory operand cannot be made"
+						.. " memory-safe (load the function pointer into a register first,"
+						.. " e.g. with `;! load ptr`, then call the register): " .. raw)
+				end
+				if not ann then
+					error("sarcasm: indirect call has no ;! signature annotation (annotate"
+						.. " the callsite, e.g. `call *%rax ;! int(ptr)`): " .. raw)
+				end
+				indcallNodes[node] = ann
 				local cs = callSigOf(node.stmt)
 				if cs and cs.retIsPtr then callPtrDefs[node] = true end
 			elseif ann then
@@ -1289,6 +1317,186 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 	end
 
+	-- Annotated register-indirect call (`call *%reg ;! sig(...)`, x86_64-only — arm64
+	-- rejects all indirect calls in validateBody). Emits filcc's exact indirect-call
+	-- sequence for a flight pointer (P = target intval, L = target lower):
+	--   1. L == 0 -> fail (null capability);
+	--   2. aux = [L-8]; (aux & 0x780000000000000) != 0x80000000000000 -> fail
+	--      (object's special type must be FUNCTION);
+	--   3. P != (aux & 0xFFFFFFFFFFFF) -> fail (ptr must equal the object's aux
+	--      pointer);
+	--   4. [L+16] == S (the callsite signature number) -> fast path: call *[L+0]
+	--      with the fast-CC marshalling below; otherwise the GENERIC path marshals
+	--      the arguments through my_thread's CC buffer (data words at 128(myth),
+	--      aux/lower words at 384(myth)), sets edx = argument byte size, and calls
+	--      the generic entrypoint *[L+8], then tests the exception flag FIRST (on
+	--      the exception edge rdx is undefined, so the ret-size check must not run
+	--      first), checks the returned ret_size in rdx, and unmarshals the result
+	--      from the buffer into the fast-CC return registers — exactly the
+	--      L_generic mismatch path of the direct-call callsite thunk
+	--      (x86_64_glue.callsiteThunk), INLINED. filcc instead
+	--      dispatches to pizlonated1ET<S> there, but that weak thunk only exists
+	--      when some C compilation unit in the link contains an indirect callsite
+	--      with signature S — referencing it would be a link error otherwise, so
+	--      sarcasm must not (and does not) depend on it. The buffer-CC callee has
+	--      the SAME callsite-visible ABI as the fast entrypoint (al bit0 =
+	--      exception flag; result in rdx/rcx after unmarshalling), so both paths
+	--      rejoin at the shared exception check + result unpacking.
+	--   5. fail: rdi = P, rsi = L, call filc_check_function_call_fail@PLT
+	--      (noreturn; the runtime re-derives the precise cause).
+	-- No bounds check: a function object's bounds are degenerate (upper == lower).
+	-- GC safety is exactly emitCall's: the target's lower and every pointer
+	-- argument's lower were rooted into the frame's root slots when their webs
+	-- were defined (entry, `;! load ptr`, a ptr-returning call), so every lower
+	-- live across the call is in its slot; a pointer result's lower is rooted
+	-- right after the call.
+	local indcallCounter = 0
+	local function emitIndirectCall(node)
+		local cs = callSigOf(node.stmt)
+		local raw = node.stmt.raw or node.stmt.mnemonic or "?"
+		local targetOp = node.stmt.operands and node.stmt.operands[1]
+		local fpIv = targetOp and node.opTemp[targetOp] or nil
+		local fpLo = fpIv and pf.lowerTemp[fpIv] or nil
+		if not (fpIv and pf.isPtr[fpIv] and fpLo) then
+			-- The target register's web is not a known pointer value, so its
+			-- lower (capability) is unknowable and the callee-is-a-function
+			-- checks cannot be emitted.
+			error("sarcasm: indirect call target must be a function pointer value"
+				.. " (a pointer argument, or the result of `;! load ptr` /"
+				.. " a ptr-returning call): " .. raw)
+		end
+		indcallCounter += 1
+		local tag = name .. "_" .. indcallCounter
+		local genL = ".Lindcall_generic_" .. tag
+		local rejoinL = ".Lindcall_rejoin_" .. tag
+		local failL = ".Lindcall_fail_" .. tag
+		local retfailL = ".Lindcall_retfail_" .. tag
+
+		-- yolo argument webs (SysV argument registers), exactly like emitCall.
+		local argTemps = {}
+		for _, r in node.c.uses do if r.argReg then argTemps[r.num] = node.opTemp[r] end end
+
+		-- 1. null capability
+		cg.branchZero(fpLo, failL)
+		-- 2. special type == FUNCTION (aux word at [L-8])
+		local auxT = allocTemp({ role = "scratch" })
+		cg.load(auxT, fpLo, -8, 8)
+		local maskedT = allocTemp({ role = "scratch" })
+		cg.movBig(maskedT, "0x780000000000000")
+		emit(build.insn("and", { build.rt(maskedT), build.rt(auxT) },
+			{ defs = { maskedT }, uses = { maskedT, auxT } }))
+		local valT = allocTemp({ role = "scratch" })
+		cg.movBig(valT, "0x80000000000000")
+		cg.cmpBranch(maskedT, valT, "ne", failL)
+		-- 3. ptr == canonical entrypoint (aux & 0xFFFFFFFFFFFF)
+		local canonT = allocTemp({ role = "scratch" })
+		cg.move(canonT, auxT, true)
+		cg.maskLow48(canonT)
+		cg.cmpBranch(fpIv, canonT, "ne", failL)
+		-- 4. signature dispatch: [L+16] == S -> fast entrypoint at [L+0]
+		local sigT = allocTemp({ role = "scratch" })
+		cg.load(sigT, fpLo, 16, 8)
+		cg.cmpImmBranch(sigT, cs.signature, "ne", genL)
+		local fnT = allocTemp({ role = "scratch" })
+		cg.load(fnT, fpLo, 0, 8)
+		-- fast path: rdi = myth, rsi = callee lower, dense fast-CC args
+		cg.move(pColored(cc.myth), vMyth)
+		cg.move(pColored(cc.fo), fpLo)
+		local fastUses = { pColored(cc.myth), pColored(cc.fo), fnT }
+		for k = 1, cs.argWords do
+			local aTemp = argTemps[cc.yoloArg(k)]
+			cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
+			table.insert(fastUses, pColored(cc.argIv(cs.argTypes, k)))
+			if cs.argTypes[k] == 7 then table.insert(fastUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
+		end
+		local fastCall = build.insn("call", { build.rt(fnT) },
+			{ control = "call", uses = fastUses, defs = cg.callerSavedClobbers() })
+		fastCall.indirect = true
+		emit(fastCall)
+		cg.jump(rejoinL)
+		-- generic (buffer-CC) path for a signature mismatch: marshal the args into
+		-- my_thread's CC buffer, edx = argument byte size, call *[L+8].
+		cg.label(genL)
+		local argBytes = cs.argWords * 8
+		local zeroT = nil
+		for k = 1, cs.argWords do
+			local aTemp = argTemps[cc.yoloArg(k)]
+			cg.store(aTemp, vMyth, 128 + 8 * (k - 1))
+			local loT = (cs.argTypes[k] == 7) and pf.lowerTemp[aTemp] or nil
+			if loT then
+				cg.store(loT, vMyth, 384 + 8 * (k - 1))
+			else
+				-- scalar arg (or a pointer arg whose web has no capability):
+				-- the aux word is 0, exactly like the callsite thunk.
+				if not zeroT then zeroT = allocTemp({ role = "scratch" }); cg.moveZero(zeroT) end
+				cg.store(zeroT, vMyth, 384 + 8 * (k - 1))
+			end
+		end
+		cg.moveImm(pColored(cc.rtArg(3)), argBytes)   -- edx = argument byte size
+		cg.move(pColored(cc.myth), vMyth)             -- rdi = myth
+		cg.move(pColored(cc.fo), fpLo)                -- rsi = callee lower
+		local genCall = build.insn("call", { build.memx(build.rt(fpLo), { dispVal = 8 }) },
+			{ control = "call",
+				uses = { pColored(cc.myth), pColored(cc.fo), pColored(cc.rtArg(3)), fpLo },
+				defs = cg.callerSavedClobbers() })
+		genCall.indirect = true
+		emit(genCall)
+		-- Test the exception flag IMMEDIATELY after the generic call, BEFORE the
+		-- ret-size check and the result unmarshal — exactly L_generic's order in
+		-- the callsite thunk (and filcc's pizlonated1ET thunk). On the exception
+		-- edge the buffer CC leaves rdx (ret_size) UNDEFINED, so a ret-size check
+		-- running first could spuriously fire filc_cc_rets_check_failure instead
+		-- of propagating the exception. Branches to the SAME shared exception
+		-- label the fast path's rejoin test uses.
+		cg.exceptionBranch(ensureExcLabel())
+		if cs.retWords >= 1 then
+			-- the buffer CC returns the actual result byte size in rdx; it must
+			-- cover the signature's result words (else filc_cc_rets_check_failure),
+			-- then the result unmarshals into the fast-CC return registers.
+			local retBytes = cs.retWords * 8
+			cg.cmpImmBranch(pColored(cc.retIv), retBytes - 1, "ule", retfailL)
+			cg.load(pColored(cc.retIv), vMyth, 128, 8)
+			if cs.retIsPtr then cg.load(pColored(cc.retLo), vMyth, 384, 8) end
+		end
+		-- rejoin: exception-flag test + result unpacking, identical to emitCall.
+		-- (On the generic fall-through edge the flag is already known clear, so
+		-- the shared re-test just falls through.)
+		cg.label(rejoinL)
+		cg.exceptionBranch(ensureExcLabel())
+		if not cs.isVoid then
+			cg.move(node.defTemps[1], pColored(cc.retIv))
+			if cs.retIsPtr then
+				local loT = pf.lowerTemp[node.defTemps[1]]
+				if loT then
+					cg.move(loT, pColored(cc.retLo))
+					emitRootStore(loT)
+				end
+			end
+		end
+		-- fail stubs (noreturn; emitted at function end): the function-call check
+		-- failure gets the flight pointer (rdi = P, rsi = L); the buffer-CC
+		-- ret-size failure gets (rdi = actual size, rsi = expected size, rdx = 0).
+		table.insert(failStubs, build.label(failL))
+		table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(1)), build.rt(fpIv) },
+			{ defs = { pColored(cc.rtArg(1)) }, uses = { fpIv } }))
+		table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(2)), build.rt(fpLo) },
+			{ defs = { pColored(cc.rtArg(2)) }, uses = { fpLo } }))
+		table.insert(failStubs, build.insn("call", { build.sym("filc_check_function_call_fail", "plt") },
+			{ control = "call", uses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) } }))
+		if cs.retWords >= 1 then
+			local retBytes = cs.retWords * 8
+			table.insert(failStubs, build.label(retfailL))
+			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(2), 32), build.imm(retBytes) },
+				{ defs = { pColored(cc.rtArg(2)) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(1)), build.rt(pColored(cc.retIv)) },
+				{ defs = { pColored(cc.rtArg(1)) }, uses = { pColored(cc.retIv) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(3), 32), build.imm(0) },
+				{ defs = { pColored(cc.rtArg(3)) } }))
+			table.insert(failStubs, build.insn("call", { build.sym("filc_cc_rets_check_failure", "plt") },
+				{ control = "call", uses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)) } }))
+		end
+	end
+
 	-- Stack allocations. `;! alloca size (x)` captures the byte size; `;! alloca result (x)` /
 	-- `;! alloca result size=N` becomes filc_allocate(myth, size); payload = allocation+16.
 	local allocaSizes = {}
@@ -1373,6 +1581,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				emit(build.insn("ret", {}, { control = "return", fallsThrough = false }))
 			elseif c.control == "call" and callNodes[node] then
 				emitCall(node)
+			elseif c.control == "indcall" then
+				-- The annotation classification above already rejected every
+				-- unannotated or memory-operand indirect call (and arm64 rejected
+				-- all of them in validateBody), so only an annotated
+				-- register-indirect call reaches here.
+				emitIndirectCall(node)
 			elseif emitRegionRedirect(node) then
 				-- sp-relative address computation redirected into an alloca region
 			else

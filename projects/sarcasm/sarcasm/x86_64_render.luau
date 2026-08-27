@@ -186,9 +186,21 @@ function x86_64_render.renderInsn(node, colorNum, syntax)
 	-- on exactly-modeled memory-destination RMWs) re-emits ahead of the mnemonic.
 	local lockPfx = ((node.stmt and node.stmt.lockPrefix) or node.lockPrefix) and "lock " or ""
 
-	-- control-only forms
-	if node.indirect and (low == "call" or low == "jmp") then
-		local tgt = renderOperand(node, ops[1], colorNum, syntax)
+	-- control-only forms: an indirect call/jump renders its target operand with
+	-- the AT&T `*`. The marker comes from a synthesized node's `indirect` flag
+	-- (the transform's indirect-call sequence), from the PARSED operand's own
+	-- `*` (x86_64_parse records it in op.indirect), or implicitly: a call/jmp
+	-- whose operand is a register or memory operand is ALWAYS indirect (x86 has
+	-- no direct register/memory call or jmp — direct forms take a symbol), which
+	-- also covers Intel-syntax input (`jmp rax` has no `*` to record). Losing
+	-- the marker renders `jmp %rax`, which clang's integrated assembler rejects
+	-- and gas only warns about.
+	local ctlBase = x86.baseMnemonic(mnem)
+	local op1 = ops[1]
+	local indir = node.indirect or (op1 and op1.indirect)
+		or (op1 and (op1.kind == "reg" or op1.kind == "mem"))
+	if indir and (ctlBase == "call" or ctlBase == "jmp") then
+		local tgt = renderOperand(node, op1, colorNum, syntax)
 		return "\t" .. low .. "\t" .. (syntax == "att" and ("*" .. tgt) or tgt)
 	end
 

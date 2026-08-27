@@ -128,6 +128,52 @@ Store barrier: `movq filc_current_marking_state@GOTPCREL(%rip),%r; cmpl $0,(%r);
 signature `cmpq $SIG, 16(FO)`; direct: `movq (FO),%rax; <restore CC>; jmpq *%rax`; else
 marshal to CC buffers and call generic entrypoint. Fail: filc_check_function_call_fail.
 
+## Indirect calls (`call *%reg ;! sig(...)` — emitted by sarcasm, x86_64 only)
+For a register-indirect call with a callsite signature annotation, sarcasm emits
+filcc's exact indirect-call sequence for the flight pointer (P = target intval,
+L = target lower — the target register's web must be a known pointer value, so
+its lower is known):
+
+```
+testq L, L ; je FAIL                          # null capability
+movq -8(L), %a ; movq $0x780000000000000, %b ; andq %a, %b
+movq $0x80000000000000, %c ; cmpq %c, %b ; jne FAIL   # special type == FUNCTION
+shlq $16, %a ; shrq $16, %a                   # a = aux & 0xFFFFFFFFFFFF
+cmpq %a, P ; jne FAIL                         # ptr == canonical entrypoint
+movq 16(L), %a ; cmpq $SIG, %a ; jne GENERIC  # signature dispatch
+movq (L), %tgt                                # fast entrypoint
+movq myth, %rdi ; movq L, %rsi ; <dense fast-CC args>
+call *%tgt
+jmp REJOIN
+GENERIC:                                      # signature mismatch: buffer CC
+<store args at 128(myth), aux/lowers at 384(myth), $0 for scalar aux>
+movq $ARGBYTES, %rdx ; movq myth, %rdi ; movq L, %rsi
+call *8(L)                                    # generic entrypoint
+testb $1, %al ; jne EXC                       # exception flag FIRST: on the exception edge
+                                              # rdx (ret_size) is undefined, so the ret-size
+                                              # check must not run before this test
+cmpq $RETBYTES-1, %rdx ; jbe RETFAIL          # ret_size must cover the result
+movq 128(myth), %rdx ; movq 384(myth), %rcx   # unmarshal (rcx only for ptr ret)
+REJOIN:
+testb $1, %al ; jne EXC                       # exception flag, as for direct calls
+                                              # (already known clear on the generic edge)
+<result unpacking identical to a direct call; a ptr result's lower is rooted>
+FAIL:    movq P, %rdi ; movq L, %rsi ; callq filc_check_function_call_fail@PLT
+RETFAIL: movl $RETBYTES, %esi ; movq %rdx, %rdi ; xorl %edx, %edx
+         callq filc_cc_rets_check_failure@PLT
+```
+
+The GENERIC block inlines exactly what the callsite resolver's L_generic
+mismatch path does (and what filcc's weak pizlonated1ET<sig> thunk does for a
+C indirect callsite), so sarcasm never references pizlonated1ET<sig> — that
+weak symbol exists only when some C compilation unit in the link contains an
+indirect callsite with signature SIG, so referencing it could be a link error.
+No bounds check appears anywhere in the sequence: a function object's bounds
+are degenerate (upper == lower). Unannotated register-indirect calls, all
+memory-indirect calls (`call *mem`), and annotated calls whose target web is
+not a known pointer value are compile-time errors; arm64 rejects all indirect
+calls.
+
 ## Data directives
 `.quad` (= .xword), `.long` (= .word), `.zero`, `.byte`, `.asciz` — same layout as ARM64.
 `movabsq $imm, %reg` for 64-bit immediates; `endbr64` (CET marker; safe to keep/ignore).

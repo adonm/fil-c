@@ -70,7 +70,9 @@ Input assembly must carry `;!` annotations:
   swp's Wt) receives the old value WITH its capability, exactly like an
   `;! atomic load ptr` result. The native LSE forms write no flags, so NZCV
   is preserved across the sequence rather than recomputed;
-- on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`;
+- on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`. On x86_64 the
+  same annotation also marks a register-indirect call (`call *%rax ;! ptr(int)`) — see
+  "Indirect calls" below;
 - on stack allocations: `;! alloca size (x)` on the `sub sp,...` and `;! alloca result (x)`
   on the instruction that yields the pointer (dynamic), or `;! alloca result size=N` for a
   fixed-size buffer. These become GC allocations (`filc_allocate`), not real stack memory.
@@ -86,6 +88,41 @@ and are rejected on
 cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64), which cannot operate
 on pointers; any other
 unrecognized annotation string is a compile-time error.
+
+### Indirect calls (x86_64)
+
+On x86_64, a register-indirect call carrying a callsite signature is supported
+exactly like an annotated direct call:
+
+```
+call *%rax    ;! ptr(int)
+```
+
+The target register's web must be a known pointer value (a pointer argument,
+the result of `;! load ptr`, or a pointer-returning call) so that its
+capability (lower) is known. The emitted code is filcc's exact indirect-call
+sequence for the flight pointer (P = target intval, L = target lower): L==0
+traps; the aux word at [L-8] must have special type FUNCTION
+((aux & 0x780000000000000) == 0x80000000000000); P must equal the object's
+canonical entrypoint (aux & 0xFFFFFFFFFFFF); then the signature word at
+[L+16] selects the fast entrypoint at [L+0] on a match (fast-CC args in
+rdi=myth, rsi=L, rdx/rcx/r8/r9 densely packed) or, on a mismatch, an inlined
+generic (buffer-CC) call through [L+8] — the arguments are marshalled into
+my_thread's CC buffer (data at 128(myth), aux at 384(myth)) exactly like the
+direct-call resolver thunk's mismatch path, so there is NO link dependency on
+the weak pizlonated1ET<sig> thunk filcc uses (it exists only when some C
+compilation unit performs an indirect call with that signature). All failure
+edges share one stub calling filc_check_function_call_fail (rdi=P, rsi=L),
+which reports the precise cause (null object / isn't even special / wrong
+special type / ptr != aux). Results (including pointer results, with the
+returned lower rooted) and the exception flag behave exactly like a direct
+call. Three forms are rejected with clean errors: an UNANNOTATED
+register-indirect call (no `;!` signature — historically it got no checks and
+not even caller-saved clobber modeling), ANY memory-indirect call
+(`call *mem`, annotated or not — load the function pointer into a register
+first, e.g. via `;! load ptr`), and an annotated call whose target web is not
+a known pointer value. On arm64 ALL indirect calls remain rejected
+(validateBody), as before.
 
 See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-att/hash.s`
 (AT&T syntax) and `filc/tests/sarcasm-hash-int/hash.s` (Intel syntax), or
@@ -328,7 +365,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   exemption rather than being silently dropped into a semantic-changing
   direct branch or gas-failing output); unaffected are direct branches
   (call/jmp/jcc to symbols, numeric labels), register-indirect branches
-  (`jmp *%rdi`), and register-based memory-indirect branches (bounds-checked);
+  (`jmp *%rdi`), and register-based memory-indirect branches (`jmp
+  *(%rax,%rcx,8)` — bounds-checked like any memory operand; memory-indirect
+  CALLS are instead rejected — see "Indirect calls");
   exempt are
   the bare code-target operands (call/jmp/jcc/loop*/xbegin, incl. numeric
   local labels), lea address arithmetic, $imm, and segment-register moves

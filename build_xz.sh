@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/xz-5.6.2
+cd projects/xz-5.8.3
 extract_source
 CC="$CCPREFIX$PWD/../../../build/bin/clang -O -g" ./configure \
     --disable-assembler --prefix=$PWD/../../../pizfix

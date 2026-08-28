@@ -867,13 +867,13 @@ cd ..
 rm -rf pizlonated-curl
 hash -r
 
-tar -xf $FILCSRC/pizlix/wget-1.24.5.tar.gz
-cd wget-1.24.5
+tar -xf $FILCSRC/pizlix/wget-1.25.0.tar.gz
+cd wget-1.25.0
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --with-ssl=openssl
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf wget-1.24.5
+rm -rf wget-1.25.0
 hash -r
 
 tar -xf $FILCSRC/projects/git-2.55.0/pizlonated-git.tar.gz

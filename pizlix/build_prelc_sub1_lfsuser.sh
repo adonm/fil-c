@@ -257,8 +257,8 @@ rm -v $LFS/yolo/lib/libmagic.la
 cd ..
 rm -rf file-5.45
 
-tar -xf findutils-4.10.0.tar.xz
-cd findutils-4.10.0
+tar -xf findutils-4.11.0.tar.xz
+cd findutils-4.11.0
 ./configure --prefix=/yolo \
     --localstatedir=/var/lib/locate \
     --host=$LFS_TGT \
@@ -266,7 +266,7 @@ cd findutils-4.10.0
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf findutils-4.10.0
+rm -rf findutils-4.11.0
 
 tar -xf gawk-5.3.0.tar.xz
 cd gawk-5.3.0

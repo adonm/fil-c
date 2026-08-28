@@ -50,7 +50,7 @@ cp -v \
     expect-5.45.4-gcc14-1.patch \
     expect5.45.4.tar.gz \
     file-5.45.tar.gz \
-    findutils-4.10.0.tar.xz \
+    findutils-4.11.0.tar.xz \
     flex-2.6.4.tar.gz \
     flit_core-3.9.0.tar.gz \
     gawk-5.3.0.tar.xz \

@@ -286,13 +286,13 @@ cd ..
 rm -rf gawk-5.3.0
 hash -r
 
-tar -xf findutils-4.10.0.tar.xz
-cd findutils-4.10.0
+tar -xf findutils-4.11.0.tar.xz
+cd findutils-4.11.0
 ./configure --prefix=/usr --localstatedir=/var/lib/locate
 make
 make install
 cd ..
-rm -rf findutils-4.10.0
+rm -rf findutils-4.11.0
 hash -r
 
 tar -xf groff-1.23.0.tar.gz

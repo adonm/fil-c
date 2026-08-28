@@ -539,8 +539,16 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	end
 
 	-- Emit weak/hidden callsite resolver thunks for called externals (deduped, and only
-	-- when we don't define the same FI symbol locally).
-	for sigName, ext in calledExterns do
+	-- when we don't define the same FI symbol locally). DETERMINISM: calledExterns is
+	-- keyed by sig-name STRING, and a VM's string-keyed hash-table iteration order is an
+	-- implementation detail not derived from the input — it must not choose emission
+	-- order, so sort the keys: identical input then emits identical output. Sorting also
+	-- keeps that guarantee if a future Luau seeds string hashes.
+	local thunkSigs = {}
+	for sigName in calledExterns do table.insert(thunkSigs, sigName) end
+	table.sort(thunkSigs)
+	for _, sigName in thunkSigs do
+		local ext = calledExterns[sigName]
 		if not definedFI[sigName] then
 			glue.callsiteThunk(out, ext.name, ext.sigDesc)
 		end

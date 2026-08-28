@@ -1217,13 +1217,17 @@ here, not regressions introduced by this change:
   r*/e* tokens, PTR/brackets), so a register file of pure vector registers
   is invisible to it. (That input rejects on the x86_64 path too — the
   symbolic moffs operand — so again only the error message changes.)
-- sarcasm's transform output is nondeterministic across processes for some
-  inputs: Luau seeds its string hashing per process, so iteration order over
-  string-keyed tables differs run to run, and the spill-slot packing is
-  sensitive to that order. Observed case:
-  `filc/tests/sarcasm-stackbufs-o0-copy-ok-arm` flips a spill slot between
-  two equivalent layouts (48↔56) across processes; both outputs pass the
-  test.
+- transform output is deterministic across processes: every site whose iteration
+  order could reach the output or the temp/slot numbering iterates a sorted key
+  array instead of the table itself. Fixed: the alloca-region ptrTemp allocation
+  (was: hash order over node-keyed `allocaNodes` — Luau seeds object hashes per
+  process, so two allocas swapped temp ids, which renumbered spill slots —
+  observed as `filc/tests/sarcasm-stackbufs-o0-copy-ok-arm` flipping a spill
+  offset 48↔56 between equivalent layouts) and the callsite-thunk emission
+  order (was: hash order over the string-keyed extern map). Re-verify: run the
+  transform on the same input several times and diff the outputs — all runs
+  must be byte-identical (e.g. `for i in $(seq 1 20); do minilute
+  sarcasm-cli.luau <in.s> -S -o /tmp/out$i.s; done; md5sum /tmp/out*.s`).
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root

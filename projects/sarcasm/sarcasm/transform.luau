@@ -491,8 +491,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	-- Link each fixed-size alloca-result node to its region; give the region a stable pointer
 	-- temp for redirecting sp-relative math and a shared lower (the result's seeded lower).
-	for node, al in allocaNodes do
-		if al.kind == "resultSize" then
+	-- DETERMINISM: iterate lf.nodes in statement order, NOT allocaNodes itself — allocaNodes
+	-- is keyed by node IDENTITY, and hash iteration over pointer keys varies per process
+	-- (Luau seeds object hashes per VM), so the regionptr temp ids (and with them every
+	-- later temp id, spill slot layout, and coloring tie-break) would reorder per run.
+	for _, node in lf.nodes do
+		local al = allocaNodes[node]
+		if al and al.kind == "resultSize" then
 			for _, r in allocaRegions do
 				if r.stmt == node.stmt then al.region = r; break end
 			end
@@ -1812,8 +1817,17 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- ignores it — it tags slots frameSlot and rides the shift below instead).
 	if cg.expandFpSaves then cg.expandFpSaves(out, fctx, #rootTemps) end
 
+	-- DETERMINISM: externsList is consumed per-function to build the module-level
+	-- callsite-thunk map, whose emission order is fixed in sarcasm.compile; build it
+	-- in sorted-callee order so the array (and anything downstream of it) does not
+	-- inherit hash iteration order from the string-keyed calledExterns map.
 	local externsList = {}
-	for _, e in calledExterns do table.insert(externsList, e) end
+	do
+		local calleeNames = {}
+		for callee in calledExterns do table.insert(calleeNames, callee) end
+		table.sort(calleeNames)
+		for _, callee in calleeNames do table.insert(externsList, calledExterns[callee]) end
+	end
 
 	-- GC root-slot ABI fixup (x86_64 FP/SIMD): the Fil-C GC reads a frame's roots as
 	-- frame->lowers[index] (filc_frame: parent, origin, then lowers[]), so the root

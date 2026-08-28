@@ -31,7 +31,7 @@ do
 		REG[w[i]] = { num = i - 1, width = 16 }
 		REG[b[i]] = { num = i - 1, width = 8 }
 	end
-	REG["ah"] = { num = 0, width = 8 }  -- high byte (rare); treated as reg 0
+	REG["ah"] = { num = 0, width = 8, parseOnly = true }  -- high byte (rare); parse-only alias for reg 0
 end
 
 local function classifyReg(name)
@@ -68,7 +68,19 @@ x86parse.classifyReg = classifyReg
 -- canonical name for (num, width)
 local NAMES = { [64] = {}, [32] = {}, [16] = {}, [8] = {} }
 do
-	for name, r in REG do NAMES[r.width][r.num] = NAMES[r.width][r.num] or name end
+	-- DETERMINISM: REG is string-keyed, and a VM's string-keyed hash-table iteration
+	-- order is an implementation detail not derived from the input, so sort the names
+	-- rather than rely on it (this also stays deterministic if a future Luau seeds
+	-- string hashes). "ah" and "al" both map to (width=8, num=0); skip the parse-only
+	-- "ah" alias during the fill so the canonical low-byte name wins (matching the
+	-- standard encoding, where al/cl/dl/bl are nums 0-3).
+	local regNames = {}
+	for name in REG do table.insert(regNames, name) end
+	table.sort(regNames)
+	for _, name in regNames do
+		local r = REG[name]
+		if not r.parseOnly and not NAMES[r.width][r.num] then NAMES[r.width][r.num] = name end
+	end
 	-- prefer the standard names
 	local pref64 = { [0]="rax","rcx","rdx","rbx","rsp","rbp","rsi","rdi","r8","r9","r10","r11","r12","r13","r14","r15" }
 	for n, nm in pref64 do NAMES[64][n] = nm end

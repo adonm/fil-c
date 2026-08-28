@@ -12532,7 +12532,11 @@ int filc_native_zsys_pivot_root(filc_thread* my_thread, filc_ptr new_root_ptr, f
 int filc_native_zsys_pidfd_send_signal(filc_thread* my_thread, int pidfd, int sig,
                                        filc_ptr siginfo_ptr, unsigned flags)
 {
-    filc_check_write(siginfo_ptr, sizeof(siginfo_t)); /* Maybe this could be check read? */
+    /* The kernel allows a null siginfo; in that case it delivers the signal with default siginfo
+       semantics.  Note that a non-null siginfo requires CAP_SYS_ADMIN, so programs usually pass
+       null. */
+    if (filc_ptr_ptr(siginfo_ptr))
+        filc_check_write(siginfo_ptr, sizeof(siginfo_t)); /* Maybe this could be check read? */
 #if PAS_GLIBC
     return FILC_SYSCALL(my_thread, pidfd_send_signal(pidfd, sig,
                                                      (siginfo_t*)filc_ptr_ptr(siginfo_ptr), flags));

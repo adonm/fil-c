@@ -71,7 +71,7 @@ cp -v \
     iproute2-6.10.0.tar.xz \
     jinja2-3.1.4.tar.gz \
     kmod-33.tar.xz \
-    less-661.tar.gz \
+    less-704.tar.gz \
     libcap-2.70.tar.xz \
     libffi-3.4.6.tar.gz \
     libpipeline-1.5.7.tar.gz \

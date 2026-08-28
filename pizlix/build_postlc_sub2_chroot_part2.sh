@@ -72,13 +72,13 @@ cd ..
 rm -rf inetutils-2.5
 hash -r
 
-tar -xf less-661.tar.gz
-cd less-661
+tar -xf less-704.tar.gz
+cd less-704
 ./configure --prefix=/usr --sysconfdir=/etc
 make
 make install
 cd ..
-rm -rf less-661
+rm -rf less-704
 hash -r
 
 ./build_postlc_chroot_project_perl.sh

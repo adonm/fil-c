@@ -71,8 +71,12 @@ transform.DATA_DIRECTIVES = DATA_DIRECTIVES
 -- annotation validation must see the original statements). ARM64-only (gated on
 -- cgm.strictBodyValidation — the x86_64 backend deliberately keeps its historical
 -- acceptance of unannotated calls, tail branches and looser annotation placement):
---  * unannotated `bl`/`call` and any `blr`/`br`/indirect call or jump are rejected
---    (raw calls are not marshalled and indirect targets are unprovable);
+--  * unannotated `bl`/`call` are rejected (raw calls are not marshalled); indirect
+--    calls and indirect branches are handled by the shared annotation walk below
+--    (a REGISTER-indirect call with a signature annotation is supported there —
+--    on both architectures — while a memory-operand or unannotated one is
+--    rejected; every register-target branch classifies as an indirect branch and
+--    is rejected too);
 --  * `b`/cond-branch to a non-local target is a tail call — not yet supported;
 --  * every `;!` annotation must be a recognized form (alloca family, a ptr
 --    annotation with a valid instruction shape, or a callsite signature on a call);
@@ -126,8 +130,11 @@ local function validateBody(body, cgm)
 						.. callee .. " ;! int(ptr)`): " .. raw)
 				end
 			elseif c.control == "indcall" then
-				error("sarcasm: indirect call through a raw register cannot be made memory-safe"
-					.. " (indirect calls must go through function-pointer values): " .. raw)
+				-- An indirect call is validated by the SHARED annotation walk below
+				-- (memory-operand, missing-annotation and target-must-be-a-pointer
+				-- rejections), so nothing is rejected here: on both architectures a
+				-- register-indirect call with a signature annotation is supported,
+				-- and every other indirect call shape is rejected by the walk.
 			elseif c.control == "indirect" then
 				error("sarcasm: indirect branch through a raw register cannot be made memory-safe"
 					.. " (computed goto / switch jump tables are not supported): " .. raw)
@@ -150,9 +157,10 @@ local function validateBody(body, cgm)
 					-- atomic/pointer-RMW family: the per-arch shape validator runs;
 					-- the transform's annotation walk re-validates later.
 					if cgm.ptrAtomicShape then cgm.ptrAtomicShape(ann, st) end
-				elseif c.control == "call" then
-					-- callsite signature: parse now to reject malformed sigs early
-					-- (the transform re-parses via callSigOf when marshalling).
+				elseif c.control == "call" or c.control == "indcall" then
+					-- callsite signature (direct or register-indirect call): parse now
+					-- to reject malformed sigs early (the transform re-parses via
+					-- callSigOf when marshalling).
 					sig.parseSignature(ann)
 				elseif string.find(ann, "%(") then
 					error("sarcasm: signature annotation '" .. ann
@@ -175,7 +183,31 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local framePolicy = backend.frame  -- per-arch frame policy (analyzeFrame + rewrite)
 	local cc = cgm.cc
 
-	local returnRegs = sigDesc.isVoid and {} or {0}
+	-- Floating-point signature classes (float/double). The arm64 backend supports
+	-- them: FP args pass in v0..v7 (in declaration order among FP args, unmodeled by
+	-- the GPR webs — they flow through the body verbatim) and an FP return rides in
+	-- v0. The x86_64 backend rejects every FP class at signature validation (entry
+	-- validation in sarcasm.luau / checkCallsiteSig here), so the FP paths below are
+	-- unreachable on x86_64; the hasFp guards are defense in depth.
+	local function isFp(t) return sig.isFpClass(t) end
+	local retIsFp = (not sigDesc.isVoid) and isFp(sigDesc.retTypes[1])
+	local function csHasFp(cs)
+		if cs.retTypes[1] and isFp(cs.retTypes[1]) then return true end
+		for _, t in cs.argTypes do if isFp(t) then return true end end
+		return false
+	end
+	local function fpOrdinalOf(argTypes, k)
+		local m = 0
+		for i = 1, k - 1 do
+			if isFp(argTypes[i]) then m += 1 end
+		end
+		return m
+	end
+
+	-- An FP-returning function leaves the value in v0; the body never produces a
+	-- yolo GPR result (no synthetic x0 use at `ret`, like the void case — an FP-ret
+	-- body may leave x0 undefined).
+	local returnRegs = (sigDesc.isVoid or retIsFp) and {} or {0}
 	local funcLine = (body[1] and body[1].line) or 0
 	local curLine = funcLine
 
@@ -184,9 +216,42 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- requires frameSize. The analysis is pure; frame.preprocess re-runs it internally.
 	local fctx = nil
 	if framePolicy.analyzeFrame then
-		-- 4th return (x86_64 only): FP/SIMD stack-slot materialization info.
-		local fs, fpo, ufp, fpinfo = framePolicy.analyzeFrame(body)
+		-- 4th return (x86_64 only): FP/SIMD stack-slot materialization info. The
+		-- signature is passed so the arm64 analysis can force the vector-save
+		-- reservation for FP-signature functions (see arm64_frame.analyzeFrame).
+		local fs, fpo, ufp, fpinfo = framePolicy.analyzeFrame(body, sigDesc)
 		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo }
+	end
+
+	-- FP values ride in the v registers (arm64) even when the body itself never
+	-- names a NEON register: an FP argument/return of the ENTRY signature (handled
+	-- by the arm64 frame analysis above), an FP value passed BETWEEN two calls
+	-- (an FP-returning call feeding an FP-argument call), or FP arguments placed
+	-- for a call by the source program. Around every INJECTED runtime call the
+	-- fpSave/fpRestore machinery must be active, or such a value would be silently
+	-- clobbered — so force the vector-save reservation whenever any signature in
+	-- play (entry or callsite) has a float/double class. (The arm64 backend
+	-- supports FP signatures; the x86_64 backend rejects them at validation, so
+	-- this is gated on cgm.fpSignatures and can never fire there.)
+	if fctx and fctx.fp and cgm.fpSignatures and fctx.fp.saveBytes == 0 then
+		local bodyUsesFp = false
+		local function sigUsesFp(cs)
+			if cs.retTypes[1] and isFp(cs.retTypes[1]) then return true end
+			for _, t in cs.argTypes do
+				if isFp(t) then return true end
+			end
+			return false
+		end
+		for _, st in body do
+			if st.kind == "insn" and st.annotation and string.find(st.annotation, "%(") then
+				local ok, cs = pcall(sig.parseSignature, st.annotation)
+				if ok and cs and sigUsesFp(cs) then
+					bodyUsesFp = true
+					break
+				end
+			end
+		end
+		if bodyUsesFp then fctx.fp.saveBytes = backend.frame.VEC_SAVE_BYTES end
 	end
 
 	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size); gcc -O0
@@ -226,7 +291,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		validateBody(body, cgm)
 	end
 
-	body = framePass.preprocess(body, allocaRegions, framePolicy)
+	body = framePass.preprocess(body, allocaRegions, framePolicy, sigDesc)
 
 	-- per-call signature info
 	local callSigCache = {}
@@ -251,9 +316,17 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function callInfo(stmt)
 		local cs = callSigOf(stmt)
 		if not cs then return nil end
+		-- Only the GPR-class arguments get yolo GPR uses (FP args pass through the
+		-- v registers unmodeled); an FP result is returned in v0, so there is no
+		-- yolo result register to model.
 		local argRegs = {}
-		for k = 1, cs.argWords do table.insert(argRegs, cc.yoloArg(k)) end
-		return { argRegs = argRegs, resultReg = cs.isVoid and nil or 0 }
+		for k = 1, cs.argWords do
+			if not isFp(cs.argTypes[k]) then
+				table.insert(argRegs, cc.yoloArg(k, cs.argTypes))
+			end
+		end
+		local resultReg = (cs.isVoid or (cs.retTypes[1] and isFp(cs.retTypes[1]))) and nil or 0
+		return { argRegs = argRegs, resultReg = resultReg }
 	end
 
 	local lf = lift.liftFunction(body, { classify = cgm.classify, returnRegs = returnRegs, callInfo = callInfo })
@@ -276,13 +349,20 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- Seeds for pointer flow: pointer args occupy their yolo argument registers.
+	-- FP args (float/double on arm64) pass in the v registers unmodeled: no yolo
+	-- GPR, no entry temp — the entry unpack below skips them entirely.
 	local argPtrTemps = {}
 	local argInfo = {}
 	for k, ty in sigDesc.argTypes do
-		local yreg = cc.yoloArg(k)
-		local et = lf.entryTemp[yreg]
-		argInfo[k] = { isPtr = (ty == 7), yoloReg = yreg, entryTemp = et }
-		if ty == 7 and et then table.insert(argPtrTemps, et) end
+		if isFp(ty) then
+			argInfo[k] = { isPtr = false, fp = true, fpOrdinal = fpOrdinalOf(sigDesc.argTypes, k),
+				yoloReg = nil, entryTemp = nil }
+		else
+			local yreg = cc.yoloArg(k, sigDesc.argTypes)
+			local et = yreg and lf.entryTemp[yreg] or nil
+			argInfo[k] = { isPtr = (ty == 7), yoloReg = yreg, entryTemp = et }
+			if ty == 7 and et then table.insert(argPtrTemps, et) end
+		end
 	end
 
 	-- classify nodes: load-ptr / store-ptr / call / alloca. EVERY annotation on an
@@ -293,8 +373,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- operation). Both are now clean compile-time errors.
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
 	local callPtrDefs = {}
-	-- x86_64 annotated register-indirect calls (`call *%reg ;! sig(...)`); arm64
-	-- rejects every indirect call in validateBody before this walk ever runs.
+	-- Annotated register-indirect calls (`call *%reg ;! sig(...)` on x86_64,
+	-- `blr xN ;! sig(...)` on arm64).
 	local indcallNodes = {}
 	-- Atomic pointer operations and pointer RMWs (x86_64 cmpxchg/movq forms;
 	-- arm64 cas/LSE forms — `;! load store ptr` excepted, arm64-only rejection).
@@ -355,15 +435,15 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				local cs = callSigOf(node.stmt)
 				if cs and cs.retIsPtr then callPtrDefs[node] = true end
 			elseif node.c.control == "indcall" then
-				-- Indirect calls (x86_64-only in practice — arm64's validateBody
-				-- rejects every indirect call before the lift; see
-				-- strictBodyValidation). A MEMORY-indirect call (`call *mem`) can
-				-- never be made memory-safe: the loaded value carries no
-				-- capability. A register-indirect call is supported exactly like an
-				-- annotated direct call, but only when it carries a callsite
-				-- signature — an unannotated one would get no callee-is-a-function
-				-- checks (and historically didn't even model the caller-saved
-				-- clobbers or the result redefinition).
+				-- Indirect calls (a register-indirect call with a callsite signature
+				-- annotation is supported on BOTH architectures; the emission is
+				-- arch-neutral through the cg hooks). A MEMORY-indirect call
+				-- (`call *mem`) can never be made memory-safe: the loaded value
+				-- carries no capability. A register-indirect call is supported
+				-- exactly like an annotated direct call, but only when it carries a
+				-- callsite signature — an unannotated one would get no
+				-- callee-is-a-function checks (and historically didn't even model
+				-- the caller-saved clobbers or the result redefinition).
 				if cgm.memOperand(node.stmt) then
 					error("sarcasm: indirect call through a memory operand cannot be made"
 						.. " memory-safe (load the function pointer into a register first,"
@@ -371,7 +451,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				end
 				if not ann then
 					error("sarcasm: indirect call has no ;! signature annotation (annotate"
-						.. " the callsite, e.g. `call *%rax ;! int(ptr)`): " .. raw)
+						.. " the callsite with the callee's signature, e.g. `;! int(ptr)`): "
+						.. raw)
 				end
 				indcallNodes[node] = ann
 				local cs = callSigOf(node.stmt)
@@ -512,6 +593,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function emitRootStore(loT) emit({ kind = "rootstore", temp = loT, index = rootSlotFor(loT), useTemps = { loT } }) end
 
 	-- entry CC unpacking: myth <- myth reg; params from CC iv/lo regs into their yolo webs.
+	-- FP args (float/double on arm64) are SKIPPED entirely: their value is already in
+	-- its v register (v0..v7, in declaration order among the FP args) and the body
+	-- reads it there — no move, no entry temp, no rooting.
 	cg.move(vMyth, pColored(cc.myth), true)
 	for k, ty in sigDesc.argTypes do
 		local info = argInfo[k]
@@ -1291,19 +1375,37 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local callee = node.stmt.operands[1].text
 		calledExterns[callee] = { name = callee, sig = cs.signature, sigDesc = cs,
 			sigName = "pizlonatedFI" .. cs.signature .. "_" .. callee }
+		-- FP signatures are arm64-only (x86_64 rejects them at checkCallsiteSig);
+		-- error defensively if a backend without the FP marshalling atoms got here.
+		local hasFp = csHasFp(cs)
+		if hasFp and not cg.storeFpArg then
+			error("sarcasm: internal error: floating-point signature marshalling is"
+				.. " not implemented for this target (call to '" .. callee .. "')")
+		end
 		local argTemps = {}
 		for _, r in node.c.uses do if r.argReg then argTemps[r.num] = node.opTemp[r] end end
 		cg.move(pColored(cc.myth), vMyth)
 		local callUses = { pColored(cc.myth) }
+		local fpVecUses = nil
 		for k = 1, cs.argWords do
-			local aTemp = argTemps[cc.yoloArg(k)]
-			cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
-			table.insert(callUses, pColored(cc.argIv(cs.argTypes, k)))
-			if cs.argTypes[k] == 7 then table.insert(callUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
+			if isFp(cs.argTypes[k]) then
+				-- FP arg: passes through its v register (placed there by the source
+				-- program, per AAPCS) — no GPR marshalling, but the value must stay
+				-- live up to the call for the FP save/restore liveness.
+				local m = fpOrdinalOf(cs.argTypes, k)
+				fpVecUses = fpVecUses or {}
+				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
+			else
+				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
+				cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
+				table.insert(callUses, pColored(cc.argIv(cs.argTypes, k)))
+				if cs.argTypes[k] == 7 then table.insert(callUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
+			end
 		end
-		cg.call("pizlonatedFI" .. cs.signature .. "_" .. callee, callUses, cg.callerSavedClobbers())
+		local callNode = cg.call("pizlonatedFI" .. cs.signature .. "_" .. callee, callUses, cg.callerSavedClobbers())
+		if fpVecUses then callNode.fpVecUses = fpVecUses end
 		cg.exceptionBranch(ensureExcLabel())
-		if not cs.isVoid then
+		if not cs.isVoid and not isFp(cs.retTypes[1]) then
 			cg.move(node.defTemps[1], pColored(cc.retIv))
 			if cs.retIsPtr then
 				-- a pointer call result is (iv, lo); define its lower from retLo and root it
@@ -1317,8 +1419,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 	end
 
-	-- Annotated register-indirect call (`call *%reg ;! sig(...)`, x86_64-only — arm64
-	-- rejects all indirect calls in validateBody). Emits filcc's exact indirect-call
+	-- Annotated register-indirect call (`call *%reg ;! sig(...)` on x86_64,
+	-- `blr xN ;! sig(...)` on arm64 — the sequence below is arch-neutral; the
+	-- x86-isms live in the cg hooks). Emits filcc's exact indirect-call
 	-- sequence for a flight pointer (P = target intval, L = target lower):
 	--   1. L == 0 -> fail (null capability);
 	--   2. aux = [L-8]; (aux & 0x780000000000000) != 0x80000000000000 -> fail
@@ -1328,21 +1431,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	--   4. [L+16] == S (the callsite signature number) -> fast path: call *[L+0]
 	--      with the fast-CC marshalling below; otherwise the GENERIC path marshals
 	--      the arguments through my_thread's CC buffer (data words at 128(myth),
-	--      aux/lower words at 384(myth)), sets edx = argument byte size, and calls
-	--      the generic entrypoint *[L+8], then tests the exception flag FIRST (on
-	--      the exception edge rdx is undefined, so the ret-size check must not run
-	--      first), checks the returned ret_size in rdx, and unmarshals the result
-	--      from the buffer into the fast-CC return registers — exactly the
-	--      L_generic mismatch path of the direct-call callsite thunk
-	--      (x86_64_glue.callsiteThunk), INLINED. filcc instead
+	--      aux/lower words at 384(myth)), sets the argument byte size (the CC's
+	--      third runtime argument register: edx / x2), and calls the generic
+	--      entrypoint *[L+8], then tests the exception flag FIRST (on the
+	--      exception edge the ret-size register is undefined, so the ret-size
+	--      check must not run first), checks the returned ret_size, and unmarshals
+	--      the result from the buffer into the fast-CC return registers — exactly
+	--      the L_generic mismatch path of the direct-call callsite thunk
+	--      (x86_64_glue / arm64_glue callsiteThunk), INLINED. filcc instead
 	--      dispatches to pizlonated1ET<S> there, but that weak thunk only exists
 	--      when some C compilation unit in the link contains an indirect callsite
 	--      with signature S — referencing it would be a link error otherwise, so
 	--      sarcasm must not (and does not) depend on it. The buffer-CC callee has
-	--      the SAME callsite-visible ABI as the fast entrypoint (al bit0 =
-	--      exception flag; result in rdx/rcx after unmarshalling), so both paths
-	--      rejoin at the shared exception check + result unpacking.
-	--   5. fail: rdi = P, rsi = L, call filc_check_function_call_fail@PLT
+	--      the SAME callsite-visible ABI as the fast entrypoint (flag bit0 =
+	--      exception flag; result in the ret registers after unmarshalling), so
+	--      both paths rejoin at the shared exception check + result unpacking.
+	--   5. fail: (P, L) = (arg0, arg1), call filc_check_function_call_fail
 	--      (noreturn; the runtime re-derives the precise cause).
 	-- No bounds check: a function object's bounds are degenerate (upper == lower).
 	-- GC safety is exactly emitCall's: the target's lower and every pointer
@@ -1354,6 +1458,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function emitIndirectCall(node)
 		local cs = callSigOf(node.stmt)
 		local raw = node.stmt.raw or node.stmt.mnemonic or "?"
+		-- FP signatures are arm64-only (x86_64 rejects them at checkCallsiteSig);
+		-- error defensively if a backend without the FP marshalling atoms got here.
+		local hasFp = csHasFp(cs)
+		if hasFp and not cg.storeFpArg then
+			error("sarcasm: internal error: floating-point signature marshalling is"
+				.. " not implemented for this target (indirect call): " .. raw)
+		end
 		local targetOp = node.stmt.operands and node.stmt.operands[1]
 		local fpIv = targetOp and node.opTemp[targetOp] or nil
 		local fpLo = fpIv and pf.lowerTemp[fpIv] or nil
@@ -1382,9 +1493,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local auxT = allocTemp({ role = "scratch" })
 		cg.load(auxT, fpLo, -8, 8)
 		local maskedT = allocTemp({ role = "scratch" })
-		cg.movBig(maskedT, "0x780000000000000")
-		emit(build.insn("and", { build.rt(maskedT), build.rt(auxT) },
-			{ defs = { maskedT }, uses = { maskedT, auxT } }))
+		cg.andConst(maskedT, auxT, "0x780000000000000")   -- maskedT = aux & FUNCTION-type mask
 		local valT = allocTemp({ role = "scratch" })
 		cg.movBig(valT, "0x80000000000000")
 		cg.cmpBranch(maskedT, valT, "ne", failL)
@@ -1396,74 +1505,103 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- 4. signature dispatch: [L+16] == S -> fast entrypoint at [L+0]
 		local sigT = allocTemp({ role = "scratch" })
 		cg.load(sigT, fpLo, 16, 8)
-		cg.cmpImmBranch(sigT, cs.signature, "ne", genL)
+		-- the signature number can exceed any arch's immediate-compare range, so
+		-- the compare goes through the widened hook (x86_64: plain cmp imm32;
+		-- arm64: plain 12-bit cmp when it fits, else the movz/sub-cmp schemes).
+		cg.cmpImmBranchWidened(sigT, cs.signature, "ne", genL)
 		local fnT = allocTemp({ role = "scratch" })
 		cg.load(fnT, fpLo, 0, 8)
-		-- fast path: rdi = myth, rsi = callee lower, dense fast-CC args
+		-- fast path: myth = CC myth, fo = callee lower, dense fast-CC args.
+		-- FP args are SKIPPED (they pass through their v registers, placed there by
+		-- the source program per AAPCS) — but they must stay live up to the call,
+		-- so the call node is tagged with their vector uses for the FP save/restore
+		-- liveness (fpVecUses, see arm64_codegen.expandFpSaves).
 		cg.move(pColored(cc.myth), vMyth)
 		cg.move(pColored(cc.fo), fpLo)
 		local fastUses = { pColored(cc.myth), pColored(cc.fo), fnT }
+		local fpVecUses = nil
 		for k = 1, cs.argWords do
-			local aTemp = argTemps[cc.yoloArg(k)]
-			cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
-			table.insert(fastUses, pColored(cc.argIv(cs.argTypes, k)))
-			if cs.argTypes[k] == 7 then table.insert(fastUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
+			if isFp(cs.argTypes[k]) then
+				local m = fpOrdinalOf(cs.argTypes, k)
+				fpVecUses = fpVecUses or {}
+				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
+			else
+				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
+				cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
+				table.insert(fastUses, pColored(cc.argIv(cs.argTypes, k)))
+				if cs.argTypes[k] == 7 then table.insert(fastUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
+			end
 		end
-		local fastCall = build.insn("call", { build.rt(fnT) },
-			{ control = "call", uses = fastUses, defs = cg.callerSavedClobbers() })
-		fastCall.indirect = true
-		emit(fastCall)
+		local fastNode = cg.emitIndirectCallInsn(fnT, fastUses, cg.callerSavedClobbers())
+		if fpVecUses then fastNode.fpVecUses = fpVecUses end
 		cg.jump(rejoinL)
 		-- generic (buffer-CC) path for a signature mismatch: marshal the args into
-		-- my_thread's CC buffer, edx = argument byte size, call *[L+8].
+		-- my_thread's CC buffer, set the argument byte size, call *[L+8]. The buffer
+		-- word index is the argument's DECLARATION index for EVERY class: GPR intval
+		-- words at 128+8i (lower words at 384+8i), FP args as one 8-byte word at
+		-- 128+8i (a float writes the low 4 bytes; the upper bytes are never read)
+		-- with a zero aux word at 384+8i — exactly filcc's buffer marshalling. The
+		-- FP values are read straight out of their v registers (still live there).
 		cg.label(genL)
 		local argBytes = cs.argWords * 8
 		local zeroT = nil
 		for k = 1, cs.argWords do
-			local aTemp = argTemps[cc.yoloArg(k)]
-			cg.store(aTemp, vMyth, 128 + 8 * (k - 1))
-			local loT = (cs.argTypes[k] == 7) and pf.lowerTemp[aTemp] or nil
-			if loT then
-				cg.store(loT, vMyth, 384 + 8 * (k - 1))
-			else
-				-- scalar arg (or a pointer arg whose web has no capability):
-				-- the aux word is 0, exactly like the callsite thunk.
+			local ty = cs.argTypes[k]
+			local bufOff = 128 + 8 * (k - 1)
+			local loOff = 384 + 8 * (k - 1)
+			if isFp(ty) then
+				cg.storeFpArg(ty, fpOrdinalOf(cs.argTypes, k), vMyth, bufOff)
 				if not zeroT then zeroT = allocTemp({ role = "scratch" }); cg.moveZero(zeroT) end
-				cg.store(zeroT, vMyth, 384 + 8 * (k - 1))
+				cg.store(zeroT, vMyth, loOff)
+			else
+				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
+				cg.store(aTemp, vMyth, bufOff)
+				local loT = (ty == 7) and pf.lowerTemp[aTemp] or nil
+				if loT then
+					cg.store(loT, vMyth, loOff)
+				else
+					-- scalar arg (or a pointer arg whose web has no capability):
+					-- the aux word is 0, exactly like the callsite thunk.
+					if not zeroT then zeroT = allocTemp({ role = "scratch" }); cg.moveZero(zeroT) end
+					cg.store(zeroT, vMyth, loOff)
+				end
 			end
 		end
-		cg.moveImm(pColored(cc.rtArg(3)), argBytes)   -- edx = argument byte size
-		cg.move(pColored(cc.myth), vMyth)             -- rdi = myth
-		cg.move(pColored(cc.fo), fpLo)                -- rsi = callee lower
-		local genCall = build.insn("call", { build.memx(build.rt(fpLo), { dispVal = 8 }) },
-			{ control = "call",
-				uses = { pColored(cc.myth), pColored(cc.fo), pColored(cc.rtArg(3)), fpLo },
-				defs = cg.callerSavedClobbers() })
-		genCall.indirect = true
-		emit(genCall)
+		cg.moveImm(pColored(cc.rtArg(3)), argBytes)   -- argument byte size (CC arg 3)
+		cg.move(pColored(cc.myth), vMyth)             -- myth = CC myth register
+		cg.move(pColored(cc.fo), fpLo)                -- fo = callee lower
+		cg.emitGenericIndirectCall(fpLo,
+			{ pColored(cc.myth), pColored(cc.fo), pColored(cc.rtArg(3)), fpLo },
+			cg.callerSavedClobbers())
 		-- Test the exception flag IMMEDIATELY after the generic call, BEFORE the
 		-- ret-size check and the result unmarshal — exactly L_generic's order in
 		-- the callsite thunk (and filcc's pizlonated1ET thunk). On the exception
-		-- edge the buffer CC leaves rdx (ret_size) UNDEFINED, so a ret-size check
-		-- running first could spuriously fire filc_cc_rets_check_failure instead
-		-- of propagating the exception. Branches to the SAME shared exception
-		-- label the fast path's rejoin test uses.
+		-- edge the buffer CC leaves the ret-size register (rdx / x1) UNDEFINED, so
+		-- a ret-size check running first could spuriously fire
+		-- filc_cc_rets_check_failure instead of propagating the exception. Branches
+		-- to the SAME shared exception label the fast path's rejoin test uses.
 		cg.exceptionBranch(ensureExcLabel())
 		if cs.retWords >= 1 then
-			-- the buffer CC returns the actual result byte size in rdx; it must
-			-- cover the signature's result words (else filc_cc_rets_check_failure),
-			-- then the result unmarshals into the fast-CC return registers.
+			-- the buffer CC returns the actual result byte size in the retIv
+			-- register (rdx / x1); it must cover the signature's result words (else
+			-- filc_cc_rets_check_failure), then the result unmarshals into the
+			-- fast-CC return registers. An FP result (float/double) unmarshals from
+			-- the buffer into v0 (s0/d0) instead of the retIv register.
 			local retBytes = cs.retWords * 8
-			cg.cmpImmBranch(pColored(cc.retIv), retBytes - 1, "ule", retfailL)
-			cg.load(pColored(cc.retIv), vMyth, 128, 8)
-			if cs.retIsPtr then cg.load(pColored(cc.retLo), vMyth, 384, 8) end
+			cg.cmpImmBranchWidened(pColored(cc.retIv), retBytes - 1, "ule", retfailL)
+			if isFp(cs.retTypes[1]) then
+				cg.loadFpRet(cs.retTypes[1], vMyth, 128)
+			else
+				cg.load(pColored(cc.retIv), vMyth, 128, 8)
+				if cs.retIsPtr then cg.load(pColored(cc.retLo), vMyth, 384, 8) end
+			end
 		end
 		-- rejoin: exception-flag test + result unpacking, identical to emitCall.
 		-- (On the generic fall-through edge the flag is already known clear, so
 		-- the shared re-test just falls through.)
 		cg.label(rejoinL)
 		cg.exceptionBranch(ensureExcLabel())
-		if not cs.isVoid then
+		if not cs.isVoid and not isFp(cs.retTypes[1]) then
 			cg.move(node.defTemps[1], pColored(cc.retIv))
 			if cs.retIsPtr then
 				local loT = pf.lowerTemp[node.defTemps[1]]
@@ -1474,26 +1612,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			end
 		end
 		-- fail stubs (noreturn; emitted at function end): the function-call check
-		-- failure gets the flight pointer (rdi = P, rsi = L); the buffer-CC
-		-- ret-size failure gets (rdi = actual size, rsi = expected size, rdx = 0).
-		table.insert(failStubs, build.label(failL))
-		table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(1)), build.rt(fpIv) },
-			{ defs = { pColored(cc.rtArg(1)) }, uses = { fpIv } }))
-		table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(2)), build.rt(fpLo) },
-			{ defs = { pColored(cc.rtArg(2)) }, uses = { fpLo } }))
-		table.insert(failStubs, build.insn("call", { build.sym("filc_check_function_call_fail", "plt") },
-			{ control = "call", uses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) } }))
+		-- failure gets the flight pointer (arg0 = P, arg1 = L); the buffer-CC
+		-- ret-size failure gets (arg0 = actual size, arg1 = expected size, arg2 = 0).
+		cg.emitIndcallFailStub(failStubs, failL, fpIv, fpLo)
 		if cs.retWords >= 1 then
-			local retBytes = cs.retWords * 8
-			table.insert(failStubs, build.label(retfailL))
-			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(2), 32), build.imm(retBytes) },
-				{ defs = { pColored(cc.rtArg(2)) } }))
-			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(1)), build.rt(pColored(cc.retIv)) },
-				{ defs = { pColored(cc.rtArg(1)) }, uses = { pColored(cc.retIv) } }))
-			table.insert(failStubs, build.insn("mov", { build.rp(cc.rtArg(3), 32), build.imm(0) },
-				{ defs = { pColored(cc.rtArg(3)) } }))
-			table.insert(failStubs, build.insn("call", { build.sym("filc_cc_rets_check_failure", "plt") },
-				{ control = "call", uses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)) } }))
+			cg.emitRetsFailStub(failStubs, retfailL, pColored(cc.retIv), cs.retWords * 8)
 		end
 	end
 
@@ -1570,7 +1693,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					emitAlloca(node, allocaNodes[node])
 				end)
 			elseif c.control == "return" then
-				if not sigDesc.isVoid then
+				-- An FP-returning function (float/double on arm64) leaves the value
+				-- in v0 — skip the retIv move (and the ptr-lower cap move; an FP
+				-- return is never a pointer), exactly like the void case skips both.
+				if not sigDesc.isVoid and not retIsFp then
 					local retTemp
 					for _, r in c.uses do if r.retReg then retTemp = node.opTemp[r] end end
 					if retTemp then cg.move(pColored(cc.retIv), retTemp) end
@@ -1583,9 +1709,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				emitCall(node)
 			elseif c.control == "indcall" then
 				-- The annotation classification above already rejected every
-				-- unannotated or memory-operand indirect call (and arm64 rejected
-				-- all of them in validateBody), so only an annotated
-				-- register-indirect call reaches here.
+				-- unannotated or memory-operand indirect call, so only an
+				-- annotated register-indirect call reaches here (on both
+				-- architectures).
 				emitIndirectCall(node)
 			elseif emitRegionRedirect(node) then
 				-- sp-relative address computation redirected into an alloca region

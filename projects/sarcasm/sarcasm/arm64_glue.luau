@@ -6,34 +6,58 @@
 
 local glue = {}
 
+local sig = require("./sig")
+
 local FUNCTION_UPPER_FLAGS = "36873221949095936" -- 0x83 << 48
 
 -- Dense fast-CC arg registers: (iv[, lo]) pairs packed consecutively from x2; a scalar
--- arg consumes one slot, a pointer arg two. Matches pizlonated clang output. The arm64
--- fast CC has SIX dense argument registers (x2..x7) -- wider arguments go on the stack,
--- which sarcasm does not marshal; signatures needing more than 6 register argument
--- words are rejected.
+-- arg consumes one slot, a pointer arg two. FLOAT/DOUBLE args consume NO GPR slot:
+-- they pass in the vector registers v0..v7, in declaration order among the FP args
+-- alone (float = low 32 bits = sN, double = full dN), matching pizlonated clang
+-- output (long(double,int,float,long): double->v0, int->x2, float->v1, long->x3).
+-- The arm64 fast CC has SIX dense argument GPRs (x2..x7) -- wider arguments go on the
+-- stack, which sarcasm does not marshal; signatures needing more than 6 register
+-- argument words are rejected (FP args are bounded separately: at most 8, v0..v7).
 local DENSE_ARG_REGS = { 2, 3, 4, 5, 6, 7 }
 local function denseArgRegs(argTypes, argWords)
 	local ivReg, loReg = {}, {}
 	local slot = 1
 	for k = 1, argWords do
-		ivReg[k] = DENSE_ARG_REGS[slot]
-		if argTypes[k] == 7 then   -- TYPE_PTR
+		if sig.isFpClass(argTypes[k]) then
+			-- FP arg: passes in a v register, consumes no GPR slot
+		elseif argTypes[k] == 7 then   -- TYPE_PTR
+			ivReg[k] = DENSE_ARG_REGS[slot]
 			loReg[k] = DENSE_ARG_REGS[slot + 1]
 			slot += 2
 		else
+			ivReg[k] = DENSE_ARG_REGS[slot]
 			slot += 1
 		end
 	end
 	return ivReg, loReg
 end
 
--- Number of fast-CC register argument words a signature needs (ptr args = 2).
+-- Number of fast-CC register argument words a signature needs (ptr args = 2; FP args
+-- pass in the v registers and consume none).
 local function argRegWords(argTypes, argWords)
 	local words = 0
-	for k = 1, argWords do words += (argTypes[k] == 7) and 2 or 1 end
+	for k = 1, argWords do
+		if not sig.isFpClass(argTypes[k]) then words += (argTypes[k] == 7) and 2 or 1 end
+	end
 	return words
+end
+
+-- v-register name of FP argument k (sN = low 32 bits for float, dN for double; N =
+-- the argument's 0-based ordinal among the FP args). Also used for the FP return
+-- (ordinal 0: s0/d0).
+local function fpArgName(argTypes, k)
+	local w = sig.fpWidthBytes(argTypes[k])
+		or error("sarcasm: internal error: FP register name for a non-FP argument " .. tostring(k))
+	local m = 0
+	for i = 1, k - 1 do
+		if sig.isFpClass(argTypes[i]) then m += 1 end
+	end
+	return (w == 4 and "s" or "d") .. tostring(m)
 end
 
 -- Function getter: returns the FO flight pointer (intval in x0, lower in x1).
@@ -55,16 +79,23 @@ end
 
 -- Generic (buffer-based) entrypoint thunk pizlonated2ET<sig>. Marshals args from the
 -- thread CC buffers into the register CC, calls the fast entrypoint, marshals the
--- return value back. argWords/retWords count 8-byte words. retIsPtr controls whether
--- the return lower is copied (else zeroed).
-function glue.genericThunk(out, signature: number, argWords: number, retWords: number, retIsPtr: boolean, argTypes)
+-- return value back. argWords/retWords count 8-byte words (FP args occupy one buffer
+-- word each, so argBytes counts them too). retIsPtr controls whether the return lower
+-- is copied (else zeroed). An FP return (retTypes[1] float/double) comes back from the
+-- fast entrypoint in v0 (s0/d0) and is stored into the buffer word at [myth+128] (a
+-- float in the low 4 bytes), with a zero lower word at [myth+384] — the ret size
+-- stays 8, exactly like filcc's own generic thunks.
+function glue.genericThunk(out, signature: number, argWords: number, retWords: number, retIsPtr: boolean, argTypes, retTypes)
 	assert(argRegWords(argTypes, argWords) <= 6, "sarcasm: >6 register argument words not yet supported")
 	local sym = "pizlonated2ET" .. tostring(signature)
 	local argBytes = argWords * 8
 	local retBytes = retWords * 8
 	local lend = ".LBB_2ET" .. signature
-	-- dense CC iv/lo registers for arg k (1-based); lo only for pointer args.
+	-- dense CC iv/lo registers for arg k (1-based); lo only for pointer args. FP args
+	-- have no GPR register (they load straight into their v registers).
 	local ivReg, loReg = denseArgRegs(argTypes, argWords)
+	local retFpName = (retTypes and retTypes[1] and sig.isFpClass(retTypes[1]))
+		and ((retTypes[1] == sig.TYPE_FLOAT) and "s0" or "d0") or nil
 	table.insert(out, "\t.text")
 	table.insert(out, "\t.weak\t" .. sym)
 	table.insert(out, "\t.p2align\t2")
@@ -74,11 +105,17 @@ function glue.genericThunk(out, signature: number, argWords: number, retWords: n
 	table.insert(out, "\tcmp\tx2, #" .. tostring(argBytes))
 	table.insert(out, "\tb.lo\t" .. lend .. "_fail")
 	-- load args from the per-argument buffer slots (iv at 128+8i, lower at 384+8i)
-	-- into the densely packed CC registers.
+	-- into the densely packed CC registers; FP args load into their v registers
+	-- (declaration order among the FP args), also from 128+8i.
 	for i = 0, argWords - 1 do
-		table.insert(out, "\tldr\tx" .. tostring(ivReg[i + 1]) .. ", [x0, #" .. tostring(128 + 8 * i) .. "]")
-		if loReg[i + 1] then
-			table.insert(out, "\tldr\tx" .. tostring(loReg[i + 1]) .. ", [x0, #" .. tostring(384 + 8 * i) .. "]")
+		local k = i + 1
+		if sig.isFpClass(argTypes[k]) then
+			table.insert(out, "\tldr\t" .. fpArgName(argTypes, k) .. ", [x0, #" .. tostring(128 + 8 * i) .. "]")
+		else
+			table.insert(out, "\tldr\tx" .. tostring(ivReg[k]) .. ", [x0, #" .. tostring(128 + 8 * i) .. "]")
+			if loReg[k] then
+				table.insert(out, "\tldr\tx" .. tostring(loReg[k]) .. ", [x0, #" .. tostring(384 + 8 * i) .. "]")
+			end
 		end
 	end
 	table.insert(out, "\tmov\tx19, x0")
@@ -86,7 +123,12 @@ function glue.genericThunk(out, signature: number, argWords: number, retWords: n
 	table.insert(out, "\tblr\tx8")
 	table.insert(out, "\ttbnz\tw0, #0, " .. lend .. "_exc")
 	if retWords >= 1 then
-		table.insert(out, "\tstr\tx1, [x19, #128]")
+		if retFpName then
+			-- FP return: the fast entrypoint left the value in v0 (s0/d0)
+			table.insert(out, "\tstr\t" .. retFpName .. ", [x19, #128]")
+		else
+			table.insert(out, "\tstr\tx1, [x19, #128]")
+		end
 	end
 	table.insert(out, "\tmov\tw1, #" .. tostring(retBytes))
 	if retWords >= 1 then
@@ -257,13 +299,24 @@ end
 -- signature mismatch it marshals through the generic (buffer) calling convention. On a
 -- non-function object it raises filc_check_function_call_fail. (Template: clang's
 -- pizlonatedFI<sig>_NAME in test3.c output.)
+--
+-- FP arguments (float/double) ride in v0..v7 and are NEVER spilled by this thunk:
+-- everything between entry and the two call sites — the register saves, the getter
+-- (adrp/add/mov/ret), the object checks and the signature compare — touches GPRs
+-- only, so on the fast path the FP args are still in their v registers when the
+-- tail call consumes them, and on the generic path they are stored into the CC
+-- buffer straight from there (each at its DECLARATION index, one 8-byte word; a
+-- float stores the low 4 bytes and the aux word at 384+8i is zero). An FP return is
+-- loaded back from the buffer word at [myth+128] into v0 (s0/d0) after the ret-size
+-- check; the ret size stays 8.
 function glue.callsiteThunk(out, callee: string, sigDesc)
-	local sig = sigDesc.signature
-	local sym = "pizlonatedFI" .. tostring(sig) .. "_" .. callee
-	local L = ".Lcsr_" .. callee .. "_" .. tostring(sig)
+	local signum = sigDesc.signature
+	local sym = "pizlonatedFI" .. tostring(signum) .. "_" .. callee
+	local L = ".Lcsr_" .. callee .. "_" .. tostring(signum)
 
 	-- incoming fast-call args arrive densely packed in x2..x7; lo registers only for
-	-- pointer args.
+	-- pointer args. FP args arrive in their v registers (fpArgName) and pass through
+	-- unmodeled — ivReg[k] is nil for them.
 	local ivReg, loReg = denseArgRegs(sigDesc.argTypes, sigDesc.argWords)
 
 	-- register save plan: x19 = myth; then per-arg iv (+ lo if pointer) from x20 up.
@@ -271,7 +324,7 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	-- argument word (two per pointer arg: intval + lower). The CC has at most 6 argument
 	-- words (x2..x7), so the holds top out at x20..x25, well within x19..x28; a signature
 	-- needing more than 6 words goes on the stack, which sarcasm does not marshal --
-	-- reject it cleanly.
+	-- reject it cleanly. (FP args need no hold: they stay in the v registers.)
 	local holdWords = argRegWords(sigDesc.argTypes, sigDesc.argWords)
 	if holdWords > 6 then
 		error("sarcasm: callsite thunk for '" .. callee .. "': >6 register argument words not yet supported"
@@ -283,22 +336,28 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	local entryReg = 2 + holdWords
 	local myth = 19
 	local nextReg = 20
-	local args = {}  -- k -> { iv = reg, lo = reg|nil, isPtr = bool }
+	local args = {}  -- k -> { iv = reg, lo = reg|nil, isPtr = bool } (GPR args only)
 	for k = 1, sigDesc.argWords do
-		local isPtr = sigDesc.argTypes[k] == 7
-		local ent = { iv = nextReg, isPtr = isPtr }
-		nextReg += 1
-		if isPtr then ent.lo = nextReg; nextReg += 1 end
-		args[k] = ent
+		if ivReg[k] then
+			local isPtr = sigDesc.argTypes[k] == 7
+			local ent = { iv = nextReg, isPtr = isPtr }
+			nextReg += 1
+			if isPtr then ent.lo = nextReg; nextReg += 1 end
+			args[k] = ent
+		end
 	end
 	local saved = { myth }
 	for k = 1, sigDesc.argWords do
-		table.insert(saved, args[k].iv)
-		if args[k].lo then table.insert(saved, args[k].lo) end
+		if args[k] then
+			table.insert(saved, args[k].iv)
+			if args[k].lo then table.insert(saved, args[k].lo) end
+		end
 	end
 	local total = math.floor((8 * (1 + #saved) + 15) / 16) * 16
 	local argBytes = sigDesc.argWords * 8
 	local retBytes = sigDesc.retWords * 8
+	local retFpName = (sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]))
+		and ((sigDesc.retTypes[1] == sig.TYPE_FLOAT) and "s0" or "d0") or nil
 
 	local function e(s) table.insert(out, s) end
 	e("\t.text")
@@ -310,13 +369,21 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	e("\tsub\tsp, sp, #" .. total)
 	e("\tstr\tx30, [sp, #0]")
 	for i, r in saved do e("\tstr\tx" .. r .. ", [sp, #" .. (8 * i) .. "]") end
-	-- save incoming CC registers into callee-saved
+	-- save incoming CC registers into callee-saved (FP args stay in the v registers)
 	e("\tmov\tx" .. myth .. ", x0")
 	for k = 1, sigDesc.argWords do
-		e("\tmov\tx" .. args[k].iv .. ", x" .. ivReg[k])
-		if args[k].lo then e("\tmov\tx" .. args[k].lo .. ", x" .. loReg[k]) end
+		if args[k] then
+			e("\tmov\tx" .. args[k].iv .. ", x" .. ivReg[k])
+			if args[k].lo then e("\tmov\tx" .. args[k].lo .. ", x" .. loReg[k]) end
+		end
 	end
-	-- resolve the function object
+	-- resolve the function object. The getter takes (my_thread, origin): on the
+	-- slow path (first initialization of a data object) the runtime swaps the
+	-- origin argument into my_thread's top filc_frame, so a stale x1 would
+	-- corrupt that frame's origin (and later panic dumps with it). This thunk is
+	-- shared by all callers, so it has no single origin to pass — pass NULL,
+	-- exactly like pizlonated clang's own FI thunk (x86_64 emits xorl %esi, %esi).
+	e("\tmov\tx1, xzr")
 	e("\tbl\tpizlonated_" .. callee)
 	e("\tcbz\tx1, " .. L .. "_fail")
 	e("\tldur\tx8, [x1, #-8]")
@@ -332,26 +399,53 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	-- pizlonated clang emits for larger signatures: a single movz into w9 when the
 	-- signature fits in 16 bits (e.g. 12777), a sub/cmp pair splitting off the top
 	-- 12-bit chunk when the high part fits (e.g. 194714 = 47<<12 | 2202), and
-	-- movz/movk otherwise (e.g. 23561750). x8/x9 are dead scratch at this point.
-	if sig <= 4095 then
-		e("\tcmp\tx8, #" .. tostring(sig))
-	elseif sig <= 65535 then
-		e("\tmov\tw9, #" .. tostring(sig))
+	-- movz/movk otherwise (e.g. 23561750). x8/x9 are dead scratch at this point (x9's
+	-- last read is the FUNCTION-type compare above, and nothing past the compare --
+	-- fast tail call or generic arm -- reads it).
+	--
+	-- Signatures with 8 FP arguments reach past 2^32 (8 doubles -> 8552919316), where
+	-- the movk high half no longer fits 16 bits and `as` rejects the w-form encoding.
+	-- Materialize the whole constant into the dead scratch x9 as 16-bit movz/movk
+	-- chunks (x-register forms, so the lsl #32/#48 chunks encode; movz zeroes the rest
+	-- of x9, so zero chunks are skipped), then compare registers. The sub/cmp split
+	-- only engages below 2^24, where both of its 12-bit halves fit, so it cannot
+	-- overflow.
+	if signum <= 4095 then
+		e("\tcmp\tx8, #" .. tostring(signum))
+	elseif signum <= 65535 then
+		e("\tmov\tw9, #" .. tostring(signum))
 		e("\tcmp\tx8, x9")
-	elseif math.floor(sig / 4096) <= 4095 then
-		e("\tsub\tx8, x8, #" .. tostring(math.floor(sig / 4096)) .. ", lsl #12")
-		e("\tcmp\tx8, #" .. tostring(sig % 4096))
+	elseif math.floor(signum / 4096) <= 4095 then
+		e("\tsub\tx8, x8, #" .. tostring(math.floor(signum / 4096)) .. ", lsl #12")
+		e("\tcmp\tx8, #" .. tostring(signum % 4096))
+	elseif signum < 4294967296 then
+		e("\tmov\tw9, #" .. tostring(signum % 65536))
+		e("\tmovk\tw9, #" .. tostring(math.floor(signum / 65536)) .. ", lsl #16")
+		e("\tcmp\tx8, x9")
 	else
-		e("\tmov\tw9, #" .. tostring(sig % 65536))
-		e("\tmovk\tw9, #" .. tostring(math.floor(sig / 65536)) .. ", lsl #16")
+		e("\tmovz\tx9, #" .. tostring(signum % 65536))
+		local rest = math.floor(signum / 65536)
+		local shift = 16
+		while rest > 0 do
+			local chunk = rest % 65536
+			if chunk ~= 0 then
+				assert(chunk <= 65535 and shift <= 48,
+					"sarcasm: signature " .. tostring(signum) .. " does not fit 64 bits")
+				e("\tmovk\tx9, #" .. tostring(chunk) .. ", lsl #" .. tostring(shift))
+			end
+			rest = math.floor(rest / 65536)
+			shift += 16
+		end
 		e("\tcmp\tx8, x9")
 	end
 	e("\tb.ne\t" .. L .. "_generic")
 	-- direct fast call
 	e("\tmov\tx0, x" .. myth)
 	for k = 1, sigDesc.argWords do
-		e("\tmov\tx" .. ivReg[k] .. ", x" .. args[k].iv)
-		if args[k].lo then e("\tmov\tx" .. loReg[k] .. ", x" .. args[k].lo) end
+		if args[k] then
+			e("\tmov\tx" .. ivReg[k] .. ", x" .. args[k].iv)
+			if args[k].lo then e("\tmov\tx" .. loReg[k] .. ", x" .. args[k].lo) end
+		end
 	end
 	for i, r in saved do e("\tldr\tx" .. r .. ", [sp, #" .. (8 * i) .. "]") end
 	e("\tldr\tx" .. entryReg .. ", [x1]")
@@ -361,11 +455,19 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	-- generic buffer call
 	e(L .. "_generic:")
 	for k = 1, sigDesc.argWords do
-		e("\tstr\tx" .. args[k].iv .. ", [x" .. myth .. ", #" .. (128 + 8 * (k - 1)) .. "]")
-		if args[k].lo then
-			e("\tstr\tx" .. args[k].lo .. ", [x" .. myth .. ", #" .. (384 + 8 * (k - 1)) .. "]")
-		else
+		if sig.isFpClass(sigDesc.argTypes[k]) then
+			-- FP arg: still live in its v register (nothing clobbered the v file);
+			-- store it at its declaration index (a float = 4-byte store into the
+			-- 8-byte slot) with a zero aux word.
+			e("\tstr\t" .. fpArgName(sigDesc.argTypes, k) .. ", [x" .. myth .. ", #" .. (128 + 8 * (k - 1)) .. "]")
 			e("\tstr\txzr, [x" .. myth .. ", #" .. (384 + 8 * (k - 1)) .. "]")
+		else
+			e("\tstr\tx" .. args[k].iv .. ", [x" .. myth .. ", #" .. (128 + 8 * (k - 1)) .. "]")
+			if args[k].lo then
+				e("\tstr\tx" .. args[k].lo .. ", [x" .. myth .. ", #" .. (384 + 8 * (k - 1)) .. "]")
+			else
+				e("\tstr\txzr, [x" .. myth .. ", #" .. (384 + 8 * (k - 1)) .. "]")
+			end
 		end
 	end
 	e("\tmov\tx0, x" .. myth)
@@ -376,8 +478,13 @@ function glue.callsiteThunk(out, callee: string, sigDesc)
 	if sigDesc.retWords >= 1 then
 		e("\tcmp\tx1, #" .. tostring(retBytes))
 		e("\tb.lo\t" .. L .. "_retfail")
-		e("\tldr\tx1, [x" .. myth .. ", #128]")
-		if sigDesc.retIsPtr then e("\tldr\tx2, [x" .. myth .. ", #384]") end
+		if retFpName then
+			-- FP return: read the buffer word back into v0 (a float = 4-byte load)
+			e("\tldr\t" .. retFpName .. ", [x" .. myth .. ", #128]")
+		else
+			e("\tldr\tx1, [x" .. myth .. ", #128]")
+			if sigDesc.retIsPtr then e("\tldr\tx2, [x" .. myth .. ", #384]") end
+		end
 	end
 	e(L .. "_done:")
 	for i, r in saved do e("\tldr\tx" .. r .. ", [sp, #" .. (8 * i) .. "]") end

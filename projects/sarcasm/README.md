@@ -89,13 +89,14 @@ cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64), which cannot operate
 on pointers; any other
 unrecognized annotation string is a compile-time error.
 
-### Indirect calls (x86_64)
+### Indirect calls (x86_64 and arm64)
 
-On x86_64, a register-indirect call carrying a callsite signature is supported
-exactly like an annotated direct call:
+On both x86_64 and arm64, a register-indirect call carrying a callsite
+signature is supported exactly like an annotated direct call:
 
 ```
-call *%rax    ;! ptr(int)
+call *%rax    ;! ptr(int)     # x86_64
+blr  x8       ;! ptr(int)     # arm64
 ```
 
 The target register's web must be a known pointer value (a pointer argument,
@@ -118,15 +119,21 @@ special type / ptr != aux). Results (including pointer results, with the
 returned lower rooted) and the exception flag behave exactly like a direct
 call. Three forms are rejected with clean errors: an UNANNOTATED
 register-indirect call (no `;!` signature — historically it got no checks and
-not even caller-saved clobber modeling), ANY memory-indirect call
+not even caller-saved clobber modeling), an annotated call whose target web is
+not a known pointer value, and (x86_64 only) ANY memory-indirect call
 (`call *mem`, annotated or not — load the function pointer into a register
-first, e.g. via `;! load ptr`), and an annotated call whose target web is not
-a known pointer value. On arm64 ALL indirect calls remain rejected
-(validateBody), as before.
+first, e.g. via `;! load ptr`; memory-operand indirect calls do not exist on
+arm64, where `blr` is register-only). On arm64 the same check sequence and
+dispatch is emitted for `blr xN ;! sig(...)` (x0=myth, x1=L, dense args from
+x2, argument byte size in w2, x1 doubles as the ret-size register, plain `bl`
+fail stubs); indirect BRANCHES (`br xN`, and `b xN` with a register operand)
+remain rejected.
 
 See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-att/hash.s`
 (AT&T syntax) and `filc/tests/sarcasm-hash-int/hash.s` (Intel syntax), or
-`filc/tests/sarcasm-call/get-sarcasm.s`.
+`filc/tests/sarcasm-call/get-sarcasm.s`; arm64 indirect-call examples live in
+`filc/tests/sarcasm-indirectcall-*-arm/` (including the failure cases
+`-notfn`, `-null`, `-ptrneq`, which must panic at the same checks).
 
 ## Pipeline (`sarcasm/`)
 Shared, architecture-independent modules:
@@ -380,8 +387,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   implicit-register mul/div/cmpxchg/cmpxchg8b/cmpxchg16b class is genuinely
   modeled as described
   above). Floating-point types are still rejected
-  in `;!` signatures — the Fil-C FP ABI is now decoded (see
-  `ABI-NOTES-x86.md`); marshalling it is deferred future work. Three known
+  in `;!` signatures on x86_64 — the Fil-C FP ABI is now decoded (see
+  `ABI-NOTES-x86.md`); marshalling it is deferred future work (arm64 float and
+  double signatures ARE supported — see the ARM64 section below). Three known
   PRE-EXISTING issues (all reproduced on the unmodified baseline, NOT
   introduced by the current change) are documented in DESIGN.md's Limitations:
   a regalloc mis-coloring at ≥~13 simultaneously-live webs, injected
@@ -419,8 +427,12 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   model (execution-tested for AES/SHA-256/pmull behind the `needsARMCrypto`
   probe). Still rejected: SVE/SVE2 (z/p registers and the SVE-only mnemonics,
   cleanly), any memory operand on a non-load/store mnemonic (prfm & co —
-  its memory effect cannot be modeled), and FP/vector types in `;!`
-  signatures (like x86_64).
+  its memory effect cannot be modeled), and `long double`/vector types in `;!`
+  signatures. Float and DOUBLE types in `;!` signatures ARE supported on arm64
+  (entry and callsite annotations alike): FP args pass in v0..v7 per AAPCS,
+  FP results return in v0, and the generic/buffer paths marshal them through
+  the CC buffer (see ABI-NOTES.md) — unlike x86_64, where all FP classes are
+  still rejected.
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
@@ -467,8 +479,8 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 728 `filc/tests/sarcasm-*` tests (467
-x86_64, 261 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
+All testing is via the Fil-C test suite: the 757 `filc/tests/sarcasm-*` tests (479
+x86_64, 278 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
 test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
 minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
 files via clang. The suite compiles every yolo input with sarcasm, links with Fil-C
@@ -610,9 +622,22 @@ AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
 
-The 261 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
+The 278 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
 the same pointer/trap/call/alloca core as x86_64, plus the arm64-specific
-surface — the NEON/FP support (17 `sarcasm-fp-*-arm` tests and
+surface — annotated register-indirect calls `blr xN ;! sig(...)`
+(`sarcasm-indirectcall-*-arm`: success, loadptr, sigmismatch, and the failure
+cases -notfn/-null/-ptrneq that must trap at the indirect-call checks, plus
+the reject tests for unannotated `blr` and register-target `br`/`b`), and
+float/double SIGNATURES (`sarcasm-fp-args-arm` entry signatures,
+`sarcasm-fp-asmcall-arm` cross-module callsites with a version script,
+`sarcasm-fp-indirectcall-arm`/-`sigmismatch-arm`, plus the
+`sarcasm-reject-fp-overflow*` and `sarcasm-reject-vecsig*` rejections for
+oversized FP signatures and vector classes); direct asm→C calls are covered
+end-to-end by `sarcasm-call-data-arm` (a C DATA symbol called as a function
+through the weak callsite resolver must panic at the special-type check),
+`sarcasm-call-data-fp-arm` (same, with an FP callsite signature) and
+`sarcasm-call-sigmismatch-arm` (a mismatched callsite signature forces the
+resolver's generic buffer-CC path) — the NEON/FP support (17 `sarcasm-fp-*-arm` tests and
 `sarcasm-neon-arm`): scalar, pair and structure loads/stores at their exact
 widths (`sarcasm-neon-arm`, `sarcasm-fp-ldmulti-arm`), NEON arithmetic,
 conversions and fp16 (`sarcasm-fp-arith-arm`, `sarcasm-fp-cvt-arm`,

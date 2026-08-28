@@ -461,27 +461,42 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
-		-- FP type classes cannot yet be marshalled through the dense GPR-only CC: clang
-		-- passes/returns them in vector registers (supported by sarcasm, but the FP
-		-- marshalling is not yet implemented; the ABI is decoded in ABI-NOTES-x86.md),
-		-- so an FP entry signature would silently miscompile the ABI. Reject it cleanly.
-		sig.checkSupportedClasses(sigDesc)
-		-- Entry-signature arity limits. Both ISAs marshal at most 3 arguments through
-		-- the register CC, and both fast CCs pack argument words DENSELY (a pointer arg
-		-- = 2 words; anything wider is passed on the stack, which sarcasm does not yet
-		-- marshal): x86_64 packs into the FOUR registers rdx,rcx,r8,r9 (4 words max);
-		-- arm64 packs into the SIX registers x2..x7 (6 words max, which any 3-arg
-		-- signature already satisfies).
-		if sigDesc.argWords > 3 then
+		-- Signature class check, arch-aware: on arm64 float and double are fully
+		-- supported (FP args pass in v0..v7 in declaration order among the FP args,
+		-- FP returns ride in v0, and the generic/buffer thunks marshal them); long
+		-- double stays rejected (filcc gives it signature word 0 and NO fast CC) and
+		-- so do the vector classes (a vec4 signature would need q-register CC
+		-- machinery). On x86_64 every FP class is still rejected: the FP marshalling
+		-- is not implemented there.
+		sig.checkSupportedClasses(sigDesc, nil, { arch = target.arch })
+		-- Entry-signature arity limits. The fast CC packs GPR argument words DENSELY
+		-- (a pointer arg = 2 words; anything wider is passed on the stack, which
+		-- sarcasm does not yet marshal), so only GPR-class args count here — FP args
+		-- (arm64 float/double) pass in the v registers instead and are bounded
+		-- separately (at most 8, v0..v7): x86_64 packs into the FOUR registers
+		-- rdx,rcx,r8,r9 (4 words max); arm64 packs into the SIX registers x2..x7.
+		local gprArgs, fpArgs, words = 0, 0, 0
+		for k = 1, sigDesc.argWords do
+			if sig.isFpClass(sigDesc.argTypes[k]) then
+				fpArgs += 1
+			else
+				gprArgs += 1
+				words += (sigDesc.argTypes[k] == 7) and 2 or 1
+			end
+		end
+		if gprArgs > 3 then
 			error("sarcasm: >3 register args not yet supported")
 		end
 		local maxWords = (target.arch == "x86_64") and 4 or 6
-		local words = 0
-		for k = 1, sigDesc.argWords do words += (sigDesc.argTypes[k] == 7) and 2 or 1 end
 		if words > maxWords then
 			error("sarcasm: function '" .. fn.name
 				.. "': >" .. tostring(maxWords) .. " register argument words not yet supported (this signature needs "
 				.. tostring(words) .. ")")
+		end
+		if fpArgs > 8 then
+			error("sarcasm: function '" .. fn.name
+				.. "': >8 floating-point arguments not yet supported (this signature needs "
+				.. tostring(fpArgs) .. ")")
 		end
 		-- body = statements after the function label up to (not incl) .size
 		local body = {}
@@ -498,7 +513,8 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		glue.getter(out, fn.name)
 		target.emitFip(out, tr, colorResult)
 		if not emittedET[sigDesc.signature] then
-			glue.genericThunk(out, sigDesc.signature, sigDesc.argWords, sigDesc.retWords, sigDesc.retIsPtr, sigDesc.argTypes)
+			glue.genericThunk(out, sigDesc.signature, sigDesc.argWords, sigDesc.retWords, sigDesc.retIsPtr,
+				sigDesc.argTypes, sigDesc.retTypes)
 			emittedET[sigDesc.signature] = true
 		end
 		glue.foAndOrigins(out, fn.name, sigDesc.signature, tr.numRoots, fnDbg)

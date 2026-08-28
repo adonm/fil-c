@@ -16,50 +16,110 @@ M.baseMnemonic = function(m) return string.lower(m) end
 M.precolorName = function(num) return "x" .. num end
 M.ALLOCATABLE = isa.ALLOCATABLE
 
--- Strict raw-body validation (validateBody in transform.luau): unannotated/indirect
--- calls, tail calls, unknown/misplaced `;!` annotations, in-body data, and forged
--- addresses are rejected BEFORE any rewriting. ARM64-only: the x86_64 backend
+-- Strict raw-body validation (validateBody in transform.luau): unannotated calls,
+-- tail calls, unknown/misplaced `;!` annotations, in-body data, and forged
+-- addresses are rejected BEFORE any rewriting (indirect CALLS with a signature
+-- annotation are supported on arm64 like on x86_64; the shared annotation walk
+-- rejects the unsupported indirect shapes). ARM64-only: the x86_64 backend
 -- deliberately keeps its historical (looser) acceptance.
 M.strictBodyValidation = true
 
--- Calling convention. Fast entrypoint: x0=myth; args are packed DENSELY into the SIX
--- registers x2..x7 (a pointer-class arg occupies two consecutive slots -- intval, lower;
--- a scalar-class arg occupies one slot, intval only), matching pizlonated clang output.
--- Arguments beyond the sixth word are passed on the stack, which sarcasm does not
--- marshal. ret w0=flags, x1=iv, x2=lo. Runtime calls (AAPCS): x0,x1,x2,...; result x0.
--- yolo params arrive in x{k-1}.
+-- This backend implements the float/double signature classes (the transform
+-- marshals FP arguments through the v registers and FP returns through v0). The
+-- x86_64 backend rejects every FP class at signature validation instead.
+M.fpSignatures = true
+
+-- Calling convention. Fast entrypoint: x0=myth; GPR-class args are packed DENSELY
+-- into the SIX registers x2..x7 (a pointer-class arg occupies two consecutive slots
+-- -- intval, lower; a scalar-class arg occupies one slot, intval only), matching
+-- pizlonated clang output. FLOAT/DOUBLE args do NOT consume GPR slots: they pass in
+-- the vector registers v0..v7 in declaration order among the FP args alone (float in
+-- the low 32 bits = sN, double in the full dN — two floats never pack one register),
+-- exactly like pizlonated clang (verified: long(double,int,float,long) places the
+-- double in v0, the int in x2, the float in v1, the long in x3). Arguments beyond the
+-- sixth GPR word are passed on the stack, which sarcasm does not marshal. FP args
+-- beyond the eighth (v0..v7) are likewise rejected. ret w0=flags, x1=iv, x2=lo, and
+-- an FP return rides in v0 (s0/d0). An INDIRECT call passes the callee's function-
+-- object lower in x1 (fo) — the same register the CC returns the result intval /
+-- ret-size in (they are live on disjoint sides of the call, exactly like x86_64's
+-- rsi/rdx overlap with the SysV argument registers). Runtime calls (AAPCS):
+-- x0,x1,x2,...; result x0.  yolo params arrive in x{k-1} counting only GPR args (FP
+-- yolo params arrive in their v registers and are not modeled as GPR webs).
 local DENSE_ARG_REGS = { 2, 3, 4, 5, 6, 7 }
 local function denseArgSlot(argTypes, k)
 	local slot = 1
 	for i = 1, k - 1 do
-		slot += (argTypes[i] == 7) and 2 or 1   -- 7 = TYPE_PTR (see sig.luau)
+		if sig.isFpClass(argTypes[i]) then
+			-- FP arg (float/double): passes in a v register, consumes no GPR slot
+		elseif argTypes[i] == 7 then
+			slot += 2                             -- 7 = TYPE_PTR (see sig.luau)
+		else
+			slot += 1
+		end
 	end
 	return slot
 end
+-- v-register index (0-based) of the FP arg at declaration position k: the count of
+-- FP args before it (FP args allocate v0..v7 in declaration order among FP args).
+local function fpArgOrdinal(argTypes, k)
+	local m = 0
+	for i = 1, k - 1 do
+		if sig.isFpClass(argTypes[i]) then m += 1 end
+	end
+	return m
+end
 M.cc = {
 	myth = 0, retFlag = 0, retIv = 1, retLo = 2,
+	fo = 1,                                       -- x1: callee function-object lower at an indirect call
 	argIv = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k)] end,
 	argLo = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k) + 1] end,  -- ptr args only
-	yoloArg = function(k) return k - 1 end,
+	-- yolo input-asm register for argument k. FP args pass in v registers (their
+	-- v-reg index is fpArgOrdinal) and consume no yolo GPR: arg k's yolo GPR
+	-- register is its 0-based ordinal among the NON-FP args (nil for an FP arg).
+	yoloArg = function(k, argTypes)
+		if argTypes and sig.isFpClass(argTypes[k]) then return nil end
+		local n = 0
+		if argTypes then
+			for i = 1, k - 1 do
+				if not sig.isFpClass(argTypes[i]) then n += 1 end
+			end
+		else
+			n = k - 1
+		end
+		return n
+	end,
+	fpArgOrdinal = fpArgOrdinal,                  -- v-reg index (0-based) of FP arg k
 	rtArg = function(k) return k - 1 end,
 	rtRet = 0,
 	rtRetLo = 1,                                  -- x1 (filc_ptr return: lower word)
 }
 
 -- Callsite signature validation (called by the shared transform for each `;! sig` call
--- annotation). The arm64 fast CC packs argument words densely into the SIX registers
--- x2..x7 (a pointer arg = 2 words); wider arguments are passed on the stack, which
--- sarcasm does not yet marshal. So a call needs at most 6 register argument words.
--- FP/vector type classes are rejected outright: they marshal through vector registers
--- sarcasm does not model, so an FP callsite signature would silently pass/return
--- garbage (same rejection the x86_64 backend applies).
+-- annotation). The arm64 fast CC packs GPR argument words densely into the SIX
+-- registers x2..x7 (a pointer arg = 2 words); wider arguments are passed on the stack,
+-- which sarcasm does not yet marshal. So a call needs at most 6 register argument
+-- words. Float/double args are supported on arm64 (they pass in v0..v7, in
+-- declaration order among FP args, and the return rides in v0), so at most 8 of them
+-- are allowed; long double and the vector classes are rejected by the arch-aware
+-- signature class check (same rejection shape as x86_64, which rejects every FP
+-- class).
 function M.checkCallsiteSig(cs, callee)
-	sig.checkSupportedClasses(cs, "call to '" .. callee .. "'")
-	local words = 0
-	for k = 1, cs.argWords do words += (cs.argTypes[k] == 7) and 2 or 1 end
+	sig.checkSupportedClasses(cs, "call to '" .. callee .. "'", { arch = "arm64" })
+	local words, fpArgs = 0, 0
+	for k = 1, cs.argWords do
+		if sig.isFpClass(cs.argTypes[k]) then
+			fpArgs += 1
+		else
+			words += (cs.argTypes[k] == 7) and 2 or 1
+		end
+	end
 	if words > 6 then
 		error("sarcasm: call to '" .. callee .. "': >6 register argument words not yet supported"
 			.. " (this call's signature needs " .. tostring(words) .. ")")
+	end
+	if fpArgs > 8 then
+		error("sarcasm: call to '" .. callee .. "': >8 floating-point arguments not yet supported"
+			.. " (this call's signature needs " .. tostring(fpArgs) .. ")")
 	end
 end
 
@@ -620,6 +680,61 @@ function M.make(ctx)
 	function cg.cmpImmBranch(a, imm, cond, lbl)
 		emit(build.insn("cmp", { rt(a), build.imm(imm) }, { uses = {a} })); br(BCOND[cond], lbl)
 	end
+	-- Compare against an arbitrary 64-bit immediate and branch. ARM's `cmp` immediate
+	-- is only 12 bits (optionally shifted), so a wider immediate must be widened —
+	-- mirroring arm64_glue.callsiteThunk's signature compare:
+	--   imm <= 4095              plain `cmp xN, #imm; b.cond`
+	--   imm <= 65535             `mov wT, #imm` into a scratch, then cmp-register
+	--   high bits fit 12         `sub T, a, #(imm>>12), lsl #12` into a FRESH temp (the
+	--                            compared register may be live — e.g. the ret-size
+	--                            check reads cc.retIv), then `cmp T, #(imm&4095)`
+	--   imm < 2^32               `mov wT, #imm16` + `movk wT, #imm>>16, lsl 16` into a
+	--                            scratch, then cmp-register
+	--   otherwise                movBig materializes the full constant into a scratch
+	--                            (16-bit movz/movk chunks into an x register, so the
+	--                            lsl 32/48 chunks encode), then cmp-register
+	-- (The sub/cmp pair compares a - (imm & ~4095) against imm & 4095, which decides
+	-- the relation exactly; it only engages below 2^24, where both 12-bit halves fit.
+	-- Signature numbers with 8 FP arguments reach past 2^32 — e.g. 8552919316 for
+	-- double(double x8) — which is what the movBig form is for. Every temp here is
+	-- freshly allocated, so the compared register — possibly live, e.g. the ret-size
+	-- check's cc.retIv — is never clobbered.)
+	function cg.cmpImmBranchWidened(a, imm, cond, lbl)
+		imm = math.floor(tonumber(imm)
+			or error("sarcasm: internal error: bad compare immediate " .. tostring(imm)))
+		if imm <= 4095 then
+			cg.cmpImmBranch(a, imm, cond, lbl)
+		elseif imm <= 65535 then
+			local t = allocTemp({ role = "scratch" })
+			emit(build.insn("mov", { rt(t, 32), build.imm(imm) }, { defs = { t } }))
+			cg.cmpBranch(a, t, cond, lbl)
+		elseif math.floor(imm / 4096) <= 4095 then
+			local t = allocTemp({ role = "scratch" })
+			emit(build.insn("sub", { rt(t), rt(a), build.withShift(build.imm(math.floor(imm / 4096)), "lsl", 12) },
+				{ defs = { t }, uses = { a } }))
+			cg.cmpImmBranch(t, imm % 4096, cond, lbl)
+		elseif imm < 4294967296 then
+			local t = allocTemp({ role = "scratch" })
+			emit(build.insn("mov", { rt(t, 32), build.imm(imm % 65536) }, { defs = { t } }))
+			emit(build.insn("movk", { rt(t, 32), build.withShift(build.imm(math.floor(imm / 65536)), "lsl", 16) },
+				{ defs = { t }, uses = { t } }))
+			cg.cmpBranch(a, t, cond, lbl)
+		else
+			local t = allocTemp({ role = "scratch" })
+			cg.movBig(t, imm)
+			cg.cmpBranch(a, t, cond, lbl)
+		end
+	end
+	-- dst = src & mask, where mask is a 64-bit constant (hex string or number):
+	-- materialize the mask with movz/movk (ARM bitmask immediates cannot express every
+	-- constant, e.g. the FUNCTION-type mask 0x780000000000000 is fine but the general
+	-- case is not) and use the three-operand and. x86_64 uses its two-operand and —
+	-- the shared indirect-call sequence's FUNCTION-type test.
+	function cg.andConst(dst, src, mask)
+		cg.movBig(dst, mask)
+		emit(build.insn("and", { rt(dst), rt(dst), rt(src) },
+			{ defs = { dst }, uses = { dst, src } }))
+	end
 	function cg.testMaskBranch(reg, mask, cond, lbl, width)
 		emit(build.insn("tst", { rt(reg, width), build.imm(mask) }, { uses = {reg} })); br(cond == "eq" and "b.eq" or "b.ne", lbl)
 	end
@@ -628,15 +743,130 @@ function M.make(ctx)
 
 	function cg.call(sym, uses, clobbers, indirect)
 		if indirect then
-			emit(build.insn("blr", { rt(sym) }, { control = "call", uses = uses, defs = clobbers }))
+			local n = build.insn("blr", { rt(sym) }, { control = "call", uses = uses, defs = clobbers })
+			emit(n)
+			return n
 		else
-			emit(build.insn("bl", { build.sym(sym) }, { control = "call", uses = uses, defs = clobbers }))
+			local n = build.insn("bl", { build.sym(sym) }, { control = "call", uses = uses, defs = clobbers })
+			emit(n)
+			return n
 		end
 	end
 	function cg.callerSavedClobbers()
 		local clob = {}
 		for _, rn in isa.CALLER_SAVED_NUMS do table.insert(clob, pColored(rn)) end
 		return clob
+	end
+
+	-- The fast-path indirect call: call the entrypoint loaded into targetTemp.
+	-- `uses` carries every register live at the call (myth, the callee's function-
+	-- object lower, the target temp and the marshalled argument registers);
+	-- `clobbers` are the caller-saved registers the callee may destroy. The target
+	-- temp is an ordinary virtual temp, so regalloc colors it around the clobbers
+	-- (it is read AT the blr; never assume the reserved x8 scratch). Returns the
+	-- emitted node (the transform tags it with the FP-arg vector uses when the
+	-- callsite signature has float/double arguments — see fpVecUses in
+	-- expandFpSaves).
+	function cg.emitIndirectCallInsn(targetTemp, uses, clobbers)
+		local n = build.insn("blr", { rt(targetTemp) },
+			{ control = "call", uses = uses, defs = clobbers })
+		emit(n)
+		return n
+	end
+
+	-- The generic (buffer-CC) indirect call: call the callee's generic entrypoint at
+	-- [lower+8]. ARM has no memory-indirect call, so load it into a fresh temp and
+	-- blr it (x86_64 uses `call *8(%lower)` — see x86_64_codegen).
+	function cg.emitGenericIndirectCall(fpLoTemp, uses, clobbers)
+		local entryT = allocTemp({ role = "scratch" })
+		cg.load(entryT, fpLoTemp, 8, 8)
+		local allUses = {}
+		for _, t in uses do table.insert(allUses, t) end
+		table.insert(allUses, entryT)
+		local n = build.insn("blr", { rt(entryT) },
+			{ control = "call", uses = allUses, defs = clobbers })
+		emit(n)
+		return n
+	end
+
+	-- FP argument/return marshalling atoms (arm64 fast CC: FP args in v0..v7 in
+	-- declaration order among FP args; FP return in v0). These synthesize str/ldr
+	-- with a NAMED NEON register operand (regalloc never models vector registers —
+	-- the same shape expandFpSaves' save/restore movs use) plus a colored GPR base
+	-- temp for the address. The nodes carry a `vecStmt` pseudo-statement so
+	-- expandFpSaves' width-liveness sees the vector register effect (a store USES
+	-- the FP argument value — it must stay live across any injected call between
+	-- the argument's definition and the call; a load DEFINES the FP return value).
+	local function neonOperand(name, widthBytes)
+		return { kind = "reg", rc = "neon", num = tonumber(string.sub(name, 2)),
+			width = widthBytes * 8, name = name }
+	end
+
+	-- Register name of FP argument #ordinal (0-based) of the given class:
+	-- "d0".."d7" for double, "s0".."s7" for float (the low 32 bits of the v reg).
+	function cg.fpArgRegName(class, ordinal)
+		local w = sig.fpWidthBytes(class)
+			or error("sarcasm: internal error: fpArgRegName on a non-FP class " .. tostring(class))
+		return (w == 4 and "s" or "d") .. tostring(ordinal)
+	end
+
+	-- Store FP argument #ordinal (class = float/double) into the CC buffer word at
+	-- [mythT, #offset] (a float writes the low 4 bytes of the 8-byte slot, exactly
+	-- like filcc's generic marshalling).
+	function cg.storeFpArg(class, ordinal, mythTemp, offset)
+		local w = sig.fpWidthBytes(class)
+		local op = neonOperand(cg.fpArgRegName(class, ordinal), w)
+		local n = build.insn("str", { op, build.mem(rt(mythTemp), offset) },
+			{ uses = { mythTemp } })
+		n.vecStmt = { mnemonic = "str", operands = n.operands }
+		emit(n)
+		return n
+	end
+
+	-- Load the FP return value (class = float/double) from the CC buffer word at
+	-- [mythT, #offset] into v0 (s0/d0).
+	function cg.loadFpRet(class, mythTemp, offset)
+		local w = sig.fpWidthBytes(class)
+		local op = neonOperand(cg.fpArgRegName(class, 0), w)
+		local n = build.insn("ldr", { op, build.mem(rt(mythTemp), offset) },
+			{ uses = { mythTemp } })
+		n.vecStmt = { mnemonic = "ldr", operands = n.operands }
+		emit(n)
+		return n
+	end
+
+	-- Fail stubs for the shared indirect-call sequence (appended at function end).
+	-- filc_check_function_call_fail takes the flight pointer (x0 = intval, x1 =
+	-- lower); filc_cc_rets_check_failure takes (x0 = actual size, w1 = expected size,
+	-- x2 = 0) — the same argument marshalling filcc's own thunks use. Both are
+	-- noreturn plain `bl`s (no PLT reloc on ARM).
+	--
+	-- NB: on arm64 the ret-size register (cc.retIv = x1) is ALSO the second runtime
+	-- argument register, so the rets stub must copy the ACTUAL size out of x1 BEFORE
+	-- materializing the expected size into w1 (x86_64's actual-size register rdx is
+	-- rtArg(3), disjoint from its rsi = rtArg(2), so it can move in either order).
+	function cg.emitIndcallFailStub(list, lbl, ivTemp, loTemp)
+		local a1, a2 = M.cc.rtArg(1), M.cc.rtArg(2)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(ivTemp) },
+			{ defs = { pColored(a1) }, uses = { ivTemp } }))
+		table.insert(list, build.insn("mov", { build.rp(a2), rt(loTemp) },
+			{ defs = { pColored(a2) }, uses = { loTemp } }))
+		-- appended to the list (the stubs flush at function end), never emitted here
+		table.insert(list, build.insn("bl", { build.sym("filc_check_function_call_fail") },
+			{ control = "call", uses = { pColored(a1), pColored(a2) } }))
+	end
+	function cg.emitRetsFailStub(list, lbl, actualTemp, expectedBytes)
+		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(actualTemp) },
+			{ defs = { pColored(a1) }, uses = { actualTemp } }))
+		table.insert(list, build.insn("mov", { build.rp(a2, 32), build.imm(expectedBytes) },
+			{ defs = { pColored(a2) } }))
+		table.insert(list, build.insn("mov", { build.rp(a3, 32), build.imm(0) },
+			{ defs = { pColored(a3) } }))
+		table.insert(list, build.insn("bl", { build.sym("filc_cc_rets_check_failure") },
+			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 	function cg.leaGlobal(destPhys, sym)
 		emit(build.insn("adrp", { build.rp(destPhys), build.sym(sym) }, { defs = { pColored(destPhys) } }))
@@ -860,9 +1090,24 @@ function M.make(ctx)
 						d.transparent = true
 					else
 						d.killAll = true
+						-- An FP-argument call CONSUMES the FP argument values the
+						-- source program placed in v0..v7 (per AAPCS64 they ride the
+						-- call in the vector registers): they are live UP TO the call
+						-- even though the call clobbers them. Tagged by the transform
+						-- (fpVecUses = { [vregNum] = widthBytes }); applied after the
+						-- killAll below so the consumed args are live-before the call
+						-- (and get saved around an INJECTED call sitting between the
+						-- argument's definition and this call).
+						d.fpUses = node.fpVecUses
 					end
 				elseif node.stmt then
 					d.uses, d.defs = isa.vecEffects(node.stmt)
+				elseif node.vecStmt then
+					-- synthesized FP marshalling (cg.storeFpArg / cg.loadFpRet): the
+					-- same vector effects as the user instruction it stands for (a
+					-- buffer store USES the FP argument register; a buffer load
+					-- DEFINES the FP return register)
+					d.uses, d.defs = isa.vecEffects(node.vecStmt)
 				end
 				table.insert(insns, d)
 			else
@@ -880,6 +1125,13 @@ function M.make(ctx)
 				for n in pairs(live) do
 					if n < 8 or n > 15 then live[n] = nil
 					elseif live[n] > 8 then live[n] = 8 end
+				end
+				-- FP args consumed by the call (see the fpVecUses comment above):
+				-- live up to the call even though the call clobbers them.
+				if d.fpUses then
+					for n, u in pairs(d.fpUses) do
+						if (live[n] or 0) < u then live[n] = u end
+					end
 				end
 				return
 			end

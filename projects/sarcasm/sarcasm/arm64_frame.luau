@@ -3,6 +3,8 @@
 -- analysis and the per-statement rewrite: dropping AAPCS frame setup, virtualizing
 -- sp/x29-relative slots as pseudo-registers, and rejecting stack-address escapes.
 
+local sig = require("./sig")
+
 local arm64_frame = {}
 
 -- Slot virtualization mirrors the x86_64 backend: a stack slot is keyed by its byte
@@ -125,9 +127,27 @@ local PAIR_STORE = { stp = true, stnp = true }
 -- { bytes = 0 (arm64 virtualizes NEON slots instead of materializing clusters),
 --   saveBytes = the vector-save reservation for the injected-call save/restore —
 --   16 bytes per v0..v31 slot when the function touches any NEON register, else 0 }.
-function arm64_frame.analyzeFrame(body)
+-- `sigDesc` (optional) is the function's entry signature: a float/double argument or
+-- an FP return rides in the v registers EVEN when the body never names a NEON
+-- register (FP args are typically consumed by a call, an FP return produced, without
+-- any NEON instruction in the body), so the vector-save reservation must be active —
+-- otherwise an injected runtime call (pollcheck slow path, allocation, ptr-store
+-- barrier) could silently clobber an FP argument.
+function arm64_frame.analyzeFrame(body, sigDesc)
 	local frameSize, fpOffset, usesFp = 0, 0, false
 	local usesNeon = false
+	if sigDesc then
+		if sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]) then
+			usesNeon = true
+		else
+			for _, t in (sigDesc.argTypes or {}) do
+				if sig.isFpClass(t) then
+					usesNeon = true
+					break
+				end
+			end
+		end
+	end
 	for _, st in body do
 		if st.kind == "insn" then
 			local m = string.lower(st.mnemonic)
@@ -160,6 +180,12 @@ function arm64_frame.analyzeFrame(body)
 	local fpInfo = { bytes = 0, saveBytes = usesNeon and (32 * 16) or 0 }
 	return frameSize, fpOffset, usesFp, fpInfo
 end
+
+-- The vector-save reservation arm64 uses when a function's v registers must be
+-- preserved across an injected runtime call (16 bytes per v0..v31 slot). The
+-- transform forces this reservation for FP-signature functions even when the body
+-- touches no NEON register (see transform.luau).
+arm64_frame.VEC_SAVE_BYTES = 32 * 16
 
 -- The signed sp adjustment a statement performs, for ctx.cumAdj (the cumulative
 -- total of sp adjustments seen so far in body order): `sub sp` allocates (+),

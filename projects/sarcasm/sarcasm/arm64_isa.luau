@@ -117,6 +117,17 @@ local COND_BRANCH_ALIASES = {
 
 local function isGpr(op) return op and op.kind == "reg" and op.rc == "gpr" end
 
+-- First operand that cannot be a label (a register of any kind — xzr/sp included —
+-- or anything else non-symbolic), or nil. Used to detect a REGISTER branch target:
+-- `b xN`, `cbz xN, xM`, `b.eq xM`, ... A branch target that is not a label is an
+-- indirect branch no matter what register class it names.
+local function firstNonSym(ops)
+	for _, o in ops do
+		if o.kind ~= "sym" then return o end
+	end
+	return nil
+end
+
 -- Pointer-authentication instructions (pacia*/pacib*/paciza*/pacizb* and the
 -- paciasp/pacialr/pacib1716/... HINT-space aliases, the pacd*/autd* data-pointer
 -- siblings, pacga, autia*/autib*/... aliases, xpaci/xpacd/xpaclri) implicitly
@@ -213,11 +224,23 @@ function arm64.classify(insn)
 	local control, targets, fallsThrough = "none", nil, true
 	local isMove = nil
 
-	-- Control flow first.
+	-- Control flow first. A branch whose TARGET is not a label (`br xN`, `b xN`,
+	-- `cbz xN, xM`, `tbz xN, #i, xM`, `b.eq xM`, ...) is an INDIRECT branch: its
+	-- target is not a provable label, so it classifies exactly like `br` and the
+	-- shared body validation rejects it (a raw register branch cannot be made
+	-- memory-safe). Label-target forms are unaffected. (Only `br`/`blr`/`ret` can
+	-- take register targets in the ISA; every other branch form is unconditional
+	-- about labels — an operand there is garbage that must never render verbatim.)
 	if m == "b" then
-		control, fallsThrough = "branch", false
-		targets = {}
-		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		local regTarget = firstNonSym(ops)
+		if regTarget then
+			control, fallsThrough = "indirect", false
+			if isGpr(regTarget) then table.insert(uses, regTarget) end
+		else
+			control, fallsThrough = "branch", false
+			targets = {}
+			for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		end
 	elseif m == "br" then
 		control, fallsThrough = "indirect", false
 		if isGpr(ops[1]) then table.insert(uses, ops[1]) end
@@ -236,19 +259,44 @@ function arm64.classify(insn)
 		end
 		control, fallsThrough = "return", false
 	elseif m == "cbz" or m == "cbnz" then
-		control = "condbranch"
-		if isGpr(ops[1]) then table.insert(uses, ops[1]) end
-		targets = {}
-		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		-- operand 2 is the branch target.
+		local regTarget = (ops[2] and ops[2].kind ~= "sym") and ops[2] or nil
+		if regTarget then
+			control = "indirect"   -- conditional; fallsThrough stays true (rejected before use)
+			if isGpr(ops[1]) then table.insert(uses, ops[1]) end
+			if isGpr(regTarget) then table.insert(uses, regTarget) end
+		else
+			control = "condbranch"
+			if isGpr(ops[1]) then table.insert(uses, ops[1]) end
+			targets = {}
+			for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		end
 	elseif m == "tbz" or m == "tbnz" then
-		control = "condbranch"
-		if isGpr(ops[1]) then table.insert(uses, ops[1]) end
-		targets = {}
-		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		-- operands are (reg, bit, target): operand 3 is the branch target.
+		local regTarget = (ops[3] and ops[3].kind ~= "sym") and ops[3] or nil
+		if regTarget then
+			control = "indirect"   -- conditional; fallsThrough stays true (rejected before use)
+			if isGpr(ops[1]) then table.insert(uses, ops[1]) end
+			if isGpr(regTarget) then table.insert(uses, regTarget) end
+		else
+			control = "condbranch"
+			if isGpr(ops[1]) then table.insert(uses, ops[1]) end
+			targets = {}
+			for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		end
 	elseif string.sub(m, 1, 2) == "b." or COND_BRANCH_ALIASES[m] then
-		control = "condbranch"
-		targets = {}
-		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		local regTarget = firstNonSym(ops)
+		if regTarget then
+			-- a conditional branch with a non-label target is not even encodable, but
+			-- classify it like any other register branch so it can never slip through
+			-- as a label-less (i.e. unvalidated) condbranch.
+			control = "indirect"
+			if isGpr(regTarget) then table.insert(uses, regTarget) end
+		else
+			control = "condbranch"
+			targets = {}
+			for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		end
 	end
 
 	if control == "call" or control == "indcall" then

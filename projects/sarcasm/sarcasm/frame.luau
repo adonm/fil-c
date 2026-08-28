@@ -36,9 +36,12 @@ end
 
 -- Rewrite `body` using the arch `policy`. `regions` are fixed-size alloca regions (their
 -- stack math is redirected to the allocation by the transform, so it passes through here).
-function frame.preprocess(body, regions, policy)
+-- `sigDesc` (optional) is the function's entry signature: arm64's frame analysis uses it
+-- to force the vector-save reservation for FP-signature functions (float/double args or
+-- an FP return ride in the v registers even when the body never names a NEON register).
+function frame.preprocess(body, regions, policy, sigDesc)
 	-- fpInfo (x86_64 only): FP/SIMD stack-slot materialization clusters (or nil).
-	local frameSize, fpOffset, usesFp, fpInfo = policy.analyzeFrame(body)
+	local frameSize, fpOffset, usesFp, fpInfo = policy.analyzeFrame(body, sigDesc)
 	local out = {}
 	local function emit(n) out[#out + 1] = n end
 

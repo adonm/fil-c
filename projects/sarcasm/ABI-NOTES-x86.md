@@ -39,6 +39,17 @@ word at `384(%rbx)` — `movsd %xmm0, 128(%rbx); movq $0, 384(%rbx)` for double;
 sarcasm still REJECTS FP/vector type classes in `;!` signatures (entry and
 callsite alike) — this decode is the groundwork for future FP-signature support;
 the remaining work is the marshalling (entry/callsite glue + buffer-CC packing).
+Future work: FP signatures on x86_64. The design already accommodates them —
+the FP-signature capability is a per-arch marker (`cgm.fpSignatures`), the
+signature class check is arch-aware (`sig.checkSupportedClasses` takes the
+target), and the backend hooks the arm64 marshalling uses (`cg.storeFpArg` /
+`cg.loadFpArg`-style FP buffer atoms plus the per-arch calling-convention
+tables) are parameterized the same way the dense-GPR tables are. Adding x86_64
+FP support means filling in the x86 CC tables (xmm sequence for fast paths,
+`movss`/`movsd` buffer packing for generic paths per the decode above); until
+then `checkCallsiteSig` keeps rejecting FP classes on x86_64 and no behavioral
+change is intended there. (arm64 float/double signatures are implemented — see
+ABI-NOTES.md.)
 
 ## Runtime-call argument registers (SysV: rdi, rsi, rdx, rcx, r8, r9)
 - `filc_optimized_access_check_fail(rdi=intval, rsi=lower, rdx=&origin)`

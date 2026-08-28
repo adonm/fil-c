@@ -409,6 +409,21 @@ function M.make(ctx)
 	function cg.cmpImmBranch(a, imm, cond, lbl)
 		emit(build.insn("cmp", { rt(a), build.imm(imm) }, { uses = {a} })); branch(JCC[cond], lbl)
 	end
+	-- Compare against an arbitrary 64-bit immediate and branch. x86_64's cmp takes a
+	-- sign-extended imm32, which already covers every signature/ret-size immediate the
+	-- transform compares (arm64 needs the widened scheme — see arm64_codegen) — so this
+	-- is exactly cmpImmBranch.
+	function cg.cmpImmBranchWidened(a, imm, cond, lbl)
+		cg.cmpImmBranch(a, imm, cond, lbl)
+	end
+	-- dst = src & mask, where mask is a 64-bit constant (hex string or number): x86_64
+	-- materializes the mask and uses the two-operand and (arm64 uses movz/movk plus a
+	-- three-operand and — the shared indirect-call sequence's FUNCTION-type test).
+	function cg.andConst(dst, src, mask)
+		cg.movBig(dst, mask)
+		emit(build.insn("and", { rt(dst), rt(src) },
+			{ defs = { dst }, uses = { dst, src } }))
+	end
 	-- branch if (reg & mask) cond 0   (cond "eq"/"ne"). x86 `test` only takes a 32-bit
 	-- (sign-extended) immediate, so a mask that doesn't fit imm32 must go through a register.
 	function cg.testMaskBranch(reg, mask, cond, lbl, width)
@@ -437,6 +452,56 @@ function M.make(ctx)
 		local clob = {}
 		for _, rn in isa.CALLER_SAVED_NUMS do table.insert(clob, pColored(rn)) end
 		return clob
+	end
+
+	-- The fast-path indirect call: call the entrypoint loaded into targetTemp.
+	-- `uses` carries every register live at the call (myth, fo, the target temp and
+	-- the marshalled argument registers); `clobbers` are the caller-saved registers
+	-- the callee may destroy. x86_64 renders this as `call *%reg` (op.indirect marks
+	-- it for the renderer).
+	function cg.emitIndirectCallInsn(targetTemp, uses, clobbers)
+		local node = build.insn("call", { build.rt(targetTemp) },
+			{ control = "call", uses = uses, defs = clobbers })
+		node.indirect = true
+		emit(node)
+	end
+
+	-- The generic (buffer-CC) indirect call: call the callee's generic entrypoint at
+	-- [lower+8] — x86_64 can take the target straight from memory (`call *8(%lower)`);
+	-- arm64 loads it into a fresh temp first (see arm64_codegen).
+	function cg.emitGenericIndirectCall(fpLoTemp, uses, clobbers)
+		local node = build.insn("call", { build.memx(build.rt(fpLoTemp), { dispVal = 8 }) },
+			{ control = "call", uses = uses, defs = clobbers })
+		node.indirect = true
+		emit(node)
+	end
+
+	-- Fail stubs for the shared indirect-call sequence (appended at function end).
+	-- filc_check_function_call_fail takes the flight pointer (arg0 = intval, arg1 =
+	-- lower); filc_cc_rets_check_failure takes (arg0 = actual size, arg1 = expected
+	-- size, arg2 = 0). Both are noreturn.
+	function cg.emitIndcallFailStub(list, lbl, ivTemp, loTemp)
+		local a1, a2 = M.cc.rtArg(1), M.cc.rtArg(2)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(ivTemp) },
+			{ defs = { pColored(a1) }, uses = { ivTemp } }))
+		table.insert(list, build.insn("mov", { build.rp(a2), rt(loTemp) },
+			{ defs = { pColored(a2) }, uses = { loTemp } }))
+		-- appended to the list (the stubs flush at function end), never emitted here
+		table.insert(list, build.insn("call", { build.sym("filc_check_function_call_fail", "plt") },
+			{ control = "call", uses = { pColored(a1), pColored(a2) } }))
+	end
+	function cg.emitRetsFailStub(list, lbl, actualTemp, expectedBytes)
+		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
+		table.insert(list, build.label(lbl))
+		table.insert(list, build.insn("mov", { build.rp(a2, 32), build.imm(expectedBytes) },
+			{ defs = { pColored(a2) } }))
+		table.insert(list, build.insn("mov", { build.rp(a1), rt(actualTemp) },
+			{ defs = { pColored(a1) }, uses = { actualTemp } }))
+		table.insert(list, build.insn("mov", { build.rp(a3, 32), build.imm(0) },
+			{ defs = { pColored(a3) } }))
+		table.insert(list, build.insn("call", { build.sym("filc_cc_rets_check_failure", "plt") },
+			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 	function cg.leaGlobal(destPhys, sym)  -- destPhys is a physical reg num
 		emit(build.insn("lea", { build.rp(destPhys), build.memx({ kind = "reg", rc = "rip" }, { dispSym = sym }) },

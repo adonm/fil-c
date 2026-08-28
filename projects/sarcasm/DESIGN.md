@@ -832,8 +832,11 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
 - calls (`;! sig` on the call insn) -> marshal args into the Fil-C CC registers, call the
   callsite thunk `pizlonatedFI<sig>_foo`, test the exception flag (propagate on throw),
   read results. Emits one weak/hidden callsite thunk per distinct called extern.
-- indirect calls (`call *%reg ;! sig(...)`, x86_64 only — arm64's validateBody
-  rejects every indirect call) -> filcc's exact indirect-call sequence for the
+- indirect calls (`call *%reg ;! sig(...)` on x86_64, `blr xN ;! sig(...)` on
+  arm64 — both architectures now support REGISTER-operand annotated indirect
+  calls through the same arch-neutral transform code; on arm64 validateBody
+  delegates to the shared annotation walk, which accepts exactly the annotated
+  register-indirect shape) -> filcc's exact indirect-call sequence for the
   flight pointer (P = target intval temp, L = its lower temp): L==0 -> fail;
   aux = [L-8] must satisfy (aux & 0x780000000000000) == 0x80000000000000
   (special type FUNCTION); P must equal aux & 0xFFFFFFFFFFFF (the canonical
@@ -864,7 +867,14 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   annotated indirect call exactly like a direct one, and the renderer emits
   the AT&T `*` for indirect call/jmp operands (a passthrough `jmp *%rax`
   previously lost the marker — clang's integrated assembler rejects the
-  star-less form).
+  star-less form). On arm64 the same sequence is emitted for
+  `blr xN ;! sig(...)` through the same shared code with the arm64 CC
+  registers (x0=myth, x1=L, dense args from x2, w2=argument byte size,
+  x1 doubles as the ret-size register, fail stubs use plain `bl` — no @PLT
+  relocations); the signature immediate uses the same movz/sub-cmp/movk
+  widening as the callsite resolver. Memory-operand indirect calls do not
+  exist on arm64 (`blr` is register-only), so the x86 `call *mem` rejection
+  has no arm64 analog.
 - loops (back-edges from the CFG) -> insert a pollcheck at the loop header.
 - alloca annotations (`;! alloca size (x)` / `;! alloca result (x)`, or `;! alloca result
   size=N`) -> a GC allocation via filc_allocate, not real stack memory.
@@ -909,27 +919,65 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   thunk also needs one callee-saved hold register per argument word, and its hold pool
   is 4 registers — the same limit). On arm64 the fixed x2..x7 pairs cap a callsite at 3
   arguments, same as entry signatures. An over-limit call is rejected.
-- Indirect calls: on arm64 ALL indirect calls are rejected (validateBody —
-  "indirect call through a raw register cannot be made memory-safe"). On
-  x86_64 a register-indirect call is supported when it carries a `;!`
-  callsite signature and its target register's web is a known pointer value
-  (see the transform section's indirect-call bullet for the emitted check and
-  dispatch sequence); rejected are: an unannotated register-indirect call
-  ("indirect call has no ;! signature annotation"), ANY memory-indirect call
+- Indirect calls: on BOTH architectures a register-indirect call is supported
+  when it carries a `;!` callsite signature and its target register's web is a
+  known pointer value (`blr xN ;! sig(...)` on arm64 — validateBody delegates
+  to the shared annotation walk; `call *%reg ;! sig(...)` on x86_64; see the
+  transform section's indirect-call bullet for the emitted check and dispatch
+  sequence). Rejected on both: an unannotated register-indirect call
+  ("indirect call has no ;! signature annotation"), and an annotated call
+  whose target web is not pointer-typed ("indirect call target must be a
+  function pointer value..."). On x86_64 additionally ANY memory-indirect call
   `call *mem`, annotated or not ("indirect call through a memory operand
   cannot be made memory-safe (load the function pointer into a register
-  first...)"), and an annotated call whose target web is not pointer-typed
-  ("indirect call target must be a function pointer value...").
-- Floating-point/vector type classes (float, double, long double, the vector
-  classes) are rejected in ALL `;!` signatures — entry signatures and callsite
-  annotations alike, on both architectures. This is deliberately deferred, not
-  fundamental: the Fil-C x86_64 FP ABI is now decoded (see ABI-NOTES-x86.md — FP
-  arguments travel in a separate xmm sequence alongside the dense GPR packing,
-  long double goes on the stack and returns in st(0), and the generic buffer CC
-  gives every argument one 8-byte word regardless of class); the remaining work
-  is the marshalling — entry/callsite glue and buffer-CC packing for the FP
-  classes. Until it lands, an FP-typed signature would silently miscompile the
-  ABI at both ends, so it is rejected; the error names the offending type.
+  first...)") — memory-operand indirect calls do not exist on arm64
+  (`blr` is register-only). Indirect BRANCHES stay rejected on arm64 in all
+  forms (`br xN`, and `b xN` with a register operand — both close the same
+  unvalidatable control-flow hole).
+- Floating-point signatures: arm64 float/double are FULLY SUPPORTED in `;!`
+  signatures (entry and callsite alike) — see the "Floating-point signatures
+  (arm64)" section below. Still rejected on both architectures: `long double`
+  (filcc gives it signature word 0 and NO fast CC on arm64, and it travels on
+  the stack on x86_64) and the vector classes (a vec4 signature would need
+  q-register CC machinery, and filcc's encoding only matches sarcasm's formula
+  for vec4 anyway). On x86_64 every FP class is still rejected — FP-signature
+  support there is future work that slots into the same parameterized hooks
+  (see ABI-NOTES-x86.md's FP decode and future-work note).
+
+## Floating-point signatures (arm64)
+- Capability marker: the arm64 codegen module sets `cgm.fpSignatures = true`
+  (x86_64 does not), and the signature class check is ARCH-AWARE:
+  `sig.checkSupportedClasses(sd, where, { arch = target.arch })` accepts the
+  float/double classes on arm64 and rejects every FP class on x86_64, at entry
+  signatures (sarcasm.luau) and callsite annotations (arm64's
+  `checkCallsiteSig`) alike; the error names the offending type class.
+- Fast paths (entry unpack, direct calls, indirect-call fast arm, returns): FP
+  arguments and results PASS THROUGH the v registers untouched — the transform
+  simply skips FP-class args in the dense GPR marshalling (the yolo→dense
+  mapping counts only GPR args, so GPR args are not shifted by FP args) and
+  skips the x1 retval move for FP returns. The source program places FP args
+  in v0..v7 per AAPCS and reads the FP result from v0 (s0/d0).
+- Generic/buffer paths (indirect-call generic arm, the weak callsite resolver
+  thunk, the 2ET generic thunks): FP args are stored into the CC buffer at
+  their declaration index — `cg.storeFpArg` emits `str sN/dN, [myth, #128+8i]`
+  (a float writes the low 4 bytes of the 8-byte slot) with a zero aux word at
+  384+8i; w2 counts every argument word. An FP return is loaded back from
+  `myth+128` with `cg.loadFpRet` (`ldr s0/d0`) after the ret-size check
+  (expected size stays 8). The callsite thunk keeps FP args live in the v file
+  across its getter call (nothing in the thunk touches the v registers) and
+  stores them into the buffer straight from there on the mismatch path.
+- Frame interaction: because FP values ride in v registers even when the body
+  never names a NEON register (an FP argument/return of the entry signature,
+  or an FP value flowing between two calls), the vector-save reservation is
+  FORCED whenever any signature in play (entry or callsite) has a float/double
+  class — otherwise an injected runtime call's liveness-driven vector saves
+  would not bracket the clobbered v registers. (Gated on `cgm.fpSignatures`;
+  unreachable on x86_64, which rejects FP signatures at validation.)
+- x86_64 FP support is future work that slots into the same parameterized
+  hooks: an x86_64 `cgm.fpSignatures` marker, x86 CC tables (xmm sequence for
+  fast paths per the decoded ABI in ABI-NOTES-x86.md), and
+  `cg.storeFpArg`/`cg.loadFpArg`-style FP buffer atoms (`movss`/`movsd`
+  marshalling). No x86_64 behavior changes until that lands.
 - Taking the address of the stack frame is rejected (cannot prove safety), whether by
   address arithmetic off the stack register (`add xD, sp, #k` / `leaq 8(%rsp), %rax`),
   by copying it (`movq %rsp, %rax`), or by storing it into a frame slot
@@ -981,7 +1029,9 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   forms — on a heap base they are supported at exact widths); NEON structure
   pre-index writeback (no such encoding in the modeled subset); and a memory
   operand on any mnemonic sarcasm does not model as a load/store (prfm & co).
-  FP/vector types in `;!` signatures stay rejected on both architectures.
+  `long double`/vector types in `;!` signatures stay rejected (float/double
+  signature types are supported on arm64 — see the "Floating-point signatures
+  (arm64)" section above; every FP class stays rejected on x86_64).
 - On X86_64, `enter`/`enterq` is rejected (packed frame setup sarcasm does not model —
   see the frame section). FP/SIMD code is IN SCOPE (see the FP/SIMD subsection of the
   frame section); the only rejected instructions are ones whose memory-safety effects
@@ -1129,7 +1179,10 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     in the unknown class;
   * FP/SIMD stack accesses needing more than 16-byte alignment (see the frame
     section).
-  Floating-point signature types are rejected on both architectures (see above).
+  FP/SIMD signature types are rejected on x86_64 and `long double`/vector
+  signature types are rejected on both architectures (see the
+  "Floating-point signatures (arm64)" section above for the arm64 float/double
+  support).
 - On X86_64, an AT&T-style parens operand field in Intel-syntax input is
   rejected ("AT&T-style operand in Intel-syntax input (use [bracket] memory
   operands)") — see the `*_parse.luau` module entry; previously a total check
@@ -1164,6 +1217,13 @@ here, not regressions introduced by this change:
   r*/e* tokens, PTR/brackets), so a register file of pure vector registers
   is invisible to it. (That input rejects on the x86_64 path too — the
   symbolic moffs operand — so again only the error message changes.)
+- sarcasm's transform output is nondeterministic across processes for some
+  inputs: Luau seeds its string hashing per process, so iteration order over
+  string-keyed tables differs run to run, and the spill-slot packing is
+  sensitive to that order. Observed case:
+  `filc/tests/sarcasm-stackbufs-o0-copy-ok-arm` flips a spill slot between
+  two equivalent layouts (48↔56) across processes; both outputs pass the
+  test.
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root

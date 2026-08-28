@@ -12,10 +12,27 @@ local TYPE_INT = 0
 local TYPE_FLOAT = 1
 local TYPE_DOUBLE = 2
 local TYPE_LONGDOUBLE = 3
--- 4..6 vectors, 7 pointer
+local TYPE_VEC4 = 4
+local TYPE_VEC5 = 5
+local TYPE_VEC6 = 6
 local TYPE_PTR = 7
 
+-- Integer-class type words: a token classifies as integer only if EVERY
+-- whitespace-separated word (the token is normalized and lowercased first) is
+-- in this set — int, unsigned, long, size_t, the stdint names, bool, enum,
+-- etc. Anything else (e.g. `__m128`, a typo) is a clean parse error instead of
+-- silently misclassifying the token as an integer type.
+local INTEGER_WORDS = {
+	int = true, long = true, short = true, char = true, signed = true,
+	unsigned = true, bool = true, _bool = true, enum = true,
+	size_t = true, ssize_t = true, ptrdiff_t = true,
+	int8_t = true, int16_t = true, int32_t = true, int64_t = true,
+	uint8_t = true, uint16_t = true, uint32_t = true, uint64_t = true,
+	intptr_t = true, uintptr_t = true,
+}
+
 -- Map a C type token (already trimmed, may contain spaces) to a type class.
+-- Raises a clean `sarcasm:` error for a token that names no known type class.
 local function classifyType(tok: string): number?
 	tok = (string.gsub(tok, "%s+", " "))
 	tok = (string.gsub(tok, "^%s*(.-)%s*$", "%1"))
@@ -35,7 +52,24 @@ local function classifyType(tok: string): number?
 	if low == "long double" then
 		return TYPE_LONGDOUBLE
 	end
-	-- everything else integer-class: int, unsigned, long, size_t, char, bool, enums, etc.
+	-- vector classes: recognized so the signature class checks REJECT them with a
+	-- precise message (SIMD signatures are not supported on either architecture)
+	-- instead of silently misclassifying the token as an integer type.
+	if low == "vec4" then
+		return TYPE_VEC4
+	end
+	if low == "vec5" then
+		return TYPE_VEC5
+	end
+	if low == "vec6" then
+		return TYPE_VEC6
+	end
+	for word in string.gmatch(low, "%S+") do
+		if not INTEGER_WORDS[word] then
+			error("sarcasm: unknown type '" .. tok .. "' in signature annotation")
+		end
+	end
+	-- all-integer words: int, unsigned, long, size_t, uint64_t, enums, etc.
 	return TYPE_INT
 end
 sig.classifyType = classifyType
@@ -110,23 +144,59 @@ end
 local CLASS_NAME = {
 	[TYPE_INT] = "integer", [TYPE_FLOAT] = "float", [TYPE_DOUBLE] = "double",
 	[TYPE_LONGDOUBLE] = "long double", [TYPE_PTR] = "ptr",
+	[TYPE_VEC4] = "vec4", [TYPE_VEC5] = "vec5", [TYPE_VEC6] = "vec6",
 }
 
--- Floating-point type classes are not yet supported in signatures. sarcasm packs and
--- unpacks dense GPRs only, while the Fil-C ABI passes and returns FP values in vector
--- registers (which sarcasm itself supports) — the FP ABI marshalling (the fast-CC xmm
--- register sequence plus the buffer-CC glue) is simply not yet implemented. An
--- FP-typed signature would therefore silently miscompile the ABI at BOTH ends (entry
--- unpacking and callsite packing), so reject it wherever a signature is consumed.
+-- Is this class a supported floating-point class (float/double)? Architecture-
+-- neutral: on every target the FP classes are float (4 bytes, low 32 bits of a v
+-- register) and double (8 bytes, a full v register).
+function sig.isFpClass(t: number): boolean
+	return t == TYPE_FLOAT or t == TYPE_DOUBLE
+end
+
+-- Byte width of a supported floating-point class (float=4, double=8), nil otherwise.
+function sig.fpWidthBytes(t: number): number?
+	if t == TYPE_FLOAT then return 4 end
+	if t == TYPE_DOUBLE then return 8 end
+	return nil
+end
+
+-- Floating-point (and vector) type classes are rejected on x86_64. sarcasm packs
+-- and unpacks dense GPRs only there, while the Fil-C ABI passes and returns FP
+-- values in vector registers (which sarcasm itself supports) — the FP ABI
+-- marshalling (the fast-CC xmm register sequence plus the buffer-CC glue) is simply
+-- not yet implemented on x86_64. An FP-typed signature would therefore silently
+-- miscompile the ABI at BOTH ends (entry unpacking and callsite packing), so reject
+-- it wherever a signature is consumed.
+--
+-- On arm64 float and double ARE supported (the fast CC passes FP arguments in
+-- v0..v7 in declaration order among FP args and returns them in v0, and sarcasm's
+-- transform marshals them — see arm64_codegen / arm64_glue); `opts.arch ==
+-- "arm64"` selects that behavior. Long double stays rejected on arm64 too: filcc
+-- gives long-double signatures NO fast CC at all (signature word 0 and a pure
+-- buffer-CC entrypoint), so sarcasm's signature formula would not even match the
+-- ABI. The vector classes (vec4-6) stay rejected on both: a vec4 signature would
+-- need q-register CC machinery (vec5/vec6 additionally get filcc "memory-class"
+-- signature words that do not follow the formula at all).
+--
 -- `where` optionally prefixes a context (e.g. "call to 'foo'"). Raises a clean
 -- sarcasm: error naming the offending type.
-function sig.checkSupportedClasses(sd, where)
+function sig.checkSupportedClasses(sd, where, opts)
+	local prefix = "sarcasm: " .. (where and (where .. ": ") or "")
 	local function check(t)
-		if t ~= TYPE_INT and t ~= TYPE_PTR then
-			error("sarcasm: " .. (where and (where .. ": ") or "")
-				.. "floating-point types are not supported in signatures: "
+		if t == TYPE_INT or t == TYPE_PTR then return end
+		if opts and opts.arch == "arm64" then
+			if t == TYPE_FLOAT or t == TYPE_DOUBLE then return end
+			if t == TYPE_LONGDOUBLE then
+				error(prefix .. "only float and double floating-point types are supported"
+					.. " in signatures on arm64: long double")
+			end
+			error(prefix .. "vector types are not supported in signatures on arm64"
+				.. " (SIMD signatures are not supported): "
 				.. (CLASS_NAME[t] or ("type class " .. tostring(t))))
 		end
+		error(prefix .. "floating-point types are not supported in signatures: "
+			.. (CLASS_NAME[t] or ("type class " .. tostring(t))))
 	end
 	for _, t in (sd.retTypes or {}) do check(t) end
 	for _, t in (sd.argTypes or {}) do check(t) end
@@ -134,6 +204,9 @@ end
 
 sig.TYPE_INT = TYPE_INT
 sig.TYPE_PTR = TYPE_PTR
+sig.TYPE_FLOAT = TYPE_FLOAT
+sig.TYPE_DOUBLE = TYPE_DOUBLE
+sig.TYPE_LONGDOUBLE = TYPE_LONGDOUBLE
 
 -- The `;! ... ptr` annotation family (exact strings, matched against the whole
 -- annotation). `load ptr` / `store ptr` annotate a plain 8-byte GPR pointer

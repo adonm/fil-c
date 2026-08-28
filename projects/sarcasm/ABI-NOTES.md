@@ -105,10 +105,26 @@ allocation. For fixed sizes, sp-relative address math inside `[base, base+size)`
   with a scalar before a later arg.) Arguments beyond the sixth word go on the stack;
   sarcasm does not marshal stack arguments and rejects such signatures.
 - return: w0 bit0 = exception flag (1=exception); x1 = ret.intval; x2 = ret.lower.
-- FP/vector (neon) classes are NOT decoded here yet: FP types in `;!` signatures
-  are rejected on both architectures (see ABI-NOTES-x86.md's FP section for what
-  the decoded x86_64 FP ABI looks like; arm64 marshalling is deferred the same
-  way). NEON registers in instruction BODIES are fully supported, though: they
+- FP args (arm64 float/double; verified against pizlonated clang aarch64 output):
+  - Fast CC: FP args pass in v0..v7 in DECLARATION ORDER among the FP args (a float
+    occupies the low 32 bits of its v register, a double the full 64); the dense GPR
+    packing into x2..x7 counts only GPR/pointer args, so a float arg never consumes a
+    GPR slot and a GPR arg after a float arg is NOT shifted by it. The FP return rides
+    in v0 (s0 for float, d0 for double); the flag/retval GPR contract is unchanged
+    (w0 bit0 = exception flag, x1 = ret.intval, x2 = ret.lower). Verified signatures:
+    double(double,double)=4792, float(float,float)=3195, double(int,double)=4526,
+    void(float,double)=4656, long(double,int,float,long)=211073, float(void)=3.
+  - Generic/buffer CC (both sarcasm's weak callsite thunk and the 2ET generic thunks):
+    one 8-byte word per argument at `myth+128+8*i` with i = the argument's DECLARATION
+    index over ALL arguments (FP args included) — a float is a 4-byte store into the
+    low half of its 8-byte slot; the aux word at `myth+384+8*i` is zero. w2 = total
+    argument count * 8 (FP args count). An FP return is 8 bytes at `myth+128` (a float
+    in the low 4 bytes) with a zero word at `myth+384`; the expected ret size is 8.
+  - The weak callsite resolver does NOT spill FP args across its getter call: nothing
+    between entry and its two call sites touches the v file, so on the fast path the
+    FP args are still in their v registers for the tail call, and on the generic path
+    they are stored into the buffer straight from there.
+- NEON registers in instruction BODIES are fully supported: they
   pass through verbatim (sarcasm never register-allocates them), their heap
   accesses get the standard capability+bounds check at exact widths, and their
   frame slots virtualize into the GPR slot webs. The AAPCS64 vector discipline
@@ -170,3 +186,48 @@ Argument-buffer size = 8 * (number of argument words), rounded per 8/alignment.
   intval match, and signature==SIG, then tail-calls fast entrypoint (`br x5`) or falls
   back through generic buffers. Fail: `filc_check_function_call_fail`,
   size mismatch: `filc_cc_rets_check_failure` / `filc_cc_args_check_failure`.
+  The getter takes (my_thread, origin): the origin argument (x1) must be NULL or a valid
+  `filc_origin*`, because the getter's slow path (first initialization of a data object)
+  swaps it into `my_thread`'s top `filc_frame`. The callsite thunk is shared by all
+  callers, so it passes NULL: `mov x1, xzr; bl pizlonated_NAME` (pizlonated clang's own
+  FI thunk does the same).
+
+## Indirect calls (`blr xN ;! sig(...)` — emitted by sarcasm, arm64 only)
+For a register-indirect call with a callsite signature annotation, sarcasm inlines
+exactly the check sequence above (the callsite resolver's checks, the same ones an
+indirect call performs), for the flight pointer (P = target intval, L = target lower —
+the target register's web must be a known pointer value, so its lower is known):
+
+```
+cbz  L, FAIL                                  ; null capability
+ldur a, [L, #-8] ; movz/cmp (a>>48)&0x780 vs 0x80 ; b.ne FAIL   ; special type FUNCTION
+and  a, a, #0xffffffffffff ; cmp a, P ; b.ne FAIL               ; canonical entrypoint
+ldr  a, [L, #16] ; cmp a, #SIG (movz/sub-cmp/movk for big SIG) ; b.ne GENERIC
+ldr  tgt, [L]                                  ; fast entrypoint
+mov  x0, myth ; mov x1, L ; <dense fast-CC args>
+blr  tgt
+b    REJOIN
+GENERIC:                                       ; signature mismatch: buffer CC
+<store args at 128(myth), aux/lowers at 384(myth), xzr for scalar/FP aux>
+mov  w2, #ARGBYTES ; mov x0, myth ; ldr x8, [L, #8] ; blr x8    ; generic entrypoint
+tbnz w0, #0, EXC                               ; exception flag FIRST: on the exception
+                                               ; edge x1 (ret size) is undefined, so the
+                                               ; ret-size check must not run before this
+cmp  x1, #RETBYTES ; b.lo RETFAIL              ; ret_size must cover the result
+ldr  x1, [myth, #128] ; (ldr x2, [myth, #384] for ptr ret)      ; unmarshal
+REJOIN:
+tbnz w0, #0, EXC                               ; exception flag, as for direct calls
+                                               ; (already known clear on the generic edge)
+<result unpacking identical to a direct call; a ptr result's lower is rooted>
+FAIL:    (x0, x1 = P, L) ; bl filc_check_function_call_fail
+RETFAIL: mov x0, x1 ; mov w1, #RETBYTES ; mov x2, xzr
+         bl filc_cc_rets_check_failure
+```
+
+The GENERIC block inlines exactly what the callsite resolver's generic mismatch path
+does, so sarcasm never references pizlonated1ET<sig>. Unannotated `blr`, memory-operand
+indirect calls (they do not exist on arm64 — `blr` is register-only, so the x86
+`call *mem` rejection has no arm64 analog), and annotated calls whose target web is not
+a known pointer value are compile-time errors; `br xN` (indirect branch) and `b xN` are
+rejected in all forms.
+

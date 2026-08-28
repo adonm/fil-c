@@ -188,15 +188,15 @@ cd ..
 rm -rf pcre2-10.47
 hash -r
 
-tar -xf wget-1.24.5.tar.gz
-cd wget-1.24.5
+tar -xf wget-1.25.0.tar.gz
+cd wget-1.25.0
 ./configure --prefix=/usr      \
             --sysconfdir=/etc  \
             --with-ssl=openssl
 make
 make install
 cd ..
-rm -rf wget-1.24.5
+rm -rf wget-1.25.0
 hash -r
 
 tar -xf pizlonated-git.tar.gz

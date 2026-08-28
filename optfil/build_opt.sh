@@ -686,13 +686,13 @@ cd ..
 rm -rf pizlonated-grep
 hash -r
 
-tar --no-same-owner -xf $FILCSRC/pizlix/less-661.tar.gz
-cd less-661
+tar --no-same-owner -xf $FILCSRC/pizlix/less-704.tar.gz
+cd less-704
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf less-661
+rm -rf less-704
 hash -r
 
 tar -xf $FILCSRC/projects/diffutils-3.10/pizlonated-diffutils.tar.gz

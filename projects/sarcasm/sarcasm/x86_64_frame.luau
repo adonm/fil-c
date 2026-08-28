@@ -144,7 +144,26 @@ local D0 = 0  -- net rsp depth at the end of the prologue prefix (the frame base
 --   * st.x86_teardown      — inside such a verified teardown region.
 -- The frame size for rbp-based normalization is D0 - fpDepth (so rbp = rsp + frameSize at
 -- the post-prologue rsp); without a frame pointer it is the net constant allocation.
-function x86_64_frame.analyzeFrame(body)
+function x86_64_frame.analyzeFrame(body, sigDesc)
+	-- (sigDesc is the function's entry signature. A float/double argument or FP
+	-- return rides in the xmm registers EVEN when the body never names a vector
+	-- register — FP args are typically consumed by a call, an FP return produced,
+	-- without any SSE instruction in the body — so the vector-save reservation must
+	-- be forced from the SIGNATURE alone, exactly like arm64's usesNeon forcing.
+	-- Otherwise an injected runtime call (pollcheck slow path, allocation, ptr-store
+	-- barrier) could silently clobber an FP argument. The transform's callsite-side
+	-- forcing (transform.luau) covers FP CALLSITE signatures; this covers the entry.)
+	local sigHasFp = false
+	if sigDesc then
+		if sigDesc.retTypes and sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]) then
+			sigHasFp = true
+		else
+			for _, t in (sigDesc.argTypes or {}) do
+				if sig.isFpClass(t) then sigHasFp = true break end
+			end
+		end
+	end
+
 	-- jump-target label names (backward edges must end the prologue: instructions behind
 	-- such a label can re-execute, so their stack effect cannot be counted once)
 	local targeted = {}
@@ -533,6 +552,11 @@ function x86_64_frame.analyzeFrame(body)
 			if vb and (not vecBytes or vb > vecBytes) then vecBytes = vb end
 		end
 	end
+	-- Force the reservation from an FP entry signature alone (see the sigHasFp
+	-- comment above): 16 bytes per xmm0..xmm15 slot, exactly VEC_SAVE_BYTES below.
+	-- A body that already touches vector registers reserves at least this much on
+	-- its own (a ymm/zmm body reserves 32/64-byte slots).
+	if not vecBytes and sigHasFp then vecBytes = 16 end
 	local saveBytes = vecBytes and 16 * vecBytes or 0
 	local base0 = 16 + saveBytes
 	local cursor = base0
@@ -924,5 +948,16 @@ function x86_64_frame.rewrite(st, ctx)
 
 	emit(st)
 end
+
+-- The vector-save reservation x86_64 uses when a function's xmm registers must be
+-- preserved across an injected runtime call (16 bytes per xmm0..xmm15 slot — the
+-- Fil-C runtime is SSE2-only, so xmm16-31 / ymm / zmm / k state is unreachable
+-- for it; the expandFpSaves liveness narrows each slot's mov to the live width).
+-- The transform forces this reservation for FP-signature CALLSITE functions even
+-- when the body touches no vector register (see transform.luau) — the ENTRY
+-- signature case is forced directly in analyzeFrame above — matching
+-- arm64_frame.VEC_SAVE_BYTES. Consumed by codegen (which also widens its
+-- save/restore activation to any forced reservation) and the layout.
+x86_64_frame.VEC_SAVE_BYTES = 16 * 16
 
 return x86_64_frame

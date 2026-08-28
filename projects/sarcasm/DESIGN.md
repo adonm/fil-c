@@ -485,7 +485,12 @@ function body is emitted (before the frameSlot numRoots shift)
 the emitted node stream and replaces each placeholder with exactly the movs the
 analysis proves live at that point: a register live only in its low 32 bits is
 saved with `movss`, 64 bits with `movsd`, 128 with `movdqu`, 256 with `vmovdqu`,
-512 with `vmovdqu64`; a register dead across the call emits nothing.
+512 with `vmovdqu64`; a register dead across the call emits nothing. A call
+node additionally carries `fpVecUses` — the FP arguments an annotated call
+consumes (the source program placed them in xmm registers per the fast CC) —
+as uses at the movss=4/movsd=8-byte live width, so an FP argument web stays
+live from its definition up to the call and the save/restore brackets any
+injected runtime call in between.
 
 The width semantics come from `fp.vecEffects` (x86_64_fp.luau): each instruction
 reports, per vector register NUMBER (xmm/ymm/zmm alias by number), a use width
@@ -512,7 +517,13 @@ cannot touch ymm/zmm bits above 128, zmm16-31, or k0-7.
 The frame reservation is UNCHANGED at 16*vecBytes (vecBytes = the function's
 widest vector operand, 16/32/64; slot i stays at 16+i*vecBytes pre-shift) —
 the optimization only elides/narrows the movs, never the reservation, so no
-layout/computeLayout changes. The expanded movs carry no temps (named fixed
+layout/computeLayout changes. The reservation is also FORCED at
+16*16 = 256 bytes (`x86_64_frame.VEC_SAVE_BYTES`) when any signature in play —
+the entry signature's FP args/return, or a callsite annotation's — carries a
+float/double class, even if the body has no vector operand at all
+(x86_64_frame.analyzeFrame forces it from the entry signature, transform.luau
+from callsite signatures): an FP value riding in an xmm register needs the
+save area in a GPR-only body just as much. The expanded movs carry no temps (named fixed
 operands), exactly like the old unconditional code, so the register allocator
 never sees them.
 
@@ -530,8 +541,13 @@ program's x87 state survives across them (compiler-generated code never keeps
 x87 values live across such points anyway). k-opmask state, by contrast, is
 genuinely EVEX-only, so an SSE2-only runtime build cannot clobber it (an
 AVX512 runtime build would require extending this to zmm16-31 and k0-7). The
-whole mechanism emits NOTHING for GPR-only functions — zero cost (fpSave/
-fpRestore emit no placeholders at all, and expandFpSaves is a no-op scan).
+whole mechanism still emits NOTHING for GPR-only functions with GPR-only
+signatures — zero cost (fpSave/
+fpRestore emit no placeholders at all, and expandFpSaves is a no-op scan); the
+one exception is an FP signature, which forces the 256-byte reservation above
+even with no SSE instruction in the body (the saves themselves stay
+liveness-driven, so a dead xmm still saves nothing — see
+`sarcasm-fp-live-nosse-att`/`-int`).
 
 #### arm64: NEON/FP registers, slot virtualization, and injected-call saves
 NEON/FP registers are IN SCOPE on arm64 (Phase 2). As on x86_64 they pass
@@ -829,9 +845,18 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   cmpxchg8b/cmpxchg16b EVERY ptr-family annotation is rejected — a
   double-width CAS cannot operate on invisicaps); any other
   unrecognized annotation string on an instruction is a compile-time error.
-- calls (`;! sig` on the call insn) -> marshal args into the Fil-C CC registers, call the
+- calls (`;! sig` on the call insn — REQUIRED on every direct call: an unannotated
+  direct `call foo`/`bl foo` is rejected by body validation on BOTH architectures,
+  see Limitations) -> marshal args into the Fil-C CC registers, call the
   callsite thunk `pizlonatedFI<sig>_foo`, test the exception flag (propagate on throw),
-  read results. Emits one weak/hidden callsite thunk per distinct called extern.
+  read results. If `foo` is defined and annotated in the same module,
+  `pizlonatedFI<sig>_foo` is a strong `.set` alias of its fast entrypoint (no
+  resolver involved); otherwise sarcasm emits one weak/hidden callsite
+  resolver thunk per distinct called external — it resolves the callee through
+  `pizlonated_foo` and validates non-null capability, FUNCTION special type,
+  canonical intval and signature (a DATA symbol panics at the special-type
+  check), takes the fast entrypoint on an exact signature match, and
+  marshals through the generic buffer CC on a mismatch.
 - indirect calls (`call *%reg ;! sig(...)` on x86_64, `blr xN ;! sig(...)` on
   arm64 — both architectures now support REGISTER-operand annotated indirect
   calls through the same arch-neutral transform code; on arm64 validateBody
@@ -886,7 +911,11 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   ptr-store aux-ensure/barrier slow paths) -> wrap in a vector save/restore
   (x86_64: xmm0-15, or ymm0-15/zmm0-15 when the function uses wider classes): the
   source program never saw these calls and the Fil-C runtime clobbers xmm
-  registers. A no-op for GPR-only functions. (arm64 uses the same mechanism:
+  registers. A no-op for GPR-only functions — UNLESS a signature in play
+  (the entry signature, or a callsite annotation) carries a float/double
+  class, in which case the vector-save reservation is forced from the
+  signature alone so an FP value riding in a vector register survives (see
+  the Floating-point signatures section). (arm64 uses the same mechanism:
   v0-v31 with 16-byte slots, width-liveness narrowing sN/dN/qN saves and the
   AAPCS64 v8-v15 callee-saved-low-64 rule — see the arm64 NEON subsection of
   the frame section.)
@@ -931,53 +960,115 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   `call *mem`, annotated or not ("indirect call through a memory operand
   cannot be made memory-safe (load the function pointer into a register
   first...)") — memory-operand indirect calls do not exist on arm64
-  (`blr` is register-only). Indirect BRANCHES stay rejected on arm64 in all
-  forms (`br xN`, and `b xN` with a register operand — both close the same
-  unvalidatable control-flow hole).
-- Floating-point signatures: arm64 float/double are FULLY SUPPORTED in `;!`
-  signatures (entry and callsite alike) — see the "Floating-point signatures
-  (arm64)" section below. Still rejected on both architectures: `long double`
+  (`blr` is register-only).
+- Unannotated DIRECT calls (`call foo` with no `;!` signature annotation) are
+  rejected on BOTH architectures (validateBody, gated on each backend's
+  `strictBodyValidation` — arm64 always had it; x86_64 joined when its direct-call
+  support reached parity, since the historical x86_64 passthrough silently
+  miscompiled calls to same-file annotated callees — they landed in the callee's
+  FIP body without myth marshalling — and could never link against C callees,
+  which filcc names `pizlonated_*`, never bare `foo`). The rejection message
+  matches arm64's ("call to 'foo' has no ;! signature annotation (annotate the
+  callsite, e.g. `call foo ;! int(ptr)`)").
+- Indirect BRANCHES are rejected on BOTH architectures in all raw forms: arm64
+  `br xN` and `b xN`/`cbz xN, xM` with a register operand (any non-label branch
+  target classifies as an indirect branch), and x86_64 `jmp *%reg` / `jmpq *%reg`
+  and `jmp *mem` (both classify as indirect branches — the renderer would
+  otherwise pass `jmp *%rax` through verbatim as an uncontrolled branch; memory
+  targets are also caught by the moffs rejection when the operand names a symbol
+  or absolute address, e.g. `jmp *myglobal`). A branch whose target operand is
+  not a label at all (`jcc *%reg`, which is not even encodable, or a raw
+  absolute `jmp $imm`) is rejected by the shared no-label-target check; a branch
+  to a non-local LABEL is a tail call and is rejected on both (even annotated).
+  Label-target branches inside the function (loop back-edges, `jmp
+  .Llabel`/`1b`) keep working. All of this closes the same unvalidatable
+  control-flow hole.
+- Exception propagation through sarcasm x86_64 frames: NOT SUPPORTED (intentional,
+  for now). The x86_64 glue emits every function origin with personality_getter = 0
+  (`.quad 0`) and can_throw = can_catch = has_setjmps = 0 (`.byte 0/0/0`), so Fil-C
+  unwinding (filc_native__Unwind_RaiseException phase 1, libpas/src/libpas/
+  filc_runtime.c) fatals at any sarcasm x86_64 frame whose origin is !can_catch
+  (or !can_throw without a personality): a C++ exception thrown in code CALLED
+  from sarcasm x86_64 assembly terminates the process (libc++abi "terminating due
+  to uncaught exception" -> filc panic) instead of reaching a handler in an outer
+  frame — it can neither be caught inside nor propagate through the sarcasm
+  x86_64 frame. The arm64 glue currently emits can_throw = can_catch = 1
+  (personality still NULL — there are no landing pads, so a throw still cannot be
+  CAUGHT inside sarcasm code, but it DOES propagate through sarcasm arm64 frames;
+  see arm64_glue.luau's comment and filc/tests/sarcasm-excprop-arm). This is
+  detailed in ABI-NOTES-x86.md's "Exceptions / unwinding" section.
+- Floating-point signatures: float/double are FULLY SUPPORTED in `;!`
+  signatures on BOTH architectures (entry and callsite alike) — see the
+  "Floating-point signatures" section below (arm64 passes FP args in v0..v7
+  per AAPCS; x86_64 passes them in xmm0..xmm7, in declaration order among the
+  FP args and independent of the dense GPR packing). Still rejected on both
+  architectures: `long double`
   (filcc gives it signature word 0 and NO fast CC on arm64, and it travels on
   the stack on x86_64) and the vector classes (a vec4 signature would need
-  q-register CC machinery, and filcc's encoding only matches sarcasm's formula
-  for vec4 anyway). On x86_64 every FP class is still rejected — FP-signature
-  support there is future work that slots into the same parameterized hooks
-  (see ABI-NOTES-x86.md's FP decode and future-work note).
+  q-register/xmm-vector CC machinery, and filcc's encoding only matches
+  sarcasm's formula for vec4 anyway).
 
-## Floating-point signatures (arm64)
-- Capability marker: the arm64 codegen module sets `cgm.fpSignatures = true`
-  (x86_64 does not), and the signature class check is ARCH-AWARE:
+## Floating-point signatures (arm64 and x86_64)
+- Capability marker: BOTH codegen modules set `cgm.fpSignatures = true`, and
+  the signature class check is arch-aware only in its error spelling:
   `sig.checkSupportedClasses(sd, where, { arch = target.arch })` accepts the
-  float/double classes on arm64 and rejects every FP class on x86_64, at entry
-  signatures (sarcasm.luau) and callsite annotations (arm64's
-  `checkCallsiteSig`) alike; the error names the offending type class.
+  float/double classes on both architectures and rejects `long double` and the
+  vector classes (the error names the offending type class and the arch), at
+  entry signatures (sarcasm.luau) and callsite annotations (the backends'
+  `checkCallsiteSig`) alike.
 - Fast paths (entry unpack, direct calls, indirect-call fast arm, returns): FP
-  arguments and results PASS THROUGH the v registers untouched — the transform
+  arguments and results PASS THROUGH the vector registers untouched — the transform
   simply skips FP-class args in the dense GPR marshalling (the yolo→dense
   mapping counts only GPR args, so GPR args are not shifted by FP args) and
-  skips the x1 retval move for FP returns. The source program places FP args
-  in v0..v7 per AAPCS and reads the FP result from v0 (s0/d0).
+  skips the integer retval move for FP returns. On arm64 the source program
+  places FP args in v0..v7 per AAPCS and reads the FP result from v0 (s0/d0).
+  On x86_64 they go in xmm0..xmm7 in declaration order among the FP args —
+  INDEPENDENT of the dense GPR packing rdx,rcx,r8,r9 (a GPR arg's ordinal
+  counts only the non-FP args before it; the entry unpack copies the internal
+  dense fast-CC registers into the author-visible yolo sequence
+  %rdi,%rsi,...), and an FP return rides in xmm0 with the `ret` path still
+  clearing the %al exception flag (`movl $0, %eax`) even though %rax is not
+  the result register (verified signatures mirror arm64's:
+  `long(double,int,float,long)` reads the double in %xmm0, the int in %rdi,
+  the float in %xmm1 and the long in %rsi).
 - Generic/buffer paths (indirect-call generic arm, the weak callsite resolver
   thunk, the 2ET generic thunks): FP args are stored into the CC buffer at
-  their declaration index — `cg.storeFpArg` emits `str sN/dN, [myth, #128+8i]`
-  (a float writes the low 4 bytes of the 8-byte slot) with a zero aux word at
-  384+8i; w2 counts every argument word. An FP return is loaded back from
-  `myth+128` with `cg.loadFpRet` (`ldr s0/d0`) after the ret-size check
-  (expected size stays 8). The callsite thunk keeps FP args live in the v file
-  across its getter call (nothing in the thunk touches the v registers) and
-  stores them into the buffer straight from there on the mismatch path.
-- Frame interaction: because FP values ride in v registers even when the body
-  never names a NEON register (an FP argument/return of the entry signature,
+  their declaration index — arm64's `cg.storeFpArg` emits `str sN/dN, [myth,
+  #128+8i]` (a float writes the low 4 bytes of the 8-byte slot), x86_64's
+  emits `movss/movsd %xmmN, 128+8i(%myth)` — each with a zero aux word at
+  384+8i; the argument byte size counts every argument word. An FP return is
+  loaded back from `myth+128` after the ret-size check (expected size stays 8):
+  arm64 `cg.loadFpRet` (`ldr s0/d0`), x86_64 `movss/movsd 128(%myth), %xmm0`
+  (the 2ET thunk additionally zeroes the aux word at `384(%rbx)` on the way
+  out). The callsite thunk keeps FP args live in the vector file
+  across its getter call (nothing in the thunk touches the v/xmm registers)
+  and stores them into the buffer straight from there on the mismatch path.
+- Frame interaction: because FP values ride in vector registers even when the body
+  never names one (an FP argument/return of the entry signature,
   or an FP value flowing between two calls), the vector-save reservation is
   FORCED whenever any signature in play (entry or callsite) has a float/double
   class — otherwise an injected runtime call's liveness-driven vector saves
-  would not bracket the clobbered v registers. (Gated on `cgm.fpSignatures`;
-  unreachable on x86_64, which rejects FP signatures at validation.)
-- x86_64 FP support is future work that slots into the same parameterized
-  hooks: an x86_64 `cgm.fpSignatures` marker, x86 CC tables (xmm sequence for
-  fast paths per the decoded ABI in ABI-NOTES-x86.md), and
-  `cg.storeFpArg`/`cg.loadFpArg`-style FP buffer atoms (`movss`/`movsd`
-  marshalling). No x86_64 behavior changes until that lands.
+  would not bracket the clobbered vector registers. (Gated on
+  `cgm.fpSignatures`; both backends force it — x86_64_frame.analyzeFrame
+  forces the 256-byte `VEC_SAVE_BYTES` reservation from the entry signature
+  alone, and transform.luau forces it when any CALLSITE signature in play
+  carries a float/double class.)
+- x86_64 specifics: the fast paths tag each call node with `fpVecUses` (the
+  FP arguments the call consumes, as xmm uses at the movss=4/movsd=8-byte live
+  width) so `x86_64_codegen.expandFpSaves`'s width-aware backward liveness
+  keeps an FP argument web live from its definition up to the call; the frame
+  forces the 256-byte (16 xmm slot) vector-save area from the signature alone;
+  and FP signatures push signature numbers past a 32-bit immediate (eight
+  doubles encode to 8552919316), so both signature-compare sites widen — the
+  shared codegen hook (`cmpImmBranchWidened`) materializes the constant with
+  `movq $imm64, %reg` (the movabs encoding) into a freshly allocated temp and
+  compares registers, and the hand-written resolver glue does the same into
+  the dead scratch `%r10` (arm64 needs none of this: its `cmp` immediate uses
+  the existing chunked movz/sub-cmp/movk widening). Pinned by
+  `sarcasm-fp-args-att/-int`, `sarcasm-fp-args8-att/-int`,
+  `sarcasm-fp-asmcall-att/-int`, `sarcasm-fp-indirectcall-att/-int`,
+  `sarcasm-fp-indirectcall-sigmismatch-att/-int`, and
+  `sarcasm-fp-live-nosse-att/-int` (arm64: `sarcasm-fp-args-arm` & co).
 - Taking the address of the stack frame is rejected (cannot prove safety), whether by
   address arithmetic off the stack register (`add xD, sp, #k` / `leaq 8(%rsp), %rax`),
   by copying it (`movq %rsp, %rax`), or by storing it into a frame slot
@@ -1030,8 +1121,8 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   pre-index writeback (no such encoding in the modeled subset); and a memory
   operand on any mnemonic sarcasm does not model as a load/store (prfm & co).
   `long double`/vector types in `;!` signatures stay rejected (float/double
-  signature types are supported on arm64 — see the "Floating-point signatures
-  (arm64)" section above; every FP class stays rejected on x86_64).
+  signature types are supported on BOTH architectures — see the
+  "Floating-point signatures" section above).
 - On X86_64, `enter`/`enterq` is rejected (packed frame setup sarcasm does not model —
   see the frame section). FP/SIMD code is IN SCOPE (see the FP/SIMD subsection of the
   frame section); the only rejected instructions are ones whose memory-safety effects
@@ -1179,10 +1270,9 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     in the unknown class;
   * FP/SIMD stack accesses needing more than 16-byte alignment (see the frame
     section).
-  FP/SIMD signature types are rejected on x86_64 and `long double`/vector
-  signature types are rejected on both architectures (see the
-  "Floating-point signatures (arm64)" section above for the arm64 float/double
-  support).
+  `long double`/vector signature types are rejected on both architectures;
+  float/double signature types ARE supported on both (see the
+  "Floating-point signatures" section above).
 - On X86_64, an AT&T-style parens operand field in Intel-syntax input is
   rejected ("AT&T-style operand in Intel-syntax input (use [bracket] memory
   operands)") — see the `*_parse.luau` module entry; previously a total check
@@ -1231,13 +1321,13 @@ here, not regressions introduced by this change:
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 728 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
-assemble via minilute + sarcasm, `.c` files via clang) — 467 x86_64 and 261 aarch64
+runs the 784 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
+assemble via minilute + sarcasm, `.c` files via clang) — 504 x86_64 and 280 aarch64
 (every test is `only-on-platform:` exactly one of them). For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
 + that OOB/null-capability inputs trap. The suite breaks down as:
 
-- 442 behavioral tests (278 x86_64, 164 aarch64), most exercised in AT&T and Intel
+- 469 behavioral tests (296 x86_64, 173 aarch64), most exercised in AT&T and Intel
   variants (`-att` / `-int` pairs, aarch64 singletons as `-arm`): pointer-chasing
   workloads in several sizes (`sarcasm-hash(-oob)-*`, `sarcasm-t2-*`,
   `sarcasm-t3valid/t3oob-*`, `sarcasm-medium/large`), null-capability and OOB traps
@@ -1247,10 +1337,19 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   `sarcasm-nullret-*`), register-indexed access (`sarcasm-regidx(-oob)-*`), RMW
   memory operands (`sarcasm-rmw-*`), calls and the callsite resolver
   (`sarcasm-call(-error)-*`, `sarcasm-asmcall-*`, `sarcasm-funcptr-*`,
-  `sarcasm-recurse-*`), dense fast-CC packing (`sarcasm-args3-*`,
+  `sarcasm-recurse-*`; the direct-call RESOLVER paths — a C DATA symbol called
+  as a function must panic at the special-type check, and a deliberately
+  mismatched callsite signature must take the resolver's generic buffer-CC
+  path — are covered by `sarcasm-call-data-att/-int` and
+  `sarcasm-call-sigmismatch-att/-int`, mirroring `sarcasm-call-data-arm` /
+  `sarcasm-call-sigmismatch-arm`), dense fast-CC packing (`sarcasm-args3-*`,
   `sarcasm-densepack-llp-*` and the `-fp-` variants, which route the call through a
   function POINTER to exercise the generic buffer-CC entrypoint), width/zero-extension
-  slots (`sarcasm-slotw-*`, `sarcasm-zeroext-*`), allocas and stack buffers
+  slots (`sarcasm-slotw-*`, `sarcasm-zeroext-*`) and the setcc 8-bit-write widening
+  (a register-destination `setcc %rXb` — modeled as a FULL-WIDTH def of the
+  destination web — is followed by a zero-extension of the low byte,
+  `movzbl %rXb, %rXd`, so the hardware makes the whole web hold 0/1 exactly as
+  the model claims; `sarcasm-setcc-widen-att`/`-int`), allocas and stack buffers
   (`sarcasm-alloca-*`, `sarcasm-stackbuf-*`, including region redirects via `lea`/`mov`
   re-derivations, the gcc -O0 rbp form, and the `movq %rbp,%rsp; popq %rbp; ret` VLA
   epilogue), spill-slot packing and frame geometry (`sarcasm-spill(-oob)-*`,
@@ -1367,7 +1466,7 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   `filc/tests/has_fp16.c` — HWCAP_FPHP for the scalar ARMv8.2-FP16
   arithmetic in `sarcasm-fp-half-arm`) run-tests compiles and runs at
   startup — the arm64 analog of the `needsAVX512` cpuid probe.
-- 78 FP/SIMD tests (`sarcasm-fp-*`, 61 x86_64, 17 aarch64): SSE scalar arithmetic and
+- 96 FP/SIMD tests (`sarcasm-fp-*`, 73 x86_64, 23 aarch64): SSE scalar arithmetic and
   comparisons (`sarcasm-fp-sse-arith-att` / `-int`), scalar FP heap loads/stores at
   8 and 4 bytes (`sarcasm-fp-mem-movsd-att` / `-int`), 16-byte vector heap copies
   (`sarcasm-fp-mem-movups-att`), an FP reduction loop with xmm live across the
@@ -1430,7 +1529,19 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   `needsAVX512`), `-vnni-usd-att` (the cross-sign vpdpwusd ymm at 32,
   `needsAVX512`), `-dq2ph-att` (bare vcvtdq2ph ymm reading a 64-byte m512
   source, proven by the pre-execution bounds trap — no FP16 silicon needed,
-  `needsAVX512`). The 17 aarch64 FP/SIMD tests cover the arm64 NEON support:
+  `needsAVX512`). The x86_64 float/double SIGNATURE family rounds out the
+  backend: entry signatures with interleaved FP/GPR args proving the xmm
+  sequence is independent of the dense GPR packing (`sarcasm-fp-args-att`/
+  `-int`), the eight-double signature past imm32 with `movabsq`-widened
+  resolver compares and a version-script cross-module call
+  (`sarcasm-fp-args8-att`/`-int`), FP callsites across the fast same-module
+  strong-alias path and the cross-module weak-resolver path, matching and
+  deliberately mismatching (`sarcasm-fp-asmcall-att`/`-int`), annotated
+  indirect calls with FP signatures incl. the mismatch-forced generic
+  buffer-CC path with movss/movsd marshalling (`sarcasm-fp-indirectcall-att`/
+  `-int`, `-sigmismatch-att`/`-int`), and the signature-forced 256-byte
+  xmm-save area in a body with no SSE instruction (`sarcasm-fp-live-nosse-att`/
+  `-int`). The 23 aarch64 FP/SIMD tests cover the arm64 NEON support:
   scalar/pair/structure heap copies at exact widths (`sarcasm-neon-arm` — q,
   s/h/b scalars, q pairs; `sarcasm-fp-ldmulti-arm` — multi-structure
   ld2-4/st2-4 off the heap), NEON arithmetic and the scalar/vector
@@ -1441,20 +1552,27 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   liveness-aware vector saves around injected pollcheck/filc_allocate/
   ptr-store-barrier/atomic runtime calls (`sarcasm-fp-live-alloca-arm`,
   `sarcasm-fp-live-barrier-arm`, `sarcasm-fp-live-atomic-arm`,
-  `sarcasm-fp-gcstress-arm`), the ARMv8 crypto known-answer tests
+  `sarcasm-fp-gcstress-arm`), the arm64 float/double SIGNATURE family
+  (`sarcasm-fp-args-arm`, `sarcasm-fp-args8-arm`, `sarcasm-fp-asmcall-arm`,
+  `sarcasm-fp-indirectcall-arm`, `sarcasm-fp-indirectcall-sigmismatch-arm`,
+  and the NEON-free body case `sarcasm-fp-live-noneon-arm`), the ARMv8
+  crypto known-answer tests
   (`sarcasm-fp-crypto-arm`, `needsARMCrypto` — AES-128 FIPS-197 KAT,
   SHA-256 of "abc", pmull/pmull2 against a C carryless multiply), and the
   per-width OOB traps (`sarcasm-fp-oob-bh-arm`/`-s-arm`/`-d-arm`/`-q-arm`/
   `-pair-arm`/`-ld2-arm`/`-st4-arm`, `sarcasm-neon-oob-arm`,
   `sarcasm-half-oob-arm`).
-- 208 rejection tests (`sarcasm-reject-*`, 128 x86_64, 80 aarch64 — the `-arm` ones
+- 219 rejection tests (`sarcasm-reject-*`, 135 x86_64, 84 aarch64 — the `-arm` ones
   cover the ARM64-only rejections). Each directory carries exactly ONE `.s` file
   (compileFailure manifest), so every rejected input is proven rejected
   individually rather than one file's rejection masking another's. Families:
   missing/unparseable/over-limit signatures and callsites (`-nosig-*`,
-  `-badsig-*`, `-too-many-args-*`, `-callsite-arity-*`), FP signature types
-  (`-fp-sig-entry-float`, `-fp-sig-entry-double`, `-fp-sig-callsite-arg`,
-  `-fp-sig-callsite-ret`), alloca misuse (`-alloca-*`), out-of-frame stack
+  `-badsig-*`, `-too-many-args-*`, `-callsite-arity-*`), the unsupported FP
+  signature classes and over-limit FP signatures (`-fpsig-longdouble` /
+  `-fpsig-arm-longdouble` — long double on both arches, `-vecsig*` /
+  `-vecsig-call*` on both arches — the vector classes, entry and callsite
+  alike, `-fp-overflow`/`-fp-overflow-call` and their `-arm` twins — more
+  than 8 FP arguments), alloca misuse (`-alloca-*`), out-of-frame stack
   accesses (`-below-frame-*`, `-caller-frame-*`, `-dispsym-stack*`,
   `-stack-indexed`), mid-function stack-pointer movement and frame-geometry
   violations (`-midframe-sp-*`, `-frame-misc-*`, `-unpaired-pop-*`, `-enter*`),
@@ -1465,10 +1583,17 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   absolute-address (moffs) operands (`-absaddr-load`, `-absaddr-store`,
   `-absaddr-num`, `-absaddr-alu`), indirect-branch moffs operands
   (`-jmp-indirect-abs`, `-call-indirect-abs`, `-jmp-indirect-num` — the `*`
-  indirect marker overriding the call/jmp code-target exemption),
+  indirect marker overriding the call/jmp code-target exemption), and the
+  direct-call/branch body-validation rejections (`-call-nosig` — an unannotated
+  direct call, matching arm64's `-call-nosig-arm`; `-indbranch-reg` — a
+  register-target `jmp *%rax`, matching `-indbranch-reg-arm`; `-tailcall` — a
+  branch to a non-local label, matching `-tailcall-arm`),
   AT&T-style parens operands in Intel-syntax input (`-intel-attmem`,
   `-intel-attmem-fp`, `-intel-enqcmd`), the ambiguous unsized narrowing
-  convert (`-cvt-unsized`), and
+  convert (`-cvt-unsized`), the high-byte setcc destination (`-setcc-ah` —
+  the web model has no subregister view and the renderer always names the low
+  byte, so `sete %ah` would silently write `%al`, and `movzbl %ah` is
+  unencodable so the widening rewrite cannot apply), and
   the FP/SIMD and unsafe-instruction rejections listed under Limitations
   (`-syscall`, `-portio`, `-hlt`, `-crmove`, `-intN`, `-stringop-*`,
   `-lockprefix` (`lock movq` — lock on a non-RMW), `-lock-regreg`,

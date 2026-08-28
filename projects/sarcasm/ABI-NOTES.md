@@ -124,6 +124,15 @@ allocation. For fixed sizes, sp-relative address math inside `[base, base+size)`
     between entry and its two call sites touches the v file, so on the fast path the
     FP args are still in their v registers for the tail call, and on the generic path
     they are stored into the buffer straight from there.
+  - x86_64 implements the same float/double signature support with the x86
+    equivalents: an independent xmm sequence (xmm0..xmm7 in declaration order among
+    the FP args, independent of the dense rdx/rcx/r8/r9 packing), the FP return in
+    xmm0 with `movl $0, %eax` still clearing the exception flag, `movss`/`movsd`
+    buffer packing at the same 128+8i/384+8i offsets, a signature-forced 256-byte
+    xmm-save area, and — where a >imm32 signature immediate is concerned —
+    `movabsq`-widened compares instead of this arch's chunked movz/sub-cmp/movk
+    encoding (x86 has no `cmpq $imm64, mem`); see ABI-NOTES-x86.md's
+    "Floating-point ABI".
 - NEON registers in instruction BODIES are fully supported: they
   pass through verbatim (sarcasm never register-allocates them), their heap
   accesses get the standard capability+bounds check at exact widths, and their
@@ -192,7 +201,8 @@ Argument-buffer size = 8 * (number of argument words), rounded per 8/alignment.
   callers, so it passes NULL: `mov x1, xzr; bl pizlonated_NAME` (pizlonated clang's own
   FI thunk does the same).
 
-## Indirect calls (`blr xN ;! sig(...)` — emitted by sarcasm, arm64 only)
+## Indirect calls (`blr xN ;! sig(...)` — the arm64 form; x86_64 emits the
+## analogous `call *%reg ;! sig(...)`, see ABI-NOTES-x86.md)
 For a register-indirect call with a callsite signature annotation, sarcasm inlines
 exactly the check sequence above (the callsite resolver's checks, the same ones an
 indirect call performs), for the flight pointer (P = target intval, L = target lower —

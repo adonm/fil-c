@@ -53,8 +53,9 @@ end
 -- functions only: such content — whether inside a function body (literal pools, jump
 -- tables) or between functions (data sections) — cannot be given a capability
 -- automatically, so it is rejected rather than silently dropped. Shared with the
--- driver-level top-level scan in sarcasm.luau. (Enforced on arm64 only — see
--- strictBodyValidation / the arch gate in sarcasm.luau.)
+-- driver-level top-level scan in sarcasm.luau. (The IN-BODY use is enforced on BOTH
+-- architectures via validateBody below; the TOP-LEVEL scan remains ARM64-only — see
+-- the arch gate in sarcasm.luau.)
 local DATA_DIRECTIVES = {}
 for _, d in {
 	".word", ".xword", ".quad", ".long", ".int", ".short", ".hword",
@@ -68,23 +69,31 @@ transform.DATA_DIRECTIVES = DATA_DIRECTIVES
 
 -- Validate a function's RAW body before the frame pass runs (the frame pass rewrites
 -- stack accesses, stripping annotations from the statements it virtualizes, so
--- annotation validation must see the original statements). ARM64-only (gated on
--- cgm.strictBodyValidation — the x86_64 backend deliberately keeps its historical
--- acceptance of unannotated calls, tail branches and looser annotation placement):
---  * unannotated `bl`/`call` are rejected (raw calls are not marshalled); indirect
+-- annotation validation must see the original statements). SHARED by both
+-- architectures (each backend sets cgm.strictBodyValidation):
+--  * unannotated `bl`/`call` are rejected (raw calls are not marshalled — and on
+--    x86_64 the historical passthrough silently miscompiled calls to same-file
+--    annotated callees, landing in the callee's FIP body without marshalling, and
+--    could never link against C callees, which filcc names pizlonated_*); indirect
 --    calls and indirect branches are handled by the shared annotation walk below
 --    (a REGISTER-indirect call with a signature annotation is supported there —
 --    on both architectures — while a memory-operand or unannotated one is
 --    rejected; every register-target branch classifies as an indirect branch and
---    is rejected too);
---  * `b`/cond-branch to a non-local target is a tail call — not yet supported;
+--    is rejected too — on x86_64 that is `jmp *%reg` / `jmp *mem`, which the
+--    renderer would otherwise pass through verbatim as an uncontrolled branch);
+--  * a `b`/`jmp`/cond-branch to a non-local target is a tail call — not yet
+--    supported; a branch whose target operand is not a label at all (x86
+--    `jcc *%reg`, which is not even encodable, or a raw absolute `jmp $imm`) is
+--    likewise rejected;
 --  * every `;!` annotation must be a recognized form (alloca family, a ptr
 --    annotation with a valid instruction shape, or a callsite signature on a call);
 --  * a `;!` annotation on a mid-body label, an empty line, or a directive is
 --    rejected (only the function-entry label carries the signature — any other
 --    non-instruction annotation would be silently dropped);
 --  * data-emitting directives inside the body are rejected;
---  * arch-specific forged-address instructions (adrp/adr/ldr-literal) are rejected.
+--  * arch-specific forged-address instructions are rejected (arm64:
+--    adrp/adr/ldr-literal via cgm.checkForgedAddress; x86_64: the absolute-address
+--    forms are rejected in classify instead).
 local function validateBody(body, cgm)
 	local localLabels = {}
 	for _, st in body do
@@ -139,6 +148,17 @@ local function validateBody(body, cgm)
 				error("sarcasm: indirect branch through a raw register cannot be made memory-safe"
 					.. " (computed goto / switch jump tables are not supported): " .. raw)
 			elseif (c.control == "branch" or c.control == "condbranch") and c.targets then
+				-- A label-target branch must stay inside the function (a branch to a
+				-- non-local label is a tail call). A branch with NO label operand has
+				-- no provable target at all: x86 `jcc *%reg` is not even encodable
+				-- (rendering would silently emit the star-less direct form), `jmp
+				-- $imm` is a raw absolute branch, and on arm64 every non-label branch
+				-- target already classifies as "indirect" above — so this arm fires
+				-- only for a degenerate operand-less branch there.
+				if #c.targets == 0 then
+					error("sarcasm: branch with a non-label target cannot be made memory-safe"
+						.. " (computed goto / raw absolute branches are not supported): " .. raw)
+				end
 				for _, t in c.targets do
 					if not localLabels[t] then
 						error("sarcasm: branch to '" .. t .. "' leaves the function"
@@ -150,9 +170,13 @@ local function validateBody(body, cgm)
 				if parseAlloca(ann) then
 					-- alloca family: validated/consumed by the transform below
 				elseif ann == "load ptr" then
-					cgm.validatePtrAccess(st, "load")
+					-- arm64 provides an early shape validator with detailed reasons;
+					-- x86_64 defines no such hook and relies on the shared annotation
+					-- walk below (its ptrAccessKind must return the plain access kind,
+					-- and a memory-destination RMW is rejected there).
+					if cgm.validatePtrAccess then cgm.validatePtrAccess(st, "load") end
 				elseif ann == "store ptr" then
-					cgm.validatePtrAccess(st, "store")
+					if cgm.validatePtrAccess then cgm.validatePtrAccess(st, "store") end
 				elseif sig.PTR_ANNOTATIONS[ann] then
 					-- atomic/pointer-RMW family: the per-arch shape validator runs;
 					-- the transform's annotation walk re-validates later.
@@ -183,12 +207,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local framePolicy = backend.frame  -- per-arch frame policy (analyzeFrame + rewrite)
 	local cc = cgm.cc
 
-	-- Floating-point signature classes (float/double). The arm64 backend supports
-	-- them: FP args pass in v0..v7 (in declaration order among FP args, unmodeled by
-	-- the GPR webs — they flow through the body verbatim) and an FP return rides in
-	-- v0. The x86_64 backend rejects every FP class at signature validation (entry
-	-- validation in sarcasm.luau / checkCallsiteSig here), so the FP paths below are
-	-- unreachable on x86_64; the hasFp guards are defense in depth.
+	-- Floating-point signature classes (float/double), supported on BOTH backends.
+	-- FP args pass in the arch's vector registers (xmm0..xmm7 on x86_64, v0..v7 on
+	-- arm64) in declaration order among the FP args, unmodeled by the GPR webs —
+	-- they flow through the body verbatim; an FP return rides in xmm0 / v0. The
+	-- hasFp guards below are defense in depth (a backend must set cgm.fpSignatures
+	-- and provide the cg.storeFpArg / cg.loadFpRet atoms to accept FP signatures;
+	-- sig.checkSupportedClasses rejects FP classes otherwise).
 	local function isFp(t) return sig.isFpClass(t) end
 	local retIsFp = (not sigDesc.isVoid) and isFp(sigDesc.retTypes[1])
 	local function csHasFp(cs)
@@ -204,9 +229,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		return m
 	end
 
-	-- An FP-returning function leaves the value in v0; the body never produces a
-	-- yolo GPR result (no synthetic x0 use at `ret`, like the void case — an FP-ret
-	-- body may leave x0 undefined).
+	-- An FP-returning function leaves the value in xmm0/v0; the body never produces a
+	-- yolo GPR result (no synthetic ret-register use at `ret`, like the void case —
+	-- an FP-ret body may leave the integer return registers undefined).
 	local returnRegs = (sigDesc.isVoid or retIsFp) and {} or {0}
 	local funcLine = (body[1] and body[1].line) or 0
 	local curLine = funcLine
@@ -217,22 +242,24 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local fctx = nil
 	if framePolicy.analyzeFrame then
 		-- 4th return (x86_64 only): FP/SIMD stack-slot materialization info. The
-		-- signature is passed so the arm64 analysis can force the vector-save
-		-- reservation for FP-signature functions (see arm64_frame.analyzeFrame).
+		-- signature is passed so the frame analysis can force the vector-save
+		-- reservation for FP-signature functions (see arm64_frame.analyzeFrame and
+		-- x86_64_frame.analyzeFrame).
 		local fs, fpo, ufp, fpinfo = framePolicy.analyzeFrame(body, sigDesc)
 		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo }
 	end
 
-	-- FP values ride in the v registers (arm64) even when the body itself never
-	-- names a NEON register: an FP argument/return of the ENTRY signature (handled
-	-- by the arm64 frame analysis above), an FP value passed BETWEEN two calls
-	-- (an FP-returning call feeding an FP-argument call), or FP arguments placed
-	-- for a call by the source program. Around every INJECTED runtime call the
-	-- fpSave/fpRestore machinery must be active, or such a value would be silently
-	-- clobbered — so force the vector-save reservation whenever any signature in
-	-- play (entry or callsite) has a float/double class. (The arm64 backend
-	-- supports FP signatures; the x86_64 backend rejects them at validation, so
-	-- this is gated on cgm.fpSignatures and can never fire there.)
+	-- FP values ride in the arch's vector registers (xmm on x86_64, v on arm64)
+	-- even when the body itself never names one: an FP argument/return of the ENTRY
+	-- signature (handled by the frame analysis above — arm64_frame /
+	-- x86_64_frame force the reservation from the signature), an FP value passed
+	-- BETWEEN two calls (an FP-returning call feeding an FP-argument call), or FP
+	-- arguments placed for a call by the source program. Around every INJECTED
+	-- runtime call the fpSave/fpRestore machinery must be active, or such a value
+	-- would be silently clobbered — so force the vector-save reservation whenever
+	-- any CALLSITE signature in play has a float/double class and the frame
+	-- analysis reserved nothing itself. (Gated on cgm.fpSignatures — a backend
+	-- without FP support never gets here.)
 	if fctx and fctx.fp and cgm.fpSignatures and fctx.fp.saveBytes == 0 then
 		local bodyUsesFp = false
 		local function sigUsesFp(cs)
@@ -283,10 +310,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		return nil
 	end
 
-	-- Reject unannotated/indirect calls, tail calls, unknown/misplaced annotations,
-	-- in-body data, and forged addresses BEFORE any rewriting (see validateBody).
-	-- ARM64-only: cgm.strictBodyValidation is set by the arm64 backend; x86_64 has
-	-- no such flag and keeps its historical acceptance exactly.
+	-- Reject unannotated/indirect calls, non-local/non-label branches, unknown or
+	-- misplaced annotations, in-body data, and forged addresses BEFORE any rewriting
+	-- (see validateBody). SHARED: BOTH backends set cgm.strictBodyValidation (the
+	-- x86_64 backend used to keep its historical acceptance of raw calls, which
+	-- silently miscompiled calls to same-file annotated callees).
 	if cgm.strictBodyValidation then
 		validateBody(body, cgm)
 	end
@@ -317,8 +345,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local cs = callSigOf(stmt)
 		if not cs then return nil end
 		-- Only the GPR-class arguments get yolo GPR uses (FP args pass through the
-		-- v registers unmodeled); an FP result is returned in v0, so there is no
-		-- yolo result register to model.
+		-- arch's vector registers unmodeled); an FP result is returned in xmm0/v0,
+		-- so there is no yolo result register to model.
 		local argRegs = {}
 		for k = 1, cs.argWords do
 			if not isFp(cs.argTypes[k]) then
@@ -349,8 +377,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- Seeds for pointer flow: pointer args occupy their yolo argument registers.
-	-- FP args (float/double on arm64) pass in the v registers unmodeled: no yolo
-	-- GPR, no entry temp — the entry unpack below skips them entirely.
+	-- FP args (float/double) pass in the arch's vector registers unmodeled: no
+	-- yolo GPR, no entry temp — the entry unpack below skips them entirely.
 	local argPtrTemps = {}
 	local argInfo = {}
 	for k, ty in sigDesc.argTypes do
@@ -598,9 +626,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function emitRootStore(loT) emit({ kind = "rootstore", temp = loT, index = rootSlotFor(loT), useTemps = { loT } }) end
 
 	-- entry CC unpacking: myth <- myth reg; params from CC iv/lo regs into their yolo webs.
-	-- FP args (float/double on arm64) are SKIPPED entirely: their value is already in
-	-- its v register (v0..v7, in declaration order among the FP args) and the body
-	-- reads it there — no move, no entry temp, no rooting.
+	-- FP args (float/double) are SKIPPED entirely: their value is already in its
+	-- vector register (xmm0..xmm7 / v0..v7, in declaration order among the FP args)
+	-- and the body reads it there — no move, no entry temp, no rooting.
 	cg.move(vMyth, pColored(cc.myth), true)
 	for k, ty in sigDesc.argTypes do
 		local info = argInfo[k]
@@ -1380,8 +1408,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local callee = node.stmt.operands[1].text
 		calledExterns[callee] = { name = callee, sig = cs.signature, sigDesc = cs,
 			sigName = "pizlonatedFI" .. cs.signature .. "_" .. callee }
-		-- FP signatures are arm64-only (x86_64 rejects them at checkCallsiteSig);
-		-- error defensively if a backend without the FP marshalling atoms got here.
+		-- A backend that accepts FP signatures must provide the marshalling atoms
+		-- (FP signatures are rejected at checkCallsiteSig otherwise); error
+		-- defensively if one got here without them.
 		local hasFp = csHasFp(cs)
 		if hasFp and not cg.storeFpArg then
 			error("sarcasm: internal error: floating-point signature marshalling is"
@@ -1463,8 +1492,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function emitIndirectCall(node)
 		local cs = callSigOf(node.stmt)
 		local raw = node.stmt.raw or node.stmt.mnemonic or "?"
-		-- FP signatures are arm64-only (x86_64 rejects them at checkCallsiteSig);
-		-- error defensively if a backend without the FP marshalling atoms got here.
+		-- A backend that accepts FP signatures must provide the marshalling atoms
+		-- (FP signatures are rejected at checkCallsiteSig otherwise); error
+		-- defensively if one got here without them.
 		local hasFp = csHasFp(cs)
 		if hasFp and not cg.storeFpArg then
 			error("sarcasm: internal error: floating-point signature marshalling is"
@@ -1517,10 +1547,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local fnT = allocTemp({ role = "scratch" })
 		cg.load(fnT, fpLo, 0, 8)
 		-- fast path: myth = CC myth, fo = callee lower, dense fast-CC args.
-		-- FP args are SKIPPED (they pass through their v registers, placed there by
-		-- the source program per AAPCS) — but they must stay live up to the call,
-		-- so the call node is tagged with their vector uses for the FP save/restore
-		-- liveness (fpVecUses, see arm64_codegen.expandFpSaves).
+		-- FP args are SKIPPED (they pass through their vector registers, placed there
+		-- by the source program per the fast CC) — but they must stay live up to the
+		-- call, so the call node is tagged with their vector uses for the FP
+		-- save/restore liveness (fpVecUses, see the backends' expandFpSaves).
 		cg.move(pColored(cc.myth), vMyth)
 		cg.move(pColored(cc.fo), fpLo)
 		local fastUses = { pColored(cc.myth), pColored(cc.fo), fnT }
@@ -1546,7 +1576,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- words at 128+8i (lower words at 384+8i), FP args as one 8-byte word at
 		-- 128+8i (a float writes the low 4 bytes; the upper bytes are never read)
 		-- with a zero aux word at 384+8i — exactly filcc's buffer marshalling. The
-		-- FP values are read straight out of their v registers (still live there).
+		-- FP values are read straight out of their vector registers (still live
+		-- there).
 		cg.label(genL)
 		local argBytes = cs.argWords * 8
 		local zeroT = nil
@@ -1591,7 +1622,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			-- register (rdx / x1); it must cover the signature's result words (else
 			-- filc_cc_rets_check_failure), then the result unmarshals into the
 			-- fast-CC return registers. An FP result (float/double) unmarshals from
-			-- the buffer into v0 (s0/d0) instead of the retIv register.
+			-- the buffer into xmm0 (v0 on arm64) instead of the retIv register.
 			local retBytes = cs.retWords * 8
 			cg.cmpImmBranchWidened(pColored(cc.retIv), retBytes - 1, "ule", retfailL)
 			if isFp(cs.retTypes[1]) then
@@ -1698,9 +1729,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					emitAlloca(node, allocaNodes[node])
 				end)
 			elseif c.control == "return" then
-				-- An FP-returning function (float/double on arm64) leaves the value
-				-- in v0 — skip the retIv move (and the ptr-lower cap move; an FP
-				-- return is never a pointer), exactly like the void case skips both.
+				-- An FP-returning function (float/double) leaves the value in its
+				-- vector return register (xmm0 / v0) — skip the retIv move (and the
+				-- ptr-lower cap move; an FP return is never a pointer), exactly like
+				-- the void case skips both.
 				if not sigDesc.isVoid and not retIsFp then
 					local retTemp
 					for _, r in c.uses do if r.retReg then retTemp = node.opTemp[r] end end

@@ -311,7 +311,8 @@ local function attMnemonic(m)
 	return m, nil
 end
 
--- comments: strip `#` to end of line (not inside strings); `;!` handled separately.
+-- comments: strip `#` to end of line (not inside strings) BEFORE the `;!` split (see
+-- parseString below — comment text must not fabricate annotations).
 local function stripComment(s)
 	local inStr = false
 	for i = 1, #s do
@@ -334,8 +335,13 @@ function x86parse.parseString(text, syntax)
 	local lineNo = 0
 	for raw in (text .. "\n"):gmatch("(.-)\n") do
 		lineNo += 1
-		local code, annotation = splitAnnotation(raw)
-		code = stripComment(code)
+		-- Strip `#` comments BEFORE splitting the `;!` annotation (the arm64 parser
+		-- strips comments first, too): comment text must never fabricate an
+		-- annotation — a line like `# use ;! load ptr here` would otherwise attach a
+		-- spurious annotation to an otherwise-empty statement, which the shared body
+		-- validation rejects ("annotation on an otherwise-empty line"). A `#` after
+		-- the annotation still ends a trailing comment.
+		local code, annotation = splitAnnotation(stripComment(raw))
 		local t = trim(code)
 		local before = #out
 		if t == "" then

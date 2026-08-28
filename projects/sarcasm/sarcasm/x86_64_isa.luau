@@ -4,6 +4,7 @@
 -- (already normalized to destination-first, so ops[1] is the destination).
 
 local fp = require("./x86_64_fp")
+local sig = require("./sig")
 
 local x86 = {}
 
@@ -440,6 +441,25 @@ function x86.classify(insn)
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 	elseif m == "mov" or m == "movzx" or m == "movsx" or m == "lea" or m == "cmov" or m == "setcc" then
 		-- ops[1] def, ops[2..] use (mem regs used); a store (mem dst) uses the value instead.
+		--
+		-- setcc models as a FULL-WIDTH def of its destination web (like mov): the web
+		-- model has no subregister view (webs are keyed by register number), but the
+		-- hardware writes only the low byte. The model is made truthful by codegen's
+		-- lowerSpecial, which rewrites a register-destination setcc into setcc +
+		-- zero-extension (a 32-bit write zeroes bits 32-63, so the whole web reads
+		-- 0/1 after the pair; the extension writes no flags). A memory destination
+		-- is a complete 8-bit store and needs none of that.
+		if m == "setcc" and isGpr(ops[1]) and ops[1].name == "ah" then
+			-- x86_64_parse maps the high byte `ah` to { num=0, width=8 }, i.e. the
+			-- SAME web as `al`; the renderer names the LOW byte of the colored
+			-- register (regName(num, 8) — there is no subregister model), so
+			-- `sete %ah` would silently write %al. Reject instead of miscompiling.
+			-- (movzbl %ah is also unencodable, so the widening rewrite could never
+			-- be expressed for it either.)
+			error("sarcasm: setcc with the high-byte destination %ah is not supported"
+				.. " (only the low byte of a register is modeled; use the low-byte form,"
+				.. " e.g. `sete %al`): " .. (insn.raw or rawMnem))
+		end
 		if isGpr(ops[1]) then table.insert(defs, ops[1])
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 		if (ops[1] and ops[1].kind == "mem") and isGpr(ops[2]) then table.insert(uses, ops[2]) end
@@ -512,21 +532,48 @@ x86.SCRATCH_NUM = 11
 x86.CALLER_SAVED_NUMS = { 0, 1, 2, 6, 7, 8, 9, 10 }
 
 -- Fil-C fast-entrypoint calling convention (register numbers).
--- Args are packed DENSELY (a pointer-class arg occupies two consecutive slots --
--- intval, lower; a scalar-class arg occupies one slot, intval only), matching
--- pizlonated clang output. Clang's x86_64 fast CC has only FOUR dense argument
--- registers (rdx, rcx, r8, r9); arguments beyond the fourth word are passed on the
--- stack. sarcasm does not marshal stack arguments -- it rejects signatures needing
--- more than 4 register argument words (see sarcasm.luau / x86_64_codegen.luau), so
--- only the first four slots below are ever used.
+-- GPR-class args are packed DENSELY (a pointer-class arg occupies two consecutive
+-- slots -- intval, lower; a scalar-class arg occupies one slot, intval only),
+-- matching pizlonated clang output. FLOAT/DOUBLE args do NOT consume GPR slots:
+-- they pass in the vector registers xmm0..xmm7 in declaration order among the FP
+-- args alone (a float in the low 32 bits, a double in the full 64 — two floats
+-- never pack one register), exactly like pizlonated clang (verified:
+-- long(double,int,float,long) places the double in xmm0, the int in rdx, the
+-- float in xmm1, the long in rcx). Clang's x86_64 fast CC has only FOUR dense
+-- argument GPRs (rdx, rcx, r8, r9); arguments beyond the fourth GPR word are
+-- passed on the stack, which sarcasm does not marshal -- it rejects signatures
+-- needing more than 4 GPR argument words (see sarcasm.luau /
+-- x86_64_codegen.luau), so only the first four slots below are ever used. FP args
+-- beyond the eighth (xmm0..xmm7) are likewise rejected.
 local DENSE_ARG_REGS = { 2, 1, 8, 9, 10, 11 }  -- rdx, rcx, r8, r9, (r10, r11: unreachable)
 local function denseArgSlot(argTypes, k)
 	local slot = 1
 	for i = 1, k - 1 do
-		slot += (argTypes[i] == 7) and 2 or 1   -- 7 = TYPE_PTR (see sig.luau)
+		if sig.isFpClass(argTypes[i]) then
+			-- FP arg (float/double): passes in an xmm register, consumes no GPR slot
+		elseif argTypes[i] == 7 then
+			slot += 2                           -- 7 = TYPE_PTR (see sig.luau)
+		else
+			slot += 1
+		end
 	end
 	return slot
 end
+-- xmm-register index (0-based) of the FP arg at declaration position k: the count
+-- of FP args before it (FP args allocate xmm0..xmm7 in declaration order among FP
+-- args). Also the xmm index of the FP RETURN (ordinal 0: xmm0).
+local function fpArgOrdinal(argTypes, k)
+	local m = 0
+	for i = 1, k - 1 do
+		if sig.isFpClass(argTypes[i]) then m += 1 end
+	end
+	return m
+end
+-- SysV C-call argument registers: rdi, rsi, rdx, rcx, r8, r9. Doubles as the
+-- AUTHOR-VISIBLE yolo input-asm register sequence for GPR arguments (the entry
+-- unpack copies the internal dense fast-CC regs rdx,rcx,r8,r9 into them).
+x86.SYSV = { 7, 6, 2, 1, 8, 9 }
+
 x86.CC = {
 	myth = 7,       -- rdi
 	fo = 6,         -- rsi
@@ -535,8 +582,22 @@ x86.CC = {
 	retFlag = 0,    -- al (rax)
 	retIv = 2,      -- rdx
 	retLo = 1,      -- rcx
+	-- yolo input-asm register for argument k. FP args pass in the xmm registers
+	-- (their xmm index is fpArgOrdinal) and consume no yolo GPR: arg k's yolo GPR
+	-- register is its 1-based ordinal among the NON-FP args (nil for an FP arg).
+	yoloArg = function(k, argTypes)
+		if argTypes and sig.isFpClass(argTypes[k]) then return nil end
+		local n = 0
+		if argTypes then
+			for i = 1, k - 1 do
+				if not sig.isFpClass(argTypes[i]) then n += 1 end
+			end
+		else
+			n = k - 1
+		end
+		return x86.SYSV[n + 1]
+	end,
+	fpArgOrdinal = fpArgOrdinal,   -- xmm index (0-based) of FP arg k
 }
--- SysV C-call argument registers: rdi, rsi, rdx, rcx, r8, r9.
-x86.SYSV = { 7, 6, 2, 1, 8, 9 }
 
 return x86

@@ -161,23 +161,19 @@ function sig.fpWidthBytes(t: number): number?
 	return nil
 end
 
--- Floating-point (and vector) type classes are rejected on x86_64. sarcasm packs
--- and unpacks dense GPRs only there, while the Fil-C ABI passes and returns FP
--- values in vector registers (which sarcasm itself supports) — the FP ABI
--- marshalling (the fast-CC xmm register sequence plus the buffer-CC glue) is simply
--- not yet implemented on x86_64. An FP-typed signature would therefore silently
--- miscompile the ABI at BOTH ends (entry unpacking and callsite packing), so reject
--- it wherever a signature is consumed.
---
--- On arm64 float and double ARE supported (the fast CC passes FP arguments in
--- v0..v7 in declaration order among FP args and returns them in v0, and sarcasm's
--- transform marshals them — see arm64_codegen / arm64_glue); `opts.arch ==
--- "arm64"` selects that behavior. Long double stays rejected on arm64 too: filcc
--- gives long-double signatures NO fast CC at all (signature word 0 and a pure
--- buffer-CC entrypoint), so sarcasm's signature formula would not even match the
--- ABI. The vector classes (vec4-6) stay rejected on both: a vec4 signature would
--- need q-register CC machinery (vec5/vec6 additionally get filcc "memory-class"
+-- Floating-point (and vector) type classes on x86_64: float and double ARE
+-- supported (the fast CC passes FP arguments in xmm0..xmm7 in declaration order
+-- among FP args and returns them in xmm0, and sarcasm's transform marshals them —
+-- see x86_64_codegen / x86_64_glue). Long double stays rejected: filcc gives
+-- long-double signatures NO fast CC at all (signature word 0 and a pure buffer-CC
+-- entrypoint), so sarcasm's signature formula would not even match the ABI. The
+-- vector classes (vec4-6) stay rejected too: a vec4 signature would need full
+-- vector-register CC machinery (vec5/vec6 additionally get filcc "memory-class"
 -- signature words that do not follow the formula at all).
+--
+-- On arm64 float and double are supported identically (v0..v7 / v0); `opts.arch ==
+-- "arm64"` selects that behavior, and `opts` == nil means x86_64 (both x86 call
+-- sites pass { arch = "x86_64" } explicitly).
 --
 -- `where` optionally prefixes a context (e.g. "call to 'foo'"). Raises a clean
 -- sarcasm: error naming the offending type.
@@ -185,17 +181,15 @@ function sig.checkSupportedClasses(sd, where, opts)
 	local prefix = "sarcasm: " .. (where and (where .. ": ") or "")
 	local function check(t)
 		if t == TYPE_INT or t == TYPE_PTR then return end
-		if opts and opts.arch == "arm64" then
-			if t == TYPE_FLOAT or t == TYPE_DOUBLE then return end
-			if t == TYPE_LONGDOUBLE then
-				error(prefix .. "only float and double floating-point types are supported"
-					.. " in signatures on arm64: long double")
-			end
-			error(prefix .. "vector types are not supported in signatures on arm64"
-				.. " (SIMD signatures are not supported): "
-				.. (CLASS_NAME[t] or ("type class " .. tostring(t))))
+		if t == TYPE_FLOAT or t == TYPE_DOUBLE then return end
+		if t == TYPE_LONGDOUBLE then
+			local arch = (opts and opts.arch == "arm64") and "arm64" or "x86_64"
+			error(prefix .. "only float and double floating-point types are supported"
+				.. " in signatures on " .. arch .. ": long double")
 		end
-		error(prefix .. "floating-point types are not supported in signatures: "
+		local arch = (opts and opts.arch == "arm64") and "arm64" or "x86_64"
+		error(prefix .. "vector types are not supported in signatures on " .. arch
+			.. " (SIMD signatures are not supported): "
 			.. (CLASS_NAME[t] or ("type class " .. tostring(t))))
 	end
 	for _, t in (sd.retTypes or {}) do check(t) end

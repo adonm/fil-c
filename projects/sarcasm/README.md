@@ -70,7 +70,17 @@ Input assembly must carry `;!` annotations:
   swp's Wt) receives the old value WITH its capability, exactly like an
   `;! atomic load ptr` result. The native LSE forms write no flags, so NZCV
   is preserved across the sequence rather than recomputed;
-- on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`. On x86_64 the
+- on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`. EVERY
+  direct call needs one — an unannotated direct `call foo`/`bl foo` is a
+  compile-time rejection on both architectures — and the annotated call is
+  retargeted to `pizlonatedFI<sig>_foo`: a strong `.set` alias of the callee's
+  fast entrypoint when the callee is defined and annotated in the same module,
+  otherwise one weak/hidden callsite resolver thunk per called external (it
+  resolves the callee through `pizlonated_foo` and validates non-null
+  capability, FUNCTION special type, canonical intval and signature — a DATA
+  symbol panics at the special-type check — takes the fast entrypoint on an
+  exact signature match, and marshals through the generic buffer CC on a
+  mismatch). On x86_64 the
   same annotation also marks a register-indirect call (`call *%rax ;! ptr(int)`) — see
   "Indirect calls" below;
 - on stack allocations: `;! alloca size (x)` on the `sub sp,...` and `;! alloca result (x)`
@@ -371,13 +381,14 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   indirect encoding at all, so the `*` marker overrides the code-target
   exemption rather than being silently dropped into a semantic-changing
   direct branch or gas-failing output); unaffected are direct branches
-  (call/jmp/jcc to symbols, numeric labels), register-indirect branches
-  (`jmp *%rdi`), and register-based memory-indirect branches (`jmp
-  *(%rax,%rcx,8)` — bounds-checked like any memory operand; memory-indirect
-  CALLS are instead rejected — see "Indirect calls");
-  exempt are
+  (call/jmp/jcc to symbols, numeric labels) and lea address arithmetic —
+  register-indirect branches (`jmp *%rdi`) and register-based memory-indirect
+  branches (`jmp *(%rax,%rcx,8)`) are REJECTED by the shared body validation
+  (an uncontrolled branch cannot be made memory-safe — see DESIGN.md's
+  "Indirect BRANCHES" bullet; memory-indirect CALLS are instead rejected —
+  see "Indirect calls"); exempt are
   the bare code-target operands (call/jmp/jcc/loop*/xbegin, incl. numeric
-  local labels), lea address arithmetic, $imm, and segment-register moves
+  local labels), $imm, and segment-register moves
   (%gs & co) —, and unknown mnemonics with
   memory operands (width unknowable — the fallback no longer guesses a
   default-width check; unknown register-only forms still pass through with
@@ -386,10 +397,17 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   BMI1/BMI2/ADX/bsf/bsr/xadd/adcx/adox/crc32 have exact entries, and the
   implicit-register mul/div/cmpxchg/cmpxchg8b/cmpxchg16b class is genuinely
   modeled as described
-  above). Floating-point types are still rejected
-  in `;!` signatures on x86_64 — the Fil-C FP ABI is now decoded (see
-  `ABI-NOTES-x86.md`); marshalling it is deferred future work (arm64 float and
-  double signatures ARE supported — see the ARM64 section below). Three known
+  above). Float and double types in `;!` signatures are now SUPPORTED on
+  x86_64 too (entry signatures and callsite annotations alike): FP arguments
+  pass in `%xmm0`..`%xmm7` in declaration order among the FP args —
+  independent of the dense GPR packing `%rdx`,`%rcx`,`%r8`,`%r9`, which counts
+  only non-FP args — an FP result returns in `%xmm0`, the generic/buffer paths
+  pack FP args with `movss`/`movsd`, and the xmm-save reservation is forced
+  from the signature alone so an FP value sitting in an xmm register survives
+  interleaved injected runtime calls (signatures whose encoding exceeds imm32
+  widen their signature compares with `movabsq`); see `ABI-NOTES-x86.md`'s
+  "Floating-point ABI" (arm64 has the analogous v0..v7 scheme — see the ARM64
+  section below). Three known
   PRE-EXISTING issues (all reproduced on the unmodified baseline, NOT
   introduced by the current change) are documented in DESIGN.md's Limitations:
   a regalloc mis-coloring at ≥~13 simultaneously-live webs, injected
@@ -397,7 +415,13 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   and detect.luau's arch autodetect falling back to ARM64 for register-free
   x86 input — or input whose only registers are xmm-class (a lone `movss
   myglobal, %xmm0`; the detector keys on GPR markers) — (the input then
-  fails later at `as` — confusing but harmless).
+  fails later at `as` — confusing but harmless). x86_64 sarcasm frames also
+  cannot propagate exceptions (intentional): the x86_64 glue emits function
+  origins with can_throw = can_catch = 0, so Fil-C unwinding stops at any
+  sarcasm x86_64 frame and a C++ throw in a callee reached from the
+  assembly terminates the process instead of reaching an outer handler
+  (arm64 frames currently DO propagate — see DESIGN.md's Limitations and
+  ABI-NOTES-x86.md's "Exceptions / unwinding").
 - **FP/SIMD (ARM64)** is in scope: the NEON/FP registers (the b/h/s/d/q scalar
   forms, v-register and arrangement forms, and structure register lists) pass
   through exactly as written — sarcasm has no vector register file and never
@@ -431,8 +455,10 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   signatures. Float and DOUBLE types in `;!` signatures ARE supported on arm64
   (entry and callsite annotations alike): FP args pass in v0..v7 per AAPCS,
   FP results return in v0, and the generic/buffer paths marshal them through
-  the CC buffer (see ABI-NOTES.md) — unlike x86_64, where all FP classes are
-  still rejected.
+  the CC buffer (see ABI-NOTES.md) — x86_64 implements the same feature with
+  an independent xmm sequence and `movss`/`movsd` buffer packing (see
+  ABI-NOTES-x86.md); `long double` and the vector classes stay rejected on
+  BOTH architectures.
 - **Heap accesses** are bounds-checked against a capability: the base's `lower` if the
   base is a pointer, else the index's `lower` (base wins if both are pointers), else a
   **null capability** — which traps at runtime (`cannot ... with null object`).
@@ -479,8 +505,8 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 757 `filc/tests/sarcasm-*` tests (479
-x86_64, 278 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
+All testing is via the Fil-C test suite: the 784 `filc/tests/sarcasm-*` tests (504
+x86_64, 280 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
 test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
 minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
 files via clang. The suite compiles every yolo input with sarcasm, links with Fil-C
@@ -554,6 +580,9 @@ and every compile-time rejection (`filc/tests/sarcasm-reject-*` — including th
 Intel-syntax AT&T-operand rejections `sarcasm-reject-intel-attmem`,
 `sarcasm-reject-intel-attmem-fp`, and `sarcasm-reject-intel-enqcmd`, and the
 ambiguous unsized narrowing convert `sarcasm-reject-cvt-unsized`, the
+high-byte setcc destination `sarcasm-reject-setcc-ah` (the web model has no
+subregister view, so an 8-bit `setcc %ah` write would silently land in `%al`,
+and `movzbl %ah` is unencodable, so the widening rewrite cannot apply), the
 absolute-address (moffs) rejections `sarcasm-reject-absaddr-load` /
 `-absaddr-store` / `-absaddr-num` / `-absaddr-alu`, the indirect-branch
 moffs rejections `sarcasm-reject-jmp-indirect-abs` / `-call-indirect-abs` /
@@ -581,7 +610,7 @@ silently dropping the prefix), cmpxchg8b/cmpxchg16b on stack-frame slots
 (`sarcasm-reject-cmpxchg8b-stack`, `sarcasm-reject-cmpxchg16b-stack` — no
 register form to virtualize into), and `;! atomic ptr` on cmpxchg8b
 (`sarcasm-reject-cmpxchg8b-ptr`, the 8-byte twin of
-`sarcasm-reject-cmpxchg16b-ptr`). The 61
+`sarcasm-reject-cmpxchg16b-ptr`). The 73
 `filc/tests/sarcasm-fp-*` tests cover the x86_64 FP/SIMD support end-to-end: SSE
 scalar/packed arithmetic, AVX2/AVX512 (incl. embedded broadcast — off the heap
 and off materialized stack slots alike — and opmask registers), MMX, x87,
@@ -617,12 +646,22 @@ p-stem class — `sarcasm-fp-oob-pabsd-att` (vpabsd zmm at the full 64 bytes),
 `sarcasm-fp-oob-vnni-usd-att` (cross-sign vpdpwusd ymm at 32) — and
 `sarcasm-fp-oob-dq2ph-att` (bare vcvtdq2ph ymm at 64, the bounds trap
 firing before the FP16 instruction would execute — no FP16 silicon
-needed)). Most behavioral cases are exercised in both
+needed)). FP signatures get their own family: entry signatures with interleaved
+FP/GPR arguments (`sarcasm-fp-args-att`/`-int` — the xmm sequence independent of
+the dense GPR packing, `long(double,int,float,long)`-style), an eight-double
+signature whose encoding exceeds imm32 so both resolver compares widen with
+`movabsq`, plus a version-script cross-module call (`sarcasm-fp-args8-att`/
+`-int`), FP callsites on the strong-alias fast path and the cross-module
+weak-resolver path, matching and deliberately mismatching
+(`sarcasm-fp-asmcall-att`/`-int`), annotated indirect calls with FP signatures
+(`sarcasm-fp-indirectcall-att`/`-int` and the mismatch-forced buffer-CC
+`-sigmismatch-att`/`-int`), and a signature-forced xmm-save area in a body with
+no SSE instruction at all (`sarcasm-fp-live-nosse-att`/`-int`). Most behavioral cases are exercised in both
 AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
 
-The 278 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
+The 280 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
 the same pointer/trap/call/alloca core as x86_64, plus the arm64-specific
 surface — annotated register-indirect calls `blr xN ;! sig(...)`
 (`sarcasm-indirectcall-*-arm`: success, loadptr, sigmismatch, and the failure
@@ -637,7 +676,11 @@ end-to-end by `sarcasm-call-data-arm` (a C DATA symbol called as a function
 through the weak callsite resolver must panic at the special-type check),
 `sarcasm-call-data-fp-arm` (same, with an FP callsite signature) and
 `sarcasm-call-sigmismatch-arm` (a mismatched callsite signature forces the
-resolver's generic buffer-CC path) — the NEON/FP support (17 `sarcasm-fp-*-arm` tests and
+resolver's generic buffer-CC path); the x86_64 backend mirrors the two
+non-FP ones with `sarcasm-call-data-att/-int` and
+`sarcasm-call-sigmismatch-att/-int`, and pins its new direct-call/branch body
+validation with `sarcasm-reject-call-nosig`, `sarcasm-reject-indbranch-reg`
+and `sarcasm-reject-tailcall` — the NEON/FP support (23 `sarcasm-fp-*-arm` tests and
 `sarcasm-neon-arm`): scalar, pair and structure loads/stores at their exact
 widths (`sarcasm-neon-arm`, `sarcasm-fp-ldmulti-arm`), NEON arithmetic,
 conversions and fp16 (`sarcasm-fp-arith-arm`, `sarcasm-fp-cvt-arm`,

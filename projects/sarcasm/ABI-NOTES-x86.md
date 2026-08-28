@@ -36,20 +36,54 @@ word at `384(%rbx)` — `movsd %xmm0, 128(%rbx); movq $0, 384(%rbx)` for double;
 `fstpt 128(%rbx)` plus zeroed padding and a zeroed 16-byte aux word for
 `long double`.
 
-sarcasm still REJECTS FP/vector type classes in `;!` signatures (entry and
-callsite alike) — this decode is the groundwork for future FP-signature support;
-the remaining work is the marshalling (entry/callsite glue + buffer-CC packing).
-Future work: FP signatures on x86_64. The design already accommodates them —
-the FP-signature capability is a per-arch marker (`cgm.fpSignatures`), the
-signature class check is arch-aware (`sig.checkSupportedClasses` takes the
-target), and the backend hooks the arm64 marshalling uses (`cg.storeFpArg` /
-`cg.loadFpArg`-style FP buffer atoms plus the per-arch calling-convention
-tables) are parameterized the same way the dense-GPR tables are. Adding x86_64
-FP support means filling in the x86 CC tables (xmm sequence for fast paths,
-`movss`/`movsd` buffer packing for generic paths per the decode above); until
-then `checkCallsiteSig` keeps rejecting FP classes on x86_64 and no behavioral
-change is intended there. (arm64 float/double signatures are implemented — see
-ABI-NOTES.md.)
+sarcasm now IMPLEMENTS float/double `;!` signatures on x86_64 (parity with
+arm64 — see ABI-NOTES.md; `long double` and the vec4-6 classes stay rejected on
+both: filcc gives long-double signatures NO fast CC at all, and the vector
+classes would need full vector-register CC machinery, vec5/vec6 additionally
+not following the signature formula):
+
+- **Entry unpacking.** An FP argument of the entry signature is SKIPPED by the
+  entry unpack entirely: its value is already in its xmm register (in
+  declaration order among the FP args, xmm0 first) and the function body reads
+  it there — no move, no entry temp, no rooting. Author-visible GPR arguments
+  keep their SysV yolo sequence `%rdi`,`%rsi`,... counting only NON-FP args
+  (the entry unpack copies the internal dense fast-CC regs rdx,rcx,r8,r9 into
+  them), so `long(double,int,float,long)` reads the double in `%xmm0`, the int
+  in `%rdi`, the float in `%xmm1` and the long in `%rsi`.
+- **FP return.** A float/double return rides in `%xmm0` (the body leaves it
+  there; the `ret` path still does `movl $0, %eax` so the %al exception flag
+  is 0 on the normal return even though %rax is not the result register).
+- **Callsite marshalling (fast path).** An annotated call (direct or
+  `call *%reg`) skips its FP arguments in the GPR marshalling — the source asm
+  places them in xmm0..xmmN (declaration order among the FP args) — but tags
+  the call node with their vector uses (`fpVecUses`) so the FP save/restore
+  liveness keeps them alive up to the call; an FP result is left in `%xmm0`
+  (no `retIv` move).
+- **Callsite marshalling (generic/buffer path).** On a signature mismatch the
+  inline indirect-call sequence (and the weak callsite resolver thunk, and the
+  2ET generic entrypoint) packs EVERY argument at its declaration index: FP
+  args store `movss`/`movsd` (a float writes the low 4 bytes of the 8-byte
+  slot) into `myth+128+8*i` with a zero aux word at `myth+384+8*i`; the
+  argument byte size counts every arg word. An FP result unmarshals with
+  `movsd 128(%myth), %xmm0` (or `movss`) after the ret-size check, which stays
+  8 for a float/double return; the 2ET thunk additionally zeroes the aux word
+  at `384(%rbx)` on the way out.
+- **FP liveness.** Around every INJECTED runtime call (pollcheck slow path,
+  `filc_allocate`, the ptr-store barriers) the vector save/restore machinery
+  now also fires when the SIGNATURE alone carries FP (entry args/return, or an
+  FP callsite) even if the body has zero SSE instructions: the 256-byte
+  xmm-save reservation is forced from the signature (`x86_64_frame.analyzeFrame`
+  / `transform.luau`, gated on `cgm.fpSignatures`), and the width-aware
+  backward liveness (`expandFpSaves`) saves exactly the live xmm bytes
+  (`movss`/`movsd`/`movdqu`) — an FP argument web the source program placed in
+  an xmm register survives interleaved runtime calls.
+- **Signature compares past imm32.** FP signatures push signature numbers past
+  a 32-bit immediate (eight doubles encode to 8552919316), and x86 has no
+  `cmpq $imm64, mem`: both compare sites widen — the codegen hook
+  (`cmpImmBranchWidened`) materializes the constant with `movq $imm64, %reg`
+  (the movabs encoding) into a freshly allocated temp and compares registers,
+  and the hand-written resolver glue does the same into the dead scratch
+  `%r10`.
 
 ## Runtime-call argument registers (SysV: rdi, rsi, rdx, rcx, r8, r9)
 - `filc_optimized_access_check_fail(rdi=intval, rsi=lower, rdx=&origin)`
@@ -136,10 +170,19 @@ Store barrier: `movq filc_current_marking_state@GOTPCREL(%rip),%r; cmpl $0,(%r);
 ## Callsite resolver (pizlonatedFI<sig>_NAME, weak/hidden)
 `xorl %esi,%esi; callq pizlonated_NAME@PLT` -> rax=iv, rdx=lower of FO; validate flags
 `movabsq $0x780000000000000` & `== $0x80000000000000`; intval `== [FO-8]&0xFFFFFFFFFFFF`;
-signature `cmpq $SIG, 16(FO)`; direct: `movq (FO),%rax; <restore CC>; jmpq *%rax`; else
+signature `cmpq $SIG, 16(FO)` (when SIG exceeds imm32 — FP signatures do — this widens
+to `movabsq $SIG, %r10; cmpq %r10, 16(FO)`, see "Floating-point ABI"); direct:
+`movq (FO),%rax; <restore CC>; jmpq *%rax`; else
 marshal to CC buffers and call generic entrypoint. Fail: filc_check_function_call_fail.
+Invariant: FP arguments must survive in xmm0..xmm7 across the `callq pizlonated_NAME@PLT`
+getter (the resolver never spills them) — that holds today because the getter is
+hand-written `leaq`/`movq`/`retq` (no xmm use) and PLT stubs, including lazy resolution
+through the dynamic linker, don't clobber argument xmm state, but a compiler-generated
+C `pizlonated_NAME` would clobber the caller-saved xmm registers and silently marshal
+garbage.
 
-## Indirect calls (`call *%reg ;! sig(...)` — emitted by sarcasm, x86_64 only)
+## Indirect calls (`call *%reg ;! sig(...)` — the x86_64 form; arm64 emits the
+## analogous `blr xN ;! sig(...)`, see ABI-NOTES.md)
 For a register-indirect call with a callsite signature annotation, sarcasm emits
 filcc's exact indirect-call sequence for the flight pointer (P = target intval,
 L = target lower — the target register's web must be a known pointer value, so
@@ -182,8 +225,67 @@ indirect callsite with signature SIG, so referencing it could be a link error.
 No bounds check appears anywhere in the sequence: a function object's bounds
 are degenerate (upper == lower). Unannotated register-indirect calls, all
 memory-indirect calls (`call *mem`), and annotated calls whose target web is
-not a known pointer value are compile-time errors; arm64 rejects all indirect
-calls.
+not a known pointer value are compile-time errors. arm64 emits the same
+sequence for `blr xN ;! sig(...)` and rejects the same shapes (unannotated
+`blr`, a non-pointer target web; memory-operand indirect calls do not exist
+there — `blr` is register-only — and arm64 additionally rejects all indirect
+BRANCHES, `br xN`/`b xN` with a register operand, as does x86_64 for
+`jmp *%reg`/`jmp *mem`, see "Direct calls and branches" below).
+
+## Direct calls and branches (body validation, both architectures)
+An ANNOTATED direct call (`call foo ;! sig(...)`) is retargeted to
+`pizlonatedFI<SIG>_foo` (recorded in calledExterns): if `foo` is defined and
+annotated in the same module, sarcasm emits a strong `.set` alias
+`pizlonatedFI<SIG>_foo = pizlonatedFIP<SIG>_foo` and the call goes straight to
+the fast entrypoint; otherwise sarcasm emits one weak/hidden callsite resolver
+thunk `pizlonatedFI<SIG>_foo` per called external (same four checks as an
+indirect call: non-null capability, FUNCTION special type, canonical intval,
+signature — a mismatch marshals through the generic buffer CC, and a DATA
+symbol fails the special-type check). An UNANNOTATED direct call is a
+compile-time rejection ("call to 'foo' has no ;! signature annotation"):
+x86_64 now runs the shared raw-body validation (`strictBodyValidation`,
+matching arm64) — the old passthrough landed in a same-file callee's FIP body
+without marshalling and could never link against C callees. Raw branches are
+rejected by the same pass: `jmp *%reg`/`jmp *mem` (indirect branch, the
+renderer would pass them through verbatim), a branch with no label operand at
+all (`jcc *%reg` is unencodable; `jmp $imm` is a raw absolute branch), and a
+branch to a non-local label (tail call). Label-target branches (loop
+back-edges, numeric labels) keep working. Covered by
+`sarcasm-reject-call-nosig`, `sarcasm-reject-indbranch-reg`,
+`sarcasm-reject-tailcall`, `sarcasm-call-data-att/-int` and
+`sarcasm-call-sigmismatch-att/-int` (arm64 pins the same policy with
+`sarcasm-reject-call-nosig-arm`, `-indbranch-reg-arm`, `-tailcall-arm`,
+`sarcasm-call-data-arm` and `sarcasm-call-sigmismatch-arm`).
+
+## Exceptions / unwinding
+Sarcasm x86_64 frames CANNOT propagate exceptions (intentional, for now). The
+x86_64 glue (`x86_64_glue.luau` foAndOrigins) emits every function origin with
+
+```
+.quad 0        # personality_getter: NULL (sarcasm emits no landing pads)
+.byte 0        # can_throw = 0
+.byte 0        # can_catch = 0
+.byte 0        # has_setjmps = 0
+```
+
+Fil-C unwinding (`filc_native__Unwind_RaiseException` phase 1,
+libpas/src/libpas/filc_runtime.c) walks the filc_frame chain and fatals on any
+frame whose function origin is !can_catch, or !can_throw without a
+personality. Observable consequence: a C++ exception thrown in code CALLED
+from sarcasm x86_64 assembly stops at the sarcasm frame — the process
+terminates (libc++abi "terminating due to uncaught exception" -> filc panic)
+instead of the unwinder reaching a handler in an outer frame. The exception
+can neither be caught inside sarcasm code nor pass through a sarcasm x86_64
+frame. (This is unrelated to the `testb $1, %al ; jne EXC` fast-CC return-flag
+edges shown above: that mechanism forwards a callee's EXCEPTION RETURN, not
+unwinding.)
+
+Contrast with arm64: `arm64_glue.luau` emits personality_getter = NULL but
+can_throw = 1 and can_catch = 1, so unwinding DOES propagate through sarcasm
+arm64 frames (a throw still cannot be CAUGHT inside sarcasm code — there are
+no landing pads and the personality is null); see
+filc/tests/sarcasm-excprop-arm. If x86_64 ever needs the same behavior, the
+fix is confined to the glue's origin bytes — no codegen changes.
 
 ## Data directives
 `.quad` (= .xword), `.long` (= .word), `.zero`, `.byte`, `.asciz` — same layout as ARM64.

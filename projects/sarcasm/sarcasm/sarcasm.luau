@@ -461,20 +461,20 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
-		-- Signature class check, arch-aware: on arm64 float and double are fully
-		-- supported (FP args pass in v0..v7 in declaration order among the FP args,
-		-- FP returns ride in v0, and the generic/buffer thunks marshal them); long
-		-- double stays rejected (filcc gives it signature word 0 and NO fast CC) and
-		-- so do the vector classes (a vec4 signature would need q-register CC
-		-- machinery). On x86_64 every FP class is still rejected: the FP marshalling
-		-- is not implemented there.
+		-- Signature class check, arch-aware: float and double are fully supported
+		-- on BOTH arches (FP args pass in xmm0..xmm7 / v0..v7 in declaration order
+		-- among the FP args, FP returns ride in xmm0 / v0, and the generic/buffer
+		-- thunks marshal them); long double stays rejected (filcc gives it
+		-- signature word 0 and NO fast CC) and so do the vector classes (a vec4
+		-- signature would need q-register / xmm-quad CC machinery).
 		sig.checkSupportedClasses(sigDesc, nil, { arch = target.arch })
 		-- Entry-signature arity limits. The fast CC packs GPR argument words DENSELY
 		-- (a pointer arg = 2 words; anything wider is passed on the stack, which
 		-- sarcasm does not yet marshal), so only GPR-class args count here — FP args
-		-- (arm64 float/double) pass in the v registers instead and are bounded
-		-- separately (at most 8, v0..v7): x86_64 packs into the FOUR registers
-		-- rdx,rcx,r8,r9 (4 words max); arm64 packs into the SIX registers x2..x7.
+		-- (float/double, both arches) pass in the FP registers instead and are
+		-- bounded separately (at most 8: xmm0..xmm7 on x86_64, v0..v7 on arm64):
+		-- x86_64 packs into the FOUR registers rdx,rcx,r8,r9 (4 words max); arm64
+		-- packs into the SIX registers x2..x7.
 		local gprArgs, fpArgs, words = 0, 0, 0
 		for k = 1, sigDesc.argWords do
 			if sig.isFpClass(sigDesc.argTypes[k]) then

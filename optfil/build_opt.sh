@@ -632,7 +632,7 @@ cd ..
 rm -rf pizlonated-sudo
 hash -r
 
-tar -xf $FILCSRC/projects/sed-4.9/pizlonated-sed.tar.gz
+tar -xf $FILCSRC/projects/sed-4.10/pizlonated-sed.tar.gz
 cd pizlonated-sed
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

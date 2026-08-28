@@ -46,7 +46,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/vim-9.1.0660 pizlonated-vim
 ./package-source.sh projects/util-linux-2.40.2 pizlonated-util-linux
 ./package-source.sh projects/systemd-256.4 pizlonated-systemd
-./package-source.sh projects/procps-ng-4.0.4 pizlonated-procps
+./package-source.sh projects/procps-ng-4.0.7 pizlonated-procps
 ./package-source.sh projects/make-4.4.1 pizlonated-make
 ./package-source.sh projects/linux-6.10.5 pizlonated-linux
 ./package-source.sh projects/e2fsprogs-1.47.1 pizlonated-e2fsprogs

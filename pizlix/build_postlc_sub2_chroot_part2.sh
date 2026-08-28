@@ -487,7 +487,7 @@ hash -r
 tar -xf pizlonated-procps.tar.gz
 cd pizlonated-procps
 ./configure --prefix=/usr \
-    --docdir=/usr/share/doc/procps-ng-4.0.4 \
+    --docdir=/usr/share/doc/procps-ng-4.0.7 \
     --disable-static \
     --disable-kill
 make

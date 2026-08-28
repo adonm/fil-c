@@ -92,7 +92,7 @@ cp -v \
     patch-2.7.6.tar.xz \
     perl-5.40.0.tar.xz \
     pkgconf-2.3.0.tar.xz \
-    procps-ng-4.0.4.tar.xz \
+    procps-ng-4.0.7.tar.xz \
     psmisc-23.7.tar.xz \
     python-3.12.5-docs-html.tar.bz2 \
     Python-3.12.5.tar.xz \

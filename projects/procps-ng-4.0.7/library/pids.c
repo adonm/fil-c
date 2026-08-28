@@ -1097,12 +1097,12 @@ static inline int pids_oldproc_open (
         ...)
 {
     va_list vl;
-    int *ids;
+    int *ids = NULL;
     int num = 0;
 
     if (*this == NULL) {
         va_start(vl, flags);
-        ids = va_arg(vl, int*);
+        if (flags & (PROC_PID | PROC_UID)) ids = va_arg(vl, int*);
         if (flags & PROC_UID) num = va_arg(vl, int);
         va_end(vl);
         if (NULL == (*this = openproc(flags, ids, num)))

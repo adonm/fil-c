@@ -773,7 +773,7 @@ cd ../../../
 rm -rf pizlonated-icu
 hash -r
 
-tar -xf $FILCSRC/projects/procps-ng-4.0.4/pizlonated-procps.tar.gz
+tar -xf $FILCSRC/projects/procps-ng-4.0.7/pizlonated-procps.tar.gz
 cd pizlonated-procps
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --disable-static
 make -j `nproc`

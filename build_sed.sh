@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/sed-4.9
+cd projects/sed-4.10
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

@@ -713,13 +713,13 @@ cd ..
 rm -rf gawk-5.3.0
 hash -r
 
-tar -xf $FILCSRC/pizlix/findutils-4.10.0.tar.xz
-cd findutils-4.10.0
+tar -xf $FILCSRC/pizlix/findutils-4.11.0.tar.xz
+cd findutils-4.11.0
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf findutils-4.10.0
+rm -rf findutils-4.11.0
 hash -r
 
 tar -xf $FILCSRC/pizlix/gzip-1.13.tar.xz

@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/procps-ng-4.0.4
+cd projects/procps-ng-4.0.7
 extract_source
 PATH=$PWD/../../../pizfix/bin:$PATH CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix --disable-static
 make -j $NCPU

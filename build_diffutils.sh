@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/diffutils-3.10
+cd projects/diffutils-3.12
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

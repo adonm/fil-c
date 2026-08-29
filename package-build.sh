@@ -80,10 +80,15 @@ do
         fi
         if patchelf --set-interpreter pizfix/lib/ld-fil1-$ARCH.so $binary
         then
-            echo "patchelf --set-interpreter \$PWD/pizfix/lib/ld-dil1-$ARCH.so $binary" >> setup.sh
+            echo "patchelf --set-interpreter \$PWD/pizfix/lib/ld-fil1-$ARCH.so $binary" >> setup.sh
         fi
     fi
 done
+
+echo "if test -f pizfix/bin/sarcasm" >> setup.sh
+echo "then" >> setup.sh
+echo "    sed -i \"1s|.*|#!\$PWD/pizfix/bin/minilute|\" pizfix/bin/sarcasm" >> setup.sh
+echo "fi" >> setup.sh
 
 rm pizfix/lib/ld-fil1-$ARCH.so
 (cd pizfix/lib/ && ln -s libyoloc.so ld-fil1-$ARCH.so)

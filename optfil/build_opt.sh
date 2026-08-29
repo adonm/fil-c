@@ -149,6 +149,12 @@ ln -s filcc-clang-20 bin/filcc
 ln -s filcc-clang-20 bin/fil++
 ln -s filcc-clang-20 bin/filcpp
 
+cp -v $FILCSRC/pizfix/bin/minilute bin/minilute
+strip bin/minilute
+patchelf --set-interpreter /opt/fil/lib/ld-fil1-$ARCH.so bin/minilute
+patchelf --set-rpath /opt/fil/lib bin/minilute
+$FILCSRC/projects/sarcasm/install.sh /opt/fil
+
 test -d build
 test ../fil
 rm -rf build
@@ -937,4 +943,7 @@ cd ..
 test -d build
 test -d ../fil
 rm -rf build
+
+/opt/fil/bin/sarcasm --version
+/opt/fil/bin/minilute $FILCSRC/projects/minilute/tests/smoke.luau
 

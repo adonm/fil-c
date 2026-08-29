@@ -158,6 +158,16 @@ mkdir -p $LFS/usr/include/$ARCH-unknown-linux-gnu
 cp -rv $FILCSRC/build/include/$ARCH-unknown-linux-gnu/c++ $LFS/usr/include/$ARCH-unknown-linux-gnu
 cp -v $FILCSRC/pizlix/hacked_ldd $LFS/usr/bin/ldd
 
+cp -v $FILCSRC/pizfix/bin/minilute $LFS/usr/bin/minilute
+strip $LFS/usr/bin/minilute
+patchelf --set-rpath /usr/lib $LFS/usr/bin/minilute
+patchelf --set-interpreter /usr/lib/ld-fil1-$ARCH.so $LFS/usr/bin/minilute
+mkdir -p $LFS/usr/lib/sarcasm
+cp -r $FILCSRC/pizfix/lib/sarcasm/. $LFS/usr/lib/sarcasm/
+cp -v $FILCSRC/pizfix/bin/sarcasm $LFS/usr/bin/sarcasm
+sed -i "1s|.*|#!/usr/bin/minilute|" $LFS/usr/bin/sarcasm
+chmod 755 $LFS/usr/bin/sarcasm
+
 echo "lc" > $LFS/sources/lfsbuildstate
 
 ./build_unmount.sh

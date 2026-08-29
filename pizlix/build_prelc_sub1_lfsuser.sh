@@ -214,8 +214,8 @@ ln -sv bash $LFS/bin/sh
 cd ..
 rm -rf bash-5.2.32
 
-tar -xf coreutils-9.5.tar.xz
-cd coreutils-9.5
+tar -xf coreutils-9.11.tar.xz
+cd coreutils-9.11
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(build-aux/config.guess) \
@@ -228,7 +228,7 @@ mkdir -pv $LFS/yolo/share/man/man8
 mv -v $LFS/yolo/share/man/man1/chroot.1 $LFS/yolo/share/man/man8/chroot.8
 sed -i 's/"1"/"8"/' $LFS/yolo/share/man/man8/chroot.8
 cd ..
-rm -rf coreutils-9.5
+rm -rf coreutils-9.11
 
 tar -xf diffutils-3.12.tar.xz
 cd diffutils-3.12

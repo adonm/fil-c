@@ -38,8 +38,8 @@ cp -v \
     bzip2-1.0.8-install_docs-1.patch \
     bzip2-1.0.8.tar.gz \
     check-0.15.2.tar.gz \
-    coreutils-9.5-i18n-2.patch \
-    coreutils-9.5.tar.xz \
+    coreutils-9.11-i18n-1.patch \
+    coreutils-9.11.tar.xz \
     curl-8.21.0.tar.xz \
     dejagnu-1.6.3.tar.gz \
     dhcpcd-10.0.8.tar.xz \

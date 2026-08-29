@@ -119,30 +119,21 @@ _obstack_begin_worker (struct obstack *h,
   if (alignment == 0)
     alignment = __alignof__ (max_align_t);
 
-  /* The minimum size to request from the allocator, such that the
-     result is guaranteed to have enough room to start with the struct
-     _obstack_chunk sans contents, followed by minimal padding, up to
-     but possibly not including the start of an aligned object.
-     This value is zero if no size is large enough.  */
-  _OBSTACK_CHUNK_SIZE_T aligned_prefix_size;
-  bool v = align_chunk_size_up (&aligned_prefix_size, alignment - 1,
-                                offsetof (struct _obstack_chunk, contents));
-
-  _OBSTACK_CHUNK_SIZE_T size = chunk_size;
-  if (size < aligned_prefix_size)
-    {
-      size = aligned_prefix_size;
-
-      /* For speed in the typical case, allocate at least a "good" size.  */
-      int good_size = 4000;
-      if (size < good_size)
-        size = good_size;
-    }
+  /* A chunk holds exactly one object, so ignore the caller's chunk size
+     hint and start out with just the chunk header plus alignment slop.
+     _obstack_newchunk sizes chunks to hold the objects that go in them.
+     This is better for memory safety with Fil-C: out-of-bounds accesses
+     between objects allocated via obstack are caught by the capability
+     system, since no two objects share a chunk.  */
+  (void) chunk_size;
+  _OBSTACK_CHUNK_SIZE_T size;
+  bool v = align_chunk_size_up (&size, alignment - 1,
+                                sizeof (struct _obstack_chunk));
 
   h->chunk_size = size;
   h->alignment_mask = alignment - 1;
 
-  chunk = h->chunk = v ? NULL : call_chunkfun (h, size);
+  chunk = h->chunk = v ? NULL : call_chunkfun (h, h->chunk_size);
   if (!chunk)
     (*obstack_alloc_failed_handler) ();
   h->next_free = h->object_base = __PTR_ALIGN ((char *) chunk, chunk->contents,
@@ -196,18 +187,24 @@ _obstack_newchunk (struct obstack *h, _OBSTACK_INDEX_T length)
   struct _obstack_chunk *old_chunk = h->chunk;
   size_t obj_size = h->next_free - h->object_base;
 
-  /* Compute size for new chunk.  */
-  _OBSTACK_CHUNK_SIZE_T s, new_size;
+  /* Compute size for new chunk.  A chunk holds exactly one object, so
+     size the new chunk to hold the object's current contents plus LENGTH
+     more bytes, doubling the object's space so that it can continue to
+     grow in place; for a fresh object, just make room for LENGTH bytes.  */
+  _OBSTACK_CHUNK_SIZE_T new_size;
   bool v = length < 0;
-  v |= ckd_add (&s, obj_size, length);
-  v |= align_chunk_size_up (&s, h->alignment_mask, s);
-  v |= ckd_add (&s, s,
+  if (obj_size)
+    {
+      _OBSTACK_CHUNK_SIZE_T s;
+      v |= ckd_add (&s, obj_size, length);
+      v |= ckd_add (&s, s, s);
+      new_size = s;
+    }
+  else
+    new_size = length;
+  v |= ckd_add (&new_size, new_size,
                 (offsetof (struct _obstack_chunk, contents)
                  + h->alignment_mask));
-  if (ckd_add (&new_size, s, (obj_size >> 3) + 100))
-    new_size = s;
-  if (new_size < h->chunk_size)
-    new_size = h->chunk_size;
 
   /* Allocate and initialize the new chunk.  */
   struct _obstack_chunk *new_chunk =

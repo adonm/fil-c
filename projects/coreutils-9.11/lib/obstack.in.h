@@ -170,15 +170,21 @@ typedef char *_OBSTACK_CPTR;
    safe and compute the alignment relative to B.  Otherwise, use the
    faster strategy of computing the alignment through uintptr_t.  */
 #ifndef _OBSTACK_UINTPTR_TYPE
-# define __PTR_ALIGN(B, P, A) \
-   ((B) + (((P) - (B) + (A)) & ~(A)))
+# define __PTR_ALIGN(B, P, A)                                            \
+  __extension__                                                          \
+    ({ char *__P = (char *) (P);                                         \
+       zmkptr(__P, (uintptr_t)((B) + ((__P - (B) + (A)) & ~(A)))); })
 #else
-# define __PTR_ALIGN(B, P, A) \
-   ((P) + ((- (_OBSTACK_UINTPTR_TYPE) (P)) & (A)))
+# define __PTR_ALIGN(B, P, A)                                            \
+  __extension__                                                          \
+    ({ char *__P = (char *) (P);                                         \
+       zmkptr(__P, (uintptr_t) __P + ((- (_OBSTACK_UINTPTR_TYPE) __P) & (A))); })
 #endif
 
 /* For memcpy, size_t.  */
 #include <string.h>
+#include <stdfil.h>
+#include <inttypes.h>
 
 #ifndef __attribute_pure__
 # define __attribute_pure__ _GL_ATTRIBUTE_PURE
@@ -368,8 +374,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_INDEX_T __len = length;					      \
-       if (obstack_room (__o) < __len)					      \
-         _obstack_newchunk (__o, __len);				      \
+       _obstack_newchunk (__o, __len);				      \
        (void) 0; })
 
 # define obstack_empty_p(OBSTACK)					      \
@@ -384,8 +389,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_INDEX_T __len = length;					      \
-       if (obstack_room (__o) < __len)					      \
-         _obstack_newchunk (__o, __len);				      \
+       _obstack_newchunk (__o, __len);				      \
        memcpy (__o->next_free, where, __len);				      \
        __o->next_free += __len;						      \
        (void) 0; })
@@ -394,8 +398,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_INDEX_T __len = length;					      \
-       if (obstack_room (__o) <= __len)					      \
-         _obstack_newchunk (__o, __len + 1);				      \
+       _obstack_newchunk (__o, __len + 1);				      \
        memcpy (__o->next_free, where, __len);				      \
        __o->next_free += __len;						      \
        *(__o->next_free)++ = 0;						      \
@@ -404,8 +407,7 @@ extern int obstack_exit_failure;
 # define obstack_1grow(OBSTACK, datum)					      \
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
-       if (obstack_room (__o) < 1)					      \
-         _obstack_newchunk (__o, 1);					      \
+       _obstack_newchunk (__o, 1);					      \
        obstack_1grow_fast (__o, datum);					      \
        (void) 0; })
 
@@ -416,15 +418,13 @@ extern int obstack_exit_failure;
 # define obstack_ptr_grow(OBSTACK, datum)				      \
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
-       if (obstack_room (__o) < sizeof (void *))			      \
-         _obstack_newchunk (__o, sizeof (void *));			      \
+       _obstack_newchunk (__o, sizeof (void *));			      \
        obstack_ptr_grow_fast (__o, datum); })
 
 # define obstack_int_grow(OBSTACK, datum)				      \
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
-       if (obstack_room (__o) < sizeof (int))				      \
-         _obstack_newchunk (__o, sizeof (int));				      \
+       _obstack_newchunk (__o, sizeof (int));				      \
        obstack_int_grow_fast (__o, datum); })
 
 # define obstack_ptr_grow_fast(OBSTACK, aptr)				      \
@@ -447,8 +447,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_INDEX_T __len = length;					      \
-       if (obstack_room (__o) < __len)					      \
-         _obstack_newchunk (__o, __len);				      \
+       _obstack_newchunk (__o, __len);				      \
        obstack_blank_fast (__o, __len);					      \
        (void) 0; })
 
@@ -563,8 +562,7 @@ extern int obstack_exit_failure;
 
 # define obstack_blank(h, length)					      \
   ((h)->temp.tempint = (length),					      \
-   ((obstack_room (h) < (h)->temp.tempint)				      \
-   ? (_obstack_newchunk ((h), (h)->temp.tempint), 0) : 0),		      \
+   _obstack_newchunk ((h), (h)->temp.tempint),		      \
    obstack_blank_fast (h, (h)->temp.tempint),				      \
    (void) 0)
 

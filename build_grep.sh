@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/grep-3.11
+cd projects/grep-3.12
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

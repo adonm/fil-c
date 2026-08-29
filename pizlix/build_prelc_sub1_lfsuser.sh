@@ -279,15 +279,15 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf gawk-5.3.0
 
-tar -xf grep-3.11.tar.xz
-cd grep-3.11
+tar -xf grep-3.12.tar.xz
+cd grep-3.12
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(./build-aux/config.guess)
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf grep-3.11
+rm -rf grep-3.12
 
 tar -xf gzip-1.13.tar.xz
 cd gzip-1.13

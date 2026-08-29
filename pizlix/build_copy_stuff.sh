@@ -61,7 +61,7 @@ cp -v \
     glibc-2.40.tar.xz \
     gmp-6.3.0.tar.xz \
     gperf-3.1.tar.gz \
-    grep-3.11.tar.xz \
+    grep-3.12.tar.xz \
     groff-1.23.0.tar.gz \
     grub-2.12.tar.xz \
     gzip-1.13.tar.xz \

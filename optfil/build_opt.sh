@@ -677,7 +677,7 @@ cd ..
 rm -rf pizlonated-bison
 hash -r
 
-tar -xf $FILCSRC/projects/grep-3.11/pizlonated-grep.tar.gz
+tar -xf $FILCSRC/projects/grep-3.12/pizlonated-grep.tar.gz
 cd pizlonated-grep
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

@@ -26,7 +26,7 @@
 #define ASYNC_POSIX
 #define ASYNC_ARCH
 
-#if defined(__CET__) || defined(__ia64__)
+#if defined(__CET__) || defined(__ia64__) || defined(__FILC__)
 /*
  * When Intel CET is enabled, makecontext will create a different
  * shadow stack for each context.  async_fibre_swapcontext cannot
@@ -34,6 +34,7 @@
  * well as normal stack.
  * On IA64 the register stack engine is not saved across setjmp/longjmp. Here
  * swapcontext() performs correctly.
+ * In Fil-C, you cannot use longjmp in combination with makecontext.
  */
 #define USE_SWAPCONTEXT
 #endif

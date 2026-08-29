@@ -78,7 +78,13 @@ static const struct array_alloc_vector {
 
     { 1, 1, EXP_NONNULL, EXP_NONNULL },
 
+    /*
+     * Fil-C panics instead of returning NULL when an allocation cannot be
+     * satisfied, so out-of-memory handling cannot be tested there.
+     */
+#if !defined(__FILC__)
     { SQRT_SIZE_T - 1, SQRT_SIZE_T - 1, EXP_OOM, EXP_OOM },
+#endif
 
     { SQRT_SIZE_T, SQRT_SIZE_T, EXP_ZERO_SIZE, EXP_INT_OF },
 
@@ -120,12 +126,20 @@ static const struct array_realloc_vector {
         EXP_ZERO_SIZE, EXP_ZERO_SIZE, EXP_ZERO_SIZE, EXP_ZERO_SIZE },
     { 1, 0, 1,
         EXP_ZERO_SIZE, EXP_NONNULL, EXP_ZERO_SIZE, EXP_NONNULL },
+    /*
+     * Fil-C panics instead of returning NULL when an allocation cannot be
+     * satisfied, so out-of-memory handling cannot be tested there.
+     */
+#if !defined(__FILC__)
     { 1, 0, SIZE_MAX,
         EXP_ZERO_SIZE, EXP_OOM, EXP_ZERO_SIZE, EXP_OOM },
+#endif
     { 1, 1, 0,
         EXP_NONNULL, EXP_ZERO_SIZE, EXP_NONNULL, EXP_ZERO_SIZE },
+#if !defined(__FILC__)
     { 1, SIZE_MAX, 0,
         EXP_OOM, EXP_ZERO_SIZE, EXP_OOM, EXP_ZERO_SIZE },
+#endif
 
     { 1, 123, 345,
         EXP_NONNULL, EXP_NONNULL, EXP_NONNULL, EXP_NONNULL },
@@ -177,7 +191,14 @@ static const struct array_aligned_alloc_vector {
      * posix_memalign expected to fail with ENOMEM, while the open-coded
      * implementation tries to alloc size + alignment, which should fail
      * on integer overflow.
+     *
+     * Fil-C panics when the alignment exceeds what its allocator supports,
+     * so this cannot be tested through posix_memalign there.  The open-coded
+     * implementation (used when custom allocators are installed) fails on
+     * its integer overflow check before allocating, so it stays testable.
      */
+#if !defined(__FILC__) || USE_CUSTOM_ALLOC_FNS || \
+    defined(OPENSSL_SMALL_FOOTPRINT)
     { 1, SIZE_MAX / 2 + 2, SIZE_MAX / 2 + 1,
 #if (defined(_BSD_SOURCE)                                        \
     || (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L)) \
@@ -188,6 +209,7 @@ static const struct array_aligned_alloc_vector {
         EXP_INT_OF, EXP_INT_OF
 #endif
     },
+#endif
 };
 
 static int secure_memory_is_secure;

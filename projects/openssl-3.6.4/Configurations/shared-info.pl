@@ -31,7 +31,11 @@ my %shared_info;
     'linux-shared' => sub {
         return {
             %{$shared_info{'gnu-shared'}},
-            shared_defflag    => '-Wl,--version-script=',
+            # Fil-C's clang only pizlonates (translates) version scripts that
+            # are passed as a direct --version-script= option; the -Wl, form
+            # bypasses that handling and produces shared libraries that export
+            # none of the pizlonated API symbols.
+            shared_defflag    => '--version-script=',
             dso_ldflags       =>
                 (grep /(?:^|\s)-fsanitize/,
                  @{$config{CFLAGS}}, @{$config{cflags}})
@@ -40,10 +44,11 @@ my %shared_info;
         };
     },
     'bsd-gcc-shared' => sub { return $shared_info{'linux-shared'}; },
-    'bsd-gcc-nodef-shared' => sub { 
+    'bsd-gcc-nodef-shared' => sub {
         return {
             %{$shared_info{'gnu-shared'}},
-            shared_defflags     => '-Wl,--version-script=',
+            # See the comment above about Fil-C and --version-script=.
+            shared_defflags     => '--version-script=',
         };
     },
     'darwin-shared' => {

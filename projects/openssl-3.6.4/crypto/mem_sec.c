@@ -106,6 +106,15 @@ static int sh_allocated(const char *ptr);
 
 int CRYPTO_secure_malloc_init(size_t size, size_t minsize)
 {
+#if defined(__FILC__)
+    /*
+     * Fil-C panics on syscalls it does not support instead of returning
+     * errors, and the secure heap needs mlock2().  Report that secure memory
+     * is unavailable rather than panicking; callers fall back to the regular
+     * allocator when this returns 0.
+     */
+    return 0;
+#endif
 #ifndef OPENSSL_NO_SECURE_MEMORY
     int ret = 0;
 

@@ -326,6 +326,22 @@ union ptrint {
     const char *s;
 };
 
+/*
+ * Fil-C cannot recover pointer provenance when a pointer that was stored in
+ * the integer member of ptrint is passed through varargs and read back as a
+ * pointer, so values that the format consumes as strings must be passed via
+ * the pointer-typed member.  Entries initialize either 's' (string arguments)
+ * or 'i' (integer arguments), leaving the other member zero, so 's' tells us
+ * which kind of value this is.  Fil-C handles reading a pointer-typed vararg
+ * back as an integer, so it is safe to always pass through ptrint_arg().
+ */
+static const void *ptrint_arg(const union ptrint *value)
+{
+    if (value->s != NULL)
+        return value->s;
+    return (const void *)(uintptr_t)value->i;
+}
+
 static const struct wp_data {
     union ptrint value;
     const char *format;
@@ -417,27 +433,27 @@ static int test_width_precision(int i)
     switch (data->num_args) {
     case 2:
         bio_ret = BIO_snprintf(bio_buf, sizeof(bio_buf), data->format,
-            data->arg1, data->arg2, data->value.i);
+            data->arg1, data->arg2, ptrint_arg(&data->value));
         if (!data->skip_libc_check)
             std_ret = snprintf(std_buf, sizeof(std_buf), data->format,
-                data->arg1, data->arg2, data->value.i);
+                data->arg1, data->arg2, ptrint_arg(&data->value));
         break;
 
     case 1:
         bio_ret = BIO_snprintf(bio_buf, sizeof(bio_buf), data->format,
-            data->arg1, data->value.i);
+            data->arg1, ptrint_arg(&data->value));
         if (!data->skip_libc_check)
             std_ret = snprintf(std_buf, sizeof(std_buf), data->format,
-                data->arg1, data->value.i);
+                data->arg1, ptrint_arg(&data->value));
         break;
 
     case 0:
     default:
         bio_ret = BIO_snprintf(bio_buf, sizeof(bio_buf), data->format,
-            data->value.i);
+            ptrint_arg(&data->value));
         if (!data->skip_libc_check)
             std_ret = snprintf(std_buf, sizeof(std_buf), data->format,
-                data->value.i);
+                ptrint_arg(&data->value));
     }
 
     if (!TEST_str_eq(bio_buf, data->expected)
@@ -606,16 +622,18 @@ static int test_n(int i)
                     &std_n.field_);                                        \
         } else if (data->arg2_type == AT_NONE) {                           \
             bio_ret = BIO_snprintf(bio_buf, sizeof(bio_buf), data->format, \
-                data->arg1.i, &n.field_);                                  \
+                ptrint_arg(&data->arg1), &n.field_);                       \
             if (!skip_libc_check)                                          \
                 std_ret = snprintf(std_buf, sizeof(std_buf), data->format, \
-                    data->arg1.i, &std_n.field_);                          \
+                    ptrint_arg(&data->arg1), &std_n.field_);               \
         } else {                                                           \
             bio_ret = BIO_snprintf(bio_buf, sizeof(bio_buf), data->format, \
-                data->arg1.i, data->arg2.i, &n.field_);                    \
+                ptrint_arg(&data->arg1), ptrint_arg(&data->arg2),          \
+                &n.field_);                                                \
             if (!skip_libc_check)                                          \
                 std_ret = snprintf(std_buf, sizeof(std_buf), data->format, \
-                    data->arg1.i, data->arg2.i, &std_n.field_);            \
+                    ptrint_arg(&data->arg1), ptrint_arg(&data->arg2),      \
+                    &std_n.field_);                                        \
         }                                                                  \
         n.val = n.field_;                                                  \
         std_n.val = std_n.field_;                                          \

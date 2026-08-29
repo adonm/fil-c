@@ -8985,6 +8985,73 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   }
 }
 
+// Begin SarcasmAs
+
+void SarcasmAs::ConstructJob(Compilation &C, const JobAction &JA,
+                             const InputInfo &Output,
+                             const InputInfoList &Inputs,
+                             const ArgList &Args,
+                             const char *LinkingOutput) const {
+  const auto &D = getToolChain().getDriver();
+
+  ArgStringList CmdArgs;
+
+  assert(Inputs.size() == 1 && "Unexpected number of inputs.");
+  const InputInfo &Input = Inputs[0];
+
+  // -yolo-assembler is consumed by the driver when it selects the assembler
+  // tool (see ToolChain::SelectTool); claim it here as well so that it never
+  // warns as unused.
+  Args.ClaimAllArgs(options::OPT_yolo_assembler);
+
+  // sarcasm provides no way to pass options down to the assembler it invokes,
+  // so there is nothing sensible we could do with these.
+  for (const Arg *A : Args.filtered(options::OPT_Wa_COMMA,
+                                    options::OPT_Xassembler))
+    D.Diag(diag::err_drv_sarcasm_unsupported_option) << A->getAsString(Args);
+  Args.ClaimAllArgs(options::OPT_Wa_COMMA);
+  Args.ClaimAllArgs(options::OPT_Xassembler);
+
+  // Resolve the sarcasm executable. In pizfix mode it lives next to the other
+  // Fil-C tools; in /opt/fil mode it lives in the same directory as the
+  // compiler; when installed pizlix style it is found on PATH.
+  SmallString<128> SarcasmPath;
+  if (D.HasPizfix) {
+    SarcasmPath = D.PizfixRoot;
+    llvm::sys::path::append(SarcasmPath, "bin");
+    llvm::sys::path::append(SarcasmPath, "sarcasm");
+  } else if (D.HasOptfil) {
+    SarcasmPath = D.Dir;
+    llvm::sys::path::append(SarcasmPath, "sarcasm");
+  } else {
+    SarcasmPath = getToolChain().GetProgramPath("sarcasm");
+  }
+
+  if ((D.HasPizfix || D.HasOptfil) &&
+      (!llvm::sys::fs::is_regular_file(SarcasmPath) ||
+       !llvm::sys::fs::can_execute(SarcasmPath))) {
+    D.Diag(diag::err_drv_sarcasm_missing) << std::string(SarcasmPath.str());
+    return;
+  }
+
+  // Forward -g so that sarcasm emits Fil-C origins that point at the input
+  // assembly for better runtime diagnostics.
+  if (Args.hasArg(options::OPT_g_Group)) {
+    Args.ClaimAllArgs(options::OPT_g_Group);
+    CmdArgs.push_back("-g");
+  }
+
+  assert(Input.isFilename() && "Invalid input.");
+  CmdArgs.push_back(Input.getFilename());
+
+  CmdArgs.push_back("-o");
+  CmdArgs.push_back(Output.getFilename());
+
+  const char *Exec = Args.MakeArgString(SarcasmPath);
+  C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
+                                         Exec, CmdArgs, Inputs, Output));
+}
+
 // Begin OffloadBundler
 void OffloadBundler::ConstructJob(Compilation &C, const JobAction &JA,
                                   const InputInfo &Output,

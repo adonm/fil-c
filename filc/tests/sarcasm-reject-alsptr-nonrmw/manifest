@@ -1,6 +1,4 @@
 return:
   compileFailure
-use-sarcasm:
-  true
 only-on-platform:
   x86_64

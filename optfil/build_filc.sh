@@ -82,5 +82,6 @@ popd
 ./build_user_glibc.sh
 ./build_cxx.sh
 ./build_minilute.sh
+./build_sarcasm.sh
 filc/run-tests
 

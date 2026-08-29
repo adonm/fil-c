@@ -141,6 +141,26 @@ public:
                     const char *LinkingOutput) const override;
 };
 
+/// Fil-C sarcasm assembler tool. Runs the sarcasm (SAfe Runtime
+/// Capability-enforced Assembler) program on the assembly input. sarcasm
+/// rewrites annotated Yolo-C assembly into memory-safe, Fil-C-linkable
+/// assembly and assembles it. This is the default assembler for .s inputs on
+/// targets that sarcasm supports; -yolo-assembler opts back into the
+/// integrated assembler.
+class LLVM_LIBRARY_VISIBILITY SarcasmAs : public Tool {
+public:
+  SarcasmAs(const ToolChain &TC)
+      : Tool("sarcasm", "sarcasm assembler", TC) {}
+  bool hasGoodDiagnostics() const override { return false; }
+  bool hasIntegratedAssembler() const override { return false; }
+  bool hasIntegratedCPP() const override { return false; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
 /// Offload bundler tool.
 class LLVM_LIBRARY_VISIBILITY OffloadBundler final : public Tool {
 public:

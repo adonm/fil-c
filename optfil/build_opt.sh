@@ -159,7 +159,7 @@ cd pizlonated-user-glibc
 mkdir -v build
 cd build
 echo "rootsbindir=/opt/fil/sbin" > configparms
-CC="/opt/fil/bin/filcc -nostdlibinc -Wno-ignored-attributes -Wno-pointer-sign -Wno-unused-command-line-argument -Wno-macro-redefined" CXX="/opt/fil/bin/fil++ -nostdlibinc -Wno-ignored-attributes -Wno-pointer-sign" ../configure --prefix=/opt/fil \
+CC="/opt/fil/bin/filcc -nostdlibinc -yolo-assembler -Wno-ignored-attributes -Wno-pointer-sign -Wno-unused-command-line-argument -Wno-macro-redefined" CXX="/opt/fil/bin/fil++ -nostdlibinc -Wno-ignored-attributes -Wno-pointer-sign" ../configure --prefix=/opt/fil \
     --disable-werror \
     --enable-kernel=4.19 \
     --disable-nscd \
@@ -208,7 +208,7 @@ tar -xf $FILCSRC/projects/binutils-2.47/pizlonated-binutils.tar.gz
 cd pizlonated-binutils
 mkdir -v build
 cd build
-CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ../configure --prefix=/opt/fil \
+CC='/opt/fil/bin/filcc -yolo-assembler' CXX=/opt/fil/bin/fil++ ../configure --prefix=/opt/fil \
     --sysconfdir=/opt/fil/etc \
     --disable-gold \
     --enable-ld=default \
@@ -463,7 +463,7 @@ hash -r
 
 tar -xf $FILCSRC/projects/openssl-3.5.7/pizlonated-openssl.tar.gz
 cd pizlonated-openssl
-CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./config --prefix=/opt/fil \
+CC='/opt/fil/bin/filcc -yolo-assembler' CXX=/opt/fil/bin/fil++ ./config --prefix=/opt/fil \
     --openssldir=/etc/ssl \
     --libdir=lib \
     shared \

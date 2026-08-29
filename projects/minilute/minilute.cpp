@@ -116,7 +116,16 @@ static std::pair<bool, std::string> getValidPath(std::string filePath)
 
     std::optional<minilute::ModulePath> mp = minilute::ModulePath::create(std::move(rootOfPath), std::move(restOfPath), miniluteIsFile, miniluteIsDirectory);
     if (!mp)
+    {
+        // Fallback for shebang-style entry scripts (e.g. pizfix/bin/sarcasm):
+        // their names have no module suffix for ModulePath to probe. If the
+        // literal path names an existing regular file, run it as-is; require()
+        // then resolves relative to its parent directory (resetToDiskPath in
+        // require.cpp has the matching fallback for requirer chunknames).
+        if (miniluteIsFile(normalized))
+            return {true, normalized};
         return {false, "Could not initialize ModulePath instance."};
+    }
 
     minilute::ResolvedRealPath resolved = mp->getRealPath();
 

@@ -54,3 +54,4 @@ fi
 ./build_cxx.sh
 
 ./build_minilute.sh
+./build_sarcasm.sh

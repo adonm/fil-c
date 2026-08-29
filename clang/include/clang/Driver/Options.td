@@ -852,6 +852,9 @@ def filc_os_include : Joined<["--"], "filc-os-include=">, Flags<[NoXarchOption]>
 def filc_include : Joined<["--"], "filc-include=">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Override Fil-C libc include directory (default: pizfix/include)">;
+def yolo_assembler : Flag<["-"], "yolo-assembler">, Flags<[NoXarchOption]>,
+  Visibility<[ClangOption]>,
+  HelpText<"Use the built-in YOLO assembler for .s inputs instead of sarcasm">;
 def CC : Flag<["-"], "CC">, Visibility<[ClangOption, CC1Option]>,
   Group<Preprocessor_Group>,
     HelpText<"Include comments from within macros in preprocessed output">,

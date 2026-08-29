@@ -5323,6 +5323,12 @@ void Driver::BuildJobs(Compilation &C) const {
   (void)C.getArgs().hasArg(options::OPT_driver_mode);
   (void)C.getArgs().hasArg(options::OPT_rsp_quoting);
 
+  // Claim -yolo-assembler here. It is consumed by the driver when it selects
+  // the assembler tool (see ToolChain::SelectTool) and by the sarcasm
+  // assembler; it never belongs to any individual cc1 job, so claim it
+  // unconditionally to avoid "argument unused" warnings on any invocation.
+  (void)C.getArgs().hasArg(options::OPT_yolo_assembler);
+
   bool HasAssembleJob = llvm::any_of(C.getJobs(), [](auto &J) {
     // Match ClangAs and other derived assemblers of Tool. ClangAs uses a
     // longer ShortName "clang integrated assembler" while other assemblers just

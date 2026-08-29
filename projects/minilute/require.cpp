@@ -126,10 +126,29 @@ struct RequireCtx
 
         std::string normalizedPath = miniluteNormalizePath(path);
 
+        // Fallback for requirer files that suffix probing cannot resolve: a
+        // shebang-style entry script (e.g. pizfix/bin/sarcasm) has no .luau/.lua
+        // suffix, so ModulePath::create fails even though the file exists. In
+        // that case navigate from the literal path (createUnprobed allows the
+        // ModulePath to start in the NotFound state; only to_parent/to_child are
+        // meaningful for it). This mirrors the entry-script fallback in
+        // minilute.cpp's getValidPath. Paths that name no existing file keep the
+        // create() failure (NavigationStatus::NotFound) behavior.
+        auto createOrUnprobed = [&](std::string rootDirectory, std::string filePath, const std::string& literalPath, std::optional<std::string> relativePathToTrack) -> std::optional<ModulePath>
+        {
+            // Note: create() gets a copy of relativePathToTrack so it is still
+            // intact for createUnprobed() below.
+            if (std::optional<ModulePath> mp = ModulePath::create(rootDirectory, filePath, miniluteIsFile, miniluteIsDirectory, relativePathToTrack))
+                return mp;
+            if (!miniluteIsFile(literalPath))
+                return std::nullopt;
+            return ModulePath::createUnprobed(std::move(rootDirectory), std::move(filePath), miniluteIsFile, miniluteIsDirectory, std::move(relativePathToTrack));
+        };
+
         if (miniluteIsAbsolutePath(normalizedPath))
         {
             size_t firstSlash = normalizedPath.find_first_of('/');
-            modulePath = ModulePath::create(normalizedPath.substr(0, firstSlash), normalizedPath.substr(firstSlash + 1), miniluteIsFile, miniluteIsDirectory);
+            modulePath = createOrUnprobed(normalizedPath.substr(0, firstSlash), normalizedPath.substr(firstSlash + 1), normalizedPath, std::nullopt);
         }
         else
         {
@@ -140,7 +159,7 @@ struct RequireCtx
             std::string joinedPath = miniluteNormalizePath(*cwd + "/" + normalizedPath);
 
             size_t firstSlash = joinedPath.find_first_of('/');
-            modulePath = ModulePath::create(joinedPath.substr(0, firstSlash), joinedPath.substr(firstSlash + 1), miniluteIsFile, miniluteIsDirectory, normalizedPath);
+            modulePath = createOrUnprobed(joinedPath.substr(0, firstSlash), joinedPath.substr(firstSlash + 1), joinedPath, normalizedPath);
         }
 
         return modulePath ? NavigationStatus::Success : NavigationStatus::NotFound;

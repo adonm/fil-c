@@ -1,7 +1,5 @@
 return:
   success
-use-sarcasm:
-  true
 only-on-platform:
   aarch64
 needsLSE:

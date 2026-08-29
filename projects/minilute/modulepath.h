@@ -127,6 +127,35 @@ public:
         return mp;
     }
 
+    // Like create(), but for a literal file path that suffix probing cannot
+    // resolve: an entry-point or requirer file with no .luau/.lua suffix, such
+    // as a shebang script (e.g. pizfix/bin/sarcasm). The path is used as-is and
+    // the ModulePath is allowed to start in the NotFound state, since for such
+    // paths only navigation relative to the file (to_parent/to_child) is
+    // meaningful. Callers must check that the literal path is an existing
+    // regular file before using this.
+    static ModulePath createUnprobed(
+        std::string rootDirectory,
+        std::string filePath,
+        std::function<bool(const std::string&)> isAFile,
+        std::function<bool(const std::string&)> isADirectory,
+        std::optional<std::string> relativePathToTrack = std::nullopt)
+    {
+        for (char& c : rootDirectory)
+        {
+            if (c == '\\')
+                c = '/';
+        }
+
+        for (char& c : filePath)
+        {
+            if (c == '\\')
+                c = '/';
+        }
+
+        return ModulePath(std::move(rootDirectory), std::move(filePath), isAFile, isADirectory, std::move(relativePathToTrack));
+    }
+
     ResolvedRealPath getRealPath() const
     {
         std::optional<ResolvedRealPath::PathType::Value> resolvedType;

@@ -124,7 +124,7 @@ hash -r
 
 tar -xf pizlonated-openssl.tar.gz
 cd pizlonated-openssl
-./config --prefix=/usr \
+CC="cc -yolo-assembler" ./config --prefix=/usr \
     --openssldir=/etc/ssl \
     --libdir=lib \
     shared \

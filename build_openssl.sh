@@ -30,7 +30,7 @@ set -x
 
 cd projects/openssl-3.5.7
 extract_source
-CC="$PWD/../../../build/bin/clang -g -O2" ./Configure \
+CC="$PWD/../../../build/bin/clang -g -O2 -yolo-assembler" ./Configure \
     zlib --prefix=$PWD/../../../pizfix --libdir=lib
 make -j $NCPU
 

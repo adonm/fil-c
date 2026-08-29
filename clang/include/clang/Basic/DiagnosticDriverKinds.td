@@ -191,6 +191,10 @@ def err_drv_invalid_diagnotics_misexpect_tolerance : Error<
   "invalid argument in '%0', only integers are supported">;
 def err_drv_missing_argument : Error<
   "argument to '%0' is missing (expected %1 value%s1)">;
+def err_drv_sarcasm_missing : Error<
+  "sarcasm assembler not found at %0 (install it with build_sarcasm.sh or pass -yolo-assembler)">;
+def err_drv_sarcasm_unsupported_option : Error<
+  "'%0' is not supported by the sarcasm assembler (pass -yolo-assembler to use the built-in YOLO assembler)">;
 def err_drv_invalid_Xarch_argument_with_args : Error<
   "invalid Xarch argument: '%0', options requiring arguments are unsupported">;
 def err_drv_Xopenmp_target_missing_triple : Error<

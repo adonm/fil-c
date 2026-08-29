@@ -273,6 +273,9 @@ sub run_tests ($$$$$)
       # Yes, this is an arbitrary limit.  If it causes trouble,
       # consider removing it.
       my $max = 30;
+      # The downstream i18n multi-byte tests have a "-mb" suffix.
+      # Therefore add 3 to the maximum test name length.
+      $max += 3;
       if ($max < length $test_name)
         {
           warn "$program_name: $test_name: test name is too long (> $max)\n";

@@ -311,6 +311,24 @@
 
 #include <getopt.h>
 #include <sys/types.h>
+
+/* Get MB_LEN_MAX.  */
+#include <limits.h>
+/* MB_LEN_MAX is incorrectly defined to be 1 in at least one GCC
+   installation; work around this configuration error.  */
+#if !defined MB_LEN_MAX || MB_LEN_MAX == 1
+# define MB_LEN_MAX 16
+#endif
+
+/* Get MB_CUR_MAX.  */
+#include <stdlib.h>
+
+/* Solaris 2.5 has a bug: <wchar.h> must be included before <wctype.h>.  */
+/* Get mbstate_t, mbrtowc(), wcwidth().  */
+#if HAVE_WCHAR_H
+# include <wchar.h>
+#endif
+
 #include "system.h"
 #include "c-ctype.h"
 #include "fadvise.h"
@@ -323,6 +341,18 @@
 #include "xstrtol.h"
 #include "xstrtol-error.h"
 #include "xdectoint.h"
+
+/* Some systems, like BeOS, have multibyte encodings but lack mbstate_t.  */
+#if HAVE_MBRTOWC && defined mbstate_t
+# define mbrtowc(pwc, s, n, ps) (mbrtowc) (pwc, s, n, 0)
+#endif
+
+#ifndef HAVE_DECL_WCWIDTH
+"this configure-time declaration test was not run"
+#endif
+#if !HAVE_DECL_WCWIDTH
+extern int wcwidth ();
+#endif
 
 /* The official name of this program (e.g., no 'g' prefix).  */
 #define PROGRAM_NAME "pr"
@@ -416,7 +446,20 @@ struct COLUMN
 
 typedef struct COLUMN COLUMN;
 
-static int char_to_clump (char c);
+/* Funtion pointers to switch functions for single byte locale or for
+   multibyte locale. If multibyte functions do not exist in your sysytem,
+   these pointers always point the function for single byte locale. */
+static void (*print_char) (char c);
+static int (*char_to_clump) (char c);
+
+/* Functions for single byte locale. */
+static void print_char_single (char c);
+static int char_to_clump_single (char c);
+
+/* Functions for multibyte locale. */
+static void print_char_multi (char c);
+static int char_to_clump_multi (char c);
+
 static bool read_line (COLUMN *p);
 static bool print_page (void);
 static bool print_stored (COLUMN *p);
@@ -427,6 +470,7 @@ static void pad_across_to (int position);
 static void add_line_number (COLUMN *p);
 static int getoptnum (char const *n_str, int min, char const *errfmt);
 static void getoptarg (char *arg, char switch_char, char *character,
+                       int *character_length, int *character_width,
                        int *number);
 static void print_files (int number_of_files, char **av);
 static void init_parameters (int number_of_files);
@@ -440,7 +484,6 @@ static void store_char (char c);
 static void pad_down (unsigned int lines);
 static void read_rest_of_line (COLUMN *p);
 static void skip_read (COLUMN *p, int column_number);
-static void print_char (char c);
 static void cleanup (void);
 static void print_sep_string (void);
 static void separator_string (char const *optarg_S);
@@ -452,7 +495,7 @@ static COLUMN *column_vector;
    we store the leftmost columns contiguously in buff.
    To print a line from buff, get the index of the first character
    from line_vector[i], and print up to line_vector[i + 1]. */
-static char *buff;
+static unsigned char *buff;
 
 /* Index of the position in buff where the next character
    will be stored. */
@@ -556,7 +599,7 @@ static int chars_per_column;
 static bool untabify_input = false;
 
 /* (-e) The input tab character. */
-static char input_tab_char = '\t';
+static char input_tab_char[MB_LEN_MAX] = "\t";
 
 /* (-e) Tabstops are at chars_per_tab, 2*chars_per_tab, 3*chars_per_tab, ...
    where the leftmost column is 1. */
@@ -566,7 +609,10 @@ static int chars_per_input_tab = 8;
 static bool tabify_output = false;
 
 /* (-i) The output tab character. */
-static char output_tab_char = '\t';
+static char output_tab_char[MB_LEN_MAX] = "\t";
+
+/* (-i) The byte length of output tab character. */
+static int output_tab_char_length = 1;
 
 /* (-i) The width of the output tab. */
 static int chars_per_output_tab = 8;
@@ -636,7 +682,13 @@ static int line_number;
 static bool numbered_lines = false;
 
 /* (-n) Character which follows each line number. */
-static char number_separator = '\t';
+static char number_separator[MB_LEN_MAX] = "\t";
+
+/* (-n) The byte length of the character which follows each line number. */
+static int number_separator_length = 1;
+
+/* (-n) The character width of the character which follows each line number. */
+static int number_separator_width = 0;
 
 /* (-n) line counting starts with 1st line of input file (not with 1st
    line of 1st page printed). */
@@ -689,6 +741,7 @@ static bool use_col_separator = false;
    -a|COLUMN|-m is a 'space' and with the -J option a 'tab'. */
 static char const *col_sep_string = "";
 static int col_sep_length = 0;
+static int col_sep_width = 0;
 static char *column_separator = (char *) " ";
 static char *line_separator = (char *) "\t";
 
@@ -851,6 +904,13 @@ separator_string (char const *optarg_S)
     integer_overflow ();
   col_sep_length = len;
   col_sep_string = optarg_S;
+
+#if HAVE_MBRTOWC
+  if (MB_CUR_MAX > 1)
+    col_sep_width = mbswidth (col_sep_string, 0);
+  else
+#endif
+    col_sep_width = col_sep_length;
 }
 
 int
@@ -874,6 +934,21 @@ main (int argc, char **argv)
   textdomain (PACKAGE);
 
   atexit (close_stdout);
+
+/* Define which functions are used, the ones for single byte locale or the ones
+   for multibyte locale. */
+#if HAVE_MBRTOWC
+  if (MB_CUR_MAX > 1)
+    {
+      print_char = print_char_multi;
+      char_to_clump = char_to_clump_multi;
+    }
+  else
+#endif
+    {
+      print_char = print_char_single;
+      char_to_clump = char_to_clump_single;
+    }
 
   n_files = 0;
   file_names = (argc > 1
@@ -951,8 +1026,12 @@ main (int argc, char **argv)
           break;
         case 'e':
           if (optarg)
-            getoptarg (optarg, 'e', &input_tab_char,
-                       &chars_per_input_tab);
+            {
+              int dummy_length, dummy_width;
+
+              getoptarg (optarg, 'e', input_tab_char, &dummy_length,
+                         &dummy_width, &chars_per_input_tab);
+            }
           /* Could check tab width > 0. */
           untabify_input = true;
           break;
@@ -965,8 +1044,12 @@ main (int argc, char **argv)
           break;
         case 'i':
           if (optarg)
-            getoptarg (optarg, 'i', &output_tab_char,
-                       &chars_per_output_tab);
+            {
+              int dummy_width;
+
+              getoptarg (optarg, 'i', output_tab_char, &output_tab_char_length,
+                         &dummy_width, &chars_per_output_tab);
+            }
           /* Could check tab width > 0. */
           tabify_output = true;
           break;
@@ -985,8 +1068,8 @@ main (int argc, char **argv)
         case 'n':
           numbered_lines = true;
           if (optarg)
-            getoptarg (optarg, 'n', &number_separator,
-                       &chars_per_number);
+            getoptarg (optarg, 'n', number_separator, &number_separator_length,
+                       &number_separator_width, &chars_per_number);
           break;
         case 'N':
           skip_count = false;
@@ -1012,6 +1095,7 @@ main (int argc, char **argv)
           /* Reset an additional input of -s, -S dominates -s */
           col_sep_string = "";
           col_sep_length = 0;
+          col_sep_width = 0;
           use_col_separator = true;
           if (optarg)
             separator_string (optarg);
@@ -1167,7 +1251,8 @@ getoptnum (char const *n_str, int min, char const *err)
    a number. */
 
 static void
-getoptarg (char *arg, char switch_char, char *character, int *number)
+getoptarg (char *arg, char switch_char, char *character, int *character_length,
+           int *character_width, int *number)
 {
   if (!*arg)
     {
@@ -1176,7 +1261,41 @@ getoptarg (char *arg, char switch_char, char *character, int *number)
     }
 
   if (!c_isdigit (*arg))
-    *character = *arg++;
+    {
+#ifdef HAVE_MBRTOWC
+      if (MB_CUR_MAX > 1)        /* for multibyte locale. */
+        {
+          wchar_t wc;
+          size_t mblength;
+          int width;
+          mbstate_t state = {'\0'};
+
+          mblength = mbrtowc (&wc, arg, strnlen(arg, MB_LEN_MAX), &state);
+
+          if (mblength == (size_t)-1 || mblength == (size_t)-2)
+            {
+              *character_length = 1;
+              *character_width = 1;
+            }
+          else
+            {
+              *character_length = (mblength < 1) ? 1 : mblength;
+              width = wcwidth (wc);
+              *character_width = (width < 0) ? 0 : width;
+            }
+
+          strncpy (character, arg, *character_length);
+          arg += *character_length;
+        }
+      else                        /* for single byte locale. */
+#endif
+        {
+          *character = *arg++;
+          *character_length = 1;
+          *character_width = 1;
+        }
+    }
+
   if (*arg)
     {
       long int tmp_long;
@@ -1205,6 +1324,11 @@ static void
 init_parameters (int number_of_files)
 {
   int chars_used_by_number = 0;
+  int mb_len = 1;
+#if HAVE_MBRTOWC
+  if (MB_CUR_MAX > 1)
+    mb_len = MB_LEN_MAX;
+#endif
 
   lines_per_body = lines_per_page - lines_per_header - lines_per_footer;
   if (lines_per_body <= 0)
@@ -1242,7 +1366,7 @@ init_parameters (int number_of_files)
           else
             col_sep_string = column_separator;
 
-          col_sep_length = 1;
+          col_sep_length = col_sep_width = 1;
           use_col_separator = true;
         }
       /* It's rather pointless to define a TAB separator with column
@@ -1274,11 +1398,11 @@ init_parameters (int number_of_files)
              + TAB_WIDTH (chars_per_input_tab, chars_per_number);   */
 
       /* Estimate chars_per_text without any margin and keep it constant. */
-      if (number_separator == '\t')
+      if (number_separator[0] == '\t')
         number_width = (chars_per_number
                         + TAB_WIDTH (chars_per_default_tab, chars_per_number));
       else
-        number_width = chars_per_number + 1;
+        number_width = chars_per_number + number_separator_width;
 
       /* The number is part of the column width unless we are
          printing files in parallel. */
@@ -1287,7 +1411,7 @@ init_parameters (int number_of_files)
     }
 
   int sep_chars, useful_chars;
-  if (ckd_mul (&sep_chars, columns - 1, col_sep_length))
+  if (ckd_mul (&sep_chars, columns - 1, col_sep_width))
     sep_chars = INT_MAX;
   if (ckd_sub (&useful_chars, chars_per_line - chars_used_by_number,
                sep_chars))
@@ -1310,7 +1434,7 @@ init_parameters (int number_of_files)
      We've to use 8 as the lower limit, if we use chars_per_default_tab = 8
      to expand a tab which is not an input_tab-char. */
   free (clump_buff);
-  clump_buff = xmalloc (MAX (8, chars_per_input_tab));
+  clump_buff = xmalloc (mb_len * MAX (8, chars_per_input_tab));
 }
 
 /* Open the necessary files,
@@ -1416,7 +1540,7 @@ init_funcs (void)
 
   /* Enlarge p->start_position of first column to use the same form of
      padding_not_printed with all columns. */
-  h = h + col_sep_length;
+  h = h + col_sep_width;
 
   /* This loop takes care of all but the rightmost column. */
 
@@ -1450,7 +1574,7 @@ init_funcs (void)
         }
       else
         {
-          h = h_next + col_sep_length;
+          h = h_next + col_sep_width;
           h_next = h + chars_per_column;
         }
     }
@@ -1750,9 +1874,9 @@ static void
 align_column (COLUMN *p)
 {
   padding_not_printed = p->start_position;
-  if (col_sep_length < padding_not_printed)
+  if (col_sep_width < padding_not_printed)
     {
-      pad_across_to (padding_not_printed - col_sep_length);
+      pad_across_to (padding_not_printed - col_sep_width);
       padding_not_printed = ANYWHERE;
     }
 
@@ -2029,13 +2153,13 @@ store_char (char c)
       /* May be too generous. */
       buff = xpalloc (buff, &buff_allocated, 1, -1, sizeof *buff);
     }
-  buff[buff_current++] = c;
+  buff[buff_current++] = (unsigned char) c;
 }
 
 static void
 add_line_number (COLUMN *p)
 {
-  int i;
+  int i, j;
   char *s;
   int num_width;
 
@@ -2052,22 +2176,24 @@ add_line_number (COLUMN *p)
       /* Tabification is assumed for multiple columns, also for n-separators,
          but 'default n-separator = TAB' hasn't been given priority over
          equal column_width also specified by POSIX. */
-      if (number_separator == '\t')
+      if (number_separator[0] == '\t')
         {
           i = number_width - chars_per_number;
           while (i-- > 0)
             (p->char_func) (' ');
         }
       else
-        (p->char_func) (number_separator);
+        for (j = 0; j < number_separator_length; j++)
+          (p->char_func) (number_separator[j]);
     }
   else
     /* To comply with POSIX, we avoid any expansion of default TAB
        separator with a single column output. No column_width requirement
        has to be considered. */
     {
-      (p->char_func) (number_separator);
-      if (number_separator == '\t')
+      for (j = 0; j < number_separator_length; j++)
+        (p->char_func) (number_separator[j]);
+      if (number_separator[0] == '\t')
         output_position = POS_AFTER_TAB (chars_per_output_tab,
                           output_position);
     }
@@ -2226,7 +2352,7 @@ print_white_space (void)
   while (goal - h_old > 1
          && (h_new = POS_AFTER_TAB (chars_per_output_tab, h_old)) <= goal)
     {
-      putchar (output_tab_char);
+      fwrite (output_tab_char, sizeof(char), output_tab_char_length, stdout);
       h_old = h_new;
     }
   while (++h_old <= goal)
@@ -2246,6 +2372,7 @@ print_sep_string (void)
 {
   char const *s = col_sep_string;
   int l = col_sep_length;
+  int not_space_flag;
 
   if (separators_not_printed <= 0)
     {
@@ -2257,6 +2384,7 @@ print_sep_string (void)
     {
       for (; separators_not_printed > 0; --separators_not_printed)
         {
+          not_space_flag = 0;
           while (l-- > 0)
             {
               /* 3 types of sep_strings: spaces only, spaces and chars,
@@ -2270,12 +2398,15 @@ print_sep_string (void)
                 }
               else
                 {
+                  not_space_flag = 1;
                   if (spaces_not_printed > 0)
                     print_white_space ();
                   putchar (*s++);
-                  ++output_position;
                 }
             }
+          if (not_space_flag)
+            output_position += col_sep_width;
+
           /* sep_string ends with some spaces */
           if (spaces_not_printed > 0)
             print_white_space ();
@@ -2306,7 +2437,7 @@ print_clump (COLUMN *p, int n, char *clump)
    required number of tabs and spaces. */
 
 static void
-print_char (char c)
+print_char_single (char c)
 {
   if (tabify_output)
     {
@@ -2329,6 +2460,74 @@ print_char (char c)
     }
   putchar (c);
 }
+
+#ifdef HAVE_MBRTOWC
+static void
+print_char_multi (char c)
+{
+  static size_t mbc_pos = 0;
+  static char mbc[MB_LEN_MAX] = {'\0'};
+  static mbstate_t state = {'\0'};
+  mbstate_t state_bak;
+  wchar_t wc;
+  size_t mblength;
+  int width;
+
+  if (tabify_output)
+    {
+      state_bak = state;
+      mbc[mbc_pos++] = c;
+      mblength = mbrtowc (&wc, mbc, mbc_pos, &state);
+
+      while (mbc_pos > 0)
+        {
+          switch (mblength)
+            {
+            case (size_t)-2:
+              state = state_bak;
+              return;
+
+            case (size_t)-1:
+              state = state_bak;
+              ++output_position;
+              putchar (mbc[0]);
+              memmove (mbc, mbc + 1, MB_CUR_MAX - 1);
+              --mbc_pos;
+              break;
+
+            case 0:
+              mblength = 1;
+
+            default:
+              if (wc == L' ')
+                {
+                  memmove (mbc, mbc + mblength, MB_CUR_MAX - mblength);
+                  --mbc_pos;
+                  ++spaces_not_printed;
+                  return;
+                }
+              else if (spaces_not_printed > 0)
+                print_white_space ();
+
+              /* Nonprintables are assumed to have width 0, except L'\b'. */
+              if ((width = wcwidth (wc)) < 1)
+                {
+                  if (wc == L'\b')
+                    --output_position;
+                }
+              else
+                output_position += width;
+
+              fwrite (mbc, sizeof(char), mblength, stdout);
+              memmove (mbc, mbc + mblength, MB_CUR_MAX - mblength);
+              mbc_pos -= mblength;
+            }
+        }
+      return;
+    }
+  putchar (c);
+}
+#endif
 
 /* Skip to page PAGE before printing.
    PAGE may be larger than total number of pages. */
@@ -2506,9 +2705,9 @@ read_line (COLUMN *p)
           align_empty_cols = false;
         }
 
-      if (col_sep_length < padding_not_printed)
+      if (col_sep_width < padding_not_printed)
         {
-          pad_across_to (padding_not_printed - col_sep_length);
+          pad_across_to (padding_not_printed - col_sep_width);
           padding_not_printed = ANYWHERE;
         }
 
@@ -2577,7 +2776,7 @@ print_stored (COLUMN *p)
   COLUMN *q;
 
   int line = p->current_line++;
-  char *first = &buff[line_vector[line]];
+  unsigned char *first = &buff[line_vector[line]];
   /* FIXME
      UMR: Uninitialized memory read:
      * This is occurring while in:
@@ -2589,7 +2788,7 @@ print_stored (COLUMN *p)
      xmalloc        [xmalloc.c:94]
      init_store_cols [pr.c:1648]
      */
-  char *last = &buff[line_vector[line + 1]];
+  unsigned char *last = &buff[line_vector[line + 1]];
 
   pad_vertically = true;
 
@@ -2609,9 +2808,9 @@ print_stored (COLUMN *p)
         }
     }
 
-  if (col_sep_length < padding_not_printed)
+  if (col_sep_width < padding_not_printed)
     {
-      pad_across_to (padding_not_printed - col_sep_length);
+      pad_across_to (padding_not_printed - col_sep_width);
       padding_not_printed = ANYWHERE;
     }
 
@@ -2624,8 +2823,8 @@ print_stored (COLUMN *p)
   if (spaces_not_printed == 0)
     {
       output_position = p->start_position + end_vector[line];
-      if (p->start_position - col_sep_length == chars_per_margin)
-        output_position -= col_sep_length;
+      if (p->start_position - col_sep_width == chars_per_margin)
+        output_position -= col_sep_width;
     }
 
   return true;
@@ -2644,7 +2843,7 @@ print_stored (COLUMN *p)
    number of characters is 1.) */
 
 static int
-char_to_clump (char c)
+char_to_clump_single (char c)
 {
   unsigned char uc = c;
   char *s = clump_buff;
@@ -2653,10 +2852,10 @@ char_to_clump (char c)
   int chars;
   int chars_per_c = 8;
 
-  if (c == input_tab_char)
+  if (c == input_tab_char[0])
     chars_per_c = chars_per_input_tab;
 
-  if (c == input_tab_char || c == '\t')
+  if (c == input_tab_char[0] || c == '\t')
     {
       width = TAB_WIDTH (chars_per_c, input_position);
 
@@ -2736,6 +2935,164 @@ char_to_clump (char c)
 
   return chars;
 }
+
+#ifdef HAVE_MBRTOWC
+static int
+char_to_clump_multi (char c)
+{
+  static size_t mbc_pos = 0;
+  static char mbc[MB_LEN_MAX] = {'\0'};
+  static mbstate_t state = {'\0'};
+  mbstate_t state_bak;
+  wchar_t wc;
+  size_t mblength;
+  int wc_width;
+  register char *s = clump_buff;
+  register int i, j;
+  char esc_buff[4];
+  int width;
+  int chars;
+  int chars_per_c = 8;
+
+  state_bak = state;
+  mbc[mbc_pos++] = c;
+  mblength = mbrtowc (&wc, mbc, mbc_pos, &state);
+
+  width = 0;
+  chars = 0;
+  while (mbc_pos > 0)
+    {
+      switch (mblength)
+        {
+        case (size_t)-2:
+          state = state_bak;
+          return 0;
+
+        case (size_t)-1:
+          state = state_bak;
+          mblength = 1;
+
+          if (use_esc_sequence || use_cntrl_prefix)
+            {
+              width = +4;
+              chars = +4;
+              *s++ = '\\';
+              sprintf (esc_buff, "%03o", (unsigned char) mbc[0]);
+              for (i = 0; i <= 2; ++i)
+                *s++ = (int) esc_buff[i];
+            }
+          else
+            {
+              width += 1;
+              chars += 1;
+              *s++ = mbc[0];
+            }
+          break;
+
+        case 0:
+          mblength = 1;
+                /* Fall through */
+
+        default:
+          if (memcmp (mbc, input_tab_char, mblength) == 0)
+            chars_per_c = chars_per_input_tab;
+
+          if (memcmp (mbc, input_tab_char, mblength) == 0 || c == '\t')
+            {
+              int  width_inc;
+
+              width_inc = TAB_WIDTH (chars_per_c, input_position);
+              width += width_inc;
+
+              if (untabify_input)
+                {
+                  for (i = width_inc; i; --i)
+                    *s++ = ' ';
+                  chars += width_inc;
+                }
+              else
+                {
+                  for (i = 0; i <  mblength; i++)
+                    *s++ = mbc[i];
+                  chars += mblength;
+                }
+            }
+          else if ((wc_width = wcwidth (wc)) < 1)
+            {
+              if (use_esc_sequence)
+                {
+                  for (i = 0; i < mblength; i++)
+                    {
+                      width += 4;
+                      chars += 4;
+                      *s++ = '\\';
+                      sprintf (esc_buff, "%03o", (unsigned char) mbc[i]);
+                      for (j = 0; j <= 2; ++j)
+                        *s++ = (int) esc_buff[j];
+                    }
+                }
+              else if (use_cntrl_prefix)
+                {
+                  if (wc < 0200)
+                    {
+                      width += 2;
+                      chars += 2;
+                      *s++ = '^';
+                      *s++ = wc ^ 0100;
+                    }
+                  else
+                    {
+                      for (i = 0; i < mblength; i++)
+                        {
+                          width += 4;
+                          chars += 4;
+                          *s++ = '\\';
+                          sprintf (esc_buff, "%03o", (unsigned char) mbc[i]);
+                          for (j = 0; j <= 2; ++j)
+                            *s++ = (int) esc_buff[j];
+                        }
+                    }
+                }
+              else if (wc == L'\b')
+                {
+                  width += -1;
+                  chars += 1;
+                  *s++ = c;
+                }
+              else
+                {
+                  width += 0;
+                  chars += mblength;
+                  for (i = 0; i < mblength; i++)
+                    *s++ = mbc[i];
+                }
+            }
+          else
+            {
+              width += wc_width;
+              chars += mblength;
+              for (i = 0; i < mblength; i++)
+                *s++ = mbc[i];
+            }
+        }
+      memmove (mbc, mbc + mblength, MB_CUR_MAX - mblength);
+      mbc_pos -= mblength;
+    }
+
+  /* Too many backspaces must put us in position 0 -- never negative. */
+  if (width < 0 && input_position == 0)
+    {
+      chars = 0;
+      input_position = 0;
+    }
+  else if (width < 0 && input_position <= -width)
+    input_position = 0;
+  else
+   input_position += width;
+
+  return chars;
+}
+#endif
 
 /* We've just printed some files and need to clean up things before
    looking for more options and printing the next batch of files.

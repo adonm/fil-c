@@ -435,6 +435,8 @@ all_tests =					\
   tests/sort/sort-field-limit.sh		\
   tests/sort/sort-files0-from.pl		\
   tests/sort/sort-float.sh			\
+  tests/misc/sort-mb-tests.sh			\
+  tests/i18n/sort.sh				\
   tests/sort/sort-h-thousands-sep.sh		\
   tests/sort/sort-locale.sh			\
   tests/sort/sort-merge.pl			\

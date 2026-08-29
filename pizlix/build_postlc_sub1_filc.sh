@@ -39,7 +39,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/libffi-3.4.6 pizlonated-libffi
 ./package-source.sh projects/Python-3.12.5 pizlonated-cpython
 ./package-source.sh projects/check-0.15.2 pizlonated-check
-./package-source.sh projects/diffutils-3.10 pizlonated-diffutils
+./package-source.sh projects/diffutils-3.12 pizlonated-diffutils
 ./package-source.sh projects/bison-3.8.2 pizlonated-bison
 ./package-source.sh projects/libpipeline-1.5.7 pizlonated-libpipeline
 ./package-source.sh projects/texinfo-7.1 pizlonated-texinfo

@@ -230,15 +230,15 @@ sed -i 's/"1"/"8"/' $LFS/yolo/share/man/man8/chroot.8
 cd ..
 rm -rf coreutils-9.5
 
-tar -xf diffutils-3.10.tar.xz
-cd diffutils-3.10
+tar -xf diffutils-3.12.tar.xz
+cd diffutils-3.12
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(./build-aux/config.guess)
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf diffutils-3.10
+rm -rf diffutils-3.12
 
 tar -xf file-5.45.tar.gz
 cd file-5.45

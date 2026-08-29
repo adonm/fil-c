@@ -43,7 +43,7 @@ cp -v \
     curl-8.21.0.tar.xz \
     dejagnu-1.6.3.tar.gz \
     dhcpcd-10.0.8.tar.xz \
-    diffutils-3.10.tar.xz \
+    diffutils-3.12.tar.xz \
     e2fsprogs-1.47.1.tar.gz \
     elfutils-0.191.tar.bz2 \
     expat-2.6.2.tar.xz \

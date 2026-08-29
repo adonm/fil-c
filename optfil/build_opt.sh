@@ -701,7 +701,7 @@ cd ..
 rm -rf less-704
 hash -r
 
-tar -xf $FILCSRC/projects/diffutils-3.10/pizlonated-diffutils.tar.gz
+tar -xf $FILCSRC/projects/diffutils-3.12/pizlonated-diffutils.tar.gz
 cd pizlonated-diffutils
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

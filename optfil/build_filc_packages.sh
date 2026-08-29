@@ -84,7 +84,7 @@ cd ../..
 ./package-source.sh projects/sed-4.10 pizlonated-sed
 ./package-source.sh projects/bison-3.8.2 pizlonated-bison
 ./package-source.sh projects/grep-3.12 pizlonated-grep
-./package-source.sh projects/diffutils-3.10 pizlonated-diffutils
+./package-source.sh projects/diffutils-3.12 pizlonated-diffutils
 ./package-source.sh projects/make-4.4.1 pizlonated-make
 ./package-source.sh projects/tar-1.35 pizlonated-tar
 ./package-source.sh projects/icu-76.1 pizlonated-icu

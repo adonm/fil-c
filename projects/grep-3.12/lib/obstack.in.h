@@ -113,6 +113,8 @@
 #include <stddef.h>             /* For size_t and ptrdiff_t.  */
 #include <stdint.h>             /* For uintptr_t.  */
 #include <string.h>             /* For memcpy.  */
+#include <stdfil.h>
+#include <inttypes.h>
 
 #if __STDC_VERSION__ < 199901L || defined __HP_cc
 # define __FLEXIBLE_ARRAY_MEMBER 1
@@ -140,11 +142,15 @@
    safe and compute the alignment relative to B.  Otherwise, use the
    faster strategy of computing the alignment through uintptr_t.  */
 #if @SMALL_PTRDIFF_T@
-# define __PTR_ALIGN(B, P, A) \
-   ((B) + (((P) - (B) + (A)) & ~(A)))
+# define __PTR_ALIGN(B, P, A)                                            \
+  __extension__                                                          \
+    ({ char *__P = (char *) (P);                                         \
+       zmkptr(__P, (uintptr_t)((B) + ((__P - (B) + (A)) & ~(A)))); })
 #else
-# define __PTR_ALIGN(B, P, A) \
-   ((P) + ((- (uintptr_t) (P)) & (A)))
+# define __PTR_ALIGN(B, P, A)                                            \
+  __extension__                                                          \
+    ({ char *__P = (char *) (P);                                         \
+       zmkptr(__P, (uintptr_t) __P + ((- (uintptr_t) __P) & (A))); })
 #endif
 
 #ifndef __attribute_pure__
@@ -396,8 +402,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        _OBSTACK_SIZE_T __len = (length);				      \
-       if (obstack_room (__o) < __len)					      \
-         _obstack_newchunk (__o, __len);				      \
+       _obstack_newchunk (__o, __len);					      \
        obstack_blank_fast (__o, __len); })
 
 # define obstack_alloc(OBSTACK, length)					      \
@@ -512,8 +517,7 @@ extern int obstack_exit_failure;
 
 # define obstack_blank(h, length)					      \
   ((h)->temp.i = (length),						      \
-   ((obstack_room (h) < (h)->temp.i)					      \
-   ? (_obstack_newchunk ((h), (h)->temp.i), 0) : 0),			      \
+   _obstack_newchunk ((h), (h)->temp.i),				      \
    obstack_blank_fast (h, (h)->temp.i))
 
 # define obstack_alloc(h, length)					      \

@@ -231,8 +231,12 @@ function regalloc.color(insns, temps, opts)
 		local live = newSet()
 		for t in (liveOutOf[i] or {}) do live[t] = true end
 		if ins.move then
-			-- uses of a move don't interfere with its def
-			for _, u in (ins.uses or {}) do live[u] = nil end
+			-- uses of a move don't interfere with its def — but ONLY for a full-width
+			-- move (see buildRaInsns' wide computation): a narrow mov zero-extends, so
+			-- its src and dst are genuinely distinct values when the src is live-out.
+			if ins.move.wide ~= false then
+				for _, u in (ins.uses or {}) do live[u] = nil end
+			end
 			setAdd(moveList[ins.move.dst], i)
 			setAdd(moveList[ins.move.src], i)
 			worklistMoves[i] = true
@@ -497,6 +501,81 @@ function regalloc.color(insns, temps, opts)
 	end
 	for t in coalescedNodes do
 		color[t] = color[getAlias(t)]
+	end
+
+	-- Soundness backstop (runs on every function, and again after every spill-round
+	-- re-run): verify the coloring before handing it to the emitter. If coloring ever
+	-- produced an unsound assignment, the emitter would silently render a mis-colored
+	-- function — an uncolored temp falls back to rendering at its original input
+	-- register, which is exactly the "same web in two different registers at different
+	-- points" failure mode — so refuse to emit instead. The checks below mirror the
+	-- interference construction above: two webs that are ever simultaneously live must
+	-- never share a register, and its cost is the same order as that construction
+	-- (insns x live-out).
+	--
+	-- Intermediate spill rounds re-enter here with actualSpills non-empty: a spilled
+	-- temp still occurs (rewriteSpills has not run yet) but has no color, so the
+	-- uncolored-occurrence check skips temps that are spilled or coalesced into a
+	-- spilled temp. On the final round actualSpills is empty, every coalesced temp's
+	-- alias is colored, and the check is complete exactly when it matters.
+	local spilledSet = newSet()
+	for _, t in actualSpills do spilledSet[t] = true end
+
+	local occurs = newSet()
+	for _, ins in insns do
+		for _, d in (ins.defs or {}) do occurs[d] = true end
+		for _, u in (ins.uses or {}) do occurs[u] = true end
+	end
+
+	for t in occurs do
+		if color[t] == nil
+			and not precoloredSet[t]
+			and not spilledSet[t]
+			and not coalescedNodes[t] then
+			error("sarcasm: register allocation left a value without a register (temp "
+				.. t .. "); refusing to emit a mis-colored function")
+		end
+	end
+
+	-- Every def's register must be free of every OTHER temp live across the insn, and
+	-- the defs of a single insn must never share a register with each other. An
+	-- uncolored temp (spilled, in an intermediate round) never compares equal to a real
+	-- color, so it is skipped naturally; the explicit color ~= nil guards make that
+	-- obvious.
+	for i, ins in insns do
+		local defs = ins.defs or {}
+		local live = liveOutOf[i]
+		if live and #defs > 0 then
+			for _, d in defs do
+				local cd = color[d]
+				if cd ~= nil then
+					for t in live do
+						if t ~= d and color[t] == cd then
+							-- A full-width move's source may share its destination's
+							-- color: a same-color move is a no-op the emitter drops
+							-- (see the move-exclusion in the interference build).
+							if not (ins.move and ins.move.wide ~= false and t == ins.move.src) then
+								error("sarcasm: register allocation assigned the same register to two simultaneously-live values (temps "
+									.. d .. " and " .. t .. " in " .. cd .. "); refusing to emit a mis-colored function")
+							end
+						end
+					end
+				end
+			end
+			for di = 1, #defs do
+				local d = defs[di]
+				local cd = color[d]
+				if cd ~= nil then
+					for dj = di + 1, #defs do
+						local d2 = defs[dj]
+						if d2 ~= d and color[d2] == cd then
+							error("sarcasm: register allocation assigned the same register to two simultaneously-live values (temps "
+								.. d .. " and " .. d2 .. " in " .. cd .. "); refusing to emit a mis-colored function")
+						end
+					end
+				end
+			end
+		end
 	end
 
 	return { color = color, spilled = actualSpills, blocks = blocks, aliasOf = getAlias }

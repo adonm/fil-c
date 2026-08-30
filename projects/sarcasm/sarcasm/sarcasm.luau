@@ -156,10 +156,23 @@ local function buildRaInsns(nodes)
 			local fallsThrough = node.fallsThrough
 			if fallsThrough == nil then fallsThrough = node.c and node.c.fallsThrough end
 			if fallsThrough == nil then fallsThrough = true end
+			local mv = node.move
+			if mv then
+				-- The regalloc move-exclusion (src and dst may share a color because a
+				-- same-color move is a droppable no-op) is only sound for a FULL-WIDTH
+				-- (64-bit) reg-reg move: a narrower mov zero-extends, so a source web
+				-- live past the move would lose its upper bits in the shared register.
+				local ops = node.stmt and node.stmt.operands or node.operands
+				local wide = true
+				if ops and #ops == 2 and ops[1].kind == "reg" and ops[2].kind == "reg" then
+					wide = ((ops[1].width or 64) >= 64) and ((ops[2].width or 64) >= 64)
+				end
+				mv.wide = wide
+			end
 			table.insert(ra, {
 				defs = node.defTemps or {},
 				uses = node.useTemps or {},
-				move = node.move,
+				move = mv,
 				targets = targets,
 				fallsThrough = fallsThrough,
 			})

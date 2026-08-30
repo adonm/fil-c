@@ -1,6 +1,8 @@
 # Fil-C 0.683 ARM64 ABI notes (decoded from clang output)
 
 Reference files: `test-filc.s`, `test2-filc.s`, `test4-filc.s`, and `clang -S -O2 test3.c`.
+(The sarcasm annotations below are spelled with the universal `;!` marker; on arm64 the
+recommended `//!` spelling is equivalent — see "Annotation markers" in README.md.)
 
 **VERIFIED**: `hash.yolo.s` (a hand transform of `test-spasm.s`, i.e. the exact shape sarcasm
 must emit) assembles with filc clang, links with a Fil-C `main`, and runs correctly

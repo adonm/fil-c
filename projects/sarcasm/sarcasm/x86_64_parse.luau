@@ -311,8 +311,19 @@ local function attMnemonic(m)
 	return m, nil
 end
 
--- comments: strip `#` to end of line (not inside strings) BEFORE the `;!` split (see
--- parseString below — comment text must not fabricate annotations).
+-- Comments and annotation markers.
+--
+-- `#` starts a comment that runs to end of line (never inside strings). But
+-- `#!` is an ANNOTATION MARKER, like the universal `;!`: on x86_64 GAS, `#` is
+-- the comment introducer, so `#!` reads as "a comment that means more". The
+-- EARLIEST marker outside a string literal splits the line into code +
+-- annotation body (see splitAnnotation below — comment text must not fabricate
+-- annotations).
+--
+-- stripComment truncates `#`-to-EOL (string-aware). It is applied to the text
+-- after an annotation marker so a trailing comment is stripped from the body
+-- exactly as it was when the whole line was comment-stripped before the split:
+-- `movq %rax, (%rbx) ;! store ptr # note` has body `store ptr`.
 local function stripComment(s)
 	local inStr = false
 	for i = 1, #s do
@@ -323,9 +334,31 @@ local function stripComment(s)
 	return s
 end
 
+-- Split the EARLIEST `;!` or `#!` annotation marker off a line, string-aware
+-- (returns code, annotation-or-nil). Text inside a double-quoted string never
+-- produces an annotation (`.asciz "a ;! b"` is an ordinary directive). A `#`
+-- NOT immediately followed by `!` starts a comment: the rest of the line is
+-- dropped and no annotation is fabricated, even if the comment text contains
+-- `;!` or `#!` (e.g. `# use ;! load ptr here`). The annotation body is the
+-- text after the marker with any trailing `#` comment stripped and then
+-- trimmed (`movq %rax, (%rbx) #! store ptr # note` has body `store ptr`).
 local function splitAnnotation(s)
-	local idx = string.find(s, ";!", 1, true)
-	if idx then return string.sub(s, 1, idx - 1), trim(string.sub(s, idx + 2)) end
+	local inStr = false
+	for i = 1, #s do
+		local c = string.sub(s, i, i)
+		if c == '"' then
+			inStr = not inStr
+		elseif not inStr then
+			local d = string.sub(s, i + 1, i + 1)
+			if (c == ";" or c == "#") and d == "!" then
+				-- earliest annotation marker: `;!` or `#!`
+				return string.sub(s, 1, i - 1), trim(stripComment(string.sub(s, i + 2)))
+			elseif c == "#" then
+				-- plain `#` comment: drop the rest of the line, no annotation
+				return string.sub(s, 1, i - 1), nil
+			end
+		end
+	end
 	return s, nil
 end
 
@@ -335,13 +368,16 @@ function x86parse.parseString(text, syntax)
 	local lineNo = 0
 	for raw in (text .. "\n"):gmatch("(.-)\n") do
 		lineNo += 1
-		-- Strip `#` comments BEFORE splitting the `;!` annotation (the arm64 parser
-		-- strips comments first, too): comment text must never fabricate an
-		-- annotation — a line like `# use ;! load ptr here` would otherwise attach a
-		-- spurious annotation to an otherwise-empty statement, which the shared body
-		-- validation rejects ("annotation on an otherwise-empty line"). A `#` after
-		-- the annotation still ends a trailing comment.
-		local code, annotation = splitAnnotation(stripComment(raw))
+		-- Split the annotation marker (`;!` everywhere, or `#!` — on x86_64 `#` is
+		-- the comment introducer, so `#!` is "a comment that means more") off the
+		-- line, string-aware. Comment text must never fabricate an annotation: a
+		-- line like `# use ;! load ptr here` would otherwise attach a spurious
+		-- annotation to an otherwise-empty statement, which the shared body
+		-- validation rejects ("annotation on an otherwise-empty line"); the arm64
+		-- parser keeps `//`/`//!`/`/* */` comments out of annotations the same
+		-- way. A `#` after the annotation still ends a trailing comment inside
+		-- the body.
+		local code, annotation = splitAnnotation(raw)
 		local t = trim(code)
 		local before = #out
 		if t == "" then
@@ -357,6 +393,14 @@ function x86parse.parseString(text, syntax)
 			end
 			if t ~= "" then
 				local mnem, rest = string.match(t, "^([%.%w_][%w_.]*)%s*(.*)$")
+				if not mnem then
+					-- The line starts with something that can neither begin a
+					-- mnemonic nor a directive (e.g. `//!` annotation text, which is
+					-- NOT a marker on x86_64 and so stays in the code part). Raise a
+					-- normal parse error rather than choking on string.sub(nil, ...)
+					-- below (a latent crash for such lines before markers existed).
+					error("sarcasm: cannot parse line: " .. t)
+				end
 				rest = trim(rest or "")
 				if string.sub(mnem, 1, 1) == "." then
 					table.insert(out, { kind = "directive", name = mnem, args = rest, raw = t })

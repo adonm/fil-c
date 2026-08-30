@@ -109,7 +109,7 @@ local function splitFunctions(stmts)
 				table.insert(functions, cur)
 				consumed[idx] = cur
 			elseif funcSyms[st.name] then
-				error("sarcasm: function '" .. st.name .. "' has no ;! signature annotation "
+				error("sarcasm: function '" .. st.name .. "' has no signature annotation "
 					.. "(add one to its label, e.g. `" .. st.name .. ": ;! int(ptr)`)")
 			elseif cur then
 				table.insert(cur.body, st)
@@ -158,7 +158,16 @@ local function buildRaInsns(nodes)
 			if fallsThrough == nil then fallsThrough = true end
 			local mv = node.move
 			if mv then
-				-- The regalloc move-exclusion (src and dst may share a color because a
+				-- A move-marked insn is always a pure single-def copy (both cg.move
+				-- implementations: defs = {dst}, uses = {src}, move = {dst, src}).
+				-- The coloring backstop's move-source exemption compares move.src
+				-- against ANY def of the insn, so it (and regalloc's move bookkeeping,
+				-- which keys on move.dst) is only sound for exactly that shape:
+				-- assert it here rather than trusting it.
+				if #(node.defTemps or {}) ~= 1 or node.defTemps[1] ~= mv.dst then
+					error("sarcasm: internal error: move-marked insn must have exactly one def, equal to its move destination")
+				end
+				-- The move-exclusion (src and dst may share a color because a
 				-- same-color move is a droppable no-op) is only sound for a FULL-WIDTH
 				-- (64-bit) reg-reg move: a narrower mov zero-extends, so a source web
 				-- live past the move would lose its upper bits in the shared register.
@@ -425,7 +434,7 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 			if not consumed[i] then
 				if st.kind == "blank" then
 					if st.annotation then
-						error("sarcasm: ;! annotation '" .. st.annotation
+						error("sarcasm: annotation '" .. st.annotation
 							.. "' on an otherwise-empty line (annotations go on the instruction's own line)")
 					end
 				elseif st.kind == "insn" then
@@ -456,7 +465,7 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 						recentLabels = {}
 					end
 					if st.annotation then
-						error("sarcasm: ;! annotation '" .. st.annotation .. "' on a directive ('"
+						error("sarcasm: annotation '" .. st.annotation .. "' on a directive ('"
 							.. st.name .. "') is not supported")
 					end
 				end
@@ -605,6 +614,10 @@ local HELP = table.concat({
 	"  str x1, [x0]  ;! store ptr     (pointer store to memory)",
 	"  bl foo        ;! int(ptr, size_t)   (call: callee signature)",
 	"",
+	"Annotations may be introduced by ;! on either architecture, by #! on X86_64 (where #",
+	"is the comment introducer), or by //! on ARM64 (where // is); the examples above use",
+	";! throughout.",
+	"",
 	"Input is ARM64 or X86_64 (auto-detected, or forced with --x86_64/--arm64; the",
 	"syntax is auto-detected, or forced with --intel/--at&t). The target options",
 	"conflict with each other (--x86_64 with --arm64, --intel with --at&t, and any",
@@ -631,7 +644,7 @@ function sarcasm.main(argv)
 	-- Explicit target selection: --x86_64/--arm64 force the architecture, --intel/--at&t
 	-- force the architecture AND the input syntax. nil means auto-detect (detect.luau).
 	-- Repeating a flag is harmless; conflicting flags are rejected as soon as both have
-	-- been seen, with whichever flag came first named in the error.
+	-- been seen, with the most recently seen flag named first in the error.
 	local forcedArch, forcedArchFlag = nil, nil
 	local forcedSyntax, forcedSyntaxFlag = nil, nil
 	local i = 2
@@ -706,6 +719,13 @@ function sarcasm.main(argv)
 		arch, syntax = "x86_64", forcedSyntax
 	elseif forcedArch == "x86_64" then
 		arch = "x86_64"
+		-- A bare --x86_64 can still end up with NO syntax: detect returns a nil syntax
+		-- only for arm64, so this happens exactly when --x86_64 is forced onto input
+		-- with no syntax directive and no x86 marker. An unadorned x86_64 parse would
+		-- silently be INTEL parsing (x86_64_parse.parseString only special-cases "att"),
+		-- but GAS's default x86 syntax is AT&T, so default the syntaxless forced case
+		-- to AT&T. An explicitly passed --intel/--at&t is applied above and still wins.
+		syntax = syntax or "att"
 	elseif forcedArch == "arm64" then
 		arch, syntax = "arm64", nil
 	end

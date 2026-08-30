@@ -104,7 +104,7 @@ local function validateBody(body, cgm)
 			-- an annotation all alone on its line is a typo (the annotation belongs on
 			-- the instruction's own line) — silently dropping it could skip a barrier.
 			if st.annotation then
-				error("sarcasm: ;! annotation '" .. st.annotation
+				error("sarcasm: annotation '" .. st.annotation
 					.. "' on an otherwise-empty line (annotations go on the instruction's own line)")
 			end
 		elseif st.kind == "label" then
@@ -112,9 +112,9 @@ local function validateBody(body, cgm)
 			-- on any other label would be silently ignored (annotations are consumed from
 			-- instructions only), so reject it like the blank-line case.
 			if st.annotation and st ~= body[1] then
-				error("sarcasm: ;! annotation '" .. st.annotation .. "' on a label ('" .. st.name
+				error("sarcasm: annotation '" .. st.annotation .. "' on a label ('" .. st.name
 					.. "') inside a function body is not supported (only the function-entry label"
-					.. " carries the ;! signature; instruction annotations go on the instruction's"
+					.. " carries the signature annotation; instruction annotations go on the instruction's"
 					.. " own line)")
 			end
 		elseif st.kind == "directive" then
@@ -124,7 +124,7 @@ local function validateBody(body, cgm)
 					.. st.name .. "'")
 			end
 			if st.annotation then
-				error("sarcasm: ;! annotation '" .. st.annotation .. "' on a directive ('"
+				error("sarcasm: annotation '" .. st.annotation .. "' on a directive ('"
 					.. st.name .. "') is not supported")
 			end
 		elseif st.kind == "insn" then
@@ -134,7 +134,7 @@ local function validateBody(body, cgm)
 			if c.control == "call" then
 				if not ann then
 					local callee = st.operands and st.operands[1] and st.operands[1].text or "?"
-					error("sarcasm: call to '" .. callee .. "' has no ;! signature annotation"
+					error("sarcasm: call to '" .. callee .. "' has no signature annotation"
 						.. " (annotate the callsite, e.g. `" .. string.lower(st.mnemonic) .. " "
 						.. callee .. " ;! int(ptr)`): " .. raw)
 				end
@@ -190,9 +190,9 @@ local function validateBody(body, cgm)
 					error("sarcasm: signature annotation '" .. ann
 						.. "' on a non-call instruction is not supported: " .. raw)
 				elseif ann == "" then
-					error("sarcasm: empty ;! annotation: " .. raw)
+					error("sarcasm: empty annotation: " .. raw)
 				else
-					error("sarcasm: unrecognized ;! annotation '" .. ann
+					error("sarcasm: unrecognized annotation '" .. ann
 						.. "' (expected 'load ptr', 'store ptr', 'alloca ...', or a callsite"
 						.. " signature like 'int(ptr)'): " .. raw)
 				end
@@ -296,7 +296,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- region: the buffer address escapes as a bare allocation pointer while
 					-- stack-relative accesses meant for the buffer virtualize into unrelated
 					-- slots — a silent miscompile. Reject instead.
-					error("sarcasm: `;! alloca result size=N` annotation is on an instruction"
+					error("sarcasm: `alloca result size=N` annotation is on an instruction"
 						.. " that does not compute a stack-frame-relative address (cannot prove"
 						.. " safety): " .. (st.raw or st.mnemonic))
 				end
@@ -435,12 +435,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				if ann == "load ptr" or ann == "store ptr" then
 					local kind = cgm.ptrAccessKind and cgm.ptrAccessKind(node.stmt) or "other"
 					if kind == "rmw" then
-						error("sarcasm: `;! " .. ann .. "` on a read-modify-write instruction;"
-							.. " pointer RMWs need `;! load store ptr` (or `;! atomic load store ptr`): " .. raw)
+						error("sarcasm: `" .. ann .. "` on a read-modify-write instruction;"
+							.. " pointer RMWs need `load store ptr` (or `atomic load store ptr`): " .. raw)
 					end
 					local want = (ann == "load ptr") and "load" or "store"
 					if kind ~= want then
-						error("sarcasm: `;! " .. ann .. "` requires a plain 8-byte GPR " .. want
+						error("sarcasm: `" .. ann .. "` requires a plain 8-byte GPR " .. want
 							.. " instruction: " .. raw)
 					end
 					if ann == "load ptr" then loadPtrDefs[node] = true else storePtrNodes[node] = true end
@@ -448,7 +448,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- atomic/pointer-RMW annotations: the per-arch shape validator
 					-- returns the sequence kind (raising the shape errors).
 					if not cgm.ptrAtomicShape then
-						error("sarcasm: `;! " .. ann .. "` is not supported on this target: " .. raw)
+						error("sarcasm: `" .. ann .. "` is not supported on this target: " .. raw)
 					end
 					local shape = cgm.ptrAtomicShape(ann, node.stmt)
 					if shape == "atomicload" then atomicLoadPtrDefs[node] = true
@@ -475,11 +475,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				if cgm.memOperand(node.stmt) then
 					error("sarcasm: indirect call through a memory operand cannot be made"
 						.. " memory-safe (load the function pointer into a register first,"
-						.. " e.g. with `;! load ptr`, then call the register): " .. raw)
+						.. " e.g. with `load ptr`, then call the register): " .. raw)
 				end
 				if not ann then
-					error("sarcasm: indirect call has no ;! signature annotation (annotate"
-						.. " the callsite with the callee's signature, e.g. `;! int(ptr)`): "
+					error("sarcasm: indirect call has no signature annotation (annotate"
+						.. " the callsite with the callee's signature, e.g. `int(ptr)`): "
 						.. raw)
 				end
 				indcallNodes[node] = ann
@@ -1120,7 +1120,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	local function emitAtomicPtrLoad(node, mem)
 		local dstIv = node.defTemps[1]
 		if not dstIv then
-			error("sarcasm: `;! atomic load ptr` requires a modeled (GPR) destination"
+			error("sarcasm: `atomic load ptr` requires a modeled (GPR) destination"
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local dstLo = pf.lowerTemp[dstIv]
@@ -1136,7 +1136,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local valOp = storeValueOperand(node.stmt, mem)
 		local valIv = valOp and node.opTemp[valOp] or nil
 		if not valIv then
-			error("sarcasm: `;! atomic store ptr` requires a modeled (GPR) value"
+			error("sarcasm: `atomic store ptr` requires a modeled (GPR) value"
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local valLo = pf.lowerTemp[valIv]
@@ -1166,7 +1166,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local srcOp = node.stmt.operands[2]
 		local newIv = srcOp and node.opTemp[srcOp] or nil
 		if not newIv then
-			error("sarcasm: `;! atomic ptr` requires a modeled (GPR) new-value register: "
+			error("sarcasm: `atomic ptr` requires a modeled (GPR) new-value register: "
 				.. (node.stmt.raw or "?"))
 		end
 		local newLo = pf.lowerTemp[newIv]
@@ -1204,7 +1204,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if so and so.kind == "reg" then
 			local t = node.opTemp[so]
 			if not t then
-				error("sarcasm: `;! " .. node.stmt.annotation .. "` source register has no"
+				error("sarcasm: `" .. node.stmt.annotation .. "` source register has no"
 					.. " temp: " .. (node.stmt.raw or "?"))
 			end
 			return t, nil, false
@@ -1296,7 +1296,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local dstOp = (plan.kind == "st") and nil or ops[2]
 		local srcT = srcOp and node.opTemp[srcOp] or nil
 		if not srcT then
-			error("sarcasm: `;! atomic load store ptr` source register has no temp: "
+			error("sarcasm: `atomic load store ptr` source register has no temp: "
 				.. (node.stmt.raw or "?"))
 		end
 		local dstT = dstOp and node.opTemp[dstOp] or nil
@@ -1516,7 +1516,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			-- lower (capability) is unknowable and the callee-is-a-function
 			-- checks cannot be emitted.
 			error("sarcasm: indirect call target must be a function pointer value"
-				.. " (a pointer argument, or the result of `;! load ptr` /"
+				.. " (a pointer argument, or the result of `load ptr` /"
 				.. " a ptr-returning call): " .. raw)
 		end
 		indcallCounter += 1
@@ -1769,7 +1769,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- an FP/vector (or otherwise unmodeled) destination has no temp:
 					-- reject cleanly instead of indexing the lower-temp table with nil.
 					if not dstIv then
-						error("sarcasm: `;! load ptr` requires a modeled (GPR) destination"
+						error("sarcasm: `load ptr` requires a modeled (GPR) destination"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
@@ -1782,7 +1782,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					local valOp = storeValueOperand(node.stmt, mem)
 					local valIv = valOp and node.opTemp[valOp] or nil
 					if not valIv then
-						error("sarcasm: `;! store ptr` requires a modeled (GPR) value"
+						error("sarcasm: `store ptr` requires a modeled (GPR) value"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local valLo = pf.lowerTemp[valIv]

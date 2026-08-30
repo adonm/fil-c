@@ -642,7 +642,7 @@ function x86_64_frame.rewrite(st, ctx)
 			end
 			error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
 				.. " (frame teardown must be an epilogue `addq $imm, %rsp` leading to `ret`;"
-				.. " dynamic allocation must use `;! alloca`): " .. (st.raw or m))
+				.. " dynamic allocation must use `alloca`): " .. (st.raw or m))
 		end
 		if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then
 			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
@@ -800,7 +800,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- memory, so the annotation can never be honored here. Reject cleanly
 		-- (used to crash the transform).
 		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-			error("sarcasm: `;! " .. st.annotation .. "` on a stack-frame access is not supported"
+			error("sarcasm: `" .. st.annotation .. "` on a stack-frame access is not supported"
 				.. " (frame slots are virtualized/materialized, not real memory): " .. (st.raw or m))
 		end
 		-- cmpxchg8b/cmpxchg16b have no register form: a frame slot cannot be

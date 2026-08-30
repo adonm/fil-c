@@ -352,12 +352,12 @@ function arm64_frame.rewrite(st, ctx)
 	-- annotated-alloca path may model (annotated statements never reach this pass).
 	if (m == "sub" or m == "add") and ops[1] and isSp(ops[1]) then
 		if ops[2] and isSp(ops[2]) and ops[3] and ops[3].kind == "imm" then return end
-		error("sarcasm: dynamic sp adjustment without an `;! alloca size` annotation is not supported: " .. raw)
+		error("sarcasm: dynamic sp adjustment without an `alloca size` annotation is not supported: " .. raw)
 	end
 	if (m == "mov" or m == "add") and ops[1] and ops[1].name == "x29" then return end
 	if m == "mov" and ops[1] and isSp(ops[1]) then
 		if ops[2] and ops[2].name == "x29" then return end  -- `mov sp, x29` (epilogue restore)
-		error("sarcasm: write to sp from a register without an `;! alloca` annotation is not supported: " .. raw)
+		error("sarcasm: write to sp from a register without an `alloca` annotation is not supported: " .. raw)
 	end
 
 	local mem = nil

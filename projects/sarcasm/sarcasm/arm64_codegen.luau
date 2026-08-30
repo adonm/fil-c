@@ -339,7 +339,7 @@ function M.validatePtrAccess(stmt, what)
 	local m = string.lower(stmt.mnemonic)
 	local raw = stmt.raw or m
 	local function bad(why)
-		error("sarcasm: ;! " .. what .. " ptr is only valid on a 64-bit scalar "
+		error("sarcasm: `" .. what .. " ptr` is only valid on a 64-bit scalar "
 			.. (what == "load" and "load (ldr/ldur xN, [...])" or "store (str/stur xN, [...])")
 			.. ": " .. why .. ": " .. raw)
 	end
@@ -468,7 +468,7 @@ function M.ptrAtomicShape(ann, stmt)
 	local function valReg(idx, what)
 		local r = ops[idx]
 		if not r or r.kind ~= "reg" or r.rc ~= "gpr" or r.width ~= 64 then
-			error("sarcasm: `;! " .. ann .. "` requires a 64-bit GPR " .. what
+			error("sarcasm: `" .. ann .. "` requires a 64-bit GPR " .. what
 				.. " (pointer slots are 8 bytes): " .. raw)
 		end
 		return r
@@ -479,25 +479,25 @@ function M.ptrAtomicShape(ann, stmt)
 	-- no atomic form has it.
 	local function checkMemShape(allowIndex)
 		if not mem then
-			error("sarcasm: `;! " .. ann .. "` requires a memory operand: " .. raw)
+			error("sarcasm: `" .. ann .. "` requires a memory operand: " .. raw)
 		end
 		if mem.writeback then
-			error("sarcasm: `;! " .. ann .. "` does not support writeback addressing"
+			error("sarcasm: `" .. ann .. "` does not support writeback addressing"
 				.. " (no atomic form exists; split the address update from the access): " .. raw)
 		end
 		if not allowIndex and (mem.index or mem.shift) then
-			error("sarcasm: `;! " .. ann .. "` on '" .. m .. "' requires a plain [base]"
+			error("sarcasm: `" .. ann .. "` on '" .. m .. "' requires a plain [base]"
 				.. " memory operand (no offset/index exists in its encoding): " .. raw)
 		end
 		if not mem.base or mem.base.rc ~= "gpr" then
-			error("sarcasm: `;! " .. ann .. "` requires a GPR base register"
+			error("sarcasm: `" .. ann .. "` requires a GPR base register"
 				.. " (sp/x29 frame slots cannot carry a capability): " .. raw)
 		end
 	end
 
 	if ann == "atomic load ptr" then
 		if not ({ ldr = true, ldur = true, ldar = true, ldapr = true })[m] then
-			error("sarcasm: `;! atomic load ptr` requires a plain 64-bit scalar load"
+			error("sarcasm: `atomic load ptr` requires a plain 64-bit scalar load"
 				.. " (ldr/ldur/ldar/ldapr xN, [...]): " .. raw)
 		end
 		valReg(1, "destination")
@@ -506,7 +506,7 @@ function M.ptrAtomicShape(ann, stmt)
 	end
 	if ann == "atomic store ptr" then
 		if not ({ str = true, stur = true, stlr = true })[m] then
-			error("sarcasm: `;! atomic store ptr` requires a plain 64-bit scalar store"
+			error("sarcasm: `atomic store ptr` requires a plain 64-bit scalar store"
 				.. " (str/stur/stlr xN, [...]): " .. raw)
 		end
 		valReg(1, "stored value")
@@ -521,11 +521,11 @@ function M.ptrAtomicShape(ann, stmt)
 				.. " atomically): " .. raw)
 		end
 		if kind ~= "cas" then
-			error("sarcasm: `;! atomic ptr` is only supported on cas (pointer"
+			error("sarcasm: `atomic ptr` is only supported on cas (pointer"
 				.. " compare-exchange): " .. raw)
 		end
 		if string.sub(m, -1) == "b" or string.sub(m, -1) == "h" then
-			error("sarcasm: `;! atomic ptr` requires the 64-bit cas form"
+			error("sarcasm: `atomic ptr` requires the 64-bit cas form"
 				.. " (pointer slots are 8 bytes): " .. raw)
 		end
 		valReg(1, "compare/expected register")
@@ -534,25 +534,25 @@ function M.ptrAtomicShape(ann, stmt)
 		return "cas"
 	end
 	if ann == "load store ptr" then
-		error("sarcasm: `;! load store ptr` is not supported on ARM64: arm64 has no"
+		error("sarcasm: `load store ptr` is not supported on ARM64: arm64 has no"
 			.. " non-atomic single-instruction memory read-modify-write; write the"
-			.. " load, op and store as separate instructions annotated `;! load ptr`"
-			.. " and `;! store ptr` (the capability rides through the slot), or use"
-			.. " `;! atomic load store ptr` on an LSE RMW for the atomic form: " .. raw)
+			.. " load, op and store as separate instructions annotated `load ptr`"
+			.. " and `store ptr` (the capability rides through the slot), or use"
+			.. " `atomic load store ptr` on an LSE RMW for the atomic form: " .. raw)
 	end
 	-- `;! atomic load store ptr`: pointer RMW via the runtime compare-exchange loop.
 	if not isa.LSE_KIND[m] then
-		error("sarcasm: `;! atomic load store ptr` requires an LSE atomic"
+		error("sarcasm: `atomic load store ptr` requires an LSE atomic"
 			.. " read-modify-write instruction (ldadd/ldset/ldeor/ldclr/swp; arm64 has"
 			.. " no plain memory-destination ALU RMW): " .. raw)
 	end
 	if not ATOMIC_PTR_RMW[m] then
-		error("sarcasm: `;! atomic load store ptr` is not supported on '" .. m
+		error("sarcasm: `atomic load store ptr` is not supported on '" .. m
 			.. "' (supported pointer RMWs: ldadd/ldset/ldeor/ldclr/swp and the st<op>"
-			.. " aliases; cas wants `;! atomic ptr`): " .. raw)
+			.. " aliases; cas wants `atomic ptr`): " .. raw)
 	end
 	if string.sub(m, -1) == "b" or string.sub(m, -1) == "h" then
-		error("sarcasm: `;! atomic load store ptr` requires the 64-bit (x-register)"
+		error("sarcasm: `atomic load store ptr` requires the 64-bit (x-register)"
 			.. " form (pointer slots are 8 bytes): " .. raw)
 	end
 	valReg(1, "operand")

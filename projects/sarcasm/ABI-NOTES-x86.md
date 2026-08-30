@@ -5,6 +5,8 @@ object header at [lower-16]=upper / [lower-8]=aux, myth offsets ([+0]=stack limi
 [+8]=flags, [+16]=top frame, [+128]=CC payload buffer, [+384]=CC aux buffer), filc_frame
 {prev, origin, roots}, signature encoding, FO layout, 0x83<<48 function flags. Only the
 registers and instructions differ.
+(The sarcasm annotations below are spelled with the universal `;!` marker; on x86_64 the
+recommended `#!` spelling is equivalent — see "Annotation markers" in README.md.)
 
 ## Register calling convention (fast entrypoint / direct call)
 - `%rdi` = myth, `%rsi` = function object (FO payload ptr).
@@ -242,7 +244,7 @@ thunk `pizlonatedFI<SIG>_foo` per called external (same four checks as an
 indirect call: non-null capability, FUNCTION special type, canonical intval,
 signature — a mismatch marshals through the generic buffer CC, and a DATA
 symbol fails the special-type check). An UNANNOTATED direct call is a
-compile-time rejection ("call to 'foo' has no ;! signature annotation"):
+compile-time rejection ("call to 'foo' has no signature annotation"):
 x86_64 now runs the shared raw-body validation (`strictBodyValidation`,
 matching arm64) — the old passthrough landed in a same-file callee's FIP body
 without marshalling and could never link against C callees. Raw branches are

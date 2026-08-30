@@ -19,14 +19,17 @@ anything it cannot prove safe rather than passing unsafe code through.
   `OUT.o` (like `as`). `--as CMD` overrides the assembler (default `as`).
 - `-S` / `--no-assemble`: emit assembly only. Without `-o`, writes `INPUT.yolo.s`.
 - Target selection (otherwise auto-detected from the input):
-  - `--x86_64`: select the X86_64 backend (input syntax still auto-detected);
+  - `--x86_64`: select the X86_64 backend (input syntax still auto-detected; when the
+    input carries no syntax directive and no x86 syntax marker, AT&T is assumed —
+    GAS's x86 default — rather than Intel);
   - `--arm64`: select the ARM64 backend;
   - `--intel` / `--at&t`: select the X86_64 backend with Intel / AT&T input syntax.
   These options conflict with each other (`--x86_64` vs `--arm64`, `--intel` vs
   `--at&t`, and any architecture selector vs a syntax-pinning selector) and are
   rejected as usage errors; repeating the same option is harmless.
 
-Input assembly must carry `;!` annotations:
+Input assembly must carry **annotations**, written on the annotated line after an
+**annotation marker** (see "Annotation markers" below):
 - on each exported function label: its Fil-C signature, e.g. `hash: ;! unsigned(ptr)`;
 - on each instruction that loads a pointer from memory: `;! load ptr` (`;! store ptr` for stores);
 - on each instruction that atomically loads a pointer from memory:
@@ -78,7 +81,7 @@ Input assembly must carry `;!` annotations:
   swp's Wt) receives the old value WITH its capability, exactly like an
   `;! atomic load ptr` result. The native LSE forms write no flags, so NZCV
   is preserved across the sequence rather than recomputed;
-- on each call: the callee's signature, e.g. `bl foo ;! int(ptr, size_t)`. EVERY
+- on each call: the callee's signature, e.g. `bl foo //! int(ptr, size_t)`. EVERY
   direct call needs one — an unannotated direct `call foo`/`bl foo` is a
   compile-time rejection on both architectures — and the annotated call is
   retargeted to `pizlonatedFI<sig>_foo`: a strong `.set` alias of the callee's
@@ -89,7 +92,7 @@ Input assembly must carry `;!` annotations:
   symbol panics at the special-type check — takes the fast entrypoint on an
   exact signature match, and marshals through the generic buffer CC on a
   mismatch). On x86_64 the
-  same annotation also marks a register-indirect call (`call *%rax ;! ptr(int)`) — see
+  same annotation also marks a register-indirect call (`call *%rax #! ptr(int)`) — see
   "Indirect calls" below;
 - on stack allocations: `;! alloca size (x)` on the `sub sp,...` and `;! alloca result (x)`
   on the instruction that yields the pointer (dynamic), or `;! alloca result size=N` for a
@@ -107,15 +110,72 @@ cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64), which cannot operate
 on pointers; any other
 unrecognized annotation string is a compile-time error.
 
+### Annotation markers
+
+The examples above are mostly spelled with the universal `;!` marker, which works on
+both architectures. Each architecture ALSO has a recommended marker that reads as "a
+comment that means more", because it is the comment introducer of that target followed
+by `!`:
+
+- **x86_64: `#!`** — `#` is the comment introducer in GAS x86_64 assembly, so
+  `slot_get: #! ptr(ptr)` reads as a comment that means more;
+- **arm64: `//!`** — `//` is the comment introducer on arm64, so `slot_get: //! ptr(ptr)`
+  likewise;
+- **`;!` on both** — the legacy spelling (`;` is a statement separator in assembly, not
+  a comment, which is why it reads as the odd one out). It remains fully supported on
+  both architectures for backwards compatibility.
+
+**Recommendation: write `#!` on x86_64 and `//!` on arm64.** Keep using `;!` wherever a
+single source file must assemble on either target — every example in this document
+works verbatim with `;!` on either architecture, and every arch-specific example works
+verbatim with the recommended marker of its architecture.
+
+All markers share the same semantics:
+
+- The **earliest marker on the line, outside a string literal**, splits the line into
+  code + annotation body. Text inside `"..."` string literals never forms an
+  annotation, so `.asciz "a ;! b"` compiles (previously a spurious error); the
+  string-aware scan covers all three markers on both architectures (`.asciz "a #! b"`
+  in an arm64 file and `.asciz "a //! b"` in an x86_64 file included).
+- **Comment text never fabricates an annotation.** On x86_64 a `#` NOT followed by `!`
+  starts a comment that runs to end of line, so a full-line `# use ;! load ptr here`
+  (or a trailing one on an instruction line that carries no marker) is just a comment;
+  on arm64 a `//` NOT followed by `!` is still a plain comment, and `/* ... */` block
+  comments still win over `//!` (`/* //! load ptr */` is a comment, NOT an annotation).
+- **On x86_64 a `#` comment inside the annotation body is still stripped**:
+  `movq %rax, (%rbx) #! store ptr # note` carries the body exactly `store ptr`. On
+  arm64 the body is taken **verbatim**: `//` and `/* */` comments are removed before
+  the marker is split, so whatever follows `//!` on the line is the whole body (a
+  later `//` on the same line has already been stripped as a comment by that pass).
+- A **marker on an otherwise-empty line is a compile error** ("annotation 'load ptr'
+  on an otherwise-empty line (annotations go on the instruction's own line)") — an
+  annotation belongs on the instruction's own line, and silently dropping it could
+  skip a safety check.
+- The markers are **per-architecture**: `#!` is NOT a marker on arm64, and `//!` is
+  NOT a marker on x86_64. The text stays in the code part and produces an ordinary
+  parse error — `f: #! unsigned(ptr)` on arm64 fails with "function 'f' has no
+  signature annotation", and `f: //! unsigned(ptr)` on x86_64 fails with "cannot
+  parse line: //! unsigned(ptr)".
+
+A `#!`- or `//!`-marked body goes through exactly the same validation as the `;!`
+spelling above — annotations are validated, never silently ignored, whichever marker
+introduces them.
+
 ### Indirect calls (x86_64 and arm64)
 
 On both x86_64 and arm64, a register-indirect call carrying a callsite
 signature is supported exactly like an annotated direct call:
 
 ```
-call *%rax    ;! ptr(int)     # x86_64
-blr  x8       ;! ptr(int)     # arm64
+# x86_64 (AT&T): the `#!` marker; a trailing `#` comment is stripped from the body
+call *%rax    #! ptr(int)
+
+// arm64: the `//!` marker; the body is everything after it on the line
+blr x8        //! ptr(int)
 ```
+
+Both spellings also work verbatim with the universal `;!` marker on either
+architecture.
 
 The target register's web must be a known pointer value (a pointer argument,
 the result of `;! load ptr`, or a pointer-returning call) so that its
@@ -142,7 +202,7 @@ not a known pointer value, and (x86_64 only) ANY memory-indirect call
 (`call *mem`, annotated or not — load the function pointer into a register
 first, e.g. via `;! load ptr`; memory-operand indirect calls do not exist on
 arm64, where `blr` is register-only). On arm64 the same check sequence and
-dispatch is emitted for `blr xN ;! sig(...)` (x0=myth, x1=L, dense args from
+dispatch is emitted for `blr xN //! sig(...)` (x0=myth, x1=L, dense args from
 x2, argument byte size in w2, x1 doubles as the ret-size register, plain `bl`
 fail stubs); indirect BRANCHES (`br xN`, and `b xN` with a register operand)
 remain rejected.
@@ -200,7 +260,8 @@ Shared, architecture-independent modules:
 - `sarcasm.luau` — the driver (function splitting, orchestration, `as` invocation).
 
 Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interface):
-- `*_parse.luau`   — GNU/clang assembly parser (+ `;!` annotations); x86_64 handles both
+- `*_parse.luau`   — GNU/clang assembly parser (+ `;!`/`#!` (x86_64) / `//!` (arm64)
+  annotations — see "Annotation markers" above); x86_64 handles both
   AT&T and Intel syntax.
 - `*_isa.luau`     — instruction semantics: register def/use, control flow, RMW.
 - `x86_64_fp.luau` — the x86_64 FP/SIMD knowledge module: per-mnemonic memory
@@ -545,14 +606,19 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 791 `filc/tests/sarcasm-*` tests (511
-x86_64, 280 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. The
+All testing is via the Fil-C test suite: the 801 `filc/tests/sarcasm-*` tests (517
+x86_64, 284 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. The
 `.s` inputs are compiled by `build/bin/clang`, whose driver executes the installed
 `pizfix/bin/sarcasm` (see "Build & install flow" above); `.c` files go through
 clang as usual. The suite compiles every yolo input with sarcasm, links with Fil-C
 `main`s, and checks results, out-of-bounds/null-cap **traps**, the pointer-store
 capability round-trip, register-indexed access, the callsite resolver, pollchecks,
-GC stress, exact-width far-pointer/descriptor-table accesses (`sarcasm-farptr-att`,
+GC stress, the annotation-marker spellings (`sarcasm-shannot-att`/`-int` — the `#!`
+marker on x86_64, in both syntaxes, mixed with `;!`, with in-body `#` comments
+stripped from the annotation body and string-literal marker text ignored;
+`sarcasm-stringannot-att` — marker text inside `.asciz`/`.string` payloads never
+fabricates an annotation), exact-width far-pointer/descriptor-table accesses
+(`sarcasm-farptr-att`,
 `sarcasm-sidt-att`, and the `sarcasm-oob-lfs-att`/`sarcasm-oob-sidt-att` traps),
 the source-register-width movnti store (`sarcasm-oob-movnti-att`),
 the pinned implicit-register mul/div/cmpxchg family under register pressure
@@ -620,7 +686,11 @@ and every compile-time rejection (`filc/tests/sarcasm-reject-*` — including th
 Intel-syntax AT&T-operand rejections `sarcasm-reject-intel-attmem`,
 `sarcasm-reject-intel-attmem-fp`, and `sarcasm-reject-intel-enqcmd`, and the
 ambiguous unsized narrowing convert `sarcasm-reject-cvt-unsized`, the
-high-byte setcc destination `sarcasm-reject-setcc-ah` (the web model has no
+marker-spelling rejections — `sarcasm-reject-shannot-blank-att` (`#! load ptr` alone
+on a line, rejected like the `;!` form), `sarcasm-reject-shannot-unrec-att` (a `#!`
+body must still be a known annotation) and `sarcasm-reject-slashannot-att` (`//!` is
+not an x86_64 marker, so the text stays in the code part and fails to parse),
+the high-byte setcc destination `sarcasm-reject-setcc-ah` (the web model has no
 subregister view, so an 8-bit `setcc %ah` write would silently land in `%al`,
 and `movzbl %ah` is unencodable, so the widening rewrite cannot apply), the
 absolute-address (moffs) rejections `sarcasm-reject-absaddr-load` /
@@ -701,9 +771,9 @@ AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
 
-The 280 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
+The 284 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
 the same pointer/trap/call/alloca core as x86_64, plus the arm64-specific
-surface — annotated register-indirect calls `blr xN ;! sig(...)`
+surface — annotated register-indirect calls `blr xN //! sig(...)`
 (`sarcasm-indirectcall-*-arm`: success, loadptr, sigmismatch, and the failure
 cases -notfn/-null/-ptrneq that must trap at the indirect-call checks, plus
 the reject tests for unannotated `blr` and register-target `br`/`b`), and
@@ -711,7 +781,10 @@ float/double SIGNATURES (`sarcasm-fp-args-arm` entry signatures,
 `sarcasm-fp-asmcall-arm` cross-module callsites with a version script,
 `sarcasm-fp-indirectcall-arm`/-`sigmismatch-arm`, plus the
 `sarcasm-reject-fp-overflow*` and `sarcasm-reject-vecsig*` rejections for
-oversized FP signatures and vector classes); direct asm→C calls are covered
+oversized FP signatures and vector classes); the `//!` annotation marker on
+arm64, mixed with `;!`, with `/* //! ... */` block comments and plain `//`
+comments kept out of annotation bodies and string-literal marker text ignored
+(`sarcasm-slashannot-arm`, `sarcasm-stringannot-arm`); direct asm→C calls are covered
 end-to-end by `sarcasm-call-data-arm` (a C DATA symbol called as a function
 through the weak callsite resolver must panic at the special-type check),
 `sarcasm-call-data-fp-arm` (same, with an FP callsite signature) and
@@ -741,7 +814,11 @@ natural-alignment/OOB/read-only/null-cap atomic traps
 `sarcasm-atomic-ro-arm`, `sarcasm-nullcap-atomic-arm`), and the annotated
 pointer atomics (`sarcasm-aptr-*-arm`, mirroring the x86_64 Phase-2 suite);
 and the fixed-alloca region redirect off both sp and x29
-(`sarcasm-alloca-redirect-arm`). Trap coverage is made systematic by the
+(`sarcasm-alloca-redirect-arm`). The arm64 marker spellings are pinned by their own
+rejections: `sarcasm-reject-shannot-arm` (`#!` is NOT an arm64 marker — the text
+stays in the code part, so the label ends up without a signature) and
+`sarcasm-reject-slashannot-blank-arm` (`//! load ptr` alone on a line, rejected
+like the `;!` form). Trap coverage is made systematic by the
 `sarcasm-tm-*-arm` matrix (73 tests: the six fault categories crossed with
 the GPR widths 1/2/4/8, the 16-byte NEON ldr/str q forms, and LSE swp/stxr
 cells). Two manifest keys gate extension-dependent aarch64 tests:

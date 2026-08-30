@@ -242,7 +242,7 @@ function M.ptrAtomicShape(ann, stmt)
 	if ann == "atomic load ptr" or ann == "atomic store ptr" then
 		local want = (ann == "atomic load ptr") and "load" or "store"
 		if M.ptrAccessKind(stmt) ~= want then
-			error("sarcasm: `;! " .. ann .. "` requires a plain 8-byte GPR " .. want
+			error("sarcasm: `" .. ann .. "` requires a plain 8-byte GPR " .. want
 				.. " instruction: " .. raw)
 		end
 		return (ann == "atomic load ptr") and "atomicload" or "atomicstore"
@@ -251,40 +251,40 @@ function M.ptrAtomicShape(ann, stmt)
 	local ops = stmt.operands or {}
 	if ann == "atomic ptr" then
 		if base ~= "cmpxchg" then
-			error("sarcasm: `;! atomic ptr` is only supported on cmpxchg (pointer"
+			error("sarcasm: `atomic ptr` is only supported on cmpxchg (pointer"
 				.. " compare-exchange): " .. raw)
 		end
 		if not (ops[1] and ops[1].kind == "mem") then
-			error("sarcasm: `;! atomic ptr` requires cmpxchg with a memory destination"
+			error("sarcasm: `atomic ptr` requires cmpxchg with a memory destination"
 				.. " (the register form has no capability slot to exchange against): " .. raw)
 		end
 		if #ops ~= 2 or not isa.isGpr(ops[2]) then
-			error("sarcasm: `;! atomic ptr` requires the cmpxchg mem, reg form"
+			error("sarcasm: `atomic ptr` requires the cmpxchg mem, reg form"
 				.. " (a GPR new-value operand): " .. raw)
 		end
 		local w = M.accessSizeAlign(stmt)
 		if w ~= 8 then
-			error("sarcasm: `;! atomic ptr` requires the 8-byte (q) cmpxchg form"
+			error("sarcasm: `atomic ptr` requires the 8-byte (q) cmpxchg form"
 				.. " (pointer slots are 8 bytes): " .. raw)
 		end
 		return "cas"
 	end
 	-- `;! load store ptr` / `;! atomic load store ptr`: pointer RMWs.
 	if M.ptrAccessKind(stmt) ~= "rmw" then
-		error("sarcasm: `;! " .. ann .. "` requires a memory-destination"
+		error("sarcasm: `" .. ann .. "` requires a memory-destination"
 			.. " read-modify-write instruction: " .. raw)
 	end
 	if base == "cmpxchg" then
-		error("sarcasm: `;! " .. ann .. "` on cmpxchg; pointer compare-exchange needs"
-			.. " `;! atomic ptr`: " .. raw)
+		error("sarcasm: `" .. ann .. "` on cmpxchg; pointer compare-exchange needs"
+			.. " `atomic ptr`: " .. raw)
 	end
 	if string.match(string.lower(stmt.mnemonic), "^xadd[bwlq]?$") then
-		error("sarcasm: `;! " .. ann .. "` is not supported on xadd: its source register"
+		error("sarcasm: `" .. ann .. "` is not supported on xadd: its source register"
 			.. " is also a destination (it would receive the old pointer value, needing a"
-			.. " pointer def + lower — use a `;! atomic ptr` cmpxchg loop instead): " .. raw)
+			.. " pointer def + lower — use a `atomic ptr` cmpxchg loop instead): " .. raw)
 	end
 	if not PTR_RMW_OPS[base] then
-		error("sarcasm: `;! " .. ann .. "` is not supported on '" .. string.lower(stmt.mnemonic)
+		error("sarcasm: `" .. ann .. "` is not supported on '" .. string.lower(stmt.mnemonic)
 			.. "' (supported pointer RMWs: add/adc/and/or/sbb/sub/xor, inc/dec/neg/not): " .. raw)
 	end
 	-- Operand shape: the unary forms are mem-only; the binary forms are
@@ -293,21 +293,21 @@ function M.ptrAtomicShape(ann, stmt)
 	-- register operation — reject it here.
 	if PTR_RMW_OPS[base] and (base == "inc" or base == "dec" or base == "neg" or base == "not") then
 		if #ops ~= 1 then
-			error("sarcasm: `;! " .. ann .. "` on " .. base .. " requires the one-operand"
+			error("sarcasm: `" .. ann .. "` on " .. base .. " requires the one-operand"
 				.. " memory form: " .. raw)
 		end
 	elseif #ops ~= 2 or not (isa.isGpr(ops[2]) or ops[2].kind == "imm") then
-		error("sarcasm: `;! " .. ann .. "` requires a GPR register or immediate source"
+		error("sarcasm: `" .. ann .. "` requires a GPR register or immediate source"
 			.. " operand (x86 has no mem-to-mem " .. base .. " form): " .. raw)
 	end
 	local w = M.accessSizeAlign(stmt)
 	if w ~= 8 then
-		error("sarcasm: `;! " .. ann .. "` requires the 8-byte (q) form"
+		error("sarcasm: `" .. ann .. "` requires the 8-byte (q) form"
 			.. " (pointer slots are 8 bytes): " .. raw)
 	end
 	if ann == "load store ptr" and stmt.lockPrefix then
-		error("sarcasm: `lock` on a `;! load store ptr` RMW is a lie (the sequence is a"
-			.. " non-atomic load+op+store); use `;! atomic load store ptr` for an atomic"
+		error("sarcasm: `lock` on a `load store ptr` RMW is a lie (the sequence is a"
+			.. " non-atomic load+op+store); use `atomic load store ptr` for an atomic"
 			.. " pointer RMW: " .. raw)
 	end
 	return (ann == "load store ptr") and "rmw" or "atomicrmw"
@@ -1049,7 +1049,7 @@ function M.make(ctx)
 		if mem and mem.frameSlot then
 			local ann = node.stmt.annotation
 			if ann and sig.PTR_ANNOTATIONS[ann] then
-				error("sarcasm: `;! " .. ann .. "` on a stack-frame access is not supported"
+				error("sarcasm: `" .. ann .. "` on a stack-frame access is not supported"
 					.. " (frame slots are virtualized/materialized, not real memory): "
 					.. (node.stmt.raw or "?"))
 			end

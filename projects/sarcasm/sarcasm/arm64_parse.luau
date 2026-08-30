@@ -316,9 +316,15 @@ end
 -- Remove comments from the whole text before line splitting: `/* ... */` (inline and
 -- multi-line) and `//` to end of line, neither of which may appear inside a
 -- double-quoted string (`.asciz "a // b"` keeps its slashes). `#` is NOT a comment
--- here -- on arm64 it introduces an immediate. A comment is replaced by a single space
--- (comments act as token separators in GAS); newlines inside block comments are kept so
--- statement line numbers still match the source.
+-- here -- on arm64 it introduces an immediate, and `#!` is not an annotation marker
+-- either, so `#!` text stays in the code part and produces a normal parse error. The
+-- one exception to `//` starting a comment: `//!` is an annotation marker ("a comment
+-- that means more", the arm64 sibling of the universal `;!`), so it is emitted
+-- verbatim for splitAnnotation to find while the rest of the line keeps being scanned
+-- (a later `//` on the same line is still a comment). Block comments still take
+-- precedence, so `/* //! load ptr */` is a comment, not an annotation. A comment is
+-- replaced by a single space (comments act as token separators in GAS); newlines
+-- inside block comments are kept so statement line numbers still match the source.
 local function stripComments(text: string): string
 	local out = {}
 	local i, n = 1, #text
@@ -331,9 +337,18 @@ local function stripComments(text: string): string
 				state = "str"
 				table.insert(out, c)
 			elseif c == "/" and d == "/" then
-				state = "line"
-				table.insert(out, " ")
-				i += 1
+				if string.sub(text, i + 2, i + 2) == "!" then
+					-- `//!` is an annotation marker, not a comment: keep it
+					-- verbatim so splitAnnotation can find it
+					table.insert(out, c)
+					table.insert(out, d)
+					table.insert(out, "!")
+					i += 2
+				else
+					state = "line"
+					table.insert(out, " ")
+					i += 1
+				end
 			elseif c == "/" and d == "*" then
 				state = "block"
 				table.insert(out, " ")
@@ -370,20 +385,36 @@ local function stripComments(text: string): string
 end
 parse.stripComments = stripComments
 
--- Split off a ;! annotation (returns code, annotation-or-nil).
-local function splitAnnotation(s: string): (string, string?)
-	local idx = string.find(s, ";!", 1, true)
-	if idx then
-		local code = string.sub(s, 1, idx - 1)
-		local ann = string.sub(s, idx + 2)
-		ann = (string.gsub(ann, "^%s*(.-)%s*$", "%1"))
-		return code, ann
-	end
-	return s, nil
-end
-
 local function trim(s: string): string
 	return (string.gsub(s, "^%s*(.-)%s*$", "%1"))
+end
+
+-- Split off an annotation marker (returns code, annotation-or-nil). Markers are
+-- `;!` (supported on all architectures) and `//!` (`//` is the comment introducer
+-- on arm64, so `//!` reads as "a comment that means more"). The EARLIEST marker
+-- outside a string literal wins; the body is the trimmed text after the marker,
+-- taken verbatim (stripComments already removed `//` and `/* */` comments). Text
+-- inside a double-quoted string never produces an annotation, so `.asciz "a ;! b"`
+-- and `.asciz "a //! b"` are ordinary directives. `#!` is not a marker here: it
+-- stays in the code part and produces a normal parse error.
+local function splitAnnotation(s: string): (string, string?)
+	local inStr = false
+	local i, n = 1, #s
+	while i <= n do
+		local c = string.sub(s, i, i)
+		if c == '"' then
+			inStr = not inStr
+		elseif not inStr then
+			local d = string.sub(s, i + 1, i + 1)
+			if c == ";" and d == "!" then
+				return string.sub(s, 1, i - 1), trim(string.sub(s, i + 2))
+			elseif c == "/" and d == "/" and string.sub(s, i + 2, i + 2) == "!" then
+				return string.sub(s, 1, i - 1), trim(string.sub(s, i + 3))
+			end
+		end
+		i += 1
+	end
+	return s, nil
 end
 
 -- Parse one source line into zero or more statements, appending to `out`.
@@ -458,7 +489,8 @@ function parse.parseString(text: string)
 	local out = {}
 	-- normalize CRLF
 	text = (string.gsub(text, "\r\n", "\n"))
-	-- strip C/C++ comments (string-literal aware) before line splitting
+	-- strip C/C++ comments (string-literal aware) before line splitting; the `//!`
+	-- annotation marker survives this pass so splitAnnotation can find it
 	text = stripComments(text)
 	local lineNo = 0
 	for line in (text .. "\n"):gmatch("(.-)\n") do

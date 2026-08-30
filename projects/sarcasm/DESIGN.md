@@ -42,7 +42,10 @@ Shared (architecture-independent):
 - `ABI-NOTES.md` / `ABI-NOTES-x86.md` — complete ABI references.
 
 Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDATED:
-- `*_parse.luau`   — operand parser + `;!` annotations. x86_64 parses BOTH AT&T and Intel
+- `*_parse.luau`   — operand parser + `;!`/`#!` (x86_64) / `//!` (arm64) annotations
+  (see "Annotation markers" in README.md: the recommended spelling is `#!` on x86_64
+  and `//!` on arm64, with `;!` supported on both for backwards compatibility).
+  x86_64 parses BOTH AT&T and Intel
   syntax into the common dest-first operand model. Both parsers accept GNU-as numeric
   local labels (`1:` may be defined repeatedly; `1f`/`1b` reference the next/previous
   definition, including as a memory displacement like `1f(%rip)`): numlabel.luau renames
@@ -59,6 +62,37 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   is rejected (covering the parseSym fallthrough, the numeric-prefix immediate
   path, and whitespace-dodged forms); the only legitimate parens in an Intel
   operand are the x87 stack-register name st(N).
+
+  Annotation markers and comments (both parsers — see README.md's "Annotation
+  markers" for the user-facing contract): a line is split into code + annotation
+  body at the EARLIEST annotation marker outside a string literal — `;!` on both
+  architectures, plus `#!` on x86_64 and `//!` on arm64 (the recommended
+  spellings, since they read as "a comment that means more" on their targets).
+  The interplay with comments is per-architecture, and in both directions the
+  invariant is that comment and string-literal text can never fabricate an
+  annotation:
+  - x86_64: a single string-aware scan (splitAnnotation) walks the line; a `#`
+    NOT immediately followed by `!` starts a comment that ends the line with NO
+    annotation (so `# use ;! load ptr here` stays inert), `#!` or `;!` splits the
+    line, and the body is then run through the ordinary comment stripper
+    (stripComment), so a trailing `#` comment inside the body is removed
+    (`movq %rax, (%rbx) #! store ptr # note` has body exactly `store ptr` — the
+    same body the whole-line comment strip would have produced before markers
+    were split off first). `//!` is NOT a marker here: it stays in the code part
+    and fails to parse ("cannot parse line: //! ...").
+  - arm64: comments are removed from the WHOLE text before line splitting
+    (stripComments: `//` to EOL, inline and multi-line `/* ... */`, both
+    string-literal aware, each replaced by a single space so token separation is
+    preserved, with newlines kept so line numbers still line up). `//!` is
+    emitted VERBATIM by that pass — it is a marker, not a comment — so the
+    subsequent marker split finds it, while a later `//` on the same line is
+    still stripped (it was already removed before the body was cut, so arm64
+    bodies are verbatim: no further comment stripping happens inside a body).
+    Block comments win: `/* //! load ptr */` is a comment, not an annotation.
+    `#` is NOT a comment character here (it introduces immediates), and `#!` is
+    NOT a marker, so `#!` text stays in the code part and produces an ordinary
+    parse error (e.g. `f: #! unsigned(ptr)` reports "function 'f' has no
+    signature annotation").
 - `*_isa.luau`     — instruction semantics: register defs/uses, control flow. On
   x86_64 this is also where the implicit-register GPR instructions are MODELED:
   div/idiv (implicit rdx:rax dividend use, quotient/remainder def), mul and
@@ -856,6 +890,11 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   cmpxchg8b/cmpxchg16b EVERY ptr-family annotation is rejected — a
   double-width CAS cannot operate on invisicaps); any other
   unrecognized annotation string on an instruction is a compile-time error.
+  (Marker spelling, once, since these bullets all use the universal form: every
+  `;!`-spelled annotation can equivalently be written
+  `#!` on x86_64 or `//!` on arm64 — the RECOMMENDED spellings, see README's
+  "Annotation markers". The annotation NAME is what the bullets document; the
+  marker only introduces it, whichever of the three is used.)
 - calls (`;! sig` on the call insn — REQUIRED on every direct call: an unannotated
   direct `call foo`/`bl foo` is rejected by body validation on BOTH architectures,
   see Limitations) -> marshal args into the Fil-C CC registers, call the
@@ -949,7 +988,11 @@ The target is auto-detected as above; four options force it explicitly, bypassin
 detect.luau:
 - `--x86_64` — select the X86_64 backend; the input syntax (AT&T vs Intel) is still
   auto-detected, so a `.intel_syntax`/`.att_syntax` directive (or any other syntax
-  marker) in the input still applies.
+  marker) in the input still applies. When the input carries NO syntax directive and
+  no x86 syntax marker at all, the syntaxless forced case defaults to AT&T (GAS's
+  x86 default): an unadorned x86_64 parse would silently be INTEL parsing
+  (x86_64_parse only special-cases "att"), so bare `--x86_64` is pinned to AT&T.
+  An explicitly passed `--intel`/`--at&t` still wins.
 - `--arm64` — select the ARM64 backend.
 - `--intel` — select the X86_64 backend with Intel input syntax.
 - `--at&t` — select the X86_64 backend with AT&T input syntax.
@@ -965,7 +1008,7 @@ harmless.
 Assembly that cannot be proven safe is rejected with a clean `sarcasm: <file>: <msg>`
 error (exit code 1). Current limitations, enforced on both architectures unless noted:
 - Every function declared `.type NAME, %function` and defined in the file MUST carry a
-  `;!` signature annotation; an unparseable signature is likewise rejected.
+  signature annotation on its label; an unparseable signature is likewise rejected.
 - At most 3 register arguments per function; on x86_64, additionally at most 4 register
   argument WORDS (a pointer arg occupies two words: intval + lower). The x86_64 fast CC
   packs argument words densely into rdx,rcx,r8,r9 only — arguments beyond the fourth
@@ -983,21 +1026,22 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   to the shared annotation walk; `call *%reg ;! sig(...)` on x86_64; see the
   transform section's indirect-call bullet for the emitted check and dispatch
   sequence). Rejected on both: an unannotated register-indirect call
-  ("indirect call has no ;! signature annotation"), and an annotated call
+  ("indirect call has no signature annotation (annotate the callsite with the
+  callee's signature, e.g. `int(ptr)`)"), and an annotated call
   whose target web is not pointer-typed ("indirect call target must be a
   function pointer value..."). On x86_64 additionally ANY memory-indirect call
   `call *mem`, annotated or not ("indirect call through a memory operand
   cannot be made memory-safe (load the function pointer into a register
   first...)") — memory-operand indirect calls do not exist on arm64
   (`blr` is register-only).
-- Unannotated DIRECT calls (`call foo` with no `;!` signature annotation) are
+- Unannotated DIRECT calls (`call foo` with no signature annotation) are
   rejected on BOTH architectures (validateBody, gated on each backend's
   `strictBodyValidation` — arm64 always had it; x86_64 joined when its direct-call
   support reached parity, since the historical x86_64 passthrough silently
   miscompiled calls to same-file annotated callees — they landed in the callee's
   FIP body without myth marshalling — and could never link against C callees,
   which filcc names `pizlonated_*`, never bare `foo`). The rejection message
-  matches arm64's ("call to 'foo' has no ;! signature annotation (annotate the
+  matches arm64's ("call to 'foo' has no signature annotation (annotate the
   callsite, e.g. `call foo ;! int(ptr)`)").
 - Indirect BRANCHES are rejected on BOTH architectures in all raw forms: arm64
   `br xN` and `b xN`/`cbz xN, xM` with a register operand (any non-label branch
@@ -1012,6 +1056,24 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   Label-target branches inside the function (loop back-edges, `jmp
   .Llabel`/`1b`) keep working. All of this closes the same unvalidatable
   control-flow hole.
+- (x86_64) explicit high-byte operands — the `%ah` subregister gap: sarcasm's
+  web model has no subregister view, and `ah` and `al` both parse to the SAME
+  web (register 0, width 8; see x86_64_isa.luau), while the renderer names the
+  LOW byte of whatever register that web is colored into. An explicit `%ah`
+  operand therefore names the low byte of the colored register, which is the
+  architectural AH only when the web happens to sit in physical rax. `setcc
+  %ah` is REJECTED ("setcc with the high-byte destination %ah is not
+  supported (only the low byte of a register is modeled; use the low-byte
+  form, e.g. `sete %al`)"), but every other explicit `%ah` operand is silently
+  accepted at the low byte — e.g. `movb %al, %ah` compiles and renders
+  `movb %al, %al`, writing `%al`, not the architectural `%ah` (likewise
+  `movzbl %ah, %edx` reads `%al`), so a program that really wants AH must pin
+  its value to rax itself. lahf/sahf are NOT affected — they are modeled as
+  implicit full-web RMW/use of the 64-bit rax web pinned to physical rax, so
+  the flag byte lands in bits 8-15 of the colored register wherever it lives —
+  but their support makes hand-written `%ah` idioms reachable where they
+  previously had no reason to appear (see the EFLAGS bullet under
+  "Known pre-existing issues").
 - Exception propagation through sarcasm x86_64 frames: NOT SUPPORTED (intentional,
   for now). The x86_64 glue emits every function origin with personality_getter = 0
   (`.quad 0`) and can_throw = can_catch = has_setjmps = 0 (`.byte 0/0/0`), so Fil-C
@@ -1312,29 +1374,37 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
 
 All of the following used to reproduce on the unmodified baseline (the tree
 before the current FP/SIMD review-cycle work); they were pre-existing bugs
-documented here — not regressions introduced by this change — and all are
-now FIXED:
+documented here — not regressions introduced by this change. The EFLAGS, detect
+and output-determinism items are FIXED outright; the regalloc item is instead
+CAUGHT — a soundness verifier in regalloc.color() REJECTS compilation of any
+mis-colored function with a clean error. That is a detection backstop, not a
+correction: the mis-coloring itself is not repaired or prevented, but no
+mis-colored code can reach the assembler.
 
 - regalloc could mis-color a function with ≥~13 simultaneously-live webs: the
   same web rendered in two different registers at different points, silently
   corrupting the value (the trigger was a sufficiently large interference
   graph under coalescing pressure; smaller web counts were unaffected).
-  FIXED: a large empirical hunt (~1000 generated self-checking programs with
-  up to 96 simultaneously-live webs, heavy coalescing pressure, calls,
-  bounds-check/ptr sequences, and deep spilling) could NOT reproduce any
-  miscompilation — and regardless, regalloc.color() now VERIFIES the coloring
-  after every coloring round (and every spill re-round) and rejects the
-  function with a clean "sarcasm: " error if (a) any temp that occurs in the
-  code has no color (an uncolored temp would silently render at its original
-  input register — the same-web-in-two-registers failure mode), (b) any def's
-  register collides with the register of a different temp live across that
-  def (two simultaneously-live webs in one register) — except the source of a
-  full-width move whose same-color move is a droppable no-op — or (c) two
-  defs of one instruction share a register. The move-source interference
-  exclusion is also now applied only to full-width (64-bit) moves (a narrower
-  mov zero-extends, so sharing a register would corrupt a live-out source's
-  upper bits — latent today, since every move-marked insn is a synthesized
-  64-bit move, but hardened).
+  CAUGHT, not fixed: a large empirical hunt (~1000 generated self-checking
+  programs with up to 96 simultaneously-live webs, heavy coalescing pressure,
+  calls, bounds-check/ptr sequences, and deep spilling) could NOT reproduce
+  any miscompilation — and regardless, regalloc.color() now VERIFIES the
+  coloring after every coloring round (and every spill re-round) and REJECTS
+  THE COMPILATION with a clean "sarcasm: " error if (a) any temp that occurs
+  in the code has no color (an uncolored temp would silently render at its
+  original input register — the same-web-in-two-registers failure mode), (b)
+  any def's register collides with the register of a different temp live
+  across that def (two simultaneously-live webs in one register) — except the
+  source of a full-width move whose same-color move is a droppable no-op — or
+  (c) two defs of one instruction share a register. The verifier's move-source
+  exemption is guarded by buildRaInsns, which rejects any move-marked RA insn
+  that does not have exactly one def equal to its move destination ("internal
+  error: move-marked insn must have exactly one def, equal to its move
+  destination") — the exclusion is only sound for that shape. The move-source
+  interference exclusion is also now applied only to full-width (64-bit)
+  moves (a narrower mov zero-extends, so sharing a register would corrupt a
+  live-out source's upper bits — latent today, since every move-marked insn
+  is a synthesized 64-bit move, but hardened).
 - injected bounds checks used to clobber EFLAGS: the capability/bounds-check
   sequence sarcasm emits before a checked memory operand did not preserve the
   flags register, so an instruction that relied on a carry-in flag set before
@@ -1376,7 +1446,19 @@ now FIXED:
   spoof them) — so these inputs detect as x86_64 AT&T and reject on the
   x86_64 path with a meaningful message (the string-instruction/prefix and
   symbolic-moffs rejections; previously the arm64 parse succeeded and the
-  failure surfaced opaquely at `as`). The target can also be forced
+  failure surfaced opaquely at `as`). HARDENED further against symbol
+  spoofing: the mnemonic-shaped checks (the movz/movs/movabs, sign/byte-
+  extension and q-suffix families) are anchored to an INSTRUCTION position —
+  preceded by a newline plus horizontal whitespace and NOT immediately
+  followed by `:` — so an arm64 file whose labels or symbols carry
+  mnemonic-shaped names (`movq:`, `cbw:`, `cdq:`, `pushq:`, ...) or that
+  references one mid-line (`bl movq`) no longer misdetects as x86_64; and
+  the bare Intel vector/opmask names (`xmm0`...`zmm`, `k0`..`k7`) exclude a
+  following `:` (a label), while still matching mid-line Intel operands.
+  Residual limitation, documented rather than fixed: an arm64 CALL TARGET
+  named exactly `xmm0`/`k0`/... (e.g. `bl xmm0`, in a file with no
+  `.arch armv8` directive) is still indistinguishable from an Intel operand,
+  so such a file misdetects as x86_64 Intel. The target can also be forced
   explicitly with the --x86_64/--arm64/--intel/--at&t options, bypassing
   autodetection (see "Command-line target selection" under the driver
   section).
@@ -1394,13 +1476,17 @@ now FIXED:
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 791 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
-assemble via minilute + sarcasm, `.c` files via clang) — 511 x86_64 and 280 aarch64
-(every test is `only-on-platform:` exactly one of them). For each yolo input the suite
+runs the 801 `filc/tests/sarcasm-*` tests — 517 x86_64 and 284 aarch64 (every test is
+`only-on-platform:` exactly one of them). There is no `use-sarcasm` manifest key: the
+suite compiles every `.s` input with `build/bin/clang`, whose driver executes the
+installed `pizfix/bin/sarcasm` with an explicit `--x86_64`/`--arm64` flag (from the
+compilation target triple — the input alone may not carry enough markers for
+autodetection; see "Command-line target selection" under the driver section), and
+`.c` files go through clang as usual. For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
 + that OOB/null-capability inputs trap. The suite breaks down as:
 
-- 469 behavioral tests (296 x86_64, 173 aarch64), most exercised in AT&T and Intel
+- 480 behavioral tests (305 x86_64, 175 aarch64), most exercised in AT&T and Intel
   variants (`-att` / `-int` pairs, aarch64 singletons as `-arm`): pointer-chasing
   workloads in several sizes (`sarcasm-hash(-oob)-*`, `sarcasm-t2-*`,
   `sarcasm-t3valid/t3oob-*`, `sarcasm-medium/large`), null-capability and OOB traps
@@ -1463,7 +1549,21 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   (`sarcasm-bmi-att`), the not-readonly CanWrite traps on plain/RMW/FP stores
   to read-only objects (`sarcasm-ro-plain-store-att`/`-int`,
   `sarcasm-ro-rmw-att`, `sarcasm-ro-fp-store-att`), and pollchecks/GC stress
-  (`sarcasm-pollcheck-*`, `sarcasm-*-gcstress*`), the eff+size overflow-hole
+  (`sarcasm-pollcheck-*`, `sarcasm-*-gcstress*`), the EFLAGS-preservation suite —
+  a carry-in live across a checked memory access (`sarcasm-flags-adc-att`), a
+  jcc consumer after one (`sarcasm-flags-jcc-att`), the lahf flag byte landing
+  in bits 8-15 of the pinned rax web wherever it is colored
+  (`sarcasm-flags-lahf-att`) and its OOB-trap variant, which fires the fail
+  path between the two halves of the flag bracket
+  (`sarcasm-flags-lahf-oob-att`), and sahf's flag-byte write
+  (`sarcasm-flags-sahf-att`), the register-pressure probe behind the regalloc
+  soundness verifier — ~24 webs live across an annotated call and ptr-load/
+  -store churn force many spill rounds and coalescing, which the verifier must
+  accept without mis-coloring (a per-web-multiplier checksum detects any)
+  (`sarcasm-pressure-att`), the annotation-marker spellings — `#!` on x86_64 in
+  both syntaxes, mixed with `;!`, with in-body `#` comments stripped from the
+  body (`sarcasm-shannot-att`/`-int`) and string-literal marker text ignored
+  (`sarcasm-stringannot-att`), the eff+size overflow-hole
   regressions (`sarcasm-wrap-oob-read-att`/`-int`, `-write-att`, `-read16-att`
   — eff in [2^64 - size, 2^64) now traps cleanly instead of wrapping the
   upper-bound check and SIGSEGVing), and the AVX512 {k}-masked / AVX2
@@ -1527,7 +1627,10 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   pointer atomics (`sarcasm-aptr-*-arm` — the x86_64 Phase-2 suite's arm64
   mirror: atomic load/store round-trips, pointer cas incl. the
   NZCV-recompute consumer, the LSE-form atomic RMW annotations, misalignment
-  traps, and a multi-threaded stress) —, the adcs/sbcs flag-liveness case
+  traps, and a multi-threaded stress) —, the `//!` annotation marker on arm64,
+  mixed with `;!`, with `/* //! ... */` block comments and plain `//` comments
+  kept out of annotation bodies and string-literal marker text ignored
+  (`sarcasm-slashannot-arm`, `sarcasm-stringannot-arm`), the adcs/sbcs flag-liveness case
   (`sarcasm-adcs-arm`), the x29-based fixed-alloca region redirect crossed
   with both re-derivation forms (`sarcasm-alloca-redirect-arm`), and the
   `sarcasm-tm-*-arm` trap matrix (73 tests: the six fault categories crossed
@@ -1635,7 +1738,7 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   per-width OOB traps (`sarcasm-fp-oob-bh-arm`/`-s-arm`/`-d-arm`/`-q-arm`/
   `-pair-arm`/`-ld2-arm`/`-st4-arm`, `sarcasm-neon-oob-arm`,
   `sarcasm-half-oob-arm`).
-- 219 rejection tests (`sarcasm-reject-*`, 135 x86_64, 84 aarch64 — the `-arm` ones
+- 225 rejection tests (`sarcasm-reject-*`, 139 x86_64, 86 aarch64 — the `-arm` ones
   cover the ARM64-only rejections). Each directory carries exactly ONE `.s` file
   (compileFailure manifest), so every rejected input is proven rejected
   individually rather than one file's rejection masking another's. Families:
@@ -1659,11 +1762,20 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   indirect marker overriding the call/jmp code-target exemption), and the
   direct-call/branch body-validation rejections (`-call-nosig` — an unannotated
   direct call, matching arm64's `-call-nosig-arm`; `-indbranch-reg` — a
-  register-target `jmp *%rax`, matching `-indbranch-reg-arm`; `-tailcall` — a
+  register-target `jmp *%rax`, matching `-indbranch-reg-arm`;
+  `-indbranch-mem` — a memory-target `jmp *(%rax)`, rejected by the same
+  indirect-branch check as the register form; `-tailcall` — a
   branch to a non-local label, matching `-tailcall-arm`),
   AT&T-style parens operands in Intel-syntax input (`-intel-attmem`,
   `-intel-attmem-fp`, `-intel-enqcmd`), the ambiguous unsized narrowing
-  convert (`-cvt-unsized`), the high-byte setcc destination (`-setcc-ah` —
+  convert (`-cvt-unsized`), the marker-spelling rejections —
+  `-shannot-blank-att` (`#! load ptr` alone on a line, rejected like the `;!`
+  form), `-shannot-unrec-att` (a `#!` body must still be a known annotation)
+  and `-slashannot-att` (`//!` is not an x86_64 marker, so the text stays in
+  the code part and fails to parse); the arm64 twins `-shannot-arm` (`#!` is
+  not an arm64 marker, so the label ends up without a signature) and
+  `-slashannot-blank-arm` (`//! load ptr` alone on a line) —, the high-byte
+  setcc destination (`-setcc-ah` —
   the web model has no subregister view and the renderer always names the low
   byte, so `sete %ah` would silently write `%al`, and `movzbl %ah` is
   unencodable so the widening rewrite cannot apply), and

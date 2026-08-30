@@ -1,0 +1,12 @@
+return:
+  success
+only-on-platform:
+  aarch64
+output-includes:
+  - "stringannot arm ok 7"
+  - "a //! b"
+  - "a ;! b"
+  - "a #! b"
+  - "x //! y ;! z"
+  - "trailing marker ;!"
+  - "//! at start ;! in middle #! at end"

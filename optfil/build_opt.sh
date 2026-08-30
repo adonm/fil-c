@@ -451,13 +451,13 @@ cd ..
 rm -rf pizlonated-dash
 hash -r
 
-tar -xf $FILCSRC/projects/bash-5.2.32/pizlonated-bash.tar.gz
+tar -xf $FILCSRC/projects/bash-5.3/pizlonated-bash.tar.gz
 cd pizlonated-bash
 CC="/opt/fil/bin/filcc -w" CXX="/opt/fil/bin/fil++ -w" ./configure --prefix=/opt/fil \
     --without-bash-malloc \
     --with-installed-readline \
     bash_cv_strtold_broken=no \
-    --docdir=/opt/fil/share/doc/bash-5.2.32
+    --docdir=/opt/fil/share/doc/bash-5.3
 make -j `nproc`
 make -j `nproc` install
 cd ..

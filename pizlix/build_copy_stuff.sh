@@ -86,7 +86,7 @@ cp -v \
     mg-3.7.tar.gz \
     mpc-1.3.1.tar.gz \
     mpfr-4.2.1.tar.xz \
-    ncurses-6.5.tar.gz \
+    ncurses-6.6.tar.gz \
     ninja-1.12.1.tar.gz \
     openssl-3.3.1.tar.gz \
     patch-2.7.6.tar.xz \

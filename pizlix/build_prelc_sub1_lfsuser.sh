@@ -172,8 +172,8 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf m4-1.4.19
 
-tar -xf ncurses-6.5.tar.gz
-cd ncurses-6.5
+tar -xf ncurses-6.6.tar.gz
+cd ncurses-6.6
 sed -i s/mawk// configure
 mkdir -v build
 cd build
@@ -199,7 +199,7 @@ ln -sv libncursesw.so $LFS/yolo/lib/libncurses.so
 sed -e 's/^#if.*XOPEN.*$/#if 1/' \
     -i $LFS/yolo/include/curses.h
 cd ..
-rm -rf ncurses-6.5
+rm -rf ncurses-6.6
 
 tar -xf bash-5.3.tar.gz
 cd bash-5.3

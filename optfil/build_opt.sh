@@ -362,8 +362,8 @@ cd ..
 rm -rf pcre2-10.47
 hash -r
 
-tar -xf $FILCSRC/pizlix/ncurses-6.5.tar.gz
-cd ncurses-6.5
+tar -xf $FILCSRC/pizlix/ncurses-6.6.tar.gz
+cd ncurses-6.6
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --mandir=/opt/fil/share/man \
     --with-shared \
@@ -376,8 +376,8 @@ CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --enable-overwrite
 make -j `nproc`
 make -j `nproc` DESTDIR=$PWD/dest install
-install -vm755 dest/opt/fil/lib/libncursesw.so.6.5 /opt/fil/lib
-rm -v dest/opt/fil/lib/libncursesw.so.6.5
+install -vm755 dest/opt/fil/lib/libncursesw.so.6.6 /opt/fil/lib
+rm -v dest/opt/fil/lib/libncursesw.so.6.6
 sed -e 's/^#if.*XOPEN.*$/#if 1/' \
     -i dest/opt/fil/include/curses.h
 cp -av dest/* /
@@ -386,9 +386,9 @@ for lib in ncurses form panel menu ; do
     ln -sfv ${lib}w.pc /opt/fil/lib/pkgconfig/${lib}.pc
 done
 ln -sfv libncursesw.so /opt/fil/lib/libcurses.so
-cp -v -R doc -T /opt/fil/share/doc/ncurses-6.5
+cp -v -R doc -T /opt/fil/share/doc/ncurses-6.6
 cd ..
-rm -rf ncurses-6.5
+rm -rf ncurses-6.6
 hash -r
 
 tar -xf $FILCSRC/pizlix/readline-8.3.tar.gz

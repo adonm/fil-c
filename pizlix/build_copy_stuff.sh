@@ -96,7 +96,7 @@ cp -v \
     psmisc-23.7.tar.xz \
     python-3.12.5-docs-html.tar.bz2 \
     Python-3.12.5.tar.xz \
-    readline-8.2.13.tar.gz \
+    readline-8.3.tar.gz \
     sed-4.10.tar.xz \
     setuptools-72.2.0.tar.gz \
     shadow-4.16.0.tar.xz \

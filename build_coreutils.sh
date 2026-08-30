@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/coreutils-9.5
+cd projects/coreutils-9.11
 extract_source
 FORCE_UNSAFE_CONFIGURE=1 CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ \
     ./configure --prefix=$PWD/../../../pizfix

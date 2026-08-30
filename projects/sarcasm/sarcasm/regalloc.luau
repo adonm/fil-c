@@ -181,7 +181,24 @@ function regalloc.color(insns, temps, opts)
 	opts = opts or {}
 	-- Per-target register set (caller-supplied); K is the color count.
 	local ALLOCATABLE = opts.allocatable or error("regalloc.color: opts.allocatable is required")
-	local K = #ALLOCATABLE
+	-- Reserved colors (opts.reserved = array of register names): colors some OTHER
+	-- precolored temp owns exclusively for the whole function — today the implicit
+	-- counter web's fixed rcx (loop/loopl/jrcxz/jecxz). A reserved color is removed
+	-- from the color pool (no virtual temp is ever ASSIGNED it) and coalescing into
+	-- any precolored temp OF that color is blocked (no virtual temp can INHERIT it
+	-- by aliasing an entry-unpack or argument-marshal move either — both would let
+	-- the counter's `movq $n, %rcx` silently destroy the coalesced value, e.g. a
+	-- pointer argument's capability lower that the fast CC delivers in rcx).
+	-- Precolored temps themselves keep their fixed color: the counter web must live
+	-- in rcx, and argument-marshal physical temps still carry values INTO rcx at
+	-- calls (the transform saves/restores the counter around every call).
+	local reservedSet = {}
+	if opts.reserved then for _, r in opts.reserved do reservedSet[r] = true end end
+	local pool = {}
+	for _, r in ALLOCATABLE do
+		if not reservedSet[r] then table.insert(pool, r) end
+	end
+	local K = #pool
 	local blocks = buildCFG(insns)
 	local liveOutOf = computeLiveness(insns, blocks)
 
@@ -409,9 +426,13 @@ function regalloc.color(insns, temps, opts)
 		else
 			local canCoalesce
 			if precolored(u) then
-				canCoalesce = true
-				for w in adjacent(v) do
-					if not ok(w, u) then canCoalesce = false break end
+				-- A reserved fixed color is never up for grabs: block the coalesce
+				-- (the move stays a real move) so the virtual side cannot inherit it.
+				canCoalesce = not reservedSet[temps[u].precolor]
+				if canCoalesce then
+					for w in adjacent(v) do
+						if not ok(w, u) then canCoalesce = false break end
+					end
 				end
 			else
 				canCoalesce = conservative(u, v)
@@ -481,7 +502,7 @@ function regalloc.color(insns, temps, opts)
 		local t = table.remove(selectStack)
 		onStack[t] = nil
 		local okColors = {}
-		for _, r in ALLOCATABLE do okColors[r] = true end
+		for _, r in pool do okColors[r] = true end
 		for _, w in adjList[t] do
 			local aw = getAlias(w)
 			if coloredNodes[aw] or precoloredSet[aw] then
@@ -489,7 +510,7 @@ function regalloc.color(insns, temps, opts)
 			end
 		end
 		local chosen
-		for _, r in ALLOCATABLE do
+		for _, r in pool do
 			if okColors[r] then chosen = r break end
 		end
 		if not chosen then

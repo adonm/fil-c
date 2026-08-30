@@ -11,5 +11,4 @@ f:                              ;! long(ptr)
 	call	*myglobal
 	ret
 	.size	f, .-f
-	.comm	myglobal,8,8
 	.section	.note.GNU-stack,"",@progbits

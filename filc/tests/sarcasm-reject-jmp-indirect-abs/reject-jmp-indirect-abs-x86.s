@@ -11,5 +11,4 @@ f:                              ;! long(ptr)
 	movq	%rdi, %rax
 	jmp	*myglobal
 	.size	f, .-f
-	.comm	myglobal,8,8
 	.section	.note.GNU-stack,"",@progbits

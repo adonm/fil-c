@@ -1058,6 +1058,12 @@ function M.make(ctx)
 		local base = isa.baseMnemonic(node.stmt.mnemonic)
 		local fpe = fp.lookup(string.lower(node.stmt.mnemonic))
 		if fpe and fpe.noCheck then emit(node); return true end
+		-- Multi-byte padding NOPs (nop/endbr64/nopw/nopl) are zero-effect, and a
+		-- padding operand like 0x0(%rax,%rax,1) is a dummy encoding hint, NOT a
+		-- memory access: pass through with no access check (the frame rewrite
+		-- already declined to virtualize the operand; without this the dummy mem
+		-- operand would be bounds-checked as a real access below).
+		if base == "nop" then emit(node); return true end
 		-- fnstsw/fstsw with a register destination write ONLY %ax (the encoding is
 		-- hardwired): pin the access to physical rax and copy out, rather than
 		-- letting regalloc rename the operand into an invalid `fnstsw %dx`.

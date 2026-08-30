@@ -7,5 +7,4 @@ f:                              ;! void(ptr, ptr)
 	movq	%rsi, myglobal
 	ret
 	.size	f, .-f
-	.comm	myglobal,8,8
 	.section	.note.GNU-stack,"",@progbits

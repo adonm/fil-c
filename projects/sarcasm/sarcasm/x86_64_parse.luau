@@ -31,12 +31,41 @@ do
 		REG[w[i]] = { num = i - 1, width = 16 }
 		REG[b[i]] = { num = i - 1, width = 8 }
 	end
-	REG["ah"] = { num = 0, width = 8, parseOnly = true }  -- high byte (rare); parse-only alias for reg 0
+	-- The high-byte aliases ah/ch/dh/bh (the bytes 8-15 of rax/rcx/rdx/rbx — a
+	-- separate x86 encoding from the low-byte al/cl/dl/bl). They parse so every
+	-- input gets ONE clean rejection (x86_64_isa.classify: only the low byte of a
+	-- register is modeled) instead of masquerading as bare symbols and dying with
+	-- the misleading "memory access with a symbolic address" error. parseOnly
+	-- keeps them out of the canonical-name fill (NAMES), so regName/canonical
+	-- behavior stays byte-identical and the canonical names for (width=8, num) are
+	-- the low-byte al/cl/dl/bl — these aliases can never become canonical.
+	REG["ah"] = { num = 0, width = 8, parseOnly = true }
+	REG["ch"] = { num = 1, width = 8, parseOnly = true }
+	REG["dh"] = { num = 2, width = 8, parseOnly = true }
+	REG["bh"] = { num = 3, width = 8, parseOnly = true }
 end
+
+-- Segment registers (encoding numbers, per the SDM Sreg encoding): recognized as
+-- their OWN register class so they stop masquerading as bare symbols. This is
+-- load-bearing in BOTH directions: a move INTO one (`movw %ax, %fs`) is rejected
+-- by fp.unsafeReject (a segment-register write cannot be proven safe), while a
+-- move FROM one (`movl %fs, %eax`) passes through as an ordinary (unknown-value)
+-- definition of the destination web. The segment-QUALIFIED memory spelling
+-- (`%fs:0x28`) is unaffected: classifyReg is called with the exact token
+-- "fs:0x28", which is not in SEG, so that operand still parses as a symbolic
+-- displacement and keeps its existing rejection. These names deliberately do NOT
+-- go into REG: the canonical-names fill (NAMES) is keyed by (width, num) and a
+-- 16-bit "fs" at num 4 would collide with %sp's slot (and make regName
+-- order-dependent).
+local SEG = { es = 0, cs = 1, ss = 2, ds = 3, fs = 4, gs = 5 }
 
 local function classifyReg(name)
 	local low = string.lower(name)
 	if low == "rip" then return { kind = "reg", rc = "rip", name = "rip", width = 64 } end
+	local segNum = SEG[low]
+	if segNum then
+		return { kind = "reg", rc = "seg", num = segNum, width = 16, name = low }
+	end
 	local r = REG[low]
 	if not r then
 		-- Vector/x87 register names (xmm/ymm/zmm/mm/st) get rc="xmm" so downstream (the
@@ -173,6 +202,15 @@ local function parseAttOperandRaw(field)
 	-- memory: disp(base, index, scale)  [disp and any component optional]
 	local pre, inside = string.match(field, "^(.-)%((.*)%)$")
 	if inside ~= nil then
+		-- gas concatenates base/index expressions: `(4096)(%rbx)` means
+		-- `4096(%rbx)`. Rewrite any `(...)(` concatenation into the equivalent
+		-- single group so the standard parse below covers it.
+		while true do
+			local gsubbed = string.gsub(field, "%(([^()]*)%)%(", "%1(")
+			if gsubbed == field then break end
+			field = gsubbed
+		end
+		pre, inside = string.match(field, "^(.-)%((.*)%)$")
 		local mem = { kind = "mem", scale = 1, indirect = indirect }
 		pre = trim(pre)
 		if pre ~= "" then
@@ -181,7 +219,14 @@ local function parseAttOperandRaw(field)
 		end
 		local parts = {}
 		for p in (inside .. ","):gmatch("(.-),") do table.insert(parts, trim(p)) end
-		if parts[1] and parts[1] ~= "" then mem.base = classifyReg(string.sub(parts[1], 2)) end
+		if parts[1] and parts[1] ~= "" then
+			-- A NUMBER in the base position is a displacement (gas: `(4096)` ==
+			-- `4096` — an absolute address), never a register: keeping it as the
+			-- displacement lets classify reject the absolute access precisely
+			-- instead of silently dropping the displacement.
+			mem.base = classifyReg(string.sub(parts[1], 2))
+			if not mem.base and tonumber(parts[1]) then mem.dispVal = tonumber(parts[1]) end
+		end
 		if parts[2] and parts[2] ~= "" then mem.index = classifyReg(string.sub(parts[2], 2)) end
 		if parts[3] and parts[3] ~= "" then mem.scale = tonumber(parts[3]) or 1 end
 		return mem

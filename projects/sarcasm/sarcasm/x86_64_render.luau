@@ -131,6 +131,12 @@ local function renderOperandRaw(node, op, colorNum, syntax)
 				local b = op.base and ("%" .. baseRegName(op.base)) or ""
 				return dtext .. "(" .. b .. ",%" .. baseRegName(op.index) .. "," .. tostring(op.scale or 1) .. ")"
 			end
+			if not op.base then
+				-- A displacement-only memory operand (no base, no index): classify
+				-- rejects it as an absolute address, but the renderer must never
+				-- crash on one regardless (it renders as the bare displacement).
+				return dtext
+			end
 			return dtext .. "(%" .. baseRegName(op.base) .. ")"
 		else
 			if ripBase then return "[rip + " .. disp .. "]" end
@@ -141,6 +147,8 @@ local function renderOperandRaw(node, op, colorNum, syntax)
 			if op.dispVal and op.dispVal ~= 0 then
 				table.insert(parts, (op.dispVal < 0 and tostring(op.dispVal)) or ("+" .. tostring(op.dispVal)))
 			end
+			-- (A displacement-only operand with no base and no index is rejected by
+			-- classify as an absolute address; the renderer still never crashes on it.)
 			local body = parts[1] or ""
 			for k = 2, #parts do
 				local p = parts[k]
@@ -177,10 +185,84 @@ end
 
 local INTEL_PTR = { [1]="BYTE PTR", [2]="WORD PTR", [4]="DWORD PTR", [8]="QWORD PTR" }
 
+-- rel8-reachable trampoline for the rel8-ONLY implicit-counter branches
+-- (`loop`/`loopq`/`loopl` decrement-and-branch and `jrcxz`/`jecxz` branch-on-counter-
+-- zero re-emit verbatim and have NO rel32/abs encoding). Sarcasm's instrumentation —
+-- the pollcheck at a back-edge label, the per-access bounds checks — routinely pushes
+-- the branch target beyond +-127 bytes, and gas then rejects the emitted file with an
+-- opaque "value of ... too large for field of 1 byte" error from the temp .yolo.s.
+-- Sarcasm cannot predict the post-instrumentation displacement (the instrumentation is
+-- injected between the branch and its target by earlier stages), so EVERY such branch
+-- is rewritten at render time, unconditionally, to jump through a nearby trampoline:
+--
+--	loop	.Lsarctramp_<fn>_<n>t    # the original instruction, unchanged semantics
+--	jmp	.Lsarctramp_<fn>_<n>s    # skip past the stub
+--.Lsarctramp_<fn>_<n>t:
+--	jmp	<original target>        # rel32 — always reachable
+--.Lsarctramp_<fn>_<n>s:
+--
+-- The trampoline (stub) label sits 2 bytes ahead of the branch — always within rel8
+-- reach — the skip jmp lands past the stub, and the stub's `jmp T` can be rel32. NO
+-- flag-affecting instruction is added: jmp preserves all flags and loop/jrcxz/jecxz
+-- do not read flags, so both the taken and the fall-through path see the same flags as
+-- before (a dec/jne rewrite is REJECTED as an approach: it would change the flags the
+-- fall-through path observes). Fall-through semantics are unchanged, and the IR-level
+-- instruction plus its original target stay exactly as they are — validateBody,
+-- reachability, liveness, the counter web's rcx use/def/RMW + fixedReg precolor and
+-- the pollcheck-at-back-edge machinery (which lives at the TARGET label, saving and
+-- restoring physical rcx around filc_pollcheck_slow) all still see the original
+-- branch; only the final emitted text changes. <n> is a per-function statement-order
+-- counter (deterministic: renderInsn runs once per FIP node, in emission order), the
+-- function name keeps sites of different functions apart, and the counter is bumped
+-- past any name a user label of this function already uses.
+local trampFn = nil      -- current function's plain name (set by header)
+local trampCounter = 0   -- per-function statement-order trampoline counter
+local trampUsed = nil    -- label names already defined in the current function
+
+local function trampNames()
+	while true do
+		local t = ".Lsarctramp_" .. (trampFn or "?") .. "_" .. trampCounter .. "t"
+		local s = ".Lsarctramp_" .. (trampFn or "?") .. "_" .. trampCounter .. "s"
+		trampCounter += 1
+		if not (trampUsed[t] or trampUsed[s]) then return t, s end
+	end
+end
+
+-- Is this an implicit-counter branch that must go through the trampoline? Only the
+-- supported forms reach the renderer (loopb/loopw and the ZF-consuming loop variants
+-- and jcxz are rejected at classify), but the shape is checked defensively: a label
+-- operand is required (a loop/jcxz with no label target never gets here — validateBody
+-- rejects it first).
+local function isCounterBranch(low)
+	return string.match(low, "^loop[bwlq]?$") ~= nil or low == "jrcxz" or low == "jecxz"
+end
+
 function x86_64_render.renderInsn(node, colorNum, syntax)
 	local mnem = node.stmt and node.stmt.mnemonic or node.mnemonic
 	local ops = node.stmt and node.stmt.operands or node.operands or {}
 	local low = string.lower(mnem)
+
+	-- Bare multi-byte padding NOPs do not assemble (gas rejects the bare mnemonic
+	-- with "invalid instruction suffix for `nop'"), and the operand-ful padding
+	-- forms (nopw 0x0(%rax,%rax,1)) are zero-effect encodings that render verbatim.
+	-- Normalize the bare forms to plain `nop` so the emitted file always assembles.
+	if (low == "nopw" or low == "nopl") and #ops == 0 then
+		return "\tnop"
+	end
+
+	-- The rel8 trampoline for loop/jrcxz/jecxz (see the long comment above). Emitted
+	-- as one renderInsn result: emitFip joins the output lines with newlines, so the
+	-- five-line form lands verbatim in the assembly.
+	if trampUsed and node.stmt and isCounterBranch(low)
+		and ops[1] and ops[1].kind == "sym" then
+		local tgt = renderOperand(node, ops[1], colorNum, syntax)
+		local t, s = trampNames()
+		return "\t" .. low .. "\t" .. t .. "\n"
+			.. "\tjmp\t" .. s .. "\n"
+			.. t .. ":\n"
+			.. "\tjmp\t" .. tgt .. "\n"
+			.. s .. ":"
+	end
 
 	-- A validated `lock` prefix (parser tag; x86_64_isa.classify allows it only
 	-- on exactly-modeled memory-destination RMWs) re-emits ahead of the mnemonic.
@@ -373,6 +455,23 @@ local function att_(rc) return rc.syntax == "att" end
 
 function x86_64_render.header(rc)
 	local out, sigName = rc.out, rc.sigName
+	-- Trampoline state for this function (see the rel8-trampoline comment above):
+	-- statement-order counter restarts at 0 and the used-name set collects every
+	-- label this function's FIP body defines, PLUS every user label of EVERY
+	-- function in the file (rc.tr.fileUserLabels, collected by the driver):
+	-- .Lsarctramp_* names are FILE-GLOBAL assembly symbols, so a user label in
+	-- one function named exactly like another function's generated trampoline
+	-- name would collide in the object (gas: "symbol ... is already defined",
+	-- plus a knock-on rel8 error). Generated names of OTHER functions cannot
+	-- collide with this function's — each embeds its own function name — so the
+	-- per-function statement-order counter stays deterministic.
+	trampFn = rc.tr.name
+	trampCounter = 0
+	trampUsed = {}
+	for n in (rc.tr.fileUserLabels or {}) do trampUsed[n] = true end
+	for _, n in rc.tr.fipNodes do
+		if n.kind == "label" then trampUsed[n.name] = true end
+	end
 	table.insert(out, "\t.text")
 	table.insert(out, "\t.globl\t" .. sigName)
 	table.insert(out, "\t.p2align\t4")

@@ -293,7 +293,15 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   stack-pointer movement**: constant rsp adjustments and push/pop outside the
   prologue/epilogue are rejected (balanced callee-saved save/restore pairs that no
   stack access can observe are the one exception), and dynamic allocation must use the
-  `;! alloca` annotation. `enter` is rejected. A stack slot touched by an
+  `;! alloca` annotation. `enter` is rejected. A body that can FALL OFF ITS END — some
+  control-flow path runs past the last statement without executing `ret` — is rejected
+  on both architectures (the emitted body would otherwise run on into sarcasm's own
+  next emission), as is a branch to the function's own entry name (the entry symbol is
+  renamed away, and re-entering the prologue would grow the frame unboundedly).
+  Top-level (inter-function) content is rejected rather than silently dropped: data
+  under a global or referenced label (`.data`/`.quad` & co), symbol/macro definitions,
+  and instructions or labels outside any function have no annotated signature and no
+  capability context, so they cannot be compiled safely. A stack slot touched by an
   FP/SIMD instruction cannot be virtualized (a slot pseudo-register is not a
   vector register), so it is **materialized**: sarcasm reserves a region in its
   synthesized frame and rewrites the operand to a real `N(%rsp)`, preserving
@@ -431,7 +439,17 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   so accepting the prefix there would silently drop it). What remains
   rejected is only what cannot be checked: instructions with unknowable memory
   effects (syscall/sysenter, port I/O, hlt, wrmsr/rdmsr, cr/dr moves, `int N`
-  for N≠3, string instructions and the rep/xacquire/xrelease prefixes),
+  for N≠3, string instructions and the rep/xacquire/xrelease prefixes, and
+  xchg with a MEMORY operand — an implicitly LOCKED read-modify-write in
+  hardware; register-to-register xchg IS exactly modeled — plus movbe, whose
+  only baseline encodings are byte-swapping memory moves), instructions that
+  change processor state sarcasm cannot model: FSGSBASE
+  (rdfsbase/rdgsbase/wrfsbase/wrgsbase — the runtime owns the fs/gs
+  thread-pointer BASE registers), writes INTO a segment register (plain
+  selector reads pass through; segment-QUALIFIED memory operands like
+  `%fs:0x28` keep the symbolic-address rejection), swapgs, TSX
+  (xbegin/xend/xabort), the CET notrack prefix, setssbsy, SGX
+  encls/enclu/enclv, and skinit,
   accesses that may not
   touch all addressed bytes (gather/scatter, maskmovdqu/maskmovq — their
   implicit DS:rdi memory destination cannot be bounds-checked — and the
@@ -509,21 +527,7 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   interleaved injected runtime calls (signatures whose encoding exceeds imm32
   widen their signature compares with `movabsq`); see `ABI-NOTES-x86.md`'s
   "Floating-point ABI" (arm64 has the analogous v0..v7 scheme — see the ARM64
-  section below). The previously-documented known
-  PRE-EXISTING issues (all reproduced on the unmodified baseline, NOT
-  introduced by the current change) have all been FIXED — see DESIGN.md's
-  "Known pre-existing issues": the regalloc mis-coloring at ≥~13
-  simultaneously-live webs is now caught by a soundness verifier in
-  regalloc.color() that rejects any mis-colored function with a clean error;
-  injected bounds checks clobbering EFLAGS is fixed by a flag-liveness scan
-  that brackets every injected check site with saveFlags/restoreFlags on
-  x86_64 when the program's flags are live; and detect.luau's arch
-  autodetect no longer falls back to ARM64 for register-free x86 input (or
-  input whose only registers are xmm-class, e.g. a lone
-  `movss myglobal, %xmm0`) — detection also keys on vector/x87/opmask
-  register names, the AT&T movz/movs and q-suffix mnemonic families, the
-  sign/byte extension family, and the rep/lock prefixes, and the target can
-  be forced with --x86_64/--arm64/--intel/--at&t. x86_64 sarcasm frames also
+  section below). x86_64 sarcasm frames also
   cannot propagate exceptions (intentional): the x86_64 glue emits function
   origins with can_throw = can_catch = 0, so Fil-C unwinding stops at any
   sarcasm x86_64 frame and a C++ throw in a callee reached from the
@@ -613,19 +617,27 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 801 `filc/tests/sarcasm-*` tests (517
-x86_64, 284 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. The
-`.s` inputs are compiled by `build/bin/clang`, whose driver executes the installed
-`pizfix/bin/sarcasm` (see "Build & install flow" above); `.c` files go through
-clang as usual. The suite compiles every yolo input with sarcasm, links with Fil-C
+All testing is via the Fil-C test suite: the 822 `filc/tests/sarcasm-*` tests (540
+x86_64, 282 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. `.s`
+inputs are assembled through the clang driver's default sarcasm path (the
+`pizfix/bin/sarcasm` minilute entry script; pass `-yolo-assembler` to escape) and
+`.c` files compile with clang. The suite compiles every yolo input with sarcasm, links with Fil-C
 `main`s, and checks results, out-of-bounds/null-cap **traps**, the pointer-store
 capability round-trip, register-indexed access, the callsite resolver, pollchecks,
-GC stress, the annotation-marker spellings (`sarcasm-shannot-att`/`-int` — the `#!`
-marker on x86_64, in both syntaxes, mixed with `;!`, with in-body `#` comments
-stripped from the annotation body and string-literal marker text ignored;
-`sarcasm-stringannot-att` — marker text inside `.asciz`/`.string` payloads never
-fabricates an annotation), exact-width far-pointer/descriptor-table accesses
-(`sarcasm-farptr-att`,
+GC stress, the alloca OBJECT model (`sarcasm-alloca-zero-att`/`-int` — a size=0
+alloca is a valid pointer with no writable bytes, so any store through it traps
+ptr>=upper; `sarcasm-alloca-huge-att`/`-int` — a 1 TiB alloca succeeds with
+working first/last-byte writes; `sarcasm-alloca-escape-att`/`-int` — the alloca
+pointer escapes its asm function and C keeps writing through it after the
+return, matching filcc's C-alloca-escape semantics; `sarcasm-alloca-cross-att`/
+`-int` — advancing alloca A's pointer by exactly A's size, where alloca B would
+sit in a real frame, traps instead of aliasing B), the integer-web-base store
+(`sarcasm-nonptr-store-att`/`-int` — a base web built entirely inside the asm
+from a constant compiles and traps at runtime with a null capability before
+touching memory), and deep bounded recursion under GC churn
+(`sarcasm-recurse-gc-att`/`-int` — 20000 frames, each rooting its incoming
+pointer and its own alloca scratch across a C malloc-churn call, with the
+passed-down pointer returning unchanged), exact-width far-pointer/descriptor-table accesses (`sarcasm-farptr-att`,
 `sarcasm-sidt-att`, and the `sarcasm-oob-lfs-att`/`sarcasm-oob-sidt-att` traps),
 the source-register-width movnti store (`sarcasm-oob-movnti-att`),
 the pinned implicit-register mul/div/cmpxchg family under register pressure
@@ -690,6 +702,7 @@ traps (`sarcasm-oob-aloadptr-att`, `sarcasm-oob-astoreptr-att`,
 `sarcasm-nullcap-astoreptr-att`), the
 BMI1/BMI2/ADX/bsf/bsr/xadd/crc32 exact entries (`sarcasm-bmi-att`),
 and every compile-time rejection (`filc/tests/sarcasm-reject-*` — including the
+segment-qualified memory operand `sarcasm-reject-segmem` and the
 Intel-syntax AT&T-operand rejections `sarcasm-reject-intel-attmem`,
 `sarcasm-reject-intel-attmem-fp`, and `sarcasm-reject-intel-enqcmd`, and the
 ambiguous unsized narrowing convert `sarcasm-reject-cvt-unsized`, the
@@ -778,7 +791,7 @@ AT&T and Intel variants (`-att` / `-int` test pairs). Each `sarcasm-reject-*`
 directory carries exactly ONE `.s` file, so every rejected input is proven rejected
 individually.
 
-The 284 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
+The 282 aarch64 tests (`-arm` singletons) cover the arm64 backend end-to-end:
 the same pointer/trap/call/alloca core as x86_64, plus the arm64-specific
 surface — annotated register-indirect calls `blr xN //! sig(...)`
 (`sarcasm-indirectcall-*-arm`: success, loadptr, sigmismatch, and the failure

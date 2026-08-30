@@ -6,5 +6,4 @@ f:                              ;! long(ptr)
 	movq	%rdi, %rax
 	ret
 	.size	f, .-f
-	.comm	g,8,8
 	.section	.note.GNU-stack,"",@progbits

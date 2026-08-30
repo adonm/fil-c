@@ -364,7 +364,8 @@ local function allocateWithSpilling(tr, target)
 		for t, d in tr.temps do
 			if (d.spillCost or 0) < 1e9 then d.spillCost = math.max(cnt[t] or 1, 1) end
 		end
-		local cr = regalloc.color(buildRaInsns(tr.fipNodes), tr.temps, { allocatable = target.allocatable })
+		local cr = regalloc.color(buildRaInsns(tr.fipNodes), tr.temps,
+			{ allocatable = target.allocatable, reserved = tr.reservedColors })
 		if #cr.spilled == 0 then
 			-- allocation converged; pack spill slots (reuse offsets for non-overlapping slots)
 			tr.numSpillSlots = packSpillSlots(tr, spillBase, numSlots, target)
@@ -387,11 +388,15 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	local glue = target.glue
 	local functions, consumed = splitFunctions(stmts)
 	local archDirectives = {}   -- arm64 only: forwarded .arch/.arch_extension lines
-	if target.arch == "arm64" then
-		-- Top-level (inter-function) content scan — ARM64 ONLY: on x86_64 the
-		-- historical behavior (silently dropping top-level content) is preserved so
-		-- x86 acceptance and output stay byte-identical; the x86 backend rejects
-		-- global REACHES (GOT loads etc.) at the access site instead.
+	do
+		-- Top-level (inter-function) content scan — BOTH ARCHITECTURES, with identical
+		-- semantics. (It was ARM64-only: on x86_64 the historical behavior silently
+		-- dropped top-level content, so a user `.data`/`.quad`/`.globl myglob` block
+		-- vanished while the compile and — when nothing referenced the symbol — the
+		-- link both succeeded: silent wrong behavior, and combined with a
+		-- `leaq myglob(%rip)` reach it hands a raw address to a non-pointer web. The
+		-- x86 backend still rejects global REACHES at the access site; this scan
+		-- rejects the CONTENT itself, exactly like arm64.)
 		-- sarcasm compiles functions only: content a user can OBSERVE — data with a
 		-- global or code-referenced label, symbol/macro definitions, code outside
 		-- functions — must be REJECTED, not silently dropped (a global cannot be
@@ -401,17 +406,30 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		-- keeps detector-probe inputs full of dead .rodata strings working).
 		-- Structural directives (.text/.section headers, .p2align, .cfi_*, .type,
 		-- .size, .ident, .addrsig*, .ltorg, .arch, ...) remain accepted+ignored —
-		-- except .arch/.arch_extension, which are FORWARDED into the output: the
-		-- default `as` target is base armv8-a, so an input that enables ISA
-		-- extensions (crypto, FP16, ...) for the instructions sarcasm passes
-		-- through would otherwise fail to assemble the rewritten file.
+		-- including `.section .note.GNU-stack,"",@progbits` and `.text`, which every
+		-- real input carries — except .arch/.arch_extension on arm64, which are
+		-- FORWARDED into the output: the default `as` target is base armv8-a, so an
+		-- input that enables ISA extensions (crypto, FP16, ...) for the instructions
+		-- sarcasm passes through would otherwise fail to assemble the rewritten file.
 		local globals = {}
 		for _, st in stmts do
 			if st.kind == "directive" and (st.name == ".globl" or st.name == ".global") then
-				local nm = string.match(st.args or "", "^%s*([%w_.$]+)")
-				if nm then globals[nm] = true end
+				-- .globl/.global take a COMMA-SEPARATED name list (gas accepts
+				-- `.globl a, b`). Register EVERY name: the single-name regex
+				-- silently dropped the later names, so a global label they named
+				-- escaped the top-level rejection below and vanished from the
+				-- object (the same file with one name per directive was cleanly
+				-- rejected — an opaque link error instead of a clean diagnostic).
+				-- (.weak/.protected/.internal/.hidden never flow through this scan
+				-- at all — they stay accepted+ignored like other structural
+				-- directives; making them start registering names would change
+				-- their semantics, not fix a drop.)
+				for nm in string.gmatch(st.args or "", "[%w_.$]+") do
+					globals[nm] = true
+				end
 			end
-			if st.kind == "directive" and (st.name == ".arch" or st.name == ".arch_extension") then
+			if target.arch == "arm64" and st.kind == "directive"
+				and (st.name == ".arch" or st.name == ".arch_extension") then
 				table.insert(archDirectives, "\t" .. st.name .. "\t" .. (st.args or ""))
 			end
 		end
@@ -481,6 +499,22 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	local definedFI = {}       -- FI symbols defined here (skip resolver thunks for these)
 	local emittedET = {}       -- generic thunks are per-signature: emit each once per module
 
+	-- File-global user-label name set. Synthesized label names are function-local
+	-- BY CONSTRUCTION (they embed the function name) EXCEPT the x86_64 rel8
+	-- trampoline names .Lsarctramp_<fn>_<n>{t,s}, which are file-global assembly
+	-- symbols: a user label in ONE function named exactly like another function's
+	-- generated trampoline name collides in the object (gas dies on the temp file
+	-- with "symbol ... is already defined" plus a knock-on rel8 error). Collect
+	-- every user label of every function here so the render-stage trampoline
+	-- allocator can bump past all of them (x86_64_render.header seeds its used-name
+	-- set from this; arm64 ignores it).
+	local fileUserLabels = {}
+	for _, fn in functions do
+		for _, st in fn.body do
+			if st.kind == "label" then fileUserLabels[st.name] = true end
+		end
+	end
+
 	for _, fn in functions do
 		local sigDesc = sig.parseSignature(fn.sigAnn)
 		-- Signature class check, arch-aware: float and double are fully supported
@@ -524,6 +558,7 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		local body = {}
 		for _, st in fn.body do table.insert(body, st) end
 		local tr = target.transformFunction(fn.name, sigDesc, body)
+		tr.fileUserLabels = fileUserLabels
 
 		-- allocate registers (spilling to the stack + re-running IRC as needed)
 		local colorResult = allocateWithSpilling(tr, target)

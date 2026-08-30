@@ -65,6 +65,7 @@
 -- stack slots virtualize into pseudo-registers as before.
 
 local x86 = require("./x86_64_isa")
+local x86parse = require("./x86_64_parse")
 local fp = require("./x86_64_fp")
 local sig = require("./sig")
 
@@ -261,11 +262,24 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 
 	-- Control-flow rsp-depth + save-pairing analysis. The abstract state is (depth, saves):
 	-- depth is bytes below the entry rsp ("dyn" when unknown), and saves is the abstract
-	-- stack of outstanding pushes — { name = reg, depth = slot depth } in push order —
-	-- used to prove that every dropped pop restores what a matching dropped push saved.
-	-- transfer maps the state before an instruction to the state after it; merges require
-	-- agreement on both components (a disagreement, or any dynamic-alloca influence,
-	-- yields "dyn" — unprovable).
+	-- stack of outstanding pushes — { name = reg, num = regnum, depth = slot depth,
+	-- redefined = bool } in push order — used to prove that every dropped pop restores
+	-- what a matching dropped push saved. `redefined` records whether the pushed
+	-- register's web was REDEFINED between the push and here (any modeled definition:
+	-- an explicit move, an implicit clobber like cpuid's ebx, ...): the drop-the-pop
+	-- model is only sound while the web still holds the pushed value, so a redefined
+	-- save rejects aliasing slot accesses (the slot holds the value pushed BEFORE the
+	-- redefinition) and its pop's reload is checked for observed uses (see the
+	-- checkLostReload scan in the annotation pass below). transfer maps the state
+	-- before an instruction to the state after it; merges require agreement on both
+	-- components (a disagreement, or any dynamic-alloca influence, yields "dyn" —
+	-- unprovable).
+	local classCache = {}
+	local function classOf(st)
+		local c = classCache[st]
+		if c == nil then c = x86.classify(st); classCache[st] = c end
+		return c
+	end
 	local function truncateSaves(sv, nd)
 		-- Drop save entries whose slots are no longer above rsp (deeper than the new
 		-- depth): after rsp is reset to a known position (`leave` / `movq %rbp, %rsp`) the
@@ -319,7 +333,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			local c = { table.unpack(sv) }
 			table.insert(c, {
 				name = (ops[1] and ops[1].kind == "reg") and ops[1].name or "?",
-				depth = d + 8 })
+				num = (ops[1] and ops[1].kind == "reg") and ops[1].num or nil,
+				depth = d + 8,
+				redefined = false })
 			return d + 8, c
 		end
 		if b == "pop" then
@@ -344,16 +360,95 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			end
 		end
 		if nd < d then sv = truncateSaves(sv, nd) end
+		-- A full-width (8-byte) plain store to a save slot RE-SYNCS the slot with the
+		-- pushed register's web: the hardware slot receives the stored value and the
+		-- save-slot model defines the register's web with exactly that value, so the
+		-- two agree again from here on (a redefinition before the store is harmless —
+		-- the store overwrites both). Clear the save's redefined state for such a
+		-- store; every other access keeps the state from the def-marking below.
+		if b == "mov" and sv ~= "dyn" and #sv > 0 and d == D0 then
+			local mem = nil
+			for _, o in ops do if o.kind == "mem" then mem = o end end
+			if mem and not mem.index and not mem.dispSym and mem.base
+				and (mem.base.rc == "sp" or (usesRbp and mem.base.name == "rbp")) then
+				local w0 = gprStackWidth(m, mem)
+				local off = (mem.dispVal or 0)
+				if mem.base.rc ~= "sp" then off = frameSize + off end
+				if w0 == 8 then
+					local changed = false
+					for _, e in sv do
+						if e.redefined and off == d - e.depth then changed = true break end
+					end
+					if changed then
+						local out = {}
+						for _, e in sv do
+							if e.redefined and off == d - e.depth then
+								table.insert(out, { name = e.name, num = e.num,
+									depth = e.depth, redefined = false })
+							else
+								table.insert(out, e)
+							end
+						end
+						sv = out
+					end
+				end
+			end
+		end
+		-- Any modeled definition of a pushed register breaks the link between its
+		-- outstanding save and the register's CURRENT web: the save's slot still holds
+		-- the value pushed before the redefinition, but the dropped pop would restore
+		-- the save into a register whose web now holds something else. (Never mutate
+		-- the incoming list — it is shared across the fixpoint.)
+		local c = classOf(st)
+		if #c.defs > 0 and sv ~= "dyn" and #sv > 0 then
+			local hit = false
+			for _, e in sv do
+				if not e.redefined then
+					for _, dd in c.defs do
+						if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
+							hit = true break
+						end
+					end
+				end
+				if hit then break end
+			end
+			if hit then
+				local out = {}
+				for _, e in sv do
+					local redefined = e.redefined
+					if not redefined then
+						for _, dd in c.defs do
+							if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
+								redefined = true break
+							end
+						end
+					end
+					table.insert(out, { name = e.name, num = e.num, depth = e.depth,
+						redefined = redefined })
+				end
+				return nd, out
+			end
+		end
 		return nd, sv
 	end
 	local function mergeSaves(a, b)
 		if a == nil then return b end
 		if a == "dyn" or b == "dyn" then return "dyn" end
 		if #a ~= #b then return "dyn" end
+		local grew = false
 		for k = 1, #a do
 			if a[k].name ~= b[k].name or a[k].depth ~= b[k].depth then return "dyn" end
+			if b[k].redefined and not a[k].redefined then grew = true end
 		end
-		return a
+		if not grew then return a end
+		-- A redefinition on ONE incoming path poisons the save for both (the slot
+		-- holds the pre-redefinition value regardless of which path was taken).
+		local c = {}
+		for k = 1, #a do
+			c[k] = { name = a[k].name, num = a[k].num, depth = a[k].depth,
+				redefined = a[k].redefined or b[k].redefined }
+		end
+		return c
 	end
 	local function successors(i)
 		local st = body[i]
@@ -438,10 +533,57 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	end
 
 	-- Annotate.
+	-- A paired pop of a save whose register was redefined between the push and the
+	-- pop still gets DROPPED (the save/restore round-trip is otherwise a no-op), but
+	-- its RELOAD is then lost: hardware loads the pushed value into the register,
+	-- while the web keeps the redefined value. That is invisible until the register
+	-- is OBSERVED after the pop — so walk forward from the pop (CFG, stopping at a
+	-- fresh definition of the register) and reject at the first use that would read
+	-- the wrong value. The standard prologue/epilogue shapes read nothing after the
+	-- epilogue pops and stay accepted.
+	local function checkLostReload(popIdx, save)
+		local work, seen = {}, {}
+		for _, s in successors(popIdx) do table.insert(work, s) end
+		while #work > 0 do
+			local i = table.remove(work)
+			if seen[i] then continue end
+			seen[i] = true
+			local st = body[i]
+			if st.kind ~= "insn" then continue end
+			local c = classOf(st)
+			for _, u in c.uses do
+				if u.kind == "reg" and u.rc == "gpr" and u.num == save.num then
+					error("sarcasm: register " .. save.name .. " is read after the"
+						.. " transient-pad pop that restores its save (the register was"
+						.. " redefined between its push and that pop, so the pop's"
+						.. " reload cannot be modeled and this read would see the"
+						.. " redefined value; read it before the pop or don't redefine"
+						.. " it inside the pad): " .. (st.raw or st.mnemonic))
+				end
+			end
+			local defined = false
+			for _, dd in c.defs do
+				if dd.kind == "reg" and dd.rc == "gpr" and dd.num == save.num then
+					defined = true break
+				end
+			end
+			if not defined then
+				for _, s in successors(i) do table.insert(work, s) end
+			end
+		end
+	end
 	for i, st in body do
 		if st.kind == "insn" then
 			st.x86_prologue = i < prologueEnd
 			st.x86_depth = depthIn[i]
+			-- The outstanding pushed-register save stack at this instruction (or
+			-- "dyn" when the paths disagree, or nil for unreachable code). Consumed
+			-- by the rewrite: a stack access that aliases one of these save slots
+			-- (a `pushq %rbx` inside the prologue pad that has not been popped yet)
+			-- must not virtualize into a plain slot web — the slot's content is
+			-- mirrored by the pushed register's web, because the matching pop (which
+			-- the pairing analysis proves restores exactly this register) is dropped.
+			st.x86_saves = savesIn[i]
 			-- A pop provably restores a matching save only when the incoming abstract save
 			-- stack shows the LAST outstanding push as the same register at the same slot
 			-- depth on every path. Anything else (no outstanding push, a different register
@@ -453,6 +595,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				if sv == "dyn" or d == "dyn" or #sv == 0
 					or sv[#sv].name ~= n or sv[#sv].depth ~= d then
 					st.x86_unpairedPop = true
+				elseif sv[#sv].redefined then
+					checkLostReload(i, sv[#sv])
 				end
 			end
 			if not st.x86_prologue then
@@ -704,7 +848,17 @@ function x86_64_frame.rewrite(st, ctx)
 	end
 
 	-- drop CET marker and frame setup/teardown
-	if b == "nop" and m == "endbr64" then return end
+	if b == "nop" then
+		if m == "endbr64" then return end
+		-- nop/nopw/nopl padding: zero-effect passthrough. Their operand (when
+		-- present — `nopw 0x0(%rax,%rax,1)`) is a dummy encoding hint, NOT a memory
+		-- access, so it must not ride the slot-virtualization / bounds-check
+		-- machinery below: a virtualized slot would render a random web's register
+		-- into the padding encoding, and a dummy (%rsp) operand would be treated as
+		-- a real frame access.
+		emit(st)
+		return
+	end
 	if b == "leave" then return end
 	if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then return end
 	if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then return end
@@ -811,6 +965,110 @@ function x86_64_frame.rewrite(st, ctx)
 			error("sarcasm: " .. m .. " on a stack-frame access is not supported (frame slots"
 				.. " are virtualized as registers and " .. m .. " has no register form): "
 				.. (st.raw or m))
+		end
+		-- Outstanding pushed-register save slots (the transient prologue pad). When a
+		-- `pushq %rbx` sits inside the prologue prefix and has not been popped yet,
+		-- the bytes it saved are NOT an ordinary frame slot: their content is mirrored
+		-- by the pushed register's web, because the matching pop — which the
+		-- save-pairing analysis proves restores exactly this register — is dropped.
+		-- Virtualizing an access that aliases such a slot into an unrelated slot web
+		-- silently desyncs it from the register (a store to the slot would never reach
+		-- the register, and the dropped pop would resurrect the stale pre-push value).
+		-- Model it instead:
+		--   * a full-slot (8-byte) GPR access is rewritten to the register itself: a
+		--     store then defines the pushed register's web (so the dropped pop
+		--     naturally yields the stored value, matching real x86 where the pop
+		--     overwrites the register with the stored value and the pre-push value is
+		--     lost), a read-modify-write operates on that web, and a load — of any
+		--     width, at the slot base — reads it (before any store that IS the pushed
+		--     value);
+		--   * anything else that overlaps a save slot — a partial-width store (the web
+		--     model has no subregister view), a vector/x87 access (it cannot name a
+		--     GPR web), or an instruction whose register form is not exactly modeled
+		--     (checked by classifying the rewritten instruction below) — is rejected.
+		-- Multi-register pads work the same way: the FIRST push sits at the HIGHEST
+		-- address, so displacement (depth - save.depth) selects the slot (0 = most
+		-- recent push, 8 = the one before it, ...). The saved frame pointer (a
+		-- `pushq %rbp` establishing the frame) is not a value slot and never aliases
+		-- here — it sits above the frame and the bounds check rejects accesses to it.
+		local sv = st.x86_saves
+		if sv == "dyn" then
+			-- The save state is unprovable at this (provably frame-base) depth: the
+			-- paths disagree on which registers are pushed, so a store here may alias
+			-- some path's save slot with no provable mapping. Reject rather than guess.
+			error("sarcasm: stack access while the outstanding pushed-register saves are"
+				.. " unprovable (cannot prove which register's save slot this access"
+				.. " aliases): " .. (st.raw or m))
+		end
+		local aliasHit, aliasDisp, aliasW = nil, nil, nil
+		if sv and #sv > 0 and not isFpInsn(fpEntry, st) then
+			local w0 = gprStackWidth(m, mem)
+			if w0 then
+				for _, s in sv do
+					if usesRbp and s.name == "rbp" then continue end  -- saved frame pointer
+					local sd = d - s.depth  -- that save slot's displacement from rsp (>= 0)
+					if off < sd + 8 and off + w0 > sd then
+						aliasHit, aliasDisp, aliasW = s, sd, w0
+						break
+					end
+				end
+			end
+		end
+		if aliasHit then
+			local function aliasReject(why)
+				error("sarcasm: stack access overlapping a pushed register's save slot inside"
+					.. " the transient prologue pad " .. why .. " (the slot's content is the"
+					.. " pushed register's web; use a full 8-byte access or pop the pad"
+					.. " first): " .. (st.raw or m))
+			end
+			if off ~= aliasDisp then
+				aliasReject("at a non-slot-aligned displacement")
+			end
+			if aliasW ~= 8 and ops[1] == mem then
+				-- A narrower store cannot define the register's web (the model has no
+				-- subregister view) while the remaining slot bytes keep the pushed
+				-- value the dropped pop would restore.
+				aliasReject("with a partial-width store")
+			end
+			if aliasHit.redefined and not (ops[1] == mem and aliasW == 8 and b == "mov") then
+				-- The pushed register was redefined between its push and this access:
+				-- the slot holds the value pushed BEFORE the redefinition, while the
+				-- register's web now holds the redefined value — reading the slot (a
+				-- load, or a read-modify-write) would see the wrong value. The ONE
+				-- exception is a full-width plain STORE: it overwrites the slot and
+				-- the model defines the register's web with exactly that value, so
+				-- the slot and the web agree again (the analysis clears the save's
+				-- redefined state from there on).
+				error("sarcasm: stack access overlapping a pushed register's save slot inside"
+					.. " the transient prologue pad whose register was redefined after the"
+					.. " push (the slot still holds the pre-redefinition value, so the"
+					.. " save-slot model cannot express this access; pop the pad first or"
+					.. " don't redefine the register inside it): " .. (st.raw or m))
+			end
+			local parsed = x86parse.classifyReg(aliasHit.name)
+			if not (parsed and parsed.rc == "gpr") then
+				aliasReject("for an unmodelable register")
+			end
+			local regOp = { kind = "reg", rc = "gpr", num = parsed.num,
+				width = aliasW * 8, name = parsed.name }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and regOp or o) end
+			-- The rewritten instruction's REGISTER form must be exactly modeled: the
+			-- conservative first-reg-def fallback (e.g. shld/shrd) would silently
+			-- desync the slot from the register. Classify the rewritten (now
+			-- register-only) instruction; it flags `unknown` for the fallback, and
+			-- anything it rejects outright is rejected with that instruction's own
+			-- precise message.
+			local okC, c2 = pcall(x86.classify, {
+				mnemonic = st.mnemonic, operands = newops, opsize = st.opsize,
+				raw = st.raw, syntax = st.syntax,
+			})
+			if not okC or (c2 and c2.unknown) then
+				aliasReject("by an instruction whose register form sarcasm does not model exactly")
+			end
+			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
+				raw = st.raw, line = st.line, annotation = st.annotation })
+			return
 		end
 		-- Replace the stack-slot memory operand in place with a slot pseudo-register of the
 		-- access width, keeping the original mnemonic. This uniformly handles plain moves

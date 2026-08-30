@@ -122,7 +122,34 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   only fault, an uncatchable-signal safe halt the safety model accepts. An
   explicit operand naming a pinned register renders as the fixed physical
   register, keeping it in sync with the pin. cbw/cwde/cltq need no pinning:
-  codegen rewrites them to a renameable movsxx on the rax web. On arm64 this
+  codegen rewrites them to a renameable movsxx on the rax web. xchg is modeled
+  with the same pin machinery: BOTH register operands are read and written (each
+  receives the other's value), so classify creates a fresh def-site table per
+  register (the def of rax's web must receive rcx's value, the crossing the
+  web/rmw model cannot express — the old conservative first-reg-def fallback
+  silently dropped the swap into allocation-order-dependent garbage), emitPinned
+  copies both webs into their physical registers, the passthrough xchg swaps the
+  physical registers, and each physical register is copied back out into its
+  register's fresh web; xchg with a MEMORY operand is an implicitly LOCKED
+  read-modify-write in hardware and is rejected ("implicitly locked
+  read-modify-write"), as is any non-GPR operand pair (rsp/xmm exchanges). bswap
+  is a use+def RMW of its ONE register web passed through raw (the conservative
+  fallback defined a fresh web with no use, so the emitted bswap read an
+  uninitialized temp under register pressure) — and only in its r32/r64 forms:
+  the 16/8-bit spellings are not encodable (an 8-bit byte swap would be a
+  no-op; gas: "invalid instruction suffix for `bswap'"), so `bswapw %ax` and
+  `bswapb %al` are rejected at classify ("bswap requires a 32-bit or 64-bit
+  register operand (bswapw/bswapb are not encodable)") instead of dying in the
+  temp .yolo.s; movbe is rejected outright (it
+  only exists as a byte-swapping move to/from memory; the register-to-register
+  spelling is not a baseline x86-64 encoding and the memory forms are not
+  modeled). Multi-byte padding NOPs (nop/endbr64/nopw/nopl) are a zero-effect
+  class: baseMnemonic maps them all to "nop" (no def/use effects), the frame
+  rewrite passes them through verbatim (their operand — `nopw 0x0(%rax,%rax,1)`
+  — is a dummy encoding hint, NOT a memory access, so it must not be
+  bounds-checked or virtualized), codegen's lowerSpecial skips the access check
+  for them, and the renderer normalizes the bare forms (which gas rejects with
+  "invalid instruction suffix") to plain `nop`. On arm64 this
   is where the NEON/FP semantics live: per-mnemonic def/use classification
   (the VEC_PURE_WRITE / VEC_DST_READ / lane-insert families, fmov's
   GPR<->vector roles, the safe unknown-mnemonic default — read all NEON
@@ -233,7 +260,33 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   xsave/x87-state/pcmpestri-family/implicit-GPR ops umwait/tpause
   —/implicit-memory-operand ops/monitoring-class umonitor (a memory range the
   checker cannot size)/AMX tiles (a strided, tile-config-dependent
-  footprint)/far control transfers).
+  footprint)/far control transfers/FSGSBASE rdfsbase-rdgsbase-wrfsbase-wrgsbase
+  (they read or write the fs/gs thread-pointer BASE registers the runtime owns —
+  a canonical wrfsbase silently replaces fs.base with no fault and TLS just
+  breaks; the rd forms leak the thread pointer)/swapgs (same gs.base
+  ownership)/TSX xbegin-xend-xabort (transactional control flow and memory the
+  checker cannot model; the xbegin LABEL form is rejected as the instruction it
+  is, not mistaken for a branch)/setssbsy (CET shadow-stack write through the
+  implicit SSP)/SGX encls-enclu-enclv (implicit eax/rbx/rcx operands plus
+  enclave-controlled memory effects)/skinit (privileged SVM
+  launch)/`notrack` (the CET prefix changes indirect-branch tracking for the
+  instruction that follows; parsed as a mnemonic it used to die on the
+  misleading "symbolic address" error)). Segment-register WRITES are rejected
+  too: the parser classifies %es/%cs/%ss/%ds/%fs/%gs as their own operand class
+  (rc="seg") instead of bare symbols, and any instruction whose destination is
+  one (`movw %ax, %fs`, `mov %ax, %fs`, `movq %rax, %fs`, ...) is rejected — a
+  bad selector raises an unconverted hardware fault. PUSH/POP of a segment
+  register is rejected with its OWN message ("push/pop of a segment register is
+  not supported (it transfers the segment selector, which the checker does not
+  model)") because a push only READS the selector — the old routing reported it
+  as a write — and a pop's selector load rides the stack push/pop machinery;
+  modeling either through the frame machinery is not worth it, while genuine
+  selector writes keep the write-specific message. Plain selector READS
+  (`movl %fs, %eax`) pass through: the destination web is defined with the
+  selector's value, which is sound (the emitted instruction writes the web's
+  allocated register), and segment-QUALIFIED memory operands (`%fs:0x28`,
+  Intel `fs:[0x28]`) are untouched — they still parse as symbolic displacements
+  and keep their existing rejections.
 - `*_frame.luau`   — frame policy: drop the input's frame setup/teardown, virtualize
   stack-pointer/frame-pointer-relative slots, reject stack-address escapes. (arm64
   also virtualizes NEON/FP stack slots into the raw-byte GPR slot webs — including
@@ -387,6 +440,45 @@ transient save pairs inside the prologue prefix, so such a pop can no longer mas
 as balancing the frame-pointer save. Epilogue restores of prologue saves, balanced
 shrink-wrapped pairs, and verified-teardown pops all pair exactly and keep being
 dropped.
+
+While a prologue-pad push is OUTSTANDING (e.g. `pushq %rbx` before the first frame
+touch, popped only after), the bytes it saved are NOT an ordinary frame slot: their
+content is mirrored by the pushed register's web, because the matching pop — proven to
+restore exactly this register — is dropped. The rewrite therefore maps every stack
+access at displacement (depth - save.depth) — 0 = the most recent push, 8 = the one
+before it (the FIRST push sits at the HIGHEST address) — onto that register's web
+instead of a slot web: a full 8-byte GPR store defines the register's web (the dropped
+pop then naturally yields the stored value, matching real x86 where the pop overwrites
+the register with the stored value and the pre-push value is lost), a read-modify-write
+operates on that web, and a load of any width at the slot base reads it (before any
+store that is the pushed value). Anything else that overlaps a save slot is rejected:
+a partial-width store (the web model has no subregister view, while the remaining slot
+bytes keep the value the dropped pop restores), a vector/x87 access (it cannot name a
+GPR web), an instruction whose register form is not exactly modeled (the rewritten
+instruction is re-classified; the conservative first-reg-def fallback would desync
+slot and register), and any access while the save state is unprovable ("dyn" — the
+paths disagree on what is pushed, so no provable mapping exists). Virtualizing such an
+access into an unrelated slot web instead used to miscompile silently: a store to
+`(%rsp)` never reached the register and the dropped pop resurrected the stale pre-push
+value (real x86 returned 0x4141414141414141; sarcasm returned the pre-push value).
+The saved FRAME POINTER (a `pushq %rbp` establishing the frame) is not a value slot
+and never aliases here — it sits above the frame, where the bounds check already
+rejects accesses.
+
+ACCEPTANCE GAP (conservative, deliberate — soundness first): when a pad-pop's reload
+is unmodeled (a `redefined` save whose pop is dropped but whose lost reload is judged
+observable — see the checkLostReload walk in x86_64_frame), the analysis rejects
+instead of stopping the walk at a re-push of the same save. Stopping there would be
+UNSOUND: at the next iteration's re-push, the register's web does not hold the
+hardware-faithful value (hardware restored the caller's value via the pop, while the
+model's web still holds the body's last value), so the re-push would write that wrong
+value into the new save slot — and a later slot access, or a use before the register
+is redefined after the re-push, would silently observe the stale web value instead of
+the hardware value. A standard save/restore around a loop-body load
+(`pushq %rbx; movq (%rdi),%rbx; ...; popq %rbx; loop`) is therefore conservatively
+rejected because the lost-reload walk crosses the back edge; restructure by not
+saving/restoring the same register inside the loop — let sarcasm's own callee-saved
+handling preserve it across the loop.
 
 While rbp is the frame pointer it is a stack register (rbp = rsp + frameSize), so
 reading it as a VALUE — `movq %rbp, %rax`, arithmetic on it, or using it as a memory
@@ -955,6 +1047,104 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   exist on arm64 (`blr` is register-only), so the x86 `call *mem` rejection
   has no arm64 analog.
 - loops (back-edges from the CFG) -> insert a pollcheck at the loop header.
+- X86_64 implicit-counter support (`loop`/`loopq`/`loopl`, `jrcxz`, `jecxz`):
+  the counter is an IMPLICIT register operand the emitted instruction always
+  operates on physical rcx, so the counter's (unified use+def+RMW) web is
+  PRECOLORED to physical rcx (fixedReg from classify -> temps[t].precolor in
+  the transform) — the modeled decrement/branch must land in the register the
+  hardware actually decrements/tests. Two invariants make the precolor SOUND
+  (both were soundness gaps before they were closed):
+  - The counter's fixed color is EXCLUSIVE for the whole function (transform
+    collects the fixedReg webs and hands the color set to regalloc's
+    `reserved` option): rcx is removed from the allocator's color pool and
+    coalescing into any precolored temp OF a reserved color is blocked, so no
+    other web can ever be ASSIGNED rcx or INHERIT it by aliasing an entry-unpack
+    or argument-marshal move. This de-precolors the entry/dense-arg webs the
+    fast CC seeds from rcx (a pointer argument's capability lower at dense
+    slot 2, an int argument's intval at dense slot 2): their entry unpack move
+    (rcx -> allocated web) becomes a real copy and regalloc spills/reloads them
+    like any web. Without this, a counter web defined while a pointer
+    argument's capability LOWER web was still live silently destroyed the
+    lower (the IRC's George criterion coalesced the lower into the pinned
+    physical rcx) and every later bounds check read the COUNTER as the
+    capability lower. Nested loops with two counters are hardware-faithful:
+    each counter def is a modeled rcx web def and all counter webs alias the
+    same physical register exactly as the hardware register does.
+  - Annotated CALLS in a counter function split into three classes, each with
+    its own handling of physical rcx:
+    * POINTER-returning annotated calls (direct and indirect, `retIsPtr`): the
+      counter is NOT preserved — the call DEFINES the counter web from the
+      result's LOWER web right after the call's result unpacking. Under the FIP
+      CC the callee delivers a pointer result's lower in retLo = rcx, so
+      hardware rcx after the call IS the returned lower; a saved pre-call
+      counter value no longer exists on hardware (the callee's return destroyed
+      it), and restoring it would stomp the returned lower — a `loop` behind a
+      ptr-returning call then counted down stale garbage forever and a jrcxz
+      took the wrong branch. The wire is a plain copy (rcx already holds this
+      value, so it changes no hardware behavior); it makes the MODELED web
+      match the register. The lower web is the callee's modeled capability
+      lower (a real object base, or zero for an unmodeled result) — sarcasm
+      never delivers an arbitrary asm-written rcx value as a returned lower,
+      because the caller roots every call-result lower into a GC root slot and
+      the GC marks filc_object_for_lower(lower) blindly (a fabricated lower
+      would crash the next safepoint).
+    * INJECTED runtime calls (pollcheck slow path, filc_allocate, the aux/barrier
+      slow paths, the atomic pointer operations): the counter IS preserved
+      (save/restore of the counter web through a fresh scratch web, which, being
+      live ACROSS the call, the allocator keeps out of every caller-saved
+      register — callee-saved or spilled). Hardware has no such call at all, so
+      preserving the counter around it is definitionally exact.
+    * NON-pointer-returning annotated calls (direct and indirect): the counter
+      IS preserved the same way. This matches plain hardware only when the
+      callee leaves rcx alone — sarcasm cannot see the callee's internal rcx
+      usage, and the arg marshal writes dense rcx (a call's 4th GPR argument
+      word, or a pointer argument's lower at dense slot 2) BEFORE the call,
+      which plain hardware does not do. This residue is documented,
+      deterministic, and the kill-model alternative (not preserving at all) was
+      REJECTED: it diverges more from plain hardware on the existing
+      sarcasm-loop-call tests (hardware counts 15; the kill-model counts 25,
+      because plain hardware leaves the pre-call counter alone while the
+      kill-model let the marshal's dense-rcx write reset it). Without the
+      preserve, an annotated call in the counter's live range reset the counter
+      every iteration (a `loop` countdown whose body calls never terminated).
+    Every pollcheck in a counter function preserves rcx — the counter's OWN back
+    edge passes its web explicitly (loopHeaderRcx), any other header (a GC-churn
+    loop whose back edge is a plain `jmp`, a CAS retry loop) falls back to the
+    representative counter web; a pollcheck at a non-counter back edge otherwise
+    lost rcx to filc_pollcheck_slow. The noreturn fail stubs need no save.
+    Functions WITHOUT counters reserve nothing and emit nothing — their output
+    is unchanged.
+- X86_64 rel8-counter branches (`loop`/`loopq`/`loopl`, `jrcxz`, `jecxz`) are
+  rewritten at RENDER time, unconditionally, through a rel8-reachable
+  TRAMPOLINE (x86_64_render): these instructions re-emit verbatim and have NO
+  encoding other than rel8, while the instrumentation (the pollcheck at a
+  back-edge label, the per-access bounds checks) routinely pushes their target
+  beyond +-127 bytes — gas then rejected the whole file with an opaque "value
+  of ... too large for field of 1 byte" from the temp .yolo.s. Sarcasm cannot
+  predict the post-instrumentation displacement, so every such branch is
+  emitted as `loop .Lsarctramp_<fn>_<n>t` / `jmp .Lsarctramp_<fn>_<n>s` /
+  `.Lsarctramp_<fn>_<n>t:` / `jmp <original target>` / `.Lsarctramp_<fn>_<n>s:`
+  — the trampoline label is 2 bytes ahead (always in rel8 reach), the skip jmp
+  lands past the stub, and the stub's `jmp` can be rel32. NO flag-affecting
+  instruction is added (jmp preserves all flags; loop/jcxz do not read them —
+  a dec/jne rewrite is REJECTED: it would change the flags the fall-through
+  path observes), fall-through semantics are unchanged, and the IR-level
+  instruction plus its original target stay untouched (validateBody,
+  reachability, liveness, the counter web's rcx use/def/RMW + precolor and the
+  pollcheck-at-back-edge machinery all still see the original branch — the
+  trampoline sits at the jump site, the pollcheck at the label site). `<n>` is
+  a per-function statement-order counter, bumped past any name a user label of
+  the function already uses AND past any user label name anywhere in the FILE
+  (the .Lsarctramp_* symbols are file-global: a user label in one function named
+  exactly like another function's generated trampoline name otherwise collides
+  in the object — gas dies on the temp file with "symbol ... is already
+  defined" plus a knock-on rel8 error; generated names of different functions
+  cannot collide with each other since each embeds its own function name), so
+  synthesized labels are unique and
+  deterministic. (`sarcasm-loop-big-att`/`-int` — a 6-checked-load countdown
+  whose back edge used to overflow rel8 — and `sarcasm-jrcxz-big-att`/`-int`
+  — far-target jrcxz sites with taken and not-taken paths exercised — cover
+  it; `sarcasm-trampname-att`/`-int` covers the file-global collision.)
 - alloca annotations (`;! alloca size (x)` / `;! alloca result (x)`, or `;! alloca result
   size=N`) -> a GC allocation via filc_allocate, not real stack memory.
 - fabricate prologue: SOV check + filc_frame push (prev,origin,roots) + callee-saved.
@@ -1060,6 +1250,7 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   Label-target branches inside the function (loop back-edges, `jmp
   .Llabel`/`1b`) keep working. All of this closes the same unvalidatable
   control-flow hole.
+<<<<<<< HEAD
 - (x86_64) explicit high-byte operands — the `%ah` subregister gap: sarcasm's
   web model has no subregister view, and `ah` and `al` both parse to the SAME
   web (register 0, width 8; see x86_64_isa.luau), while the renderer names the
@@ -1078,6 +1269,58 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   but their support makes hand-written `%ah` idioms reachable where they
   previously had no reason to appear (see the EFLAGS bullet under
   "Known pre-existing issues").
+=======
+- A branch to the function's OWN ENTRY NAME (`jmp f` from inside `f`) is
+  rejected on BOTH architectures (shared validateBody branch-target check): the
+  entry label is in the body's local-label set, but the entry symbol itself is
+  renamed away, so the branch would only die at link time ("undefined
+  reference") — and if it did link, re-entering the prologue would re-run the
+  SOV check against a perturbed rsp and grow the frame unboundedly.
+- A body that can FALL OFF ITS END is rejected on BOTH architectures: a shared
+  reachability worklist over the raw body's statement indices (unconditional
+  label branches go only to their target; conditional branches also fall
+  through; `ret` stops a path; every other statement — calls and indirect forms
+  included — falls through) proves whether the index one past the last
+  statement is reachable, i.e. whether some control-flow path runs past the end
+  of the body without executing `ret`. The emitted FIP body would then fall
+  through into sarcasm's own next emission (the generic-entry thunk or a fail
+  stub) and execute through caller-garbage registers, so the body is rejected
+  at compile time (`sarcasm: function 'f' can fall off the end of its body;
+  every control-flow path must end with a ret instruction: ...`). A body
+  ending in an infinite loop (its last branch jumping back to a loop header)
+  has NO reachable fall-off and stays accepted, as does any body whose every
+  path returns. This runs before the frame pass, whose control-flow walk only
+  understands validated bodies. One conservative consequence: a call to a
+  noreturn function (`call exit@PLT ;! void(int)`) is still just a call — it
+  falls through — so a body whose ONLY exit is such a call is rejected;
+  restructure it with a `ret` after the call (unreachable but present) or an
+  explicit infinite loop.
+- Top-level (inter-function) content is scanned on BOTH architectures with
+  identical semantics (it was arm64-only: x86_64 silently DROPPED top-level
+  content, so a user `.data`/`.quad`/`.globl myglob` block vanished while the
+  compile — and, when nothing referenced the symbol, the link — succeeded).
+  Data under a global or referenced label, symbol/macro definitions
+  (`.equ`/`.set`/`.macro`/`.comm`/...), instructions outside any function, and
+  labels outside any function are rejected; provably dead content (an
+  unreferenced, non-global local label and its data bytes) is dropped, and
+  structural directives (`.text`, `.section .note.GNU-stack,"",@progbits`,
+  `.p2align`, `.cfi_*`, `.type`, `.size`, ...) stay accepted+ignored.
+- On X86_64, instructions that manipulate processor state sarcasm cannot model, or
+  that touch memory the checker cannot see, are rejected with clean `sarcasm:`
+  errors (the full per-instruction reasoning lives in the transform bullet below
+  that lists "the only rejected instructions"): FSGSBASE
+  (rdfsbase/rdgsbase/wrfsbase/wrgsbase — the Fil-C runtime owns the fs/gs
+  thread-pointer BASE registers); writes INTO a segment register (the parser
+  classifies %es/%cs/%ss/%ds/%fs/%gs as their own operand class; plain selector
+  READS such as `movl %fs, %eax` pass through soundly, and segment-QUALIFIED
+  memory operands like `%fs:0x28` / Intel `fs:[0x28]` keep the symbolic-address
+  rejection); `swapgs`; TSX (`xbegin`/`xend`/`xabort`); the CET `notrack`
+  prefix; `setssbsy` (a shadow-stack write through the implicit SSP); SGX
+  `encls`/`enclu`/`enclv`; `skinit`; `movbe` (its only baseline encodings are
+  byte-swapping MEMORY moves, which are not modeled); and `xchg` with a MEMORY
+  operand (an implicitly LOCKED read-modify-write in hardware — while
+  register-to-register `xchg` IS exactly modeled).
+>>>>>>> 28d32f70fe5a (Find and fix bugs in sarcasm.)
 - Exception propagation through sarcasm x86_64 frames: NOT SUPPORTED (intentional,
   for now). The x86_64 glue emits every function origin with personality_getter = 0
   (`.quad 0`) and can_throw = can_catch = has_setjmps = 0 (`.byte 0/0/0`), so Fil-C
@@ -1279,6 +1522,44 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   * umonitor — has no implicit GPR (its address is the explicit operand), but
     it arms address-monitoring hardware on a memory range whose extent cannot
     be bounds-checked;
+  * FSGSBASE (rdfsbase/rdgsbase/wrfsbase/wrgsbase, any register form) — the
+    fs/gs thread-pointer BASE registers are owned by the Fil-C runtime: a
+    canonical wrfsbase silently replaces fs.base (no fault; TLS breaks for the
+    whole thread) and the rd forms leak the thread pointer;
+  * swapgs — swaps the gs.base thread-pointer base the runtime owns (silent
+    corruption, no fault);
+  * TSX (xbegin — both the label form and the no-operand form — xend, xabort)
+    — transactional control flow and memory semantics the checker cannot
+    model; on TSX-less hardware the encodings are #UD, an unconverted signal;
+  * setssbsy — a CET shadow-stack write through the implicit shadow-stack
+    pointer (memory the checker cannot see);
+  * encls/enclu/enclv — SGX enclave instructions with implicit eax/rbx/rcx
+    operands and enclave-controlled memory effects;
+  * skinit — privileged AMD SVM launch (same class as hlt/wrmsr);
+  * writes INTO a segment register (`movw %ax, %fs`, `mov %ax, %fs`,
+    `movq %rax, %fs`, and the other five segment registers) — a bad selector
+    raises an unconverted hardware fault; the parser classifies
+    %es/%cs/%ss/%ds/%fs/%gs as their own operand class (rc="seg") so the
+    destination is visible instead of parsing as a bare symbol that passed
+    through raw. Plain selector READS (`movl %fs, %eax`) pass through soundly
+    (the destination web is defined with the selector's value and the emitted
+    instruction writes the web's allocated register), and segment-qualified
+    memory operands (`%fs:0x28`) keep their own symbolic-address rejection.
+    PUSH/POP of a segment register (any of the six, AT&T or Intel) is rejected
+    with its own accurate message — a push only READS the selector and a pop's
+    selector load rides the stack push/pop machinery, so neither is a
+    destination write; the selector transfer is what the checker does not
+    model;
+  * `notrack` — the CET prefix changes indirect-branch tracking for the
+    instruction that follows (and the parser used to treat it as a mnemonic
+    with the real instruction as a bare-symbol operand, dying on the
+    misleading "symbolic address" error);
+  * xchg with a memory operand — an implicitly LOCKED read-modify-write in
+    hardware (the lock happens with or without a `lock` prefix) that is not
+    one of the exactly-modeled memory RMWs (register-to-register xchg IS
+    modeled — see the x86_64 backend notes); and movbe — a byte-swapping move
+    that only exists to/from memory (the register-to-register spelling is not
+    a baseline x86-64 encoding; gas only accepts it as an APX instruction);
   * AMX tile instructions (tileloadd/tilestored/ldtilecfg & co) — a tile
     load/store touches a strided, palette-configuration-dependent footprint
     (up to 16 rows x 64 bytes) that cannot be bounds-checked as a single
@@ -1319,10 +1600,14 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     indirect-call bullets). Exempt: bare code-target operands (call/jmp/jcc/
     loop*/xbegin, incl. numeric local labels), lea (address arithmetic, no
     dereference — `leaq myglobal, %rax` materializes the address as a
-    value, like the supported `leaq myglobal(%rip), %rax`), $imm, and
-    segment-register moves (%gs & co — the parser does not classify segment
-    registers, so they parse as bare symbols; a mov to/from one is a
-    register move, never an absolute memory operand);
+    value, like the supported `leaq myglobal(%rip), %rax`), $imm, and plain
+    segment-register moves (AT&T `%gs` & co — the parser classifies segment
+    registers as their own operand class rather than as absolute memory
+    operands, so a selector READ like `movl %fs, %eax` is a register move,
+    never a memory access; a WRITE into a segment register is its own
+    rejection, a segment-QUALIFIED memory operand like `%fs:0x28` is a
+    symbolic-address rejection, and an Intel-syntax bare `fs` without a
+    qualifier still reads as a bare symbol and rejects as such);
   * an Intel PTR size annotation that CONTRADICTS the ISA-determined memory
     access width (`vmovdqu64 DWORD PTR [mem], zmm0` — the emitted instruction
     encodes the 64-byte width regardless of the annotation) — rejected on the
@@ -1385,6 +1670,7 @@ mis-colored function with a clean error. That is a detection backstop, not a
 correction: the mis-coloring itself is not repaired or prevented, but no
 mis-colored code can reach the assembler.
 
+<<<<<<< HEAD
 - regalloc could mis-color a function with ≥~13 simultaneously-live webs: the
   same web rendered in two different registers at different points, silently
   corrupting the value (the trigger was a sufficiently large interference
@@ -1435,6 +1721,43 @@ mis-colored code can reach the assembler.
   native-flag contract and stay un-wrapped (see the EFLAGS bullet in the
   transform section).
 - detect.luau's architecture autodetect used to fall back to ARM64 for a
+=======
+- regalloc can mis-color a function with ≥~13 simultaneously-live webs: the
+  same web is rendered in two different registers at different points,
+  silently corrupting the value. The trigger is a sufficiently large
+  interference graph under coalescing pressure; smaller web counts are
+  unaffected.
+- injected bounds checks clobber EFLAGS: the capability/bounds-check sequence
+  sarcasm emits before a checked memory operand does not preserve the flags
+  register. Quantified in the audit: the injected sequence leaves CF = (address
+  < upper) — i.e. CF=1 after every IN-bounds access — and OF=0, so a program
+  that sets a flag and consumes it ACROSS a checked memory operand reads the
+  check's residue, not its own flag: `clc; adcxq (checked mem), %rax` silently
+  adds one extra carry (CF was already 1 when the adcx executed), and `lahf`
+  after a checked access observes a wrong AH byte. Register-only flag chains
+  (no checked memory operand between the flag-setter and the flag-consumer)
+  are fine. `lahf` inherits this AND has its own modeling gap: it passes
+  through raw with no def/use model, so (a) the AH it reads is the injected
+  check's flag residue when a checked memory operand sits between the
+  program's flag-setting instruction and the lahf (probed: ground truth
+  AH=0x97, sarcasm AH=0xff), and (b) the %ah write is invisible to the web
+  model — the old rax web is neither killed nor updated, so a later reader of
+  that web disagrees with real x86 whenever the web is not colored rax. The
+  one-line fix for the clobbering is flag liveness on x86: implement
+  saveFlags/restoreFlags (pushfq/popfq) in the x86_64 codegen module so the
+  transform's existing `withFlagSave`/`flagsLiveFrom` machinery (currently
+  ARM64-only — on x86 `flagCapable` is false and `withFlagSave` is a
+  passthrough) brackets every injected check that sits between a live
+  flag-setter and its consumer; `lahf` additionally needs a full-web RMW of
+  rax (its effect is a partial write of the colored register).
+- `monitor` with a wild %rax passes unchecked by design: MONITOR reads/writes
+  no memory, so there is nothing to bounds-check and the implicit rax address
+  is deliberately NOT modeled as a memory operand (documented in the x86_64
+  backend notes and in x86_64_isa) — arming the address-monitoring hardware on
+  a wild address can only fault, an uncatchable-signal safe halt the safety
+  model accepts.
+- detect.luau's architecture autodetect falls back to ARM64 for a
+>>>>>>> 28d32f70fe5a (Find and fix bugs in sarcasm.)
   register-free x86 input (e.g. a lone `rep movsb` with no % registers and
   no .intel_syntax/PTR/bracket markers), which then failed later —
   confusingly — at `as`; likewise for x86 input whose ONLY registers are
@@ -1480,27 +1803,32 @@ mis-colored code can reach the assembler.
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 801 `filc/tests/sarcasm-*` tests — 517 x86_64 and 284 aarch64 (every test is
-`only-on-platform:` exactly one of them). There is no `use-sarcasm` manifest key: the
-suite compiles every `.s` input with `build/bin/clang`, whose driver executes the
-installed `pizfix/bin/sarcasm` with an explicit `--x86_64`/`--arm64` flag (from the
-compilation target triple — the input alone may not carry enough markers for
-autodetection; see "Command-line target selection" under the driver section), and
-`.c` files go through clang as usual. For each yolo input the suite
+runs the 840 `filc/tests/sarcasm-*` tests (`.s` inputs assemble through the clang
+driver's default sarcasm path, `.c` files via clang) — 558 x86_64 and 282 aarch64
+(every test is `only-on-platform:` exactly one of them). For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
 + that OOB/null-capability inputs trap. The suite breaks down as:
 
-- 480 behavioral tests (305 x86_64, 175 aarch64), most exercised in AT&T and Intel
+- 495 behavioral tests (321 x86_64, 174 aarch64), most exercised in AT&T and Intel
   variants (`-att` / `-int` pairs, aarch64 singletons as `-arm`): pointer-chasing
   workloads in several sizes (`sarcasm-hash(-oob)-*`, `sarcasm-t2-*`,
   `sarcasm-t3valid/t3oob-*`, `sarcasm-medium/large`), null-capability and OOB traps
   (`sarcasm-nullcap-*`, `sarcasm-*-oob-*`, incl. the movnti store checked at its
   source-register width — `sarcasm-oob-movnti-att`), the pointer-store capability round-trip
   (`sarcasm-store(-gcstress)-*`, `sarcasm-ro-store-*`, `sarcasm-ptrret-*`,
-  `sarcasm-nullret-*`), register-indexed access (`sarcasm-regidx(-oob)-*`), RMW
+  `sarcasm-nullret-*`), the integer-web-base store (a GPR web that never
+  received a pointer value — the base is built entirely inside the asm from a
+  constant — compiles and traps at runtime with a null capability before any
+  bytes are touched: `sarcasm-nonptr-store-att`/`-int`), register-indexed
+  access (`sarcasm-regidx(-oob)-*`), RMW
   memory operands (`sarcasm-rmw-*`), calls and the callsite resolver
   (`sarcasm-call(-error)-*`, `sarcasm-asmcall-*`, `sarcasm-funcptr-*`,
-  `sarcasm-recurse-*`; the direct-call RESOLVER paths — a C DATA symbol called
+  `sarcasm-recurse-*`; `sarcasm-recurse-gc-att`/`-int` — 20000 frames of
+  BOUNDED recursion, each frame rooting its incoming pointer and its own alloca
+  scratch across a C malloc-churn call and re-verifying the scratch after the
+  recursive return, the identity of the passed-down pointer proving no
+  frame-chain corruption under FUGC churn in every subrun mode; the
+  direct-call RESOLVER paths — a C DATA symbol called
   as a function must panic at the special-type check, and a deliberately
   mismatched callsite signature must take the resolver's generic buffer-CC
   path — are covered by `sarcasm-call-data-att/-int` and
@@ -1515,7 +1843,15 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   the model claims; `sarcasm-setcc-widen-att`/`-int`), allocas and stack buffers
   (`sarcasm-alloca-*`, `sarcasm-stackbuf-*`, including region redirects via `lea`/`mov`
   re-derivations, the gcc -O0 rbp form, and the `movq %rbp,%rsp; popq %rbp; ret` VLA
-  epilogue), spill-slot packing and frame geometry (`sarcasm-spill(-oob)-*`,
+  epilogue), and the alloca OBJECT model (an alloca is a GC allocation, not
+  frame memory): a size=0 alloca returns a valid pointer whose every store
+  traps ptr>=upper (`sarcasm-alloca-zero-att`/`-int`), a 1 TiB alloca succeeds
+  with working first/last-byte writes (`sarcasm-alloca-huge-att`/`-int`), the
+  alloca pointer ESCAPES its asm function and C keeps writing through it after
+  the return (`sarcasm-alloca-escape-att`/`-int`), and advancing alloca A's
+  pointer by exactly A's size — where alloca B would sit in a real frame —
+  traps instead of aliasing B (`sarcasm-alloca-cross-att`/`-int`)),
+  spill-slot packing and frame geometry (`sarcasm-spill(-oob)-*`,
   `sarcasm-frame-*`: transient prologue-prefix push/pop pairs, the `movq %rbp,%rsp`
   teardown path, rbp-relative red-zone spills, rbp/rsp slot aliasing), rbp as an
   ordinary GPR under frame-pointer omission (`sarcasm-rbpgpr-*`), GNU-as numeric local
@@ -1550,7 +1886,19 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   (`sarcasm-implicit-pin-att`/`-int`), the cmpxchg16b full-alignment trap at an
   in-bounds word-aligned-but-not-16-aligned address through the dedicated
   align>8 fail stub (`sarcasm-misalign-cmpxchg16b-att`), the BMI1/BMI2 exact entries
-  (`sarcasm-bmi-att`), the not-readonly CanWrite traps on plain/RMW/FP stores
+  (`sarcasm-bmi-att`), the dual-direction register xchg in both operand orders
+  under register pressure (`sarcasm-xchg-att`/`-int`), the single-web bswap RMW
+  (64- and 32-bit, round-trip, under pressure — `sarcasm-bswap-att`/`-int`),
+  the transient-prologue-pad save-slot modeling (a store to `(%rsp)` while a
+  `pushq %rbx` sits in the pad defines the pushed register's web so the dropped
+  pop yields the stored value: `sarcasm-pad-slot-store-att`/`-int` — the audit
+  repro shape asserting 0x4141414141414141 through the popped register, plus
+  store-then-store; load-before-store and narrow loads reading the pushed then
+  the stored value: `sarcasm-pad-slot-load-att`/`-int`; a two-register pad with
+  per-slot mapping (first push = higher address) plus the plain-slot control
+  shape: `sarcasm-pad-two-att`/`-int`), and the zero-effect padding-NOP
+  passthrough (`sarcasm-nops-att`/`-int` — operand-ful nopw/nopl pass through
+  verbatim, bare forms render as plain `nop`), the not-readonly CanWrite traps on plain/RMW/FP stores
   to read-only objects (`sarcasm-ro-plain-store-att`/`-int`,
   `sarcasm-ro-rmw-att`, `sarcasm-ro-fp-store-att`), and pollchecks/GC stress
   (`sarcasm-pollcheck-*`, `sarcasm-*-gcstress*`), the EFLAGS-preservation suite —
@@ -1567,7 +1915,12 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   (`sarcasm-pressure-att`), the annotation-marker spellings — `#!` on x86_64 in
   both syntaxes, mixed with `;!`, with in-body `#` comments stripped from the
   body (`sarcasm-shannot-att`/`-int`) and string-literal marker text ignored
-  (`sarcasm-stringannot-att`), the eff+size overflow-hole
+  (`sarcasm-stringannot-att`), the loop-structure
+  acceptance pairs (`sarcasm-falloff-loop-ok`, `sarcasm-falloff-arm-loop-ok` —
+  a bounded countdown loop with a back edge and a conditional exit into a `ret`
+  runs to completion, while an infinite-loop body compiled alongside it proves
+  the fall-off rejection still accepts bodies whose every path loops forever),
+  the eff+size overflow-hole
   regressions (`sarcasm-wrap-oob-read-att`/`-int`, `-write-att`, `-read16-att`
   — eff in [2^64 - size, 2^64) now traps cleanly instead of wrapping the
   upper-bound check and SIGSEGVing), and the AVX512 {k}-masked / AVX2
@@ -1742,7 +2095,7 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   per-width OOB traps (`sarcasm-fp-oob-bh-arm`/`-s-arm`/`-d-arm`/`-q-arm`/
   `-pair-arm`/`-ld2-arm`/`-st4-arm`, `sarcasm-neon-oob-arm`,
   `sarcasm-half-oob-arm`).
-- 225 rejection tests (`sarcasm-reject-*`, 139 x86_64, 86 aarch64 — the `-arm` ones
+- 231 rejection tests (`sarcasm-reject-*`, 146 x86_64, 85 aarch64 — the `-arm` ones
   cover the ARM64-only rejections). Each directory carries exactly ONE `.s` file
   (compileFailure manifest), so every rejected input is proven rejected
   individually rather than one file's rejection masking another's. Families:
@@ -1770,7 +2123,20 @@ runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct r
   `-indbranch-mem` — a memory-target `jmp *(%rax)`, rejected by the same
   indirect-branch check as the register form; `-tailcall` — a
   branch to a non-local label, matching `-tailcall-arm`),
-  AT&T-style parens operands in Intel-syntax input (`-intel-attmem`,
+  the body-termination and entry-re-entry rejections (`-falloff`/`-falloff-arm`
+  — a conditional branch over the only `ret`, so some path falls off the end of
+  the body; `-jmp-self` — a branch to the function's own entry name), and the
+  top-level content rejections (`-topdata` — a `.data`/`.quad` block under a
+  global label outside any function, x86_64 joining arm64's scan),
+  the thread-pointer/selector/transaction rejections (`-wrfsbase` — FSGSBASE
+  reading or writing the fs/gs thread-pointer bases the runtime owns;
+  `-seg-write` — `mov %ax, %fs`, a write into a segment register the parser
+  now recognizes as its own operand class; `-segmem` — a segment-QUALIFIED
+  memory operand (`movq %fs:0x28, %rax`, the stack-canary idiom), rejected
+  like any symbolic memory access; `-swapgs`; `-tsx` — `xbegin` with
+  its fallback label, `xend`, `xabort`; `-notrack` — the CET prefix), the
+  exchange rejections (`-xchg-mem` — xchg with a memory operand is an
+  implicitly locked read-modify-write), AT&T-style parens operands in Intel-syntax input (`-intel-attmem`,
   `-intel-attmem-fp`, `-intel-enqcmd`), the ambiguous unsized narrowing
   convert (`-cvt-unsized`), the marker-spelling rejections —
   `-shannot-blank-att` (`#! load ptr` alone on a line, rejected like the `;!`

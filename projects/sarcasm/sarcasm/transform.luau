@@ -54,8 +54,8 @@ end
 -- tables) or between functions (data sections) — cannot be given a capability
 -- automatically, so it is rejected rather than silently dropped. Shared with the
 -- driver-level top-level scan in sarcasm.luau. (The IN-BODY use is enforced on BOTH
--- architectures via validateBody below; the TOP-LEVEL scan remains ARM64-only — see
--- the arch gate in sarcasm.luau.)
+-- architectures via validateBody below; the TOP-LEVEL scan also runs on BOTH
+-- architectures with identical semantics — see sarcasm.luau's compile.)
 local DATA_DIRECTIVES = {}
 for _, d in {
 	".word", ".xword", ".quad", ".long", ".int", ".short", ".hword",
@@ -91,13 +91,30 @@ transform.DATA_DIRECTIVES = DATA_DIRECTIVES
 --    rejected (only the function-entry label carries the signature — any other
 --    non-instruction annotation would be silently dropped);
 --  * data-emitting directives inside the body are rejected;
+--  * a branch to the function's own entry name is rejected (the entry symbol is
+--    renamed away, so the branch would only fail at link time; re-entering the
+--    prologue would also re-run the SOV check with a perturbed rsp and grow the
+--    frame unboundedly);
+--  * every control-flow path must reach a `ret`: a body that can fall off its end
+--    (a shared reachability worklist over statement indices) is rejected, since the
+--    emitted FIP body would fall through into sarcasm's own next emission (the
+--    generic-entry thunk / fail stubs) and execute through caller-garbage registers.
+--    A body ending in an infinite loop has NO reachable fall-off and stays accepted.
 --  * arch-specific forged-address instructions are rejected (arm64:
 --    adrp/adr/ldr-literal via cgm.checkForgedAddress; x86_64: the absolute-address
 --    forms are rejected in classify instead).
-local function validateBody(body, cgm)
+local function validateBody(body, cgm, funcName)
 	local localLabels = {}
-	for _, st in body do
-		if st.kind == "label" then localLabels[st.name] = true end
+	-- label name -> { statement index... } for the reachability walk below. Numeric
+	-- labels (1f/1b) are already rewritten to plain unique symbols by numlabel.resolve
+	-- before this pass runs, so this map covers every branch-target spelling.
+	local labelIndices = {}
+	for i, st in body do
+		if st.kind == "label" then
+			localLabels[st.name] = true
+			if not labelIndices[st.name] then labelIndices[st.name] = {} end
+			table.insert(labelIndices[st.name], i)
+		end
 	end
 	for _, st in body do
 		if st.kind == "blank" then
@@ -160,6 +177,15 @@ local function validateBody(body, cgm)
 						.. " (computed goto / raw absolute branches are not supported): " .. raw)
 				end
 				for _, t in c.targets do
+					if t == funcName then
+						-- The entry label is in localLabels (it is body[1]) but the entry
+						-- symbol itself is renamed away, so this branch would only die at
+						-- link time. Worse, if it did link, re-entering the prologue would
+						-- re-run the SOV check against a perturbed rsp and grow the frame
+						-- unboundedly. Reject at compile time instead.
+						error("sarcasm: branch to '" .. t .. "' re-enters this function's entry;"
+							.. " re-executing the prologue cannot be proven safe: " .. raw)
+					end
 					if not localLabels[t] then
 						error("sarcasm: branch to '" .. t .. "' leaves the function"
 							.. " (a tail call); tail calls are not yet supported: " .. raw)
@@ -200,12 +226,83 @@ local function validateBody(body, cgm)
 			if cgm.checkForgedAddress then cgm.checkForgedAddress(st) end
 		end
 	end
+
+	-- Control-flow reachability (runs AFTER the per-statement checks above, so an
+	-- instruction with an unprovable or misannotated form reports its own precise
+	-- error before this pass ever runs; by the time we get here every branch target
+	-- is a local label and `classify` has already been proven safe on every insn).
+	-- Worklist over statement indices starting at the first statement:
+	--   * unconditional label branch (control == "branch") -> only its label target;
+	--   * conditional branch (control == "condbranch", incl. cbz/tbz/b.cond) ->
+	--     its label target + fall-through;
+	--   * `ret` (control == "return") -> nothing;
+	--   * every other statement — instructions (including calls and indirect forms,
+	--     which return to the fall-through), labels, blanks and directives ->
+	--     fall-through.
+	-- If the index one past the last statement is reachable, some control-flow path
+	-- reaches the end of the body without executing `ret`. The emitted FIP body would
+	-- then fall through into sarcasm's own next emission (the generic-entry thunk or a
+	-- fail stub) and execute through caller-garbage registers, so the body is rejected
+	-- at compile time. A body ending in an infinite loop has NO reachable fall-off and
+	-- stays accepted.
+	local class = {}
+	for _, st in body do
+		if st.kind == "insn" then class[st] = cgm.classify(st) end
+	end
+	local reachable = {}
+	local work = { 1 }
+	while #work > 0 do
+		local i = table.remove(work)
+		if not reachable[i] then
+			reachable[i] = true
+			if i <= #body then
+				local st = body[i]
+				local fallsThrough = true
+				if st.kind == "insn" then
+					local c = class[st]
+					if c.control == "branch" or c.control == "condbranch" then
+						fallsThrough = (c.control == "condbranch")
+						for _, t in (c.targets or {}) do
+							for _, ti in (labelIndices[t] or {}) do
+								table.insert(work, ti)
+							end
+						end
+					elseif c.control == "return" then
+						fallsThrough = false
+					end
+				end
+				if fallsThrough then table.insert(work, i + 1) end
+			end
+		end
+	end
+	if reachable[#body + 1] then
+		local last = body[#body]
+		local lastRaw = (last and (last.raw
+			or (last.kind == "label" and (last.name .. ":") or nil)
+			or last.text or last.mnemonic)) or "?"
+		error("sarcasm: function '" .. funcName .. "' can fall off the end of its body;"
+			.. " every control-flow path must end with a ret instruction: " .. lastRaw)
+	end
 end
 
 function transform.transformFunction(name, sigDesc, body, backend)
 	local cgm = backend.cg          -- codegen module (static config + make)
 	local framePolicy = backend.frame  -- per-arch frame policy (analyzeFrame + rewrite)
 	local cc = cgm.cc
+
+	-- Reject unannotated/indirect calls, non-local/non-label branches (including a
+	-- branch to this function's own entry name), bodies that can fall off their end,
+	-- unknown or misplaced annotations, in-body data, and forged addresses BEFORE ANY
+	-- other pass runs (see validateBody). SHARED: BOTH backends set
+	-- cgm.strictBodyValidation (the x86_64 backend used to keep its historical
+	-- acceptance of raw calls, which silently miscompiled calls to same-file annotated
+	-- callees). This must precede the frame analysis below: the frame pass's control
+	-- flow walk only understands validated bodies (a branch targeting a label at the
+	-- very end of an unvalidated body would index past the last statement), and its
+	-- rewrites strip annotations, so validation must see the original statements.
+	if cgm.strictBodyValidation then
+		validateBody(body, cgm, name)
+	end
 
 	-- Floating-point signature classes (float/double), supported on BOTH backends.
 	-- FP args pass in the arch's vector registers (xmm0..xmm7 on x86_64, v0..v7 on
@@ -310,14 +407,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		return nil
 	end
 
-	-- Reject unannotated/indirect calls, non-local/non-label branches, unknown or
-	-- misplaced annotations, in-body data, and forged addresses BEFORE any rewriting
-	-- (see validateBody). SHARED: BOTH backends set cgm.strictBodyValidation (the
-	-- x86_64 backend used to keep its historical acceptance of raw calls, which
-	-- silently miscompiled calls to same-file annotated callees).
-	if cgm.strictBodyValidation then
-		validateBody(body, cgm)
-	end
+	-- (validateBody already ran at the top of this function — before the frame
+	-- analysis and every rewrite — see the comment there.)
 
 	body = framePass.preprocess(body, allocaRegions, framePolicy, sigDesc)
 
@@ -366,6 +457,54 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		temps[nextTemp] = desc or {}
 		return nextTemp
 	end
+
+	-- Implicit-counter instructions (x86 loop/loopq/loopl and jrcxz/jecxz) name the
+	-- register they read/decrement ONLY implicitly: the emitted instruction always
+	-- operates on physical rcx, so the counter's web must LIVE in physical rcx or the
+	-- modeled web and the hardware register silently diverge (a stale counter, a
+	-- loop that never terminates, a jrcxz that branches on garbage). Those operands
+	-- carry fixedReg="rcx" from classify; precolor their (unified RMW) web here so
+	-- the allocator pins it to the physical register.
+	--
+	-- The counter's fixed color is also EXCLUSIVE (all counter webs share one
+	-- physical register — the 32-bit loopl/jecxz spellings fix the low half of the
+	-- same rcx): nothing else may ever occupy rcx while a counter web exists, or a
+	-- coalesced/colored web (e.g. a pointer argument's capability lower, which the
+	-- fast CC delivers in rcx) is silently destroyed by the counter's own
+	-- `movq $n, %rcx`. So the counter webs are collected here: (a) every fixed color
+	-- is RESERVED for the whole function (removed from the allocator's color pool
+	-- and protected against coalescing — see regalloc.luau's `reserved` option),
+	-- which also de-precolors the entry/dense-arg webs the CC seeds from rcx: their
+	-- entry unpack move (rcx -> allocated web) becomes a real copy and regalloc
+	-- spills/reloads them like any web; and (b) the first counter web is kept as
+	-- the representative the transform uses to save/restore physical rcx around
+	-- every call (below). Functions without counters reserve nothing and are
+	-- unchanged. Nested loops with two counters are hardware-faithful: each
+	-- counter def is a modeled rcx web def, and both webs alias the same register
+	-- exactly as the hardware register does.
+	local counterWebs, counterWebSet = {}, {}
+	local function noteFixedRegWeb(r, node)
+		local t = r.fixedReg and node.opTemp and node.opTemp[r] or nil
+		if t then
+			temps[t].precolor = r.fixedReg
+			if not counterWebSet[t] then
+				counterWebSet[t] = true
+				table.insert(counterWebs, t)
+			end
+		end
+	end
+	for _, node in lf.nodes do
+		if node.kind == "insn" and node.opTemp then
+			for _, r in (node.c.uses or {}) do noteFixedRegWeb(r, node) end
+			for _, r in (node.c.defs or {}) do noteFixedRegWeb(r, node) end
+		end
+	end
+	local counterRegs = {}
+	for _, t in counterWebs do counterRegs[temps[t].precolor] = true end
+	local reservedColors = {}
+	for r in counterRegs do table.insert(reservedColors, r) end
+	table.sort(reservedColors)   -- determinism: string-keyed iteration order is not
+	local counterRepWeb = counterWebs[1]   -- nil when the function has no counter
 
 	-- Precolored physical-register temps: ONE node per machine register (as IRC requires).
 	local pregTemps = {}
@@ -540,13 +679,25 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 	end
 
-	-- loop headers (targets of back edges) get a pollcheck
+	-- loop headers (targets of back edges) get a pollcheck. A header whose back edge
+	-- comes from an implicit-counter instruction (loop/loopq/loopl/jrcxz/jecxz) must
+	-- additionally PRESERVE physical rcx across the pollcheck's slow path: the
+	-- counter's web is precolored to rcx (see the fixedReg precolor above), and the
+	-- runtime call clobbers it. loopHeaderRcx records the counter web temp per label.
 	local loopHeaderLabels = {}
+	local loopHeaderRcx = {}
 	for _, node in lf.nodes do
 		if node.kind == "insn" and node.c.targets and #node.c.targets > 0 then
 			for _, t in node.c.targets do
 				local ti = lf.labelToFlow[t]
-				if ti and ti <= node.fi then loopHeaderLabels[t] = true end
+				if ti and ti <= node.fi then
+					loopHeaderLabels[t] = true
+					for _, r in (node.c.uses or {}) do
+						if r.fixedReg and node.opTemp and node.opTemp[r] then
+							loopHeaderRcx[t] = node.opTemp[r]
+						end
+					end
+				end
 			end
 		end
 	end
@@ -642,6 +793,35 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				emitRootStore(loT)
 			end
 		end
+	end
+
+	-- Physical-rcx preservation across EVERY call a counter function emits
+	-- (annotated direct calls, annotated indirect calls, and the injected
+	-- runtime calls: pollcheck slow path, filc_allocate, the aux/barrier slow
+	-- paths, the atomic pointer operations). The counter's web is pinned to
+	-- physical rcx, and rcx is both a fast-CC argument register (a call's 4th
+	-- GPR argument word, or a pointer argument's lower at dense slot 2 — the
+	-- marshalling moves WRITE rcx before the call) and caller-saved (the callee
+	-- destroys it), so an unprotected counter is silently reset/clobbered at the
+	-- first call in its live range (a `loop` countdown whose body calls never
+	-- terminates). The precolored web itself cannot be spilled by the allocator
+	-- (precolored temps are never spill candidates), so the transform brackets
+	-- each call sequence with an explicit save/restore through a fresh scratch
+	-- web: the scratch is live ACROSS the call, so the allocator keeps it out of
+	-- every caller-saved register (callee-saved or spilled) — the same mechanism
+	-- the pollcheck's back-edge save has always used, now uniform. All counter
+	-- webs alias the same physical rcx, so one representative web per sequence
+	-- preserves the register for all of them. Functions without counters emit
+	-- nothing (counterRepWeb is nil). Defined here, BEFORE any call-emitting
+	-- sequence below references it.
+	local function counterGuardArm()
+		if not counterRepWeb then return nil end
+		local scratch = allocTemp({ role = "countersave" })
+		cg.move(scratch, counterRepWeb)
+		return scratch
+	end
+	local function counterGuardRestore(scratch)
+		if scratch then cg.move(counterRepWeb, scratch) end
 	end
 
 	-- access-fail stubs (bookkeeping here; the stub body is arch-specific via cg.failStub).
@@ -926,6 +1106,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- (injected returning runtime call, out of the hot line: preserve the function's
 		-- live FP/SIMD state around it — no-op for GPR-only functions)
 		cg.label(needAux)
+		local rcxSave = counterGuardArm()
 		cg.fpSave()
 		local header = allocTemp({ role = "scratch" })
 		cg.subImm(header, baseLo, 16)
@@ -933,6 +1114,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.move(pColored(cc.rtArg(2)), header)
 		cg.call("filc_object_ensure_aux_ptr_outline", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 		cg.move(aux, pColored(cc.rtRet))
 		cg.jump(barrier)
 		-- do-barrier: filc_store_barrier_for_lower_slow(myth, lower) — but only for a
@@ -940,12 +1122,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- `marking && lower`, and its _slow entrypoint asserts the lower is non-null
 		-- (storing a NULL/integer-derived pointer has no object to barrier).
 		cg.label(doBarrier)
+		local rcxSave = counterGuardArm()
 		cg.branchZero(valLo, storeLbl)
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), valLo)
 		cg.call("filc_store_barrier_for_lower_slow", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 		cg.jump(storeLbl)
 		cg.label(doneLbl)
 	end
@@ -977,8 +1161,16 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	-- pollcheck: myth flags at [myth+8], bits 0xe.
 	local pollCounter = 0
-	local function emitPollcheck()
+	local function emitPollcheck(rcxWeb)
 		pollCounter += 1
+		-- EVERY pollcheck in a function with an implicit counter must preserve
+		-- physical rcx: the slow path is a runtime call, and the counter's web
+		-- lives in rcx. The counter's OWN back edge passes its web explicitly
+		-- (loopHeaderRcx); any other header (a GC-churn loop whose back edge is a
+		-- plain jmp, a CAS retry loop) falls back to the representative counter
+		-- web — all counter webs alias the same physical rcx, so saving through
+		-- any of them preserves the register.
+		rcxWeb = rcxWeb or counterRepWeb
 		local okLbl = ".Lpollok_" .. name .. "_" .. pollCounter
 		local flags = allocTemp({ role = "scratch" })
 		cg.load(flags, vMyth, 8, 1)
@@ -987,11 +1179,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- RETURNING runtime call the source program never saw, so its live FP/SIMD
 		-- state must be preserved around it (fpSave/fpRestore are no-ops when the
 		-- function uses no vector registers).
+		-- An implicit-counter back edge (loop/loopq/loopl/jrcxz/jecxz) also requires
+		-- preserving physical rcx: the counter's web is precolored to rcx and the
+		-- call clobbers it. The value rides the slow path through a fresh scratch
+		-- web (which, being live across the call, the allocator keeps out of the
+		-- clobbered registers); the fast path never touches rcx.
+		local rcxScratch
+		if rcxWeb then
+			rcxScratch = allocTemp({ role = "scratch" })
+			cg.move(rcxScratch, rcxWeb)
+		end
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.leaGlobal(cc.rtArg(2), originSym)
 		cg.call("filc_pollcheck_slow", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		if rcxWeb then cg.move(rcxWeb, rcxScratch) end
 		cg.label(okLbl)
 	end
 
@@ -1038,17 +1241,20 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- filc_load_ptr_atomic_with_manual_tracking_outline(slot) -> old (rtRet=iv,
 	-- rtRetLo=lo). No myth arg, does not allocate, can only panic.
 	local function emitAtomicLoadCall(effTemp, capLoTemp)
+		local rcxSave = counterGuardArm()
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), effTemp)
 		cg.move(pColored(cc.rtArg(2)), capLoTemp)
 		cg.call("filc_load_ptr_atomic_with_manual_tracking_outline",
 			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 	end
 
 	-- filc_store_ptr_atomic_outline(myth, slot, value). Can allocate (creates the
 	-- 16-byte atomic box / ensures aux) => GC safepoint; barriers value internally.
 	local function emitAtomicStoreCall(effTemp, capLoTemp, valIv, valLo)
+		local rcxSave = counterGuardArm()
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), effTemp)
@@ -1059,6 +1265,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)), pColored(cc.rtArg(3)),
 				pColored(cc.rtArg(4)), pColored(cc.rtArg(5)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 	end
 
 	-- filc_strong_cas_ptr_with_manual_tracking(myth, slot, 0, expected, new) -> old.
@@ -1070,6 +1277,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- see codegen's pushStackPtr); on arm64 (AAPCS64) all eight argument words
 	-- fit in x0..x7, so it marshals in registers (cg.casNewInRegs).
 	local function emitAtomicCasCall(effTemp, capLoTemp, expIv, expLo, newIv, newLo)
+		local rcxSave = counterGuardArm()
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), effTemp)
@@ -1090,6 +1298,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.call("filc_strong_cas_ptr_with_manual_tracking", casUses, cg.callerSavedClobbers())
 		if not cg.casNewInRegs then cg.popStackPtr() end
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 	end
 
 	-- filc_xchg_ptr_with_manual_tracking(myth, slot, 0, new) -> old: the exact
@@ -1102,6 +1311,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- the stack only for words seven and eight). Currently only reached from
 	-- the arm64 LSE swp lowering (x86_64 has no swp).
 	local function emitAtomicXchgCall(effTemp, capLoTemp, newIv, newLo)
+		local rcxSave = counterGuardArm()
 		cg.fpSave()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		cg.move(pColored(cc.rtArg(2)), effTemp)
@@ -1114,6 +1324,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				pColored(cc.rtArg(4)), pColored(cc.rtArg(5)), pColored(cc.rtArg(6)) },
 			cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 	end
 
 	-- `;! atomic load ptr`: movq (mem), %reg — the runtime atomic pointer load.
@@ -1426,6 +1637,21 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 		local argTemps = {}
 		for _, r in node.c.uses do if r.argReg then argTemps[r.num] = node.opTemp[r] end end
+		-- The guard arms BEFORE the marshalling: a dense argument word (or a
+		-- pointer argument's lower) rides rcx into the call, which would silently
+		-- reset the counter every iteration. EXCEPTION — a POINTER-returning call
+		-- (retIsPtr): under the FIP CC the callee delivers the result's lower in
+		-- retLo = rcx, so hardware rcx AFTER the call IS the returned lower and
+		-- the saved pre-call counter value no longer exists on hardware (the
+		-- callee's return destroyed it). Restoring it here would stomp the
+		-- returned lower (a `loop` after a ptr-returning call then counted down
+		-- stale garbage — an endless loop, and a jrcxz took the wrong branch).
+		-- So a ptr-returning call skips the preserve and instead DEFINES the
+		-- counter web from the result's lower web right after the result
+		-- unpacking (below) — hardware-exact under the FIP CC.
+		local wireCounterFromLower = cs.retIsPtr and counterRepWeb ~= nil
+		local rcxSave = nil
+		if not wireCounterFromLower then rcxSave = counterGuardArm() end
 		cg.move(pColored(cc.myth), vMyth)
 		local callUses = { pColored(cc.myth) }
 		local fpVecUses = nil
@@ -1456,9 +1682,25 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				if loT then
 					cg.move(loT, pColored(cc.retLo))
 					emitRootStore(loT)
+					if wireCounterFromLower then
+						-- the counter web is pinned to physical rcx, whose hardware
+						-- value after this call is exactly the returned lower:
+						-- define the modeled web from the lower web so the model
+						-- matches the register (a plain copy — rcx already holds
+						-- this value, so it changes no hardware behavior).
+						cg.move(counterRepWeb, loT)
+					end
 				end
 			end
 		end
+		-- The restore sits after the result unpacking: a pointer result's lower is
+		-- delivered in retLo = rcx, so rcx is still a CALL RESULT here — restoring
+		-- the counter before reading it would overwrite the callee's lower with the
+		-- saved counter (the exception edge skips the restore; it never returns).
+		-- A ptr-returning call restored nothing (its counter web was defined from
+		-- the returned lower above, which is what hardware rcx holds); rcxSave is
+		-- nil there and this is a no-op.
+		counterGuardRestore(rcxSave)
 	end
 
 	-- Annotated register-indirect call (`call *%reg ;! sig(...)` on x86_64,
@@ -1529,6 +1771,21 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- yolo argument webs (SysV argument registers), exactly like emitCall.
 		local argTemps = {}
 		for _, r in node.c.uses do if r.argReg then argTemps[r.num] = node.opTemp[r] end end
+
+		-- One guard covers BOTH call paths (fast + generic): the save sits before
+		-- either marshalling, and each path restores right after its own call
+		-- (the noreturn fail stubs need no restore). EXCEPTION — a
+		-- POINTER-returning call (retIsPtr): retLo = rcx is the returned lower on
+		-- BOTH paths (the fast CC returns it in rcx; the generic path unmarshals
+		-- it from the buffer into rcx), so hardware rcx after the call IS the
+		-- returned lower and the saved pre-call counter value no longer exists.
+		-- The call skips the preserve and DEFINES the counter web from the
+		-- result's lower web at the shared unpack below — hardware-exact under
+		-- the FIP CC (the direct-call site does the same; see it for the full
+		-- rationale).
+		local wireCounterFromLower = cs.retIsPtr and counterRepWeb ~= nil
+		local rcxSave = nil
+		if not wireCounterFromLower then rcxSave = counterGuardArm() end
 
 		-- 1. null capability
 		cg.branchZero(fpLo, failL)
@@ -1652,9 +1909,24 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				if loT then
 					cg.move(loT, pColored(cc.retLo))
 					emitRootStore(loT)
+					if wireCounterFromLower then
+						-- the counter web is pinned to physical rcx, whose hardware
+						-- value after this call is exactly the returned lower on
+						-- both paths: define the modeled web from the lower web
+						-- (a plain copy — rcx already holds this value).
+						cg.move(counterRepWeb, loT)
+					end
 				end
 			end
 		end
+		-- Shared restore for BOTH call paths, after the shared result unpacking:
+		-- retLo = rcx is a call RESULT on both paths (the fast CC returns the
+		-- lower in rcx; the generic path unmarshals it from the buffer into rcx),
+		-- so the counter's saved value may only be written back once no consumer
+		-- of the callee's return words remains. A ptr-returning call restored
+		-- nothing (its counter web was defined from the returned lower above);
+		-- rcxSave is nil there and this is a no-op.
+		counterGuardRestore(rcxSave)
 		-- fail stubs (noreturn; emitted at function end): the function-call check
 		-- failure gets the flight pointer (arg0 = P, arg1 = L); the buffer-CC
 		-- ret-size failure gets (arg0 = actual size, arg1 = expected size, arg2 = 0).
@@ -1679,6 +1951,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			allocaSizes[al.name] = sizeTemp
 			return
 		end
+		local rcxSave = counterGuardArm()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		if al.kind == "result" then
 			local sizeTemp = allocaSizes[al.name]
@@ -1694,6 +1967,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.fpSave()
 		cg.call("filc_allocate", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
 		cg.fpRestore()
+		counterGuardRestore(rcxSave)
 		local resultIv = node.defTemps and node.defTemps[1]
 		if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
 		local ret = pColored(cc.rtRet)  -- allocation base; payload = base + 16
@@ -1724,7 +1998,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			if node.name ~= name and not string.match(node.name, "^%.LF[BE]") then
 				emit(node)
 				if loopHeaderLabels[node.name] then
-					withFlagSave(flagsLiveFrom(nodeIndex[node] + 1), emitPollcheck)
+					withFlagSave(flagsLiveFrom(nodeIndex[node] + 1), function()
+						emitPollcheck(loopHeaderRcx[node.name])
+					end)
 				end
 			end
 		elseif node.kind == "other" then
@@ -1913,6 +2189,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		originSym = originSym, numRoots = #rootTemps, funcLine = funcLine, nextTemp = nextTemp,
 		rootTemps = rootTemps, accessOrigins = accessOrigins, calledExterns = externsList,
 		lf = lf, pf = pf,
+		-- Fixed colors of the function's implicit-counter webs (empty unless the
+		-- body contains loop/loopl/jrcxz/jecxz): the allocator removes these from
+		-- its color pool and never coalesces into them, so nothing else can ever
+		-- occupy the counter's physical register (see regalloc.luau's `reserved`).
+		reservedColors = reservedColors,
 		-- FP/SIMD frame-slot region sizes for the layout (0 on arm64 / when no FP
 		-- stack slot was materialized).
 		fpBytes = (fctx and fctx.fp and fctx.fp.bytes) or 0,

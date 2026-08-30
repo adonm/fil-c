@@ -32,6 +32,11 @@ local FIXED = {
 	cmpxchgl = "cmpxchg", cmpxchgq = "cmpxchg",
 	cmpxchg8b = "cmpxchg8b", cmpxchg16b = "cmpxchg16b",
 	endbr64 = "nop", nop = "nop", ud2 = "ud2", ret = "ret", retq = "ret", leave = "leave",
+	-- multi-byte padding NOPs: same zero-effect class as endbr64/nop (their operand,
+	-- when present, is a dummy encoding hint like 0x0(%rax,%rax,1), NOT a memory
+	-- access — see the frame rewrite and lowerSpecial, which pass them through
+	-- without an access check, and the renderer, which normalizes the bare forms).
+	nopw = "nop", nopl = "nop",
 	call = "call", callq = "call", jmp = "jmp", jmpq = "jmp",
 	-- the flag-byte transfers (zero explicit operands; implicit %ah <-> EFLAGS —
 	-- modeled by classify's pinned branch below)
@@ -162,9 +167,13 @@ local COND_JMP = { jcc = true }
 
 -- Label-target control mnemonics baseMnemonic does NOT map to jcc (jcxz/jecxz/
 -- jrcxz already match ^j%a+$): their bare symbol operand is a code target, never
--- an absolute memory operand, so the moffs rejection below exempts them.
-local LABEL_TARGET_MNEM = { loop = true, loope = true, loopz = true, loopne = true,
-	loopnz = true, xbegin = true }
+-- an absolute memory operand, so the moffs rejection below exempts them. (The
+-- ZF-consuming loop variants loope/loopz/loopne/loopnz are rejected outright by
+-- fp.unsafeReject before this ever matters, and xbegin by its own TSX rejection;
+-- they stay listed so the exemption documents every label-target spelling.)
+local LABEL_TARGET_MNEM = { loop = true, loopq = true, loopl = true, loopb = true,
+	loopw = true, loope = true, loopz = true, loopne = true, loopnz = true,
+	xbegin = true }
 
 local function isGpr(op) return op and op.kind == "reg" and op.rc == "gpr" end
 
@@ -225,6 +234,53 @@ function x86.classify(insn)
 	-- like the supported `leaq myglobal(%rip), %rax`).
 	local codeTarget = m == "call" or m == "jmp" or m == "jcc" or m == "lea"
 		or rawMnem == "int" or LABEL_TARGET_MNEM[rawMnem]
+	-- High-byte register operands (%ah/%ch/%dh/%bh, AT&T or Intel spelling): the
+	-- parser maps them to their register's web (nums 0-3, width 8) — the SAME web as
+	-- the low-byte al/cl/dl/bl, because the web model has no subregister view. Every
+	-- modeled instruction names the LOW byte of the colored register (the renderer
+	-- always emits regName(num, 8)), so an instruction that reads or writes the high
+	-- byte would silently touch the low byte (e.g. `xchgb %ah, %bl` would swap %al).
+	-- A high-byte form is also unencodable for several modeled rewrites (the setcc
+	-- widening, movzbl). Reject in EVERY operand position and for EVERY instruction,
+	-- before anything else can silently mis-model it.
+	local HIGH_BYTE = { ah = "al", ch = "cl", dh = "dl", bh = "bl" }
+	local function rejectHighByte(o)
+		if o and o.kind == "reg" and o.width == 8 and HIGH_BYTE[o.name] then
+			local spelling = (insn.syntax == "intel") and o.name or ("%" .. o.name)
+			local lowSpelling = (insn.syntax == "intel") and HIGH_BYTE[o.name]
+				or ("%" .. HIGH_BYTE[o.name])
+			error("sarcasm: high-byte register " .. spelling .. " is not supported"
+				.. " (only the low byte of a register is modeled; use the low-byte"
+				.. " form, e.g. " .. lowSpelling .. "): " .. (insn.raw or rawMnem))
+		end
+	end
+	for _, o in ops do
+		rejectHighByte(o)
+		if o.kind == "mem" then
+			rejectHighByte(o.base)
+			rejectHighByte(o.index)
+			-- A SEGMENT register as the memory base (%fs/%gs/...): segment-relative
+			-- addressing has no capability to bounds-check against (gas itself rejects
+			-- the spelling — `(%fs)' is not a valid base/index expression — and the
+			-- fs/gs BASES belong to the Fil-C runtime, see the wrfsbase rejection).
+			if o.base and o.base.rc == "seg" then
+				error("sarcasm: segment register cannot be a memory operand base"
+					.. " (fs/gs-relative addressing cannot be bounds-checked): "
+					.. (insn.raw or rawMnem))
+			end
+			-- A memory operand with NO base register and NO index is a DISPLACEMENT-
+			-- only (absolute) address: gas assembles `movq (4096), %rax` as
+			-- `mov 0x1000,%rax` — the same un-checkable absolute-access class as the
+			-- moffs forms rejected below. (An index-only form — `(,%rax,8)` — is a
+			-- checked access through the index register and stays supported.)
+			if not o.base and not o.index then
+				error("sarcasm: memory access with an absolute address cannot be"
+					.. " bounds-checked (a memory operand with no base register is a"
+					.. " displacement-only absolute address; global data access is not"
+					.. " yet supported): " .. (insn.raw or rawMnem))
+			end
+		end
+	end
 	for _, o in ops do
 		-- The exemption is about operands that NAME a code target; an
 		-- operand-level indirect marker (`*`) on a sym/absolute operand is an
@@ -282,6 +338,17 @@ function x86.classify(insn)
 	elseif m == "jcc" then
 		control = "condbranch"; targets = {}
 		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
+		-- jrcxz/jecxz branch on their IMPLICIT counter register (rcx, or ecx for the
+		-- 0x67-address-size jecxz; the 16-bit jcxz is not encodable in 64-bit mode and
+		-- is rejected by fp.unsafeReject). The counter read must be modeled or the
+		-- allocator could color the counter's web into some other register while the
+		-- instruction silently tests the (stale) physical rcx. The fixedReg mark makes
+		-- the transform precolor the counter's web to physical rcx, exactly like loop.
+		if rawMnem == "jrcxz" or rawMnem == "jecxz" then
+			local w = (rawMnem == "jecxz") and 32 or 64
+			table.insert(uses, { kind = "reg", rc = "gpr", num = 1, width = w,
+				name = (w == 32) and "ecx" or "rcx", implicit = true, fixedReg = "rcx" })
+		end
 	elseif m == "call" then
 		control = "call"
 		if ops[1] and (isGpr(ops[1]) or ops[1].kind == "mem") then control = "indcall"; useOperand(ops[1]) end
@@ -289,6 +356,39 @@ function x86.classify(insn)
 		control, fallsThrough = "return", false
 	elseif m == "nop" or m == "ud2" or m == "leave" then
 		-- no gpr effects we model (leave restores rsp/rbp; frame handled elsewhere)
+	elseif string.match(m, "^loop[bwlq]?$") then
+		-- LOOP/LOOPQ/LOOPL: a label-target CONDITIONAL branch whose counter is the
+		-- implicit rcx (ecx for the 0x67-address-size loopl spelling). Hardware
+		-- DECREMENTS the counter and branches on the decremented value. This used to
+		-- classify as control="none" with no register effects, which (a) defeated the
+		-- fall-off reachability check — a `loop` to a label near the end of the body
+		-- compiled and executed into sarcasm's own next emission at runtime — (b) left
+		-- the physical rcx decrement unmodeled, silently desyncing any live rcx web
+		-- (hardware 0x1233 after the loop, sarcasm still 0x1234), and (c) let a `loop`
+		-- to a non-local label bypass the branch-target (tail-call) rejection.
+		-- Model it as a conditional branch with USE+DEF+RMW of the implicit counter
+		-- (the decrement always happens; the branch is on the decremented value). The
+		-- use and def deliberately SHARE one operand table: the lift keys opTemp by
+		-- table identity, and the RMW unification is exactly what makes the counter
+		-- flow through the instruction as one web. fixedReg makes the transform
+		-- precolor that web to physical rcx — the modeled decrement must land in the
+		-- register the instruction actually decrements. (The ZF-consuming variants
+		-- loope/loopz/loopne/loopnz are rejected by fp.unsafeReject: injected
+		-- memory-access checks clobber flags, so their pending condition could not be
+		-- honored. See also the jrcxz/jecxz use modeling in the jcc branch above.)
+		if m == "loopb" or m == "loopw" then
+			error("sarcasm: " .. rawMnem .. " is a 16-bit-counter form that is not"
+				.. " encodable in 64-bit mode (use loop, loopq or loopl): "
+				.. (insn.raw or rawMnem))
+		end
+		local w = (m == "loopl") and 32 or 64
+		local cnt = { kind = "reg", rc = "gpr", num = 1, width = w,
+			name = (w == 32) and "ecx" or "rcx", implicit = true, fixedReg = "rcx" }
+		table.insert(uses, cnt)
+		table.insert(defs, cnt)
+		table.insert(rmw, 1)
+		control = "condbranch"; targets = {}
+		for _, o in ops do if o.kind == "sym" then table.insert(targets, o.text) end end
 	elseif m == "cltq" or m == "cbw" or m == "cwde" then
 		-- single-register sign extension (al->ax / ax->eax / eax->rax): an RMW of
 		-- the rax web; codegen's lowerSpecial rewrites it to a renameable movsxx.
@@ -544,6 +644,82 @@ function x86.classify(insn)
 	elseif DST_ONLY[m] then
 		if isGpr(ops[1]) then table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
+	elseif string.match(m, "^bswap[bwlq]?$") then
+		-- BSWAP r32/r64: single-operand byte swap — an RMW of that ONE web, passed
+		-- through raw. (The conservative first-reg-def fallback modeled the operand
+		-- as a pure DEF with no use: the def web collided onto a fresh temp the
+		-- allocator colored freely, so the emitted bswap read an UNINITIALIZED
+		-- register and the operand's real value was silently dropped.) The RMW model
+		-- keeps the web flowing through the instruction, exactly like inc/dec/neg/not.
+		-- A 32-bit bswap zero-extends into the full web, which the identity-RMW model
+		-- expresses truthfully (the web IS the post-instruction register content).
+		-- More than one operand is not an encoding (gas: "number of operands
+		-- mismatch") — reject it here with a message that names the actual problem
+		-- instead of letting the extra operand ride into a downstream assembler
+		-- error.
+		if #ops ~= 1 then
+			error("sarcasm: bswap takes exactly one register operand (it has no"
+				.. " two-operand form): " .. (insn.raw or rawMnem))
+		end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr") then
+			error("sarcasm: bswap takes exactly one register operand (it has no memory"
+				.. " or immediate form): " .. (insn.raw or rawMnem))
+		end
+		-- bswap is r32/r64-ONLY: the 16-bit and 8-bit forms do not exist (the byte
+		-- swap of an 8-bit register is a no-op; gas rejects `bswapw %ax`/`bswapb %al`
+		-- with "invalid instruction suffix for `bswap'"). Reject at classify with a
+		-- message naming the actual problem instead of letting the unencodable
+		-- spelling ride into that downstream assembler error from the temp file.
+		if ops[1].width ~= 32 and ops[1].width ~= 64 then
+			error("sarcasm: bswap requires a 32-bit or 64-bit register operand"
+				.. " (bswapw/bswapb are not encodable): " .. (insn.raw or rawMnem))
+		end
+		table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
+	elseif string.match(m, "^movbe[bwlq]?$") then
+		-- MOVBE exists only as a byte-swapping move to/from MEMORY (m16/m32/m64 <->
+		-- r16/r32/r64). The register-to-register spelling is not a baseline x86-64
+		-- encoding (gas only accepts it as an APX instruction), and the memory forms'
+		-- swap-while-moving RMW shape is not modeled: reject every form instead of
+		-- letting the register form ride the conservative first-reg-def fallback
+		-- (which dropped the source's value) or the memory form ride the generic
+		-- unknown-mnemonic rejection.
+		error("sarcasm: movbe is not supported (a byte-swapping move: the register-to-register"
+			.. " form does not exist in baseline x86-64 and the memory forms are not modeled;"
+			.. " use a load, bswap, store sequence instead): " .. (insn.raw or rawMnem))
+	elseif string.match(m, "^xchg[bwlq]?$") then
+		-- XCHG: BOTH operands are read AND written (each receives the other's value).
+		-- A register-to-register xchg is modeled with the implicit-GPR pin machinery
+		-- (exactly like cmpxchg): emitPinned copies both webs into their physical
+		-- registers, the passthrough xchg swaps the physical registers, and each
+		-- physical register is copied back out into the FRESH web its register's def
+		-- site created — so the def of the first register's web receives the second
+		-- operand's value, which is the hardware dataflow. (The conservative
+		-- first-reg-def fallback defined only the first operand and dropped the swap
+		-- entirely; a plain def+use pair cannot express the crossing without colliding
+		-- both webs into one temp.)
+		--
+		-- A memory-operand xchg is an implicitly LOCKED read-modify-write in hardware
+		-- (the lock happens with or without a `lock` prefix) and is not one of the
+		-- exactly-modeled memory RMWs: reject.
+		if (ops[1] and ops[1].kind == "mem") or (ops[2] and ops[2].kind == "mem") then
+			error("sarcasm: xchg with a memory operand is an implicitly locked read-modify-write"
+				.. " (the hardware locks it even without a `lock` prefix; it is not one of the"
+				.. " exactly-modeled memory RMWs; cannot prove memory safety): " .. (insn.raw or rawMnem))
+		end
+		if not (isGpr(ops[1]) and isGpr(ops[2])) then
+			error("sarcasm: xchg needs two general registers (stack-pointer and vector-register"
+				.. " exchanges are not supported): " .. (insn.raw or rawMnem))
+		end
+		-- fresh table per def occurrence (see the cqo comment above): the def sites are
+		-- new webs, distinct from the use occurrences of the same registers.
+		local function imp(o)
+			return { kind="reg", rc="gpr", num=o.num, width=64, name=o.name, implicit=true }
+		end
+		local d1, d2 = imp(ops[1]), imp(ops[2])
+		table.insert(defs, d1); table.insert(defs, d2)
+		table.insert(uses, ops[1]); table.insert(uses, ops[2])
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+			pin = { uses = { ops[1], ops[2] }, defs = { d1, d2 } } }
 	elseif m == "mov" or m == "movzx" or m == "movsx" or m == "lea" or m == "cmov" or m == "setcc" then
 		-- ops[1] def, ops[2..] use (mem regs used); a store (mem dst) uses the value instead.
 		--
@@ -554,17 +730,10 @@ function x86.classify(insn)
 		-- zero-extension (a 32-bit write zeroes bits 32-63, so the whole web reads
 		-- 0/1 after the pair; the extension writes no flags). A memory destination
 		-- is a complete 8-bit store and needs none of that.
-		if m == "setcc" and isGpr(ops[1]) and ops[1].name == "ah" then
-			-- x86_64_parse maps the high byte `ah` to { num=0, width=8 }, i.e. the
-			-- SAME web as `al`; the renderer names the LOW byte of the colored
-			-- register (regName(num, 8) — there is no subregister model), so
-			-- `sete %ah` would silently write %al. Reject instead of miscompiling.
-			-- (movzbl %ah is also unencodable, so the widening rewrite could never
-			-- be expressed for it either.)
-			error("sarcasm: setcc with the high-byte destination %ah is not supported"
-				.. " (only the low byte of a register is modeled; use the low-byte form,"
-				.. " e.g. `sete %al`): " .. (insn.raw or rawMnem))
-		end
+		-- (A high-byte destination (%ah) is rejected for every instruction by the
+		-- operand scan at the top of classify: the web model has no subregister view
+		-- and movzbl %ah is not even encodable, so the widening rewrite could never
+		-- be expressed for it.)
 		if isGpr(ops[1]) then table.insert(defs, ops[1])
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 		if (ops[1] and ops[1].kind == "mem") and isGpr(ops[2]) then table.insert(uses, ops[2]) end

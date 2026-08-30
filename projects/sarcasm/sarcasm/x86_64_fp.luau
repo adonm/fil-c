@@ -1451,6 +1451,16 @@ local REASON_CRDR = "control/debug register moves are not supported (privileged 
 local REASON_CLZERO = "clzero stores to an implicit memory operand (the 64-byte cache line addressed by rax) that cannot be bounds-checked (cannot prove memory safety)"
 local REASON_XLAT = "xlatb loads from an implicit memory operand (the byte at rbx + al) that cannot be bounds-checked (cannot prove memory safety)"
 local REASON_FARCTL = "far control-transfer instructions (lcall/ljmp) have implicit stack memory effects (a far return-frame push) that cannot be modeled (cannot prove memory safety)"
+local REASON_FSGSBASE = "FSGSBASE instructions (rdfsbase/rdgsbase/wrfsbase/wrgsbase) read or write the fs/gs thread-pointer base registers, which the Fil-C runtime owns (silently corrupting fs.base/gs.base breaks thread-local storage for the whole thread; cannot prove memory safety)"
+local REASON_SEGWRITE = "writes to a segment register (es/cs/ss/ds/fs/gs) change processor state the checker cannot model (a bad selector raises an unconverted hardware fault; cannot prove memory safety)"
+local REASON_SEGXFER = "push/pop of a segment register is not supported (it transfers the segment selector, which the checker does not model)"
+local REASON_SWAPGS = "swapgs swaps the gs.base thread-pointer base, which the Fil-C runtime owns (silently corrupting it breaks thread-local state; cannot prove memory safety)"
+local REASON_TSX = "TSX transactional-memory instructions (xbegin/xend/xabort) have transactional control flow and memory semantics the checker cannot model (an xabort/xbegin fallback path is unmodeled control flow; cannot prove memory safety)"
+local REASON_SETSSBSY = "setssbsy operates on the CET shadow stack through the implicit shadow-stack pointer (memory the checker cannot see or bounds-check; cannot prove memory safety)"
+local REASON_SGX = "SGX enclave instructions (encls/enclu/enclv) have implicit eax/rbx/rcx operands and enclave-controlled memory effects the checker cannot model (cannot prove memory safety)"
+local REASON_NOTRACK = "the CET `notrack` prefix is not supported (it changes indirect-branch tracking for the instruction that follows, which the checker does not model; cannot prove memory safety)"
+local REASON_LOOPZF = "loop's ZF-consuming form branches on the flags left by the PRECEDING instruction, and sarcasm's injected memory-access checks clobber EFLAGS (the documented known issue), so the pending condition could be silently polluted (modeling it cannot be proven sound; use plain `loop`, which branches on the decremented counter instead)"
+local REASON_ADDRSIZE = "an address-size prefix changes the addressing mode of the instruction that follows, which sarcasm does not model (the size-suffixed spelling is supported where one exists, e.g. loopl for the 0x67-address-size `loop`)"
 
 -- Instructions with implicit GPR operands the def/use model cannot express (same
 -- class as pcmpestri/pcmpistri, which the fp table rejects): regalloc could rename
@@ -1460,6 +1470,13 @@ local function implicitGprReason(mnem, list)
 	return mnem .. " has implicit GPR operands (" .. list
 		.. ") that are not modeled (cannot prove memory safety)"
 end
+
+-- push/pop of a segment register (exact mnemonic set — `popcnt` must NOT match a
+-- "^pop" prefix here): a selector TRANSFER, not a write the write-check could name.
+local SEG_PUSHPOP = {
+	push = true, pushw = true, pushl = true, pushq = true,
+	pop = true, popw = true, popl = true, popq = true,
+}
 
 local UNSAFE = {
 	syscall = REASON_SYSCALL, sysenter = REASON_SYSCALL,
@@ -1491,12 +1508,46 @@ local UNSAFE = {
 	-- exactly — see x86_64_isa.classify's implicit-only pinned branch.)
 	umwait = implicitGprReason("umwait", "rax/rdx"),
 	tpause = implicitGprReason("tpause", "rax/rdx"),
+	-- FSGSBASE (the thread-pointer BASE registers, distinct from the selectors):
+	-- wrfsbase with a canonical value silently replaces fs.base (no fault, TLS
+	-- just breaks), wrgsbase does the same to gs.base, and the rd forms leak the
+	-- thread-pointer bases the runtime owns.
+	wrfsbase = REASON_FSGSBASE, wrgsbase = REASON_FSGSBASE,
+	rdfsbase = REASON_FSGSBASE, rdgsbase = REASON_FSGSBASE,
+	-- gs.base swap: the runtime owns gs.base (the myth/thread register).
+	swapgs = REASON_SWAPGS,
+	-- TSX: xbegin (both the label form and the no-operand form — the label is a
+	-- fallback CODE target, never an absolute memory operand, so it must be
+	-- rejected here before the operand classification), xend, xabort.
+	xbegin = REASON_TSX, xend = REASON_TSX, xabort = REASON_TSX,
+	-- CET shadow-stack busy-setter: implicit SSP memory effect (see REASON_SETSSBSY).
+	setssbsy = REASON_SETSSBSY,
+	-- SGX: implicit eax/rbx/rcx leaf/pointer operands plus enclave memory effects.
+	encls = REASON_SGX, enclu = REASON_SGX, enclv = REASON_SGX,
+	-- AMD SVM launch: privileged (like hlt/wrmsr) and rewrites EFER/CR0 state.
+	skinit = REASON_PRIV,
+	-- CET `notrack` prefix (parsed as a mnemonic with the real instruction as its
+	-- operand): reject with its own message rather than the misleading
+	-- "symbolic address" error the bare-symbol operand used to produce.
+	notrack = REASON_NOTRACK,
 	-- umonitor has no implicit GPR (its address is the explicit operand), but it
 	-- arms address-monitoring hardware on a cache-line-sized memory range the
 	-- checker cannot see or bounds-check — and unlike monitor (whose address is
 	-- the implicit rax operand, modeled in classify) a faulting umonitor range
 	-- cannot be attributed to a checked access.
 	umonitor = "umonitor arms address-monitoring hardware on a memory range whose extent cannot be bounds-checked (cannot prove memory safety)",
+	-- loop's ZF-consuming variants: see REASON_LOOPZF (plain `loop` branches on the
+	-- counter register and IS supported — classified as a conditional branch with an
+	-- implicit rcx use/def in x86_64_isa.classify).
+	loope = REASON_LOOPZF, loopz = REASON_LOOPZF,
+	loopne = REASON_LOOPZF, loopnz = REASON_LOOPZF,
+	-- The 16-bit-counter jcxz is not encodable in 64-bit mode (gas: "`jcxz' is not
+	-- supported in 64-bit mode"); its siblings jrcxz/jecxz are supported and modeled.
+	jcxz = "jcxz is not supported in 64-bit mode (the 16-bit-counter form is not encodable; use jrcxz, or jecxz for the 32-bit counter)",
+	-- Address-size prefixes (the explicit-prefix spelling of the 0x67 forms): the
+	-- prefixed instruction itself is not modeled. The size-suffixed spellings
+	-- (loopl/loopq, jecxz/jrcxz) are the supported way to write those forms.
+	addr32 = REASON_ADDRSIZE, addr16 = REASON_ADDRSIZE,
 }
 
 -- string ops: implicit rsi/rdi memory the checker cannot see. (The Intel dword
@@ -1527,6 +1578,29 @@ function fp.unsafeReject(mnem, insn)
 	if STRINGOPS[mnem] then return REASON_STRING end
 	if PREFIXES[mnem] then return REASON_PREFIX end
 	if STRINGOPS_ZERO_OPERAND[mnem] and #(insn.operands or {}) == 0 then return REASON_STRING end
+	-- Writes INTO a segment register. The parser now classifies %es/%cs/%ss/%ds/%fs/%gs
+	-- as segment-register operands (rc="seg"), so the destination of `movw %ax, %fs`,
+	-- `mov %ax, %fs`, `movq %rax, %fs` (and every other segment register) is visible
+	-- here instead of parsing as a bare symbol that passed through raw. The
+	-- destination-first operand model puts the destination in position 1 for every
+	-- instruction that can write a segment register (mov/pop), so this is precise:
+	-- reads (`movl %fs, %eax`) keep operands[2] and pass through — the selector read
+	-- defines the destination web with the selector's value, which is sound (the
+	-- emitted instruction writes the web's allocated register). Segment-QUALIFIED
+	-- memory operands (`movq %fs:0x28, %rax`) never parse as a segment register (the
+	-- token is "fs:0x28") and keep their existing symbolic-displacement rejection.
+	--
+	-- push/pop of a segment register gets its OWN message: a push only READS the
+	-- selector (the old routing misreported it as a write), and a pop's selector load
+	-- rides the stack push/pop machinery. Modeling either through the frame machinery
+	-- is not worth it — the selector transfer is what is unmodeled — so both keep this
+	-- rejection while genuine selector WRITES (mov to a segment register, the only
+	-- other instruction that can write one) keep the write-specific message above.
+	local dest = (insn.operands or {})[1]
+	if dest and dest.kind == "reg" and dest.rc == "seg" then
+		if SEG_PUSHPOP[mnem] then return REASON_SEGXFER end
+		return REASON_SEGWRITE
+	end
 	if mnem == "int" then
 		local ops = insn.operands or {}
 		local v = ops[1] and ops[1].kind == "imm" and (ops[1].value or tonumber(ops[1].text)) or nil

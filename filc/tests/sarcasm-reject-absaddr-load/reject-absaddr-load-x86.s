@@ -8,5 +8,4 @@ f:                              ;! long(ptr)
 	movq	myglobal, %rax
 	ret
 	.size	f, .-f
-	.comm	myglobal,8,8
 	.section	.note.GNU-stack,"",@progbits

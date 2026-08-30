@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/bash-5.2.32
+cd projects/bash-5.3
 extract_source
 CC="$PWD/../../../build/bin/clang -w" CXX="$PWD/../../../build/bin/clang++ -w" \
     ./configure --prefix=$PWD/../../../pizfix --without-bash-malloc

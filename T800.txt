@@ -12,6 +12,8 @@ The development flow is:
 
 Once you have a build, you can run `build/bin/clang` or `build/bin/clang++` to build and link programs. For example, `build/bin/clang -o hello hello.c` is enough to build a program. The compiler is smart enough to find all of the libraries it needs.
 
+Sarcasm, the pizlonating assembler that clang uses for `.s` files by default (`-yolo-assembler` opts out), is developed in `projects/sarcasm/` (Luau sources, run by minilute), but it is installed into `pizfix/`: `./build_sarcasm.sh` copies the sources to `pizfix/lib/sarcasm/` and writes the `pizfix/bin/sarcasm` launcher, and that installed copy, not the sources in `projects/sarcasm/`, is what `build/bin/clang` and `filc/run-tests` actually execute. Therefore, after editing anything in `projects/sarcasm/`, you must run `./build_sarcasm.sh` before testing; just editing the sources is not enough. The sarcasm tests live in `filc/tests/sarcasm-*`; run them with `filc/run-tests -f sarcasm`, or `-t <testname>` for exactly one. If you only changed the compiler side (e.g. the driver's SarcasmAs tool), `./build_clang.sh` rebuilds just clang. As always, `./build_all_fast.sh` is the final gate for any change, including sarcasm changes.
+
 The compiler's build (as well as the build of some of the compiler runtime bits) lives in `build/`. The Fil-C runtime's build and the libc builds live in `pizfix/`.
 
 Fil-C is fanatically compatible with C/C++ and completely memory safe. There's no such thing as "sometimes an error didn't get caught"; every behavior that is unsafe in C/C++ is either given safe semantics or results in a panic.

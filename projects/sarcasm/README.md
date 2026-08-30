@@ -153,9 +153,35 @@ See the x86_64 examples under `filc/tests/` — e.g. `filc/tests/sarcasm-hash-at
 `filc/tests/sarcasm-indirectcall-*-arm/` (including the failure cases
 `-notfn`, `-null`, `-ptrneq`, which must panic at the same checks).
 
+## Build & install flow
+
+sarcasm is developed in this directory as Luau sources (`sarcasm/`), but the Fil-C
+build never runs it from the checkout: it is **installed** into a prefix, and what
+actually executes is the installed copy.
+
+- `install.sh PREFIX` copies the Luau modules to `PREFIX/lib/sarcasm/` and writes a
+  `PREFIX/bin/sarcasm` launcher script whose `#!` shebang is `PREFIX/bin/minilute`
+  and which requires the modules from `../lib/sarcasm` (Luau relative require).
+  `PREFIX/bin/minilute` must already exist — `build_minilute.sh` installs it.
+- The main Fil-C build wires this in via `./build_sarcasm.sh` from the repo root,
+  which runs `install.sh` with `PREFIX=$PWD/pizfix`; `build_base.sh` invokes it
+  right after `build_minilute.sh`. The `/opt/fil` build runs the same script with
+  its own prefix (`optfil/build_opt.sh` runs `install.sh /opt/fil`), and the pizlix
+  (`pizlix/build_lc.sh`) and packaging (`package-build.sh`) flows reuse the
+  pizfix-installed copy, patching the launcher's shebang for their layout.
+- The development loop: edit the Luau sources under `projects/sarcasm/sarcasm/` →
+  run `./build_sarcasm.sh` from the repo root → test with `build/bin/clang` or
+  `filc/run-tests -f sarcasm` (`-t <name>` for a single test). `pizfix/bin/sarcasm`
+  runs the INSTALLED copy, so un-installed source edits have no effect on test
+  runs — if your change isn't visible to clang or the tests, you forgot to run
+  `./build_sarcasm.sh`. (`./build_clang.sh` rebuilds only the compiler;
+  `./build_all_fast.sh` picks up sarcasm changes automatically, since it runs the
+  full build including `build_sarcasm.sh`.)
+
 ## Pipeline (`sarcasm/`)
 Shared, architecture-independent modules:
-- `detect.luau`  — auto-detects the target (arm64 vs x86_64; att vs intel syntax).
+- `detect.luau`  — auto-detects the target (arm64 vs x86_64; att vs intel syntax), or
+  honors the `--x86_64`/`--arm64`/`--intel`/`--at&t` overrides.
 - `sig.luau`     — Fil-C signature encoding (`1 + Ret + 133*Arg`).
 - `frame.luau`   — drops the input frame; virtualizes stack slots as locals.
 - `lift.luau`    — lifts to a virtual-register IR via reaching-definition **register webs**.
@@ -519,11 +545,11 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   inserted automatically).
 
 ## Testing
-All testing is via the Fil-C test suite: the 784 `filc/tests/sarcasm-*` tests (504
-x86_64, 280 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. Each
-test carries a manifest with `use-sarcasm: true`; `.s` inputs are assembled via
-minilute + sarcasm (`pizfix/bin/minilute projects/sarcasm/sarcasm-cli.luau`) and `.c`
-files via clang. The suite compiles every yolo input with sarcasm, links with Fil-C
+All testing is via the Fil-C test suite: the 791 `filc/tests/sarcasm-*` tests (511
+x86_64, 280 aarch64) run with `filc/run-tests -f sarcasm` from the repo root. The
+`.s` inputs are compiled by `build/bin/clang`, whose driver executes the installed
+`pizfix/bin/sarcasm` (see "Build & install flow" above); `.c` files go through
+clang as usual. The suite compiles every yolo input with sarcasm, links with Fil-C
 `main`s, and checks results, out-of-bounds/null-cap **traps**, the pointer-store
 capability round-trip, register-indexed access, the callsite resolver, pollchecks,
 GC stress, exact-width far-pointer/descriptor-table accesses (`sarcasm-farptr-att`,

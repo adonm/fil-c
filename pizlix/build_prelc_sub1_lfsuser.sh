@@ -201,8 +201,8 @@ sed -e 's/^#if.*XOPEN.*$/#if 1/' \
 cd ..
 rm -rf ncurses-6.5
 
-tar -xf bash-5.2.32.tar.gz
-cd bash-5.2.32
+tar -xf bash-5.3.tar.gz
+cd bash-5.3
 ./configure --prefix=/yolo \
     --build=$(sh support/config.guess) \
     --host=$LFS_TGT \
@@ -212,7 +212,7 @@ make
 make DESTDIR=$LFS install
 ln -sv bash $LFS/bin/sh
 cd ..
-rm -rf bash-5.2.32
+rm -rf bash-5.3
 
 tar -xf coreutils-9.11.tar.xz
 cd coreutils-9.11

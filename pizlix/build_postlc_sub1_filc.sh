@@ -31,7 +31,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/sed-4.10 pizlonated-sed
 ./package-source.sh projects/gettext-0.22.5 pizlonated-gettext
 ./package-source.sh projects/grep-3.12 pizlonated-grep
-./package-source.sh projects/bash-5.2.32 pizlonated-bash
+./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/perl-5.40.0 pizlonated-perl
 ./package-source.sh projects/XML-Parser-2.47 pizlonated-xml-parser
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl

@@ -17,6 +17,10 @@
 
 #endif
 
+#ifdef __PIZLONATOR_WAS_HERE__
+#include <stdfil.h>
+#endif
+
 /**
  * \file
  * \brief C++ API: char16_t pointer wrappers with
@@ -31,6 +35,8 @@
  */
 #ifdef U_ALIASING_BARRIER
     // Use the predefined value.
+#elif defined(__PIZLONATOR_WAS_HERE__)
+#   define U_ALIASING_BARRIER(ptr) zcompiler_fence()
 #elif (defined(__clang__) || defined(__GNUC__)) && U_PLATFORM != U_PF_BROWSER_NATIVE_CLIENT
 #   define U_ALIASING_BARRIER(ptr) asm volatile("" : : "rm"(ptr) : "memory")
 #elif defined(U_IN_DOXYGEN)

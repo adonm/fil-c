@@ -1250,7 +1250,6 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   Label-target branches inside the function (loop back-edges, `jmp
   .Llabel`/`1b`) keep working. All of this closes the same unvalidatable
   control-flow hole.
-<<<<<<< HEAD
 - (x86_64) explicit high-byte operands — the `%ah` subregister gap: sarcasm's
   web model has no subregister view, and `ah` and `al` both parse to the SAME
   web (register 0, width 8; see x86_64_isa.luau), while the renderer names the
@@ -1269,7 +1268,6 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   but their support makes hand-written `%ah` idioms reachable where they
   previously had no reason to appear (see the EFLAGS bullet under
   "Known pre-existing issues").
-=======
 - A branch to the function's OWN ENTRY NAME (`jmp f` from inside `f`) is
   rejected on BOTH architectures (shared validateBody branch-target check): the
   entry label is in the body's local-label set, but the entry symbol itself is
@@ -1320,7 +1318,6 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   byte-swapping MEMORY moves, which are not modeled); and `xchg` with a MEMORY
   operand (an implicitly LOCKED read-modify-write in hardware — while
   register-to-register `xchg` IS exactly modeled).
->>>>>>> 28d32f70fe5a (Find and fix bugs in sarcasm.)
 - Exception propagation through sarcasm x86_64 frames: NOT SUPPORTED (intentional,
   for now). The x86_64 glue emits every function origin with personality_getter = 0
   (`.quad 0`) and can_throw = can_catch = has_setjmps = 0 (`.byte 0/0/0`), so Fil-C
@@ -1670,94 +1667,7 @@ mis-colored function with a clean error. That is a detection backstop, not a
 correction: the mis-coloring itself is not repaired or prevented, but no
 mis-colored code can reach the assembler.
 
-<<<<<<< HEAD
-- regalloc could mis-color a function with ≥~13 simultaneously-live webs: the
-  same web rendered in two different registers at different points, silently
-  corrupting the value (the trigger was a sufficiently large interference
-  graph under coalescing pressure; smaller web counts were unaffected).
-  CAUGHT, not fixed: a large empirical hunt (~1000 generated self-checking
-  programs with up to 96 simultaneously-live webs, heavy coalescing pressure,
-  calls, bounds-check/ptr sequences, and deep spilling) could NOT reproduce
-  any miscompilation — and regardless, regalloc.color() now VERIFIES the
-  coloring after every coloring round (and every spill re-round) and REJECTS
-  THE COMPILATION with a clean "sarcasm: " error if (a) any temp that occurs
-  in the code has no color (an uncolored temp would silently render at its
-  original input register — the same-web-in-two-registers failure mode), (b)
-  any def's register collides with the register of a different temp live
-  across that def (two simultaneously-live webs in one register) — except the
-  source of a full-width move whose same-color move is a droppable no-op — or
-  (c) two defs of one instruction share a register. The verifier's move-source
-  exemption is guarded by buildRaInsns, which rejects any move-marked RA insn
-  that does not have exactly one def equal to its move destination ("internal
-  error: move-marked insn must have exactly one def, equal to its move
-  destination") — the exclusion is only sound for that shape. The move-source
-  interference exclusion is also now applied only to full-width (64-bit)
-  moves (a narrower mov zero-extends, so sharing a register would corrupt a
-  live-out source's upper bits — latent today, since every move-marked insn
-  is a synthesized 64-bit move, but hardened).
-- injected bounds checks used to clobber EFLAGS: the capability/bounds-check
-  sequence sarcasm emits before a checked memory operand did not preserve the
-  flags register, so an instruction that relied on a carry-in flag set before
-  the access (`stc` then `adcx`/`adcq` through a checked memory operand)
-  observed an indeterminate flag (register-only flag chains were fine).
-  FIXED: the flag-liveness scan + withFlagSave machinery previously ARM64-only
-  now works on x86_64 — x86_64_isa provides flagUse/flagDef classification
-  (adc/sbb/adcx/adox/rcl/rcr/lahf and the jcc/setcc/cmov families are flag
-  uses, the full-def arithmetic family are flag defs; PARTIAL writers —
-  inc/dec, rol/ror, shld/shrd, cmpxchg8b/16b, the bt family, sahf, div/idiv —
-  are deliberately in NEITHER table so the scan keeps scanning forward, which
-  keeps the common dead-flags case at zero cost), and x86_64_codegen provides
-  saveFlags/restoreFlags: pushfq + pop into a regalloc-owned virtual temp,
-  then push temp + popfq (each pair stack-neutral, so an OOB fail path taken
-  mid-bracket keeps rsp aligned). Every injected sequence site is bracketed
-  only when the scan says the program's flags are actually live: plain access
-  checks, pollchecks at loop headers, allocas, load/store ptr, atomic
-  load/store ptr, and the AVX512/AVX2 masked access checks. lahf is modeled
-  as a full-web RMW of the rax web pinned to physical rax (emitPinned copies
-  the web through physical rax so the AH write lands in the colored register
-  wherever it lives) and is a flag USE; sahf is a uses-only rax pin,
-  deliberately neither flag use nor def (OF survives it). The RMW/CAS pointer
-  sequences keep their "re-execute the op as the last flag-affecting step"
-  native-flag contract and stay un-wrapped (see the EFLAGS bullet in the
-  transform section).
 - detect.luau's architecture autodetect used to fall back to ARM64 for a
-=======
-- regalloc can mis-color a function with ≥~13 simultaneously-live webs: the
-  same web is rendered in two different registers at different points,
-  silently corrupting the value. The trigger is a sufficiently large
-  interference graph under coalescing pressure; smaller web counts are
-  unaffected.
-- injected bounds checks clobber EFLAGS: the capability/bounds-check sequence
-  sarcasm emits before a checked memory operand does not preserve the flags
-  register. Quantified in the audit: the injected sequence leaves CF = (address
-  < upper) — i.e. CF=1 after every IN-bounds access — and OF=0, so a program
-  that sets a flag and consumes it ACROSS a checked memory operand reads the
-  check's residue, not its own flag: `clc; adcxq (checked mem), %rax` silently
-  adds one extra carry (CF was already 1 when the adcx executed), and `lahf`
-  after a checked access observes a wrong AH byte. Register-only flag chains
-  (no checked memory operand between the flag-setter and the flag-consumer)
-  are fine. `lahf` inherits this AND has its own modeling gap: it passes
-  through raw with no def/use model, so (a) the AH it reads is the injected
-  check's flag residue when a checked memory operand sits between the
-  program's flag-setting instruction and the lahf (probed: ground truth
-  AH=0x97, sarcasm AH=0xff), and (b) the %ah write is invisible to the web
-  model — the old rax web is neither killed nor updated, so a later reader of
-  that web disagrees with real x86 whenever the web is not colored rax. The
-  one-line fix for the clobbering is flag liveness on x86: implement
-  saveFlags/restoreFlags (pushfq/popfq) in the x86_64 codegen module so the
-  transform's existing `withFlagSave`/`flagsLiveFrom` machinery (currently
-  ARM64-only — on x86 `flagCapable` is false and `withFlagSave` is a
-  passthrough) brackets every injected check that sits between a live
-  flag-setter and its consumer; `lahf` additionally needs a full-web RMW of
-  rax (its effect is a partial write of the colored register).
-- `monitor` with a wild %rax passes unchecked by design: MONITOR reads/writes
-  no memory, so there is nothing to bounds-check and the implicit rax address
-  is deliberately NOT modeled as a memory operand (documented in the x86_64
-  backend notes and in x86_64_isa) — arming the address-monitoring hardware on
-  a wild address can only fault, an uncatchable-signal safe halt the safety
-  model accepts.
-- detect.luau's architecture autodetect falls back to ARM64 for a
->>>>>>> 28d32f70fe5a (Find and fix bugs in sarcasm.)
   register-free x86 input (e.g. a lone `rep movsb` with no % registers and
   no .intel_syntax/PTR/bracket markers), which then failed later —
   confusingly — at `as`; likewise for x86 input whose ONLY registers are

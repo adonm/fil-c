@@ -9041,6 +9041,15 @@ void SarcasmAs::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-g");
   }
 
+  // Pass the target architecture explicitly: the driver knows the triple
+  // (ToolChain::SelectTool only picks SarcasmAs on x86_64/aarch64), and the
+  // input alone may not carry enough markers for sarcasm's autodetection.
+  if (getToolChain().getTriple().getArch() == llvm::Triple::x86_64) {
+    CmdArgs.push_back("--x86_64");
+  } else {
+    CmdArgs.push_back("--arm64");
+  }
+
   assert(Input.isFilename() && "Invalid input.");
   CmdArgs.push_back(Input.getFilename());
 

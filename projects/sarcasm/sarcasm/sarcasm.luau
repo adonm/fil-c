@@ -574,7 +574,7 @@ end
 local PROGNAME = "sarcasm"
 local VERSION = "0.1.0"
 
-local USAGE = "usage: " .. PROGNAME .. " [-o <file>] [-g] [-S|--no-assemble] [--as <command>] <input.s>"
+local USAGE = "usage: " .. PROGNAME .. " [-o <file>] [-g] [-S|--no-assemble] [--x86_64|--arm64] [--intel|--at&t] [--as <command>] <input.s>"
 
 local HELP = table.concat({
 	PROGNAME .. " " .. VERSION .. " — SAfe Runtime Capability-enforced Assembler",
@@ -591,6 +591,11 @@ local HELP = table.concat({
 	"                     (points at the input assembly) for better runtime diagnostics.",
 	"  -S, --no-assemble  Emit transformed assembly only; do not run the assembler.",
 	"  --as <command>     Assembler to invoke in the default mode (default: as).",
+	"  --x86_64           Select the X86_64 backend; the input syntax (AT&T or Intel)",
+	"                     is still auto-detected.",
+	"  --arm64            Select the ARM64 backend.",
+	"  --intel            Select the X86_64 backend with Intel input syntax.",
+	"  --at&t             Select the X86_64 backend with AT&T input syntax.",
 	"      --version      Print version information and exit.",
 	"  -h, --help         Print this help and exit.",
 	"",
@@ -600,8 +605,11 @@ local HELP = table.concat({
 	"  str x1, [x0]  ;! store ptr     (pointer store to memory)",
 	"  bl foo        ;! int(ptr, size_t)   (call: callee signature)",
 	"",
-	"ARM64 and X86_64 are supported (auto-detected from the input). Assembly that",
-	"cannot be proven safe is rejected.",
+	"Input is ARM64 or X86_64 (auto-detected, or forced with --x86_64/--arm64; the",
+	"syntax is auto-detected, or forced with --intel/--at&t). The target options",
+	"conflict with each other (--x86_64 with --arm64, --intel with --at&t, and any",
+	"architecture selector with a syntax-pinning selector) and are rejected as usage",
+	"errors. Assembly that cannot be proven safe is rejected.",
 }, "\n")
 
 -- Report a command-line usage error (clean message, no stack trace); exit code 2.
@@ -620,6 +628,12 @@ end
 -- CLI: as-like. Args: [-o OUT] [-S|--no-assemble] [--as CMD] INPUT.s
 function sarcasm.main(argv)
 	local input, output, noAssemble, asCmd, debug = nil, nil, false, "as", false
+	-- Explicit target selection: --x86_64/--arm64 force the architecture, --intel/--at&t
+	-- force the architecture AND the input syntax. nil means auto-detect (detect.luau).
+	-- Repeating a flag is harmless; conflicting flags are rejected as soon as both have
+	-- been seen, with whichever flag came first named in the error.
+	local forcedArch, forcedArchFlag = nil, nil
+	local forcedSyntax, forcedSyntaxFlag = nil, nil
 	local i = 2
 	while i <= #argv do
 		local a = argv[i]
@@ -637,6 +651,32 @@ function sarcasm.main(argv)
 		elseif a == "--as" then
 			i += 1; asCmd = argv[i]
 			if not asCmd then return usageError("option '--as' requires an argument") end
+		elseif a == "--x86_64" then
+			if forcedArch == "arm64" then
+				return usageError("options '--x86_64' and '" .. forcedArchFlag .. "' select conflicting architectures")
+			end
+			if forcedSyntax then
+				return usageError("option '--x86_64' conflicts with '" .. forcedSyntaxFlag .. "', which pins the assembly syntax")
+			end
+			forcedArch, forcedArchFlag = "x86_64", "--x86_64"
+		elseif a == "--arm64" then
+			if forcedArch == "x86_64" then
+				return usageError("options '--arm64' and '" .. forcedArchFlag .. "' select conflicting architectures")
+			end
+			forcedArch, forcedArchFlag = "arm64", "--arm64"
+		elseif a == "--intel" or a == "--at&t" then
+			local syn = (a == "--intel") and "intel" or "att"
+			if forcedSyntax and forcedSyntax ~= syn then
+				return usageError("options '" .. a .. "' and '" .. forcedSyntaxFlag .. "' select conflicting assembly syntaxes")
+			end
+			if forcedArch == "arm64" then
+				return usageError("options '" .. a .. "' and '" .. forcedArchFlag .. "' select conflicting architectures")
+			end
+			if forcedArchFlag == "--x86_64" then
+				return usageError("option '" .. a .. "' conflicts with '--x86_64', which leaves the assembly syntax to auto-detection")
+			end
+			forcedArch, forcedArchFlag = "x86_64", a
+			forcedSyntax, forcedSyntaxFlag = syn, a
 		elseif string.sub(a, 1, 1) == "-" then
 			return usageError("unrecognized option '" .. a .. "'")
 		else
@@ -658,6 +698,17 @@ function sarcasm.main(argv)
 
 	local text = fs.read(fs.open(input, "r"))
 	local arch, syntax = detect.detect(text)
+	-- Apply the explicit target flags. --intel/--at&t pin both the architecture and the
+	-- input syntax; a bare --x86_64/--arm64 forces only the architecture and keeps the
+	-- auto-detected syntax (so a .intel_syntax/.att_syntax directive in the input still
+	-- applies to --x86_64; --arm64 always ends up with no syntax).
+	if forcedSyntax then
+		arch, syntax = "x86_64", forcedSyntax
+	elseif forcedArch == "x86_64" then
+		arch = "x86_64"
+	elseif forcedArch == "arm64" then
+		arch, syntax = "arm64", nil
+	end
 	local target = makeTarget(arch, syntax)
 	local fileName = string.match(input, "([^/]+)$")
 	-- Parse + compile under one pcall: parse-time rejections (e.g. an unresolvable

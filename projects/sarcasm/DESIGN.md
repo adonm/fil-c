@@ -3,7 +3,8 @@
 SAfe Runtime Capability-enforced Assembler: an ARM64 and X86_64 assembler (in Luau, run via
 `lute`) that rewrites Yolo-C assembly into memory-safe, Fil-C-linkable assembly, then invokes
 `as`. The target architecture — and, for X86_64, the AT&T vs Intel input syntax — is
-auto-detected from the input text.
+auto-detected from the input text, or forced with the --x86_64/--arm64/--intel/--at&t
+options (see "Command-line target selection" under the driver section).
 
 ## Pipeline
 ```
@@ -676,20 +677,28 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   indeterminate — and the value stored back (or CAS'd in) reflects it, exactly
   like the non-atomic form's clobbered carry-in above but without even a
   deterministic value.
-- EFLAGS for the RMW/CAS sequences: the injected sequences clobber EFLAGS, so
-  the operation is re-executed on a scratch copy of the kept-alive pre-op
-  value (and source) as the LAST flag-affecting step — a jcc/setcc
-  immediately after the annotated instruction sees the native flags (for the
-  CAS, expected and result webs can coincide in a retry loop, so the
-  comparison uses a private pre-call copy of the expected intval). `not` sets
-  no flags to recompute — the documented EFLAGS caveat. adc/sbb are the other
-  caveat, and it is wider than the flags: they read a carry-in the injected
-  sequences already clobbered, so BOTH the recomputed flags AND the stored
-  result carry it — the op itself runs on the clobbered carry (CF=0 after the
-  non-atomic `;! load store ptr` load sequence's closing `test`; indeterminate
-  — whatever the runtime call left — for the atomic forms), and the flag
-  recompute runs on whatever the store/CAS sequence left. A flag consumer
-  that does not immediately follow still sees clobbered flags.
+- EFLAGS for the RMW/CAS sequences: these injected sequences clobber EFLAGS
+  and are deliberately NOT bracketed by the flag save/restore (their
+  native-flag contract depends on it — see below), so the operation is
+  re-executed on a scratch copy of the kept-alive pre-op value (and source)
+  as the LAST flag-affecting step — a jcc/setcc immediately after the
+  annotated instruction sees the native flags (for the CAS, expected and
+  result webs can coincide in a retry loop, so the comparison uses a private
+  pre-call copy of the expected intval). `not` sets no flags to recompute —
+  the documented EFLAGS caveat. adc/sbb are the other caveat, and it is
+  wider than the flags: they read a carry-in the injected sequences already
+  clobbered, so BOTH the recomputed flags AND the stored result carry it —
+  the op itself runs on the clobbered carry (CF=0 after the non-atomic
+  `;! load store ptr` load sequence's closing `test`; indeterminate —
+  whatever the runtime call left — for the atomic forms), and the flag
+  recompute runs on whatever the store/CAS sequence left. So a flag consumer
+  that does not immediately follow one of these RMW/CAS sequences still sees
+  clobbered flags — but every OTHER injected sequence site (plain access
+  checks, pollchecks, allocas, ptr loads/stores, masked accesses) preserves
+  the program's flags via saveFlags/restoreFlags whenever the flag-liveness
+  scan says they are live (the same withFlagSave machinery arm64 uses; see
+  the "Flags" bullet under the arm64 atomics below and the FIXED EFLAGS
+  bullet in "Known pre-existing issues").
 - xadd with `;! load store ptr` / `;! atomic load store ptr` is rejected: its
   source register is also a destination and would receive the old pointer
   value (needing a pointer def + rooted lower — and its use/def web union
@@ -764,8 +773,10 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
     str sequence with separate `;! load ptr` / `;! store ptr` annotations.
   - Flags: the annotated ldar/stlr/ldapr and LSE RMW forms write no NZCV, so
     their injected check+call sequences are bracketed by withFlagSave when
-    the program's flags are live (constant-false on x86_64, which keeps its
-    EFLAGS behavior and byte-identical output); only the annotated cas has a
+    the program's flags are live — the flag-liveness scan + save/restore
+    machinery now runs on BOTH backends (x86_64's saveFlags/restoreFlags
+    round-trip EFLAGS through pushfq and a regalloc-owned virtual temp; it is
+    no longer a constant-false scan there); only the annotated cas has a
     flag contract (the recompute above).
 - non-ptr load/store through a ptr temp -> access-check(size, align) then the raw ld/st.
   Every heap WRITE (plain stores, memory-destination RMWs incl. locked forms,
@@ -931,6 +942,24 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   emit assembly; if no `-o`, write `<input>.yolo.s`. Also splits the input into
   functions, auto-detects the target (detect.luau), and packs spill slots after each
   allocation round (slots with non-overlapping live ranges share an offset).
+
+#### Command-line target selection (--x86_64 / --arm64 / --intel / --at&t)
+
+The target is auto-detected as above; four options force it explicitly, bypassing
+detect.luau:
+- `--x86_64` — select the X86_64 backend; the input syntax (AT&T vs Intel) is still
+  auto-detected, so a `.intel_syntax`/`.att_syntax` directive (or any other syntax
+  marker) in the input still applies.
+- `--arm64` — select the ARM64 backend.
+- `--intel` — select the X86_64 backend with Intel input syntax.
+- `--at&t` — select the X86_64 backend with AT&T input syntax.
+
+The options conflict with each other: `--x86_64` with `--arm64` (both select an
+architecture), `--intel` with `--at&t` (both pin a syntax), and any architecture
+selector with a syntax-pinning selector (`--x86_64` with `--intel`/`--at&t`, because a
+pinned syntax already implies X86_64; `--arm64` with all three). Conflicts are usage
+errors (exit code 2) naming the previously seen flag; repeating the same option is
+harmless.
 
 ## Limitations (compile-time rejections)
 Assembly that cannot be proven safe is rejected with a clean `sarcasm: <file>: <msg>`
@@ -1281,32 +1310,76 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
 
 ### Known pre-existing issues (NOT introduced by the current change)
 
-All of the following reproduce on the unmodified baseline (the tree before
-the current FP/SIMD review-cycle work); they are pre-existing bugs documented
-here, not regressions introduced by this change:
+All of the following used to reproduce on the unmodified baseline (the tree
+before the current FP/SIMD review-cycle work); they were pre-existing bugs
+documented here — not regressions introduced by this change — and all are
+now FIXED:
 
-- regalloc can mis-color a function with ≥~13 simultaneously-live webs: the
-  same web is rendered in two different registers at different points,
-  silently corrupting the value. The trigger is a sufficiently large
-  interference graph under coalescing pressure; smaller web counts are
-  unaffected.
-- injected bounds checks clobber EFLAGS: the capability/bounds-check sequence
-  sarcasm emits before a checked memory operand does not preserve the flags
-  register, so an instruction that relies on a carry-in flag set before the
-  access (`stc` then `adcx`/`adcq` through a checked memory operand) observes
-  an indeterminate flag. Register-only flag chains (no checked memory operand
-  between the flag-setter and the flag-consumer) are fine.
-- detect.luau's architecture autodetect falls back to ARM64 for a
+- regalloc could mis-color a function with ≥~13 simultaneously-live webs: the
+  same web rendered in two different registers at different points, silently
+  corrupting the value (the trigger was a sufficiently large interference
+  graph under coalescing pressure; smaller web counts were unaffected).
+  FIXED: a large empirical hunt (~1000 generated self-checking programs with
+  up to 96 simultaneously-live webs, heavy coalescing pressure, calls,
+  bounds-check/ptr sequences, and deep spilling) could NOT reproduce any
+  miscompilation — and regardless, regalloc.color() now VERIFIES the coloring
+  after every coloring round (and every spill re-round) and rejects the
+  function with a clean "sarcasm: " error if (a) any temp that occurs in the
+  code has no color (an uncolored temp would silently render at its original
+  input register — the same-web-in-two-registers failure mode), (b) any def's
+  register collides with the register of a different temp live across that
+  def (two simultaneously-live webs in one register) — except the source of a
+  full-width move whose same-color move is a droppable no-op — or (c) two
+  defs of one instruction share a register. The move-source interference
+  exclusion is also now applied only to full-width (64-bit) moves (a narrower
+  mov zero-extends, so sharing a register would corrupt a live-out source's
+  upper bits — latent today, since every move-marked insn is a synthesized
+  64-bit move, but hardened).
+- injected bounds checks used to clobber EFLAGS: the capability/bounds-check
+  sequence sarcasm emits before a checked memory operand did not preserve the
+  flags register, so an instruction that relied on a carry-in flag set before
+  the access (`stc` then `adcx`/`adcq` through a checked memory operand)
+  observed an indeterminate flag (register-only flag chains were fine).
+  FIXED: the flag-liveness scan + withFlagSave machinery previously ARM64-only
+  now works on x86_64 — x86_64_isa provides flagUse/flagDef classification
+  (adc/sbb/adcx/adox/rcl/rcr/lahf and the jcc/setcc/cmov families are flag
+  uses, the full-def arithmetic family are flag defs; PARTIAL writers —
+  inc/dec, rol/ror, shld/shrd, cmpxchg8b/16b, the bt family, sahf, div/idiv —
+  are deliberately in NEITHER table so the scan keeps scanning forward, which
+  keeps the common dead-flags case at zero cost), and x86_64_codegen provides
+  saveFlags/restoreFlags: pushfq + pop into a regalloc-owned virtual temp,
+  then push temp + popfq (each pair stack-neutral, so an OOB fail path taken
+  mid-bracket keeps rsp aligned). Every injected sequence site is bracketed
+  only when the scan says the program's flags are actually live: plain access
+  checks, pollchecks at loop headers, allocas, load/store ptr, atomic
+  load/store ptr, and the AVX512/AVX2 masked access checks. lahf is modeled
+  as a full-web RMW of the rax web pinned to physical rax (emitPinned copies
+  the web through physical rax so the AH write lands in the colored register
+  wherever it lives) and is a flag USE; sahf is a uses-only rax pin,
+  deliberately neither flag use nor def (OF survives it). The RMW/CAS pointer
+  sequences keep their "re-execute the op as the last flag-affecting step"
+  native-flag contract and stay un-wrapped (see the EFLAGS bullet in the
+  transform section).
+- detect.luau's architecture autodetect used to fall back to ARM64 for a
   register-free x86 input (e.g. a lone `rep movsb` with no % registers and
-  no .intel_syntax/PTR/bracket markers): the input is then parsed as arm64
-  and fails later — confusingly — at `as`. Harmless: the input was going
-  to fail anyway (`rep movsb` is a rejected string instruction on the
-  x86_64 path), only the error message is opaque. The same misdetect hits
-  x86 input whose ONLY registers are xmm-class (e.g. a lone `movss
-  myglobal, %xmm0`): the detector keys on GPR markers (%r*/%e*/%rip, bare
-  r*/e* tokens, PTR/brackets), so a register file of pure vector registers
-  is invisible to it. (That input rejects on the x86_64 path too — the
-  symbolic moffs operand — so again only the error message changes.)
+  no .intel_syntax/PTR/bracket markers), which then failed later —
+  confusingly — at `as`; likewise for x86 input whose ONLY registers are
+  xmm-class (e.g. a lone `movss myglobal, %xmm0`), which the old detector
+  could not see (it keyed on GPR markers: %r*/%e*/%rip, bare r*/e* tokens,
+  PTR/brackets). FIXED: detection now also keys on x86-only instruction
+  shapes with no GPR marker — vector/x87/opmask register names
+  (%xmm/%ymm/%zmm/%k0-7/%st and bare xmm/ymm/zmm/k0-7), the AT&T
+  movz/movs double-suffix and q-suffix mnemonic families (movzbl/movslq/
+  movq/addq/pushq/...), movabs, the x86-only sign/byte extension family
+  (cltq/cdqe/cqto/cltd/cwde/cbtw/cwtl/cwtd/cdq/cwd/cbw), and the
+  rep/lock prefixes (matched line-anchored, so a `rep:` label cannot
+  spoof them) — so these inputs detect as x86_64 AT&T and reject on the
+  x86_64 path with a meaningful message (the string-instruction/prefix and
+  symbolic-moffs rejections; previously the arm64 parse succeeded and the
+  failure surfaced opaquely at `as`). The target can also be forced
+  explicitly with the --x86_64/--arm64/--intel/--at&t options, bypassing
+  autodetection (see "Command-line target selection" under the driver
+  section).
 - transform output is deterministic across processes: every site whose iteration
   order could reach the output or the temp/slot numbering iterates a sorted key
   array instead of the table itself. Fixed: the alloca-region ptrTemp allocation
@@ -1321,8 +1394,8 @@ here, not regressions introduced by this change:
 
 ## Verification
 All testing is via the Fil-C test suite: `filc/run-tests -f sarcasm` from the repo root
-runs the 784 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
-assemble via minilute + sarcasm, `.c` files via clang) — 504 x86_64 and 280 aarch64
+runs the 791 `filc/tests/sarcasm-*` tests (manifest key `use-sarcasm: true`; `.s` inputs
+assemble via minilute + sarcasm, `.c` files via clang) — 511 x86_64 and 280 aarch64
 (every test is `only-on-platform:` exactly one of them). For each yolo input the suite
 runs sarcasm, assembles + links with Fil-C `main`s, runs, and confirms correct results
 + that OOB/null-capability inputs trap. The suite breaks down as:

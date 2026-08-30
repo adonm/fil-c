@@ -6,17 +6,25 @@ that links with **Fil-C**. It performs the GIMSO transformation on pointers, cha
 pointer representation to invisicaps, reallocates registers with Iterated Register
 Coalescing, and emits code that follows the Fil-C ABI (calling convention, safepoints,
 stack-overflow checks, GC roots). It supports **ARM64** (aarch64) and **X86_64** (both
-AT&T and Intel input syntax; the target is auto-detected from the input), and rejects
+AT&T and Intel input syntax; the target is auto-detected from the input, or forced with
+`--x86_64`/`--arm64`/`--intel`/`--at&t`), and rejects
 anything it cannot prove safe rather than passing unsafe code through.
 
 ## Usage
 
 ```
-./sarcasm.sh [-o OUT.o] [-S|--no-assemble] [--as CMD] INPUT.s
+./sarcasm.sh [-o OUT.o] [-S|--no-assemble] [--x86_64|--arm64] [--intel|--at&t] [--as CMD] INPUT.s
 ```
 - Default: writes a temporary `INPUT.yolo.s` next to the output and runs `as` to produce
   `OUT.o` (like `as`). `--as CMD` overrides the assembler (default `as`).
 - `-S` / `--no-assemble`: emit assembly only. Without `-o`, writes `INPUT.yolo.s`.
+- Target selection (otherwise auto-detected from the input):
+  - `--x86_64`: select the X86_64 backend (input syntax still auto-detected);
+  - `--arm64`: select the ARM64 backend;
+  - `--intel` / `--at&t`: select the X86_64 backend with Intel / AT&T input syntax.
+  These options conflict with each other (`--x86_64` vs `--arm64`, `--intel` vs
+  `--at&t`, and any architecture selector vs a syntax-pinning selector) and are
+  rejected as usage errors; repeating the same option is harmless.
 
 Input assembly must carry `;!` annotations:
 - on each exported function label: its Fil-C signature, e.g. `hash: ;! unsigned(ptr)`;
@@ -407,15 +415,21 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs behind a common interfac
   interleaved injected runtime calls (signatures whose encoding exceeds imm32
   widen their signature compares with `movabsq`); see `ABI-NOTES-x86.md`'s
   "Floating-point ABI" (arm64 has the analogous v0..v7 scheme — see the ARM64
-  section below). Three known
+  section below). The previously-documented known
   PRE-EXISTING issues (all reproduced on the unmodified baseline, NOT
-  introduced by the current change) are documented in DESIGN.md's Limitations:
-  a regalloc mis-coloring at ≥~13 simultaneously-live webs, injected
-  bounds checks clobbering EFLAGS (reg-only flag chains are unaffected),
-  and detect.luau's arch autodetect falling back to ARM64 for register-free
-  x86 input — or input whose only registers are xmm-class (a lone `movss
-  myglobal, %xmm0`; the detector keys on GPR markers) — (the input then
-  fails later at `as` — confusing but harmless). x86_64 sarcasm frames also
+  introduced by the current change) have all been FIXED — see DESIGN.md's
+  "Known pre-existing issues": the regalloc mis-coloring at ≥~13
+  simultaneously-live webs is now caught by a soundness verifier in
+  regalloc.color() that rejects any mis-colored function with a clean error;
+  injected bounds checks clobbering EFLAGS is fixed by a flag-liveness scan
+  that brackets every injected check site with saveFlags/restoreFlags on
+  x86_64 when the program's flags are live; and detect.luau's arch
+  autodetect no longer falls back to ARM64 for register-free x86 input (or
+  input whose only registers are xmm-class, e.g. a lone
+  `movss myglobal, %xmm0`) — detection also keys on vector/x87/opmask
+  register names, the AT&T movz/movs and q-suffix mnemonic families, the
+  sign/byte extension family, and the rep/lock prefixes, and the target can
+  be forced with --x86_64/--arm64/--intel/--at&t. x86_64 sarcasm frames also
   cannot propagate exceptions (intentional): the x86_64 glue emits function
   origins with can_throw = can_catch = 0, so Fil-C unwinding stops at any
   sarcasm x86_64 frame and a C++ throw in a callee reached from the

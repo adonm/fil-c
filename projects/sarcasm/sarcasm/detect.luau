@@ -8,8 +8,9 @@
 -- no register marker at all (movz/movs double suffixes, movabs, the sign/byte extension
 -- family, q-suffixed ALU mnemonics, line-anchored rep/lock prefixes), Intel bare vector
 -- register names, and finally Intel bare GPR/PTR/bracket markers. arm64 is the
--- fallback. The same markers can be bypassed entirely with the sarcasm CLI's
--- --x86_64/--arm64/--intel/--at&t target options.
+-- fallback. Forcing the target with the sarcasm CLI's --x86_64/--arm64 options
+-- bypasses this architecture decision, but the syntax directives/markers still apply
+-- (a bare --x86_64 keeps the auto-detected syntax); --intel/--at&t pin the syntax too.
 
 local detect = {}
 
@@ -88,35 +89,39 @@ function detect.detect(text)
 	-- pure vector/x87/opmask registers (`movss myglobal, %xmm0`), the movz/movs
 	-- double-suffix family (`movzbl`, `movzwq`, `movslq`, ...), `movabs`, the x86-only
 	-- sign/byte extension family (`cltq`, `cqto`, `cwde`, ...), q-suffixed ALU/stack
-	-- mnemonics (`movq`, `addq`, `pushq`, ...), and the rep/lock prefixes. None of
-	-- these can occur in arm64 assembly, so any match proves x86_64; the shapes only
-	-- occur in AT&T output, so the syntax is AT&T. (An .intel_syntax file that spelled
-	-- a q-suffixed mnemonic would be misdetected here, but such a file is already
-	-- caught by the .intel_syntax directive check above.)
+	-- mnemonics (`movq`, `addq`, `pushq`, ...), and the rep/lock prefixes. These
+	-- mnemonics cannot BEGIN an arm64 instruction, so a match proves x86_64; the
+	-- shapes only occur in AT&T output, so the syntax is AT&T. (An .intel_syntax file
+	-- that spelled a q-suffixed mnemonic would be misdetected here, but such a file is
+	-- already caught by the .intel_syntax directive check above.)
 	--
-	-- These checks are anchored on a whitespace-preceded token, and a mnemonic in
-	-- column 1 of the first line has no preceding whitespace in the raw text, so match
-	-- against the text with a newline prepended. The newline also line-anchors the
-	-- rep/lock prefix checks, so a label like `rep:` cannot spoof a prefix (Lua's `^`
-	-- would anchor to the start of the whole string only).
+	-- The mnemonic-shaped checks are anchored to an instruction position: the token
+	-- must be preceded by a newline plus optional horizontal whitespace, and must not
+	-- be immediately followed by `:` (the trailing frontier excludes it). A mnemonic
+	-- in column 1 of the first line has no preceding whitespace in the raw text, so
+	-- match against the text with a newline prepended. The anchoring keeps an arm64
+	-- SYMBOL with one of these mnemonic-shaped names (a label like `movq:` or `cbw:`
+	-- at any indent, or a mid-line reference like `bl movq`) from spoofing the
+	-- architecture, just like the rep/lock guard below (Lua's `^` would anchor to the
+	-- start of the whole string only).
 	local anchored = "\n" .. text
 	local att = string.find(anchored, "%%xmm%d") or string.find(anchored, "%%ymm%d")
 		-- vector/x87/opmask register names (x87 `%st` also covers `%st(1)`).
 		or string.find(anchored, "%%zmm%d") or string.find(anchored, "%%k[0-7]")
 		or string.find(anchored, "%%st")
 		-- movz/movs double-suffix family and movabs.
-		or string.find(anchored, "%smovz[bwlq][bwlq]%f[^%w]")
-		or string.find(anchored, "%smovs[bwlq][bwlq]%f[^%w]")
-		or string.find(anchored, "%smovabs%f[^%w]")
+		or string.find(anchored, "\n[ \t]*movz[bwlq][bwlq]%f[^%w:]")
+		or string.find(anchored, "\n[ \t]*movs[bwlq][bwlq]%f[^%w:]")
+		or string.find(anchored, "\n[ \t]*movabs%f[^%w:]")
 	-- The x86-only sign/byte extension family (each its own word-bounded token).
 	for _, ext in {"cltq", "cdqe", "cqto", "cltd", "cwde", "cbtw", "cwtl", "cwtd", "cdq", "cwd", "cbw"} do
-		att = att or string.find(anchored, "%s" .. ext .. "%f[^%w]")
+		att = att or string.find(anchored, "\n[ \t]*" .. ext .. "%f[^%w:]")
 	end
 	-- q-suffixed common ALU/stack mnemonics (` movq `, ` addq `, ...).
 	for _, m in {"mov", "add", "sub", "and", "or", "xor", "cmp", "test", "lea", "shl",
 		"shr", "sar", "sal", "imul", "neg", "not", "inc", "dec", "adc", "sbb", "push",
 		"pop", "xadd", "div", "idiv", "mul"} do
-		att = att or string.find(anchored, "%s" .. m .. "q%f[^%w]")
+		att = att or string.find(anchored, "\n[ \t]*" .. m .. "q%f[^%w:]")
 	end
 	-- rep/lock prefixes, line-anchored (see above) so a `rep:` label cannot spoof them.
 	att = att
@@ -128,10 +133,17 @@ function detect.detect(text)
 	-- Intel-syntax files whose only register markers are bare (unpercented) vector
 	-- names: xmm/ymm/zmm/k0..k7. arm64 never uses these register names, so a match
 	-- proves x86_64. The syntax is a best guess: an AT&T file would have carried a %
-	-- register marker (caught above), so bare names imply Intel. The [^%w_] trailing
-	-- guards keep the matches out of identifiers (`save_xmm0_state`).
-	if string.find(text, "%f[%w]xmm%d%f[^%w_]") or string.find(text, "%f[%w]ymm%d%f[^%w_]")
-		or string.find(text, "%f[%w]zmm%d%f[^%w_]") or string.find(text, "%f[%w]k[0-7]%f[^%w_]") then
+	-- register marker (caught above), so bare names imply Intel. The trailing
+	-- frontier excludes both `_` (keeping the matches out of identifiers like
+	-- `save_xmm0_state`) and `:`, so an arm64 label named `xmm0:` or `k0:` cannot
+	-- spoof the architecture. This check is deliberately NOT line-start-anchored:
+	-- vector names legitimately appear mid-line as Intel operands
+	-- (`movdqu xmm0, [rsp+8]`), so a bare vector-named arm64 CALL TARGET (`bl xmm0`)
+	-- is still indistinguishable from an Intel operand (unlike the mnemonic-shaped
+	-- checks above, which are instruction-anchored); labels named `xmm0:`/`k0:` are
+	-- not.
+	if string.find(text, "%f[%w]xmm%d%f[^%w_:]") or string.find(text, "%f[%w]ymm%d%f[^%w_:]")
+		or string.find(text, "%f[%w]zmm%d%f[^%w_:]") or string.find(text, "%f[%w]k[0-7]%f[^%w_:]") then
 		return "x86_64", "intel"
 	end
 

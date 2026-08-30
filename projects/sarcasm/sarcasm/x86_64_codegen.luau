@@ -17,6 +17,8 @@ local M = {}
 -- ISA passthrough ---------------------------------------------------------
 M.classify = isa.classify
 M.baseMnemonic = isa.baseMnemonic
+M.flagUse = isa.flagUse
+M.flagDef = isa.flagDef
 M.precolorName = function(num) return xparse.regName(num, 64) end
 M.ALLOCATABLE = isa.ALLOCATABLE
 
@@ -633,6 +635,29 @@ function M.make(ctx)
 	end
 	function cg.popStackPtr()
 		emit(build.insn("add", { build.rp(4), build.imm(16) }, {}))
+	end
+
+	-- Save/restore EFLAGS around an instrumented sequence when the program's flags
+	-- are live across it (transform.luau's flag-liveness scan; the arm64 backend
+	-- does the same with mrs/msr nzcv). x86 has no flags-to-register move, so the
+	-- flags round-trip through the stack: pushfq, then pop into a VIRTUAL temp
+	-- (ordinary regalloc-owned temp — it may spill freely), and the mirror image to
+	-- restore. Each pair is stack-neutral ON ITS OWN, so an out-of-bounds fail path
+	-- taken between the two pairs (the check's branch to the fail stub, which skips
+	-- the restore) still leaves rsp exactly where the body keeps it — a bare
+	-- pushfq/popfq bracket would misalign the stack by 8 on that path and crash the
+	-- fail stub's runtime call. The temp is live across any injected runtime call in
+	-- the bracketed sequence, so regalloc gives it a callee-saved register or spills
+	-- it (the call's precolored caller-saved defs interfere with it).
+	function cg.saveFlags()
+		local t = allocTemp({ role = "flags" })
+		emit(build.insn("pushfq", {}, {}))
+		emit(build.insn("pop", { rt(t) }, { defs = {t} }))
+		return t
+	end
+	function cg.restoreFlags(t)
+		emit(build.insn("push", { rt(t) }, { uses = {t} }))
+		emit(build.insn("popfq", {}, {}))
 	end
 
 	-- effective address + capability selection for a memory operand.

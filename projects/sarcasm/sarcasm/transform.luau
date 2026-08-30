@@ -574,10 +574,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- return, or the end of the function) conservatively assume live-out — a flag
 	-- consumer in a successor block (e.g. the b.cond terminating THIS block) counts.
 	--
-	-- ARM64-ONLY: the capability is keyed off cg.saveFlags (mrs/msr nzcv), which only
-	-- the arm64 codegen provides (x86_64 has no flag save/restore — EFLAGS clobbering
-	-- there is the documented known issue — so on x86 flagsLiveFrom is constant-false
-	-- and withFlagSave is a plain passthrough, keeping x86 output byte-identical).
+	-- The capability is keyed off cg.saveFlags/cg.restoreFlags + cgm.flagUse/flagDef,
+	-- which BOTH backends provide: arm64 via mrs/msr nzcv into a virtual temp,
+	-- x86_64 via a pushfq/popq <temp> ... pushq <temp>/popfq round-trip through a
+	-- virtual temp (x86_64_isa's FLAG_USE/FLAG_DEF classify its flag reads/writes).
+	-- The scan is live on both architectures, so an instrumented sequence is only
+	-- bracketed when a flag consumer actually reaches it.
 	local nodeIndex = {}
 	for i, nd in lf.nodes do nodeIndex[nd] = i end
 	local flagLiveCache = {}
@@ -1011,16 +1013,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- injected sequences clobber EFLAGS. The RMW/CAS paths therefore keep the
 	-- pre-op value (and the source operand) live in webs and re-execute the
 	-- operation on a scratch copy as the LAST flag-affecting step (the result
-	-- moves and root stores in between don't touch flags). A consumer that does
-	-- NOT immediately follow still sees clobbered flags — the same documented
-	-- caveat as the injected bounds checks everywhere else.
+	-- moves and root stores in between don't touch flags) — their contract is to
+	-- produce the NATIVE flags of the operation, so they are deliberately NOT
+	-- wrapped in the flag save/restore (`not` and adc/sbb carry-ins remain the
+	-- documented-indeterminate exceptions).
+	-- The CLOBBERING of injected bounds checks everywhere else is fixed by the
+	-- flag-liveness scan on BOTH architectures now: every instrumented sequence
+	-- (access checks, invisicap loads/stores, pollchecks, allocations, masked
+	-- checks) is bracketed with a save/restore of the program's flags exactly when
+	-- a consumer can reach them (arm64: mrs/msr nzcv; x86_64: pushfq/popq +
+	-- pushq/popfq through a virtual temp), and flags are dead most of the time.
 	-- NZCV (arm64): only `;! atomic ptr` (cas) has a flag contract — NZCV is
 	-- recomputed as (expected − old) as the last flag-affecting step, mirroring
 	-- the x86 cmpxchg form so a following b.eq/cset behaves natively. The native
 	-- arm64 forms (ldar/stlr/ldapr, the LSE RMWs) write NO flags, so their
 	-- sequences instead PRESERVE the program's live NZCV around themselves
-	-- (withFlagSave at the dispatch; constant-false on x86_64, which keeps its
-	-- EFLAGS behavior and byte-identical output).
+	-- (withFlagSave at the dispatch).
 	local function marshalResultPtr(dstIv, dstLo)
 		cg.move(dstIv, pColored(cc.rtRet))
 		cg.move(dstLo, pColored(cc.rtRetLo))
@@ -1784,9 +1792,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					end)
 				elseif atomicLoadPtrDefs[node] then
 					-- arm64: ldar/ldapr write no flags — preserve the program's
-					-- live NZCV around the injected check+call (x86_64:
-					-- flagsLiveFrom is constant-false, so this wrap is a plain
-					-- passthrough and the output is unchanged).
+					-- live NZCV around the injected check+call. x86_64: the
+					-- `;! atomic load ptr` sequence (check + runtime call)
+					-- clobbers EFLAGS the same way, so the bracket applies there
+					-- too now that the flag scan is live on both architectures.
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 						emitAtomicPtrLoad(node, mem)
 					end)
@@ -1811,7 +1820,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- mask-aware check (x86_64 only; nil everywhere else).
 					local minfo = cgm.maskedAccessInfo and cgm.maskedAccessInfo(node.stmt)
 					if minfo then
-						emitMaskedAccessCheck(effTemp, capLo, minfo, align, isWrite)
+						-- the masked sequence ends at its .Lmaskexec_ join label,
+						-- which every non-failing path reaches, so the restore
+						-- lands correctly; the save temp stays live across the
+						-- internal labels and regalloc handles it.
+						withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+							emitMaskedAccessCheck(effTemp, capLo, minfo, align, isWrite)
+						end)
 					else
 						withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 							emitAccessCheck(effTemp, capLo, size, align, isWrite)

@@ -33,6 +33,9 @@ local FIXED = {
 	cmpxchg8b = "cmpxchg8b", cmpxchg16b = "cmpxchg16b",
 	endbr64 = "nop", nop = "nop", ud2 = "ud2", ret = "ret", retq = "ret", leave = "leave",
 	call = "call", callq = "call", jmp = "jmp", jmpq = "jmp",
+	-- the flag-byte transfers (zero explicit operands; implicit %ah <-> EFLAGS —
+	-- modeled by classify's pinned branch below)
+	lahf = "lahf", sahf = "sahf",
 }
 function x86.baseMnemonic(m)
 	m = string.lower(m)
@@ -89,6 +92,71 @@ function x86.isMemRmw(stmt)
 		or string.match(raw, "^adox[lq]?$") ~= nil
 		or string.match(raw, "^crc32[bwlq]?$") ~= nil
 end
+
+-- EFLAGS classification, used for flag liveness at instrumentation points
+-- (transform.luau brackets its check-emitting sequences with a save/restore of the
+-- flags when a flag consumer can reach them — on x86_64 the round-trip is
+-- pushfq/popq <temp> ... pushq <temp>/popfq through a virtual temp, see
+-- x86_64_codegen.saveFlags). A "use" READS the flags (the incoming value matters);
+-- a "def" writes ALL SIX flags (each of them either architecturally defined or
+-- documented-undefined — either way no later read can depend on the pre-instruction
+-- value, so the incoming flags are dead). Instructions that read AND write (adc/
+-- sbb/adcx/adox/rcl/rcr) count as uses (the scan checks use before def).
+--
+-- PARTIAL flag writes must be in NEITHER table — the scan keeps scanning forward
+-- past them, so a later consumer still triggers the save/restore (conservative and
+-- correct):
+--   inc/dec preserve CF; rol/ror preserve SF/ZF/AF/PF (and write only OF/CF);
+--   shld/shrd preserve CF; cmpxchg8b/16b write only ZF; bt/bts/btr/btc write
+--   only CF; sahf leaves OF; div/idiv leave the flags unmodified in practice
+--   (documented-undefined); stc/clc/cmc write only CF. (bsf/bsr/tzcnt/lzcnt/
+--   popcnt ARE listed below despite leaving some flags undefined: an undefined
+--   flag is still a WRITE — garbage, not the incoming value — so no later read
+--   can depend on the pre-instruction value.)
+-- Unknown mnemonics are also neither (the scan continues — conservative).
+local FLAG_USE = {}
+for _, m in {
+	"adc","sbb",            -- carry-in / borrow-in reads
+	"adcx","adox",          -- carry-in (adcx) / overflow-in (adox) reads
+	"rcl","rcr",            -- rotate through carry: read CF
+	"lahf",                 -- reads the flags into %ah
+} do FLAG_USE[m] = true end
+
+local FLAG_DEF = {}
+for _, m in {
+	"add","sub","and","or","xor","cmp","test",  -- the ALU family (all six written)
+	"neg",                                      -- neg writes all six
+	"shl","sal","shr","sar",                    -- shifts: AF undefined, the rest written
+	"mul","imul",                               -- CF/OF defined, the rest undefined
+	"xadd","cmpxchg",                           -- full flag writes
+	"crc32",                                    -- all six written (SF/ZF/AF/PF undefined)
+	"bsf","bsr","tzcnt","lzcnt","popcnt",       -- ZF/CF/PF written, OF/SF/AF undefined
+} do FLAG_DEF[m] = true end
+
+-- Does `stmt` READ the flags? Conditional consumers (jcc/setcc/cmov) and the
+-- carry-in/rotate-through-carry families, plus lahf. Used by transform.luau's
+-- flag-liveness scan (flagsLiveFrom).
+function x86.flagUse(stmt)
+	if not stmt then return false end
+	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	if m == "jcc" or m == "setcc" or m == "cmov" then return true end
+	if FLAG_USE[m] then return true end
+	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
+	-- keep their AT&T size suffix (adcxq, crc32l, rclq, popcntq, shldq, btq, ...).
+	m = string.gsub(m, "[bwlq]$", "")
+	return FLAG_USE[m] == true
+end
+
+-- Does `stmt` write ALL SIX flags (defined or documented-undefined — no later read
+-- can depend on the pre-instruction values)? Used by transform.luau's flag-liveness
+-- scan (flagsLiveFrom). Partial writes are deliberately NOT here (see above).
+function x86.flagDef(stmt)
+	if not stmt then return false end
+	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	m = string.gsub(m, "[bwlq]$", "")
+	return FLAG_DEF[m] == true
+end
+
 -- condition -> whether it's an unsigned/eq branch we generate; classify only needs control.
 local COND_JMP = { jcc = true }
 
@@ -429,6 +497,43 @@ function x86.classify(insn)
 		end
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
 			pin = { uses = pinUses, defs = pinDefs } }
+	elseif m == "lahf" or m == "sahf" then
+		-- LAHF / SAHF: the flag byte moves between EFLAGS and %ah (bits 8-15 of the
+		-- rax web; the web model has no subregister view — the SAME web as %al — so
+		-- the whole 64-bit rax web is the modeled operand). No explicit operands.
+		--   lahf: reads the flags, writes bits 8-15 of rax — an implicit
+		--     read-modify-write of the rax web, PINNED to physical rax exactly like
+		--     the 8-bit div form: codegen's emitPinned copies the web's 64-bit value
+		--     into physical rax, emits the bare `lahf`, and copies rax back out —
+		--     wherever the web is colored, AH lands at bits 8-15 of the colored
+		--     register (and when it IS rax the copies coalesce away as self-moves).
+		--     (Reading the byte back: bits 8-15 of the web, e.g.
+		--     `shrq $8, %rax; andq $255, %rax` — a literal `%ah` operand names the
+		--     LOW byte of the colored register, which is only AH when the web stayed
+		--     in physical rax.)
+		--   sahf: reads bits 8-15 of rax, writes SF/ZF/AF/PF/CF (OF UNCHANGED —
+		--     hence in NEITHER flag-liveness table, like every partial write) —
+		--     modeled as a uses-only pin (like mulx): the reaching web is copied
+		--     into physical rax before the instruction; nothing is written back.
+		-- Without the pin the %ah write would be invisible to the web model (the
+		-- old rax web neither killed nor updated) and regalloc could rename rax
+		-- across the instruction.
+		if #ops ~= 0 then
+			error("sarcasm: " .. rawMnem .. " takes no explicit operands (its only"
+				.. " operand is the implicit %ah / flag byte): " .. (insn.raw or rawMnem))
+		end
+		-- fresh table per implicit occurrence (see the cqo comment above)
+		local axU = { kind="reg", rc="gpr", num=0, width=64, name="rax", implicit=true }
+		table.insert(uses, axU)
+		if m == "lahf" then
+			local axD = { kind="reg", rc="gpr", num=0, width=64, name="rax", implicit=true }
+			table.insert(defs, axD)
+			table.insert(rmw, 0)
+			return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+				pin = { uses = { axU }, defs = { axD } } }
+		end
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+			pin = { uses = { axU }, defs = {} } }
 	elseif FLAGS_ONLY[m] then
 		for _, o in ops do useOperand(o) end
 	elseif ALU2[m] then

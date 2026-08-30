@@ -91,12 +91,96 @@ raise unless $?.exited?
 raise unless $?.exitstatus == 0 or $?.exitstatus == 1
 $hasLSE = $?.exitstatus == 0
 
+# Check if we have ARM JSCVT (fjcvtzs)
+raise unless system("clang -O3 -g -o filc/tests/has_jscvt filc/tests/has_jscvt.c")
+system("filc/tests/has_jscvt > filc/tests/has_jscvt.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasJSCVT = $?.exitstatus == 0
+
 # Check if we have ARMv8.2 FP16 (scalar half-precision)
 raise unless system("clang -O3 -g -o filc/tests/has_fp16 filc/tests/has_fp16.c")
 system("filc/tests/has_fp16 > filc/tests/has_fp16.log 2>&1")
 raise unless $?.exited?
 raise unless $?.exitstatus == 0 or $?.exitstatus == 1
 $hasFP16 = $?.exitstatus == 0
+
+# Check if we have ARMv8.2 FP16 (vector half-precision)
+raise unless system("clang -O3 -g -o filc/tests/has_asimdhp filc/tests/has_asimdhp.c")
+system("filc/tests/has_asimdhp > filc/tests/has_asimdhp.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasASIMDHP = $?.exitstatus == 0
+
+# Check if we have BFloat16 (bfcvt/bfcvtn/bfdot & co)
+raise unless system("clang -O3 -g -o filc/tests/has_bf16 filc/tests/has_bf16.c")
+system("filc/tests/has_bf16 > filc/tests/has_bf16.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasBF16 = $?.exitstatus == 0
+
+# Check if we have 8-bit integer matrix multiply (smmla/ummla/usmmla/usdot)
+raise unless system("clang -O3 -g -o filc/tests/has_i8mm filc/tests/has_i8mm.c")
+system("filc/tests/has_i8mm > filc/tests/has_i8mm.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasI8MM = $?.exitstatus == 0
+
+# Check if we have CRC-32 checksum instructions
+raise unless system("clang -O3 -g -o filc/tests/has_crc32 filc/tests/has_crc32.c")
+system("filc/tests/has_crc32 > filc/tests/has_crc32.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasCRC32 = $?.exitstatus == 0
+
+# Check if we have Armv8.4 flag manipulation (cfinv/rmif/setf32/axflag & co)
+raise unless system("clang -O3 -g -o filc/tests/has_flagm filc/tests/has_flagm.c")
+system("filc/tests/has_flagm > filc/tests/has_flagm.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasFLAGM = $?.exitstatus == 0
+
+# Check if we have Armv8.4.2 flag manipulation (setf16/setf64)
+raise unless system("clang -O3 -g -o filc/tests/has_flagm2 filc/tests/has_flagm2.c")
+system("filc/tests/has_flagm2 > filc/tests/has_flagm2.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasFLAGM2 = $?.exitstatus == 0
+
+# Check if we have ARM SHA-3 crypto hash (eor3/rax1/xar/bcax)
+raise unless system("clang -O3 -g -o filc/tests/has_sha3 filc/tests/has_sha3.c")
+system("filc/tests/has_sha3 > filc/tests/has_sha3.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasSHA3 = $?.exitstatus == 0
+
+# Check if we have ARM SHA-512 crypto hash
+raise unless system("clang -O3 -g -o filc/tests/has_sha512 filc/tests/has_sha512.c")
+system("filc/tests/has_sha512 > filc/tests/has_sha512.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasSHA512 = $?.exitstatus == 0
+
+# Check if we have pointer authentication code
+raise unless system("clang -O3 -g -o filc/tests/has_paca filc/tests/has_paca.c")
+system("filc/tests/has_paca > filc/tests/has_paca.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasPACA = $?.exitstatus == 0
+
+# Check if we have the architectural random number generator (mrs rndr)
+raise unless system("clang -O3 -g -o filc/tests/has_rng filc/tests/has_rng.c")
+system("filc/tests/has_rng > filc/tests/has_rng.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasRNG = $?.exitstatus == 0
+
+# Check if we have FEAT_FRINTTS (frint32z/frint32x/frint64z/frint64x)
+raise unless system("clang -O3 -g -o filc/tests/has_frintts filc/tests/has_frintts.c")
+system("filc/tests/has_frintts > filc/tests/has_frintts.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasFRINTTS = $?.exitstatus == 0
 
 # Check if we're using glibc
 $hasGLIBC = (Pathname.new($pizfix) + "lib" + "libc.so.6666").exist?
@@ -168,9 +252,81 @@ $testDirectory.each_entry {
         end
         next
     end
+    if manifest["needsJSCVT"] and not $hasJSCVT
+        if $verbose
+            puts "Skipping #{testName}, requires ARM JSCVT"
+        end
+        next
+    end
     if manifest["needsFP16"] and not $hasFP16
         if $verbose
             puts "Skipping #{testName}, requires ARMv8.2 FP16"
+        end
+        next
+    end
+    if manifest["needsASIMDHP"] and not $hasASIMDHP
+        if $verbose
+            puts "Skipping #{testName}, requires ARMv8.2 vector FP16"
+        end
+        next
+    end
+    if manifest["needsBF16"] and not $hasBF16
+        if $verbose
+            puts "Skipping #{testName}, requires BFloat16"
+        end
+        next
+    end
+    if manifest["needsI8MM"] and not $hasI8MM
+        if $verbose
+            puts "Skipping #{testName}, requires ARM i8mm"
+        end
+        next
+    end
+    if manifest["needsCRC32"] and not $hasCRC32
+        if $verbose
+            puts "Skipping #{testName}, requires ARM CRC32"
+        end
+        next
+    end
+    if manifest["needsFLAGM"] and not $hasFLAGM
+        if $verbose
+            puts "Skipping #{testName}, requires ARMv8.4 flag manipulation"
+        end
+        next
+    end
+    if manifest["needsFLAGM2"] and not $hasFLAGM2
+        if $verbose
+            puts "Skipping #{testName}, requires ARMv8.4.2 flag manipulation"
+        end
+        next
+    end
+    if manifest["needsSHA3"] and not $hasSHA3
+        if $verbose
+            puts "Skipping #{testName}, requires ARM SHA3"
+        end
+        next
+    end
+    if manifest["needsSHA512"] and not $hasSHA512
+        if $verbose
+            puts "Skipping #{testName}, requires ARM SHA512"
+        end
+        next
+    end
+    if manifest["needsPACA"] and not $hasPACA
+        if $verbose
+            puts "Skipping #{testName}, requires ARM pointer authentication"
+        end
+        next
+    end
+    if manifest["needsRNG"] and not $hasRNG
+        if $verbose
+            puts "Skipping #{testName}, requires ARM random number generator"
+        end
+        next
+    end
+    if manifest["needsFRINTTS"] and not $hasFRINTTS
+        if $verbose
+            puts "Skipping #{testName}, requires FEAT_FRINTTS"
         end
         next
     end

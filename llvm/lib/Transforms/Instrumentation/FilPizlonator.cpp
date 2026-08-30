@@ -10890,6 +10890,1909 @@ class Pizlonator {
     return true;
   }
 
+  // Validate an AArch64 (A64) inline asm call. This is the AArch64 counterpart to
+  // validateSafeInlineAsm above (the x86_64 validator). The threat model is the
+  // same: an inline asm call may be passed through if all of its effects are
+  // (a) writes to registers that are covered by an output constraint or clobber,
+  // (b) writes to the NZCV condition flags provided the asm declares a "cc"
+  // clobber, (c) barriers (dmb/dsb/isb), whose memory-ordering effects are
+  // harmless, (d) uncatchable-from-Fil-C traps like brk, and (e) reads of
+  // arbitrary registers (including undeclared ones) and immediates. Anything
+  // else - memory accesses, control flow, system register writes, writes to sp,
+  // labels, symbols/relocations, or anything unrecognized - is rejected, and
+  // the asm call is replaced by a filc_error call that panics at runtime.
+  bool validateSafeAArch64InlineAsm(CallBase* CI, InlineAsm* IA, std::string& Reason) {
+
+    // Whitespace helpers.
+
+    auto isSpace = [](char c) -> bool {
+      return c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f';
+    };
+    auto trim = [&](StringRef s) -> std::string {
+      size_t start = 0;
+      while (start < s.size() && isSpace(s[start]))
+        ++start;
+      size_t end = s.size();
+      while (end > start && isSpace(s[end - 1]))
+        --end;
+      return s.substr(start, end - start).str();
+    };
+    auto toLowerStr = [&](StringRef s) -> std::string {
+      std::string r = s.str();
+      for (char& c : r)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      return r;
+    };
+
+    // Recognize immediate text: an optional sign followed by either a hex
+    // number ("0x" prefix) or a decimal number. If allowFloat is set, a
+    // decimal fraction and/or exponent is also accepted (for FP immediates
+    // like fmov's "#1.0").
+    auto isImmediateText = [&](const std::string& s, bool allowFloat) -> bool {
+      size_t i = 0;
+      if (i < s.size() && (s[i] == '+' || s[i] == '-'))
+        ++i;
+      if (i + 1 < s.size() && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+        i += 2;
+        size_t digits = i;
+        while (i < s.size() && std::isxdigit(static_cast<unsigned char>(s[i])))
+          ++i;
+        return i != digits && i == s.size();
+      }
+      size_t digits = i;
+      while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+        ++i;
+      if (i == digits)
+        return false;
+      if (allowFloat && i < s.size() && s[i] == '.') {
+        ++i;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+          ++i;
+      }
+      if (allowFloat && i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
+        ++i;
+        if (i < s.size() && (s[i] == '+' || s[i] == '-'))
+          ++i;
+        size_t expDigits = i;
+        while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i])))
+          ++i;
+        if (i == expDigits)
+          return false;
+      }
+      return i == s.size();
+    };
+
+    // Map a register name to its canonical A64 family. Register families:
+    // x0-x30 (with w0-w30 the 32-bit views, lr = x30), xzr (the zero register,
+    // spelled xzr/wzr), sp (sp/wsp), v0-v31 (the FP/SIMD registers, with
+    // b/h/s/d/q the width views and z the SVE views), and p0-p15 (SVE
+    // predicate registers, accepted as clobbers/constraints only). A vector
+    // arrangement suffix (e.g. ".4s") and/or a lane index (e.g. "[1]") is
+    // stripped before lookup. fpsr/fpcr/nzcv map to themselves; they are only
+    // meaningful as clobber names or system register operands. Everything else
+    // maps to "" (unknown).
+    auto getRegFamily = [&](StringRef reg) -> std::string {
+      std::string r = toLowerStr(reg);
+
+      // Strip a trailing lane index like "[1]".
+      if (!r.empty() && r.back() == ']') {
+        size_t open = r.find_last_of('[');
+        if (open == std::string::npos)
+          return "";
+        std::string idx = r.substr(open + 1, r.size() - open - 2);
+        if (idx.empty())
+          return "";
+        for (char c : idx) {
+          if (!std::isdigit(static_cast<unsigned char>(c)))
+            return "";
+        }
+        r.resize(open);
+      }
+
+      // Strip an optional vector arrangement suffix like ".4s" or ".16b".
+      size_t dot = r.find('.');
+      if (dot != std::string::npos) {
+        std::string suffix = r.substr(dot + 1);
+        r.resize(dot);
+        size_t i = 0;
+        while (i < suffix.size() && std::isdigit(static_cast<unsigned char>(suffix[i])))
+          ++i;
+        if (i + 1 != suffix.size())
+          return "";
+        char c = suffix[i];
+        if (c != 'b' && c != 'h' && c != 's' && c != 'd' && c != 'q')
+          return "";
+      }
+
+      static const std::unordered_map<std::string, std::string> familyMap = []{
+        std::unordered_map<std::string, std::string> m;
+        for (int i = 0; i <= 30; ++i) {
+          std::string base = "x" + std::to_string(i);
+          m[base] = base;
+          m["w" + std::to_string(i)] = base;
+        }
+        // x31/w31 are not architectural register names, but LLVM maps them to
+        // sp in clobber lists; treat them as sp (writes get rejected).
+        m["x31"] = "sp";
+        m["w31"] = "sp";
+        m["lr"] = "x30";
+        m["fp"] = "x29";
+        m["xzr"] = "xzr";
+        m["wzr"] = "xzr";
+        m["sp"] = "sp";
+        m["wsp"] = "sp";
+        for (int i = 0; i <= 31; ++i) {
+          std::string base = std::to_string(i);
+          m["v" + base] = "v" + base;
+          m["b" + base] = "v" + base;
+          m["h" + base] = "v" + base;
+          m["s" + base] = "v" + base;
+          m["d" + base] = "v" + base;
+          m["q" + base] = "v" + base;
+          m["z" + base] = "v" + base;
+        }
+        for (int i = 0; i <= 15; ++i) {
+          std::string base = "p" + std::to_string(i);
+          m[base] = base;
+        }
+        m["fpsr"] = "fpsr";
+        m["fpcr"] = "fpcr";
+        m["nzcv"] = "nzcv";
+        return m;
+      }();
+
+      auto it = familyMap.find(r);
+      if (it != familyMap.end())
+        return it->second;
+      return "";
+    };
+
+    // Parse the constraint string. The structure mirrors the x86 parser.
+
+    struct ParsedConstraint {
+      enum Kind { Clobber, Output, Input } Kind;
+      std::string String;
+      bool IsRegister = false;
+      std::string Family; // non-empty for fixed-register constraints
+      int MatchingTarget = -1;
+    };
+
+    std::vector<ParsedConstraint> Constraints;
+    bool HasCCClobber = false;
+    bool HasFPSRClobber = false;
+    std::unordered_set<std::string> ClobberFamilies;
+
+    std::string ConstraintStr = IA->getConstraintString();
+    for (size_t idx = 0, end = ConstraintStr.size(); idx < end; ) {
+      size_t comma = ConstraintStr.find(',', idx);
+      if (comma == std::string::npos)
+        comma = end;
+      std::string cstr = trim(ConstraintStr.substr(idx, comma - idx));
+      if (!cstr.empty()) {
+        ParsedConstraint pc;
+        pc.String = cstr;
+        pc.Kind = ParsedConstraint::Input;
+        pc.IsRegister = false;
+        pc.MatchingTarget = -1;
+
+        if (cstr[0] == '~') {
+          pc.Kind = ParsedConstraint::Clobber;
+          if (cstr.size() < 3 || cstr[1] != '{' || cstr.back() != '}') {
+            Reason = "malformed clobber constraint: " + cstr;
+            return false;
+          }
+          std::string name = toLowerStr(cstr.substr(2, cstr.size() - 3));
+          if (name == "cc")
+            HasCCClobber = true;
+          else if (name == "memory") {
+            // The memory clobber is allowed.
+          } else if (name == "fpsr" || name == "fpcr") {
+            // The compiler does not accept "fpsr"/"fpcr" as clobber names on
+            // AArch64 (they are rejected by the frontend), so these can only
+            // appear in hand-written IR. Reject them so that FP flag state is
+            // never left undocumented.
+            Reason = "unsupported clobber for safe inline asm: " + cstr;
+            return false;
+          } else {
+            std::string family = getRegFamily(name);
+            if (family.empty()) {
+              Reason = "unsupported clobber for safe inline asm: " + cstr;
+              return false;
+            }
+            if (family == "sp") {
+              Reason = "sp cannot be used as a safe inline asm clobber: " + cstr;
+              return false;
+            }
+            if (family == "x29") {
+              // x29 is the frame pointer (fp). Clobbering it could corrupt
+              // the frame, mirroring the x86 validator's rejection of bp.
+              Reason = "fp/x29 cannot be used as a safe inline asm clobber: " + cstr;
+              return false;
+            }
+            // Writes to xzr are discarded, so clobbering it is a no-op; it is
+            // accepted and ignored like any other register clobber.
+            ClobberFamilies.insert(family);
+          }
+        } else {
+          size_t pos = 0;
+          bool isOutput = false;
+          while (pos < cstr.size()) {
+            if (cstr[pos] == '=') {
+              isOutput = true;
+              ++pos;
+            } else if (cstr[pos] == '&' || cstr[pos] == '%') {
+              ++pos;
+            } else if (cstr[pos] == '+') {
+              isOutput = true;
+              ++pos;
+            } else {
+              break;
+            }
+          }
+          if (pos >= cstr.size()) {
+            Reason = "empty constraint after prefixes: " + cstr;
+            return false;
+          }
+          if (cstr[pos] == '*') {
+            Reason = "indirect constraint not allowed in safe inline asm: " + cstr;
+            return false;
+          }
+          pc.Kind = isOutput ? ParsedConstraint::Output : ParsedConstraint::Input;
+          std::string rest = cstr.substr(pos);
+          if (rest == "m") {
+            Reason = "memory constraint not allowed in safe inline asm (aarch64): " + cstr;
+            return false;
+          }
+          if (rest == "r" || rest == "w" || rest == "x" || rest == "y") {
+            pc.IsRegister = true;
+          } else if (rest == "i" || rest == "n" || rest == "J") {
+            pc.IsRegister = false;
+          } else if (!rest.empty() && rest[0] == '@') {
+            // Multi-letter register-class constraints are encoded in IR as
+            // "@<index><name>", e.g. "=@3Upl" for the SVE predicate register
+            // class Upl.
+            size_t i = 1;
+            while (i < rest.size() && std::isdigit(static_cast<unsigned char>(rest[i])))
+              ++i;
+            std::string name = toLowerStr(rest.substr(i));
+            if (i == 1 || (name != "upl" && name != "upa")) {
+              Reason = "unsupported constraint for safe inline asm: " + cstr;
+              return false;
+            }
+            pc.IsRegister = true;
+          } else if (rest.size() >= 2 && rest.front() == '{' && rest.back() == '}') {
+            std::string regname = toLowerStr(rest.substr(1, rest.size() - 2));
+            std::string family = getRegFamily(regname);
+            if (family.empty()) {
+              Reason = "unknown fixed register constraint: " + cstr;
+              return false;
+            }
+            if (family == "sp") {
+              Reason = "sp cannot be used as a safe inline asm constraint: " + cstr;
+              return false;
+            }
+            if (family == "x29") {
+              Reason = "fp/x29 cannot be used as a safe inline asm constraint: " + cstr;
+              return false;
+            }
+            if (family == "xzr") {
+              // Writing xzr discards the value, so using it as an output
+              // constraint is meaningless; reject it.
+              Reason = "xzr cannot be used as a safe inline asm constraint: " + cstr;
+              return false;
+            }
+            pc.IsRegister = true;
+            pc.Family = family;
+          } else {
+            bool allDigits = true;
+            for (char c : rest) {
+              if (!std::isdigit(static_cast<unsigned char>(c))) {
+                allDigits = false;
+                break;
+              }
+            }
+            if (allDigits && !rest.empty()) {
+              int target = 0;
+              for (char c : rest)
+                target = target * 10 + (c - '0');
+              pc.MatchingTarget = target;
+            } else {
+              Reason = "unsupported constraint '" + rest + "' for safe inline asm";
+              return false;
+            }
+          }
+        }
+        Constraints.push_back(pc);
+      }
+      idx = comma + 1;
+    }
+
+    // Operand placeholders refer to outputs and inputs, not clobbers. Clobbers
+    // always come last in LLVM's canonical constraint strings, but keep a
+    // separate clobber-free list so placeholder indexing is always right.
+
+    // Count the operand (non-clobber) constraints; clobbers come last.
+    size_t numOperandConstraints = 0;
+    for (const auto& pc : Constraints) {
+      if (pc.Kind != ParsedConstraint::Clobber)
+        ++numOperandConstraints;
+    }
+
+    // Resolve matching constraints ("0", "1", ...). These are emitted for
+    // "+r"-style in-out operands; clang appends the tied input after all
+    // explicit inputs (e.g. "+r"(x) : "r"(y) becomes "=r,r,0").
+    for (auto& pc : Constraints) {
+      if (pc.MatchingTarget < 0)
+        continue;
+      size_t target = static_cast<size_t>(pc.MatchingTarget);
+      if (target >= numOperandConstraints) {
+        Reason = "matching constraint out of range: " + pc.String;
+        return false;
+      }
+      const ParsedConstraint& targetPc = Constraints[target];
+      if (targetPc.Kind != ParsedConstraint::Output) {
+        Reason = "matching constraint does not point at output: " + pc.String;
+        return false;
+      }
+      if (!targetPc.IsRegister) {
+        Reason = "matching constraint points at non-register output: " + pc.String;
+        return false;
+      }
+      pc.IsRegister = true;
+      pc.Family = targetPc.Family;
+    }
+
+    std::vector<ParsedConstraint> OperandConstraints;
+    for (const auto& pc : Constraints) {
+      if (pc.Kind != ParsedConstraint::Clobber)
+        OperandConstraints.push_back(pc);
+    }
+
+    // Build sets of register families covered by input/output constraints.
+    std::unordered_set<std::string> InputFamilies;
+    std::unordered_set<std::string> OutputFamilies;
+    for (const auto& pc : Constraints) {
+      if (!pc.IsRegister)
+        continue;
+      if (pc.Kind == ParsedConstraint::Input && !pc.Family.empty())
+        InputFamilies.insert(pc.Family);
+      else if (pc.Kind == ParsedConstraint::Output && !pc.Family.empty())
+        OutputFamilies.insert(pc.Family);
+    }
+
+    if (verbose) {
+      errs() << "Safe AArch64 inline asm constraint analysis:\n";
+      errs() << "  Input families:";
+      for (const auto& f : InputFamilies)
+        errs() << " " << f;
+      errs() << "\n";
+      errs() << "  Output families:";
+      for (const auto& f : OutputFamilies)
+        errs() << " " << f;
+      errs() << "\n";
+      errs() << "  Clobber families:";
+      for (const auto& f : ClobberFamilies)
+        errs() << " " << f;
+      errs() << "\n";
+      errs() << "  Has cc clobber: " << HasCCClobber << "\n";
+    }
+
+    enum OperandRole { RoleInput, RoleOutput };
+
+    // Note: there is no RoleBoth. On x86, RoleBoth and RoleOutput are enforced
+    // identically (a write requires output/clobber coverage), and the same
+    // holds here: a destination register that an instruction also reads (like
+    // movk's or mla's) is written, so it must be covered by an output
+    // constraint or clobber; the implicit read is harmless since reading any
+    // register is allowed.
+
+    struct A64InsnInfo {
+      A64InsnInfo(bool SetsFlags, std::vector<OperandRole> Roles, bool SetsFpFlags = false)
+        : SetsFlags(SetsFlags), SetsFpFlags(SetsFpFlags), Roles(std::move(Roles)) {}
+      bool SetsFlags;
+      bool SetsFpFlags;
+      std::vector<OperandRole> Roles;
+    };
+
+    // The safe-instruction database. Roles are in as-written order (destination
+    // first, unlike AT&T syntax). A role list permits both the immediate and
+    // register forms of an operand - coverage checks only apply to registers.
+    // Instructions that access memory, transfer control, or touch system
+    // state are absent: they are rejected as unsupported mnemonics.
+    static const std::unordered_map<std::string, A64InsnInfo> info = {
+      // Arithmetic/logic (register and immediate forms; shift/extend
+      // modifiers on the last operand are reduced away before the arity
+      // check).
+      {"add", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"adds", {true, {RoleOutput, RoleInput, RoleInput}}},
+      {"sub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"subs", {true, {RoleOutput, RoleInput, RoleInput}}},
+      {"and", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ands", {true, {RoleOutput, RoleInput, RoleInput}}},
+      {"orr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"orn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"eor", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"eon", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bic", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bics", {true, {RoleOutput, RoleInput, RoleInput}}},
+      // Compare/test aliases write xzr and set flags; the xzr write is
+      // treated conservatively as flags-setting by the generic walk.
+      {"cmp", {true, {RoleInput, RoleInput}}},
+      {"cmn", {true, {RoleInput, RoleInput}}},
+      {"tst", {true, {RoleInput, RoleInput}}},
+      {"neg", {false, {RoleOutput, RoleInput}}},
+      {"negs", {true, {RoleOutput, RoleInput}}},
+      {"mvn", {false, {RoleOutput, RoleInput}}},
+      // Moves. movk is read-modify-write on its destination; the write must
+      // be covered, and the implicit read is harmless.
+      {"mov", {false, {RoleOutput, RoleInput}}},
+      {"movz", {false, {RoleOutput, RoleInput}}},
+      {"movn", {false, {RoleOutput, RoleInput}}},
+      {"movk", {false, {RoleOutput, RoleInput}}},
+      // Condition flags and conditional selects. Condition operands (eq, ne,
+      // ...) are classified as immediates.
+      {"cset", {false, {RoleOutput, RoleInput}}},
+      {"csetm", {false, {RoleOutput, RoleInput}}},
+      {"cinc", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cinv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cneg", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"csel", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"csinc", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"csinv", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"csneg", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"ccmp", {true, {RoleInput, RoleInput, RoleInput, RoleInput}}},
+      {"ccmn", {true, {RoleInput, RoleInput, RoleInput, RoleInput}}},
+      // Flag manipulation (flagm/flagm2 extensions). These only affect NZCV.
+      {"cfinv", {true, {}}},
+      {"rmif", {true, {RoleInput, RoleInput, RoleInput}}},
+      {"setf8", {true, {RoleInput}}},
+      {"setf16", {true, {RoleInput}}},
+      {"setf32", {true, {RoleInput}}},
+      {"setf64", {true, {RoleInput}}},
+      {"axflag", {true, {}}},
+      {"xaflag", {true, {}}},
+      // Carry/multiply/divide. Division by zero yields zero (no trap).
+      {"adc", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"adcs", {true, {RoleOutput, RoleInput, RoleInput}}},
+      {"sbc", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sbcs", {true, {RoleOutput, RoleInput, RoleInput}}},
+      {"ngc", {false, {RoleOutput, RoleInput}}},
+      {"ngcs", {true, {RoleOutput, RoleInput}}},
+      {"madd", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"msub", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"mul", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"mneg", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smull", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umull", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smulh", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umulh", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sdiv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"udiv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Shifts (immediate and register forms).
+      {"lsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"lsr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"asr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ror", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"asrv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"lsrv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"rorv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Bitfield/extend.
+      {"sbfm", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"ubfm", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"bfm", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"bfi", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"bfxil", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"sbfiz", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"ubfiz", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"sbfx", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"ubfx", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"extr", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"sxtb", {false, {RoleOutput, RoleInput}}},
+      {"sxth", {false, {RoleOutput, RoleInput}}},
+      {"sxtw", {false, {RoleOutput, RoleInput}}},
+      {"uxtb", {false, {RoleOutput, RoleInput}}},
+      {"uxth", {false, {RoleOutput, RoleInput}}},
+      {"uxtw", {false, {RoleOutput, RoleInput}}},
+      // Misc register-only operations.
+      {"rev", {false, {RoleOutput, RoleInput}}},
+      {"rev16", {false, {RoleOutput, RoleInput}}},
+      {"rev32", {false, {RoleOutput, RoleInput}}},
+      {"rev64", {false, {RoleOutput, RoleInput}}},
+      {"clz", {false, {RoleOutput, RoleInput}}},
+      {"cls", {false, {RoleOutput, RoleInput}}},
+      {"rbit", {false, {RoleOutput, RoleInput}}},
+      // CRC-32 checksum (FEAT_CRC32). crc32* use the CRC-32 polynomial
+      // 0x04C11DB7; crc32c* use the Castagnoli polynomial 0x1EDC6F41. All
+      // are written dest-first with two source operands: a W accumulator
+      // and a W or X (crc32x/crc32cx) data operand. They write only the
+      // destination register and touch no flags.
+      {"crc32b", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32h", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32w", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32x", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32cb", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32ch", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32cw", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"crc32cx", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // No-operand instructions, including barriers. dmb/dsb take one barrier
+      // option operand (classified as an immediate); isb is special-cased to
+      // allow 0 or 1 operands, as is bti.
+      {"nop", {false, {}}},
+      {"wfe", {false, {}}},
+      {"wfi", {false, {}}},
+      {"sev", {false, {}}},
+      {"sevl", {false, {}}},
+      {"yield", {false, {}}},
+      {"csdb", {false, {}}},
+      {"esb", {false, {}}},
+      {"drps", {false, {}}},
+      // dgh (data gathering hint, FEAT_DGH, HINT #220) and sb (speculation
+      // barrier, FEAT_SB) have no architectural effect: the ISA pseudocode
+      // for both is a no-op (Hint_DGH()/SpeculationBarrier() return without
+      // touching registers, flags, or memory). They are assembler -march
+      // gated, so no runtime test covers them here.
+      {"dgh", {false, {}}},
+      {"sb", {false, {}}},
+      {"dmb", {false, {RoleInput}}},
+      {"dsb", {false, {RoleInput}}},
+      // brk raises SIGTRAP, which is uncatchable from Fil-C code - the same
+      // reasoning that allows ud2 on x86.
+      {"brk", {false, {RoleInput}}},
+      // hlt takes a single immediate operand. Executed at EL0 without a
+      // debugger attached it raises SIGILL (the kernel treats it as an
+      // undefined instruction), which is uncatchable from Fil-C code - the
+      // same safe-trap reasoning as brk.
+      {"hlt", {false, {RoleInput}}},
+      {"hint", {false, {RoleInput}}},
+      // Scalar FP. These read/write v-register scalars only. fcmp/fcmpe are
+      // special-cased (they set FP flags in FPSR, which cannot be declared).
+      {"fmov", {false, {RoleOutput, RoleInput}}},
+      {"fadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fsub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmul", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fdiv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fabs", {false, {RoleOutput, RoleInput}}},
+      {"fneg", {false, {RoleOutput, RoleInput}}},
+      {"fsqrt", {false, {RoleOutput, RoleInput}}},
+      {"fmax", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmin", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmaxnm", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fminnm", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmulx", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fabd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmadd", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fmsub", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fnmadd", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fnmsub", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fcvt", {false, {RoleOutput, RoleInput}}},
+      {"fcvtas", {false, {RoleOutput, RoleInput}}},
+      {"fcvtau", {false, {RoleOutput, RoleInput}}},
+      {"fcvtms", {false, {RoleOutput, RoleInput}}},
+      {"fcvtmu", {false, {RoleOutput, RoleInput}}},
+      {"fcvtns", {false, {RoleOutput, RoleInput}}},
+      {"fcvtnu", {false, {RoleOutput, RoleInput}}},
+      {"fcvtps", {false, {RoleOutput, RoleInput}}},
+      {"fcvtpu", {false, {RoleOutput, RoleInput}}},
+      {"fcvtzs", {false, {RoleOutput, RoleInput}}},
+      {"fcvtzu", {false, {RoleOutput, RoleInput}}},
+      {"scvtf", {false, {RoleOutput, RoleInput}}},
+      {"ucvtf", {false, {RoleOutput, RoleInput}}},
+      {"frintn", {false, {RoleOutput, RoleInput}}},
+      {"frintm", {false, {RoleOutput, RoleInput}}},
+      {"frintp", {false, {RoleOutput, RoleInput}}},
+      {"frintz", {false, {RoleOutput, RoleInput}}},
+      {"frinta", {false, {RoleOutput, RoleInput}}},
+      {"frintx", {false, {RoleOutput, RoleInput}}},
+      {"frinti", {false, {RoleOutput, RoleInput}}},
+      // FJCVTZS (FEAT_JSCVT) is the JavaScript ToInt32 conversion. Besides
+      // writing the converted value it writes all of PSTATE.NZCV (the ISA XML
+      // says "PSTATE.[N,Z,C,V] = '0'::z::'00'": N is the sign of the result,
+      // Z is set when the conversion is exact, C is set when the value was
+      // representable in int32, and V is cleared). So it needs the "cc"
+      // clobber exactly like an adds/cmp.
+      {"fjcvtzs", {true, {RoleOutput, RoleInput}}},
+      // Basic NEON (v registers with arrangement suffixes). The two-op and
+      // three-op shapes match the scalar entries.
+      {"shl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sshr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ushr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ssra", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usra", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"srshr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"urshr", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sri", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sli", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"mla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"mls", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bif", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bit", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umaxp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smaxp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uminp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sminp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"addp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"faddp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmaxp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fminp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmaxnmp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fminnmp", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"zip1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"zip2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uzp1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uzp2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"trn1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"trn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ext", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"cnt", {false, {RoleOutput, RoleInput}}},
+      {"abs", {false, {RoleOutput, RoleInput}}},
+      {"sqabs", {false, {RoleOutput, RoleInput}}},
+      {"sqneg", {false, {RoleOutput, RoleInput}}},
+      {"addv", {false, {RoleOutput, RoleInput}}},
+      {"smaxv", {false, {RoleOutput, RoleInput}}},
+      {"umaxv", {false, {RoleOutput, RoleInput}}},
+      {"sminv", {false, {RoleOutput, RoleInput}}},
+      {"uminv", {false, {RoleOutput, RoleInput}}},
+      {"umov", {false, {RoleOutput, RoleInput}}},
+      {"smov", {false, {RoleOutput, RoleInput}}},
+      {"dup", {false, {RoleOutput, RoleInput}}},
+      // ins writes one lane of the destination vector; the destination may be
+      // spelled with a lane index (e.g. "%0.s[1]"), which classifies as a
+      // register operand.
+      {"ins", {false, {RoleOutput, RoleInput}}},
+      {"fcvtn", {false, {RoleOutput, RoleInput}}},
+      {"fcvtn2", {false, {RoleOutput, RoleInput}}},
+      {"fcvtxn", {false, {RoleOutput, RoleInput}}},
+      {"fcvtl", {false, {RoleOutput, RoleInput}}},
+      {"fcvtl2", {false, {RoleOutput, RoleInput}}},
+      {"fmla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmls", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sdot", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"udot", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sudot", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON saturating integer arithmetic. None of these set NZCV; the
+      // saturating forms set the cumulative saturation bit FPSR.QC on
+      // saturation, which is in the same class as the FP flags set by the
+      // already-accepted sqabs/sqneg/sqshl/uqshl entries above (the only way
+      // to observe it is mrs fpsr, which is not in the mrs allowlist).
+      // suqadd/usqadd are written as two-operand RMW-accumulate forms; the
+      // read of the destination is expressed by the user via a tied "+w"
+      // output, as with mla/fmla above.
+      {"sqadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqsub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqsub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"suqadd", {false, {RoleOutput, RoleInput}}},
+      {"usqadd", {false, {RoleOutput, RoleInput}}},
+      // NEON saturating shifts. Immediate forms carry the shift amount as a
+      // final immediate operand; the register forms of sqshl/uqshl/sqrshl
+      // take a third vector operand. All shapes are dest-first three-operand.
+      {"sqshlu", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqshrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrshrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqshrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqrshrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqshrun", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrshrun", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"rshrn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"rshrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqshrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrshrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqshrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqrshrn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqshrun2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrshrun2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON narrowing (the "2" forms read the high half of the 128-bit
+      // source and write the full destination; same two-operand shape).
+      {"sqxtn", {false, {RoleOutput, RoleInput}}},
+      {"sqxtn2", {false, {RoleOutput, RoleInput}}},
+      {"uqxtn", {false, {RoleOutput, RoleInput}}},
+      {"uqxtn2", {false, {RoleOutput, RoleInput}}},
+      // NEON widening arithmetic. The "l" forms produce a double-width
+      // result from single-width sources; the "w" forms add/subtract a
+      // single-width source to/from a double-width destination. The "2"
+      // forms read the high halves of the sources.
+      {"saddl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"saddl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uaddl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uaddl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"saddw", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"saddw2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uaddw", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uaddw2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ssubl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ssubl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usubl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usubl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ssubw", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ssubw2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usubw", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usubw2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON narrowing-with-high-half: add the high halves of the sum or
+      // difference of the sources into the destination.
+      {"addhn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"addhn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"subhn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"subhn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"raddhn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"raddhn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"rsubhn", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"rsubhn2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON widening multiply. The lal/lsl forms are written as
+      // three-operand RMW-accumulate (destination is both read and
+      // written; the read is expressed via a tied "+w" output).
+      {"smull2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umull2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmull", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmull2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmlal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmlal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmlsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqdmlsl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umlal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umlal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umlsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umlsl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smlal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smlal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smlsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smlsl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Saturating doubling multiply-high (three-operand; vector and by-
+      // element forms have the same shape).
+      {"sqdmulh", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrdmulh", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Saturating rounding doubling multiply-accumulate high half
+      // (FEAT_RDM). Written as three-operand RMW-accumulate. These are
+      // -march gated in the assembler, so no runtime test covers them.
+      {"sqrdmlah", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sqrdmlsh", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON absolute difference (plain and widening).
+      {"sabd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uabd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sabdl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sabdl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uabdl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uabdl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON polynomial multiply.
+      {"pmul", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"pmull", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"pmull2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Cryptographic extensions. All of these write only their destination
+      // V register and touch no NZCV or FP flags.
+      //
+      // AES rounds (FEAT_AES). aese/aesd read their destination (the state
+      // is Vd XOR Vn before the cipher transform), so they are written with
+      // a tied "+w" destination like mla/fmla above. aesmc/aesimc are pure
+      // two-operand transforms of the source.
+      {"aese", {false, {RoleOutput, RoleInput}}},
+      {"aesd", {false, {RoleOutput, RoleInput}}},
+      {"aesmc", {false, {RoleOutput, RoleInput}}},
+      {"aesimc", {false, {RoleOutput, RoleInput}}},
+      // SHA-1 (FEAT_SHA1). sha1h rotates the scalar source left by 30.
+      // sha1c/sha1p/sha1m are four-round hash updates that read the
+      // destination as the hash state; sha1su0/sha1su1 are schedule helpers
+      // that also read the destination. All are written with a tied "+w"
+      // destination.
+      {"sha1h", {false, {RoleOutput, RoleInput}}},
+      {"sha1c", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha1p", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha1m", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha1su0", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha1su1", {false, {RoleOutput, RoleInput}}},
+      // SHA-256 (FEAT_SHA256). The h/h2/su1 forms read the destination
+      // (tied "+w"); su0 is written with two operands but also reads its
+      // destination.
+      {"sha256h", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha256h2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha256su0", {false, {RoleOutput, RoleInput}}},
+      {"sha256su1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // SHA-512 (FEAT_SHA512; the assembler enables it via +sha3). Same
+      // shapes as SHA-256 with .2d vectors.
+      {"sha512h", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha512h2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sha512su0", {false, {RoleOutput, RoleInput}}},
+      {"sha512su1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // SHA-3 (FEAT_SHA3). rax1 is a pure three-operand rotate-XOR. eor3
+      // and bcax are pure FOUR-operand forms: Qd = Qn ^ Qm ^ Qa and
+      // Qd = Qn ^ (Qm & ~Qa) - the destination is not read. xar is
+      // Qd = ROR(Qn ^ Qm, #imm) with the rotate amount as a literal
+      // immediate fourth operand.
+      {"rax1", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"eor3", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"bcax", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"xar", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      // NEON min/max and halving add/subtract. The same mnemonics also
+      // spell the FEAT_CSSC general-register forms ("smax x0, x1, x2"/"#imm"),
+      // which have the same dest-first three-operand shape.
+      {"smax", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"smin", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umax", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umin", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shsub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uhadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uhsub", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"srhadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"urhadd", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON misc three-operand and estimate ops.
+      {"cmtst", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"urecpe", {false, {RoleOutput, RoleInput}}},
+      {"ursqrte", {false, {RoleOutput, RoleInput}}},
+      // NEON FP compares. These produce 0/1 (or all-ones) in the
+      // destination; they do not touch NZCV. The "#0.0" zero-compare forms
+      // have the same three-operand shape with the compare operand spelled
+      // as an immediate.
+      {"fcmeq", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fcmge", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fcmgt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fcmle", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fcmlt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON absolute-value compares (scalar and vector forms; produce 0/1
+      // in the destination, not flags).
+      {"facge", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"facgt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON reciprocal estimates (scalar and vector forms).
+      {"frecpe", {false, {RoleOutput, RoleInput}}},
+      {"frecpx", {false, {RoleOutput, RoleInput}}},
+      {"frsqrte", {false, {RoleOutput, RoleInput}}},
+      {"frecps", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"frsqrts", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON across-lane FP reductions (scalar destination).
+      {"fmaxnmv", {false, {RoleOutput, RoleInput}}},
+      {"fminnmv", {false, {RoleOutput, RoleInput}}},
+      // FP16 mixed-precision MLA/MLS (FEAT_FHM). Written as three-operand
+      // RMW-accumulate like fmla/fmls above. These are -march gated in the
+      // assembler, so they are covered by a test that supplies the march.
+      {"fmlal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmlal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmlsl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"fmlsl2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // FP complex add/multiply-accumulate (FEAT_FCMA). fcadd is Vd, Vn,
+      // Vm, #rot; fcmla is Vd, Vn, Vm, #rot for both the vector form and
+      // the by-element form Vd, Vn, Vm[index], #rot. fcmla's destination
+      // is an accumulator (RMW); the read is expressed via a tied "+w"
+      // output, as with fmla above. The rotation operand is an immediate
+      // in {0,90,180,270}.
+      {"fcadd", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fcmla", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      // FP round-to-32-bit/64-bit-precision, FEAT_FRINTTS. The z forms are
+      // round-toward-zero; the x forms use the FPCR.RMode rounding mode
+      // with inexact suppression.
+      {"frint32z", {false, {RoleOutput, RoleInput}}},
+      {"frint32x", {false, {RoleOutput, RoleInput}}},
+      {"frint64z", {false, {RoleOutput, RoleInput}}},
+      {"frint64x", {false, {RoleOutput, RoleInput}}},
+      // BFloat16 conversions and dot product (FEAT_BF16). bfcvtn2 reads
+      // the high half of the source like the other "2" forms. bfdot is
+      // written as three-operand RMW-accumulate.
+      {"bfcvt", {false, {RoleOutput, RoleInput}}},
+      {"bfcvtn", {false, {RoleOutput, RoleInput}}},
+      {"bfcvtn2", {false, {RoleOutput, RoleInput}}},
+      {"bfdot", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // 8-bit integer matrix multiply-accumulate (FEAT_I8MM). All are
+      // written as three-operand RMW-accumulate.
+      {"smmla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ummla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usmmla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"usdot", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Pointer authentication (FEAT_PAuth). PAC*/AUT*/XPAC* only rewrite
+      // their destination GPR; the authentication keys are system state that
+      // is reachable only through msr/mrs (rejected), and PSTATE.NZCV is not
+      // written on any path - the ISA pseudocode (AddPAC*/Auth*/Strip in the
+      // shared pseudocode library) either returns a new value for Xd or, on
+      // FEAT_FPAC-class hardware, raises a PAC-failure exception, which is a
+      // fault of the same uncatchable-signal class as brk/hlt, not a flag
+      // write. The two-op forms "pacia Xd, Xn|SP" / "pacga Xd, Xn, Xm|SP"
+      // and the one-op zero-modifier forms "paciza Xd" cover the destination
+      // through the usual output constraint; the second/third operand may be
+      // spelled "sp" (the SP modifier), and reading sp is harmless. The
+      // zero-operand system-class forms that rewrite LR
+      // (paciasp/autiasp/pacibsp/autibsp/paciaz/autiaz/pacibz/autibz/
+      // xpaclri) are special-cased below. The zero-operand fixed-destination
+      // 1716 forms (pacia1716/pacib1716/autia1716/autib1716, which rewrite
+      // X17) are deliberately not implemented; rejecting them as unsupported
+      // mnemonics is conservative and sound (their PACM variants are
+      // feature-unavailable on this class of hardware anyway).
+      {"pacia", {false, {RoleOutput, RoleInput}}},
+      {"pacib", {false, {RoleOutput, RoleInput}}},
+      {"pacda", {false, {RoleOutput, RoleInput}}},
+      {"pacdb", {false, {RoleOutput, RoleInput}}},
+      {"paciza", {false, {RoleOutput}}},
+      {"pacizb", {false, {RoleOutput}}},
+      {"pacdza", {false, {RoleOutput}}},
+      {"pacdzb", {false, {RoleOutput}}},
+      // pacga (PACGA <Xd>, <Xn>, <Xm|SP>) computes a generic-key PAC over
+      // its two sources; it does not read its destination.
+      {"pacga", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"autia", {false, {RoleOutput, RoleInput}}},
+      {"autib", {false, {RoleOutput, RoleInput}}},
+      {"autda", {false, {RoleOutput, RoleInput}}},
+      {"autdb", {false, {RoleOutput, RoleInput}}},
+      {"autiza", {false, {RoleOutput}}},
+      {"autizb", {false, {RoleOutput}}},
+      {"autdza", {false, {RoleOutput}}},
+      {"autdzb", {false, {RoleOutput}}},
+      // XPACI/XPACD (the xpac.xml page, "X{64}(d) = Strip(X{64}(d), data)")
+      // replace the pointer authentication code field of Xd with the
+      // extension of its address bits. The zero-operand XPACLRI (which
+      // strips the code from LR) is special-cased below.
+      {"xpaci", {false, {RoleOutput}}},
+      {"xpacd", {false, {RoleOutput}}},
+      // Remaining simple register-only forms.
+      //
+      // BFC is the zero-source alias of BFM ("BFC <Xd>, #lsb, #width").
+      {"bfc", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // LSLV is the GPR variable-shift instruction whose ASRV/LSRV/RORV
+      // siblings are already above.
+      {"lslv", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NOT is the bitwise-complement alias of MVN over V registers.
+      {"not", {false, {RoleOutput, RoleInput}}},
+      // Integer NEON compares (vector and scalar shapes; the zero forms'
+      // trailing "#0" classifies as an immediate). They produce 0/all-ones
+      // in the destination and do not touch NZCV.
+      {"cmeq", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmge", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmgt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmhi", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmhs", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmle", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"cmlt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // FP select (reads NZCV, writes only its destination - flag reads are
+      // harmless the same way reading any register is) and FP
+      // multiply-negate (a plain FP multiply of the negated product).
+      {"fcsel", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"fnmul", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // Across-vector FP max/min reductions (scalar destination, vector
+      // source).
+      {"fmaxv", {false, {RoleOutput, RoleInput}}},
+      {"fminv", {false, {RoleOutput, RoleInput}}},
+      // Vector immediate moves. The trailing "LSL #amount"/"MSL #amount"
+      // modifiers are reduced away like the other shift modifiers.
+      {"movi", {false, {RoleOutput, RoleInput}}},
+      {"mvni", {false, {RoleOutput, RoleInput}}},
+      // Widening multiply-accumulate (SMADDL Xd, Wn, Wm, Xa and signed/
+      // unsigned sub variants; the destination is written, not read, like
+      // madd) and multiply-negate (SMNEGL/UMNEGL Xd, Wn, Wm).
+      {"smaddl", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"smsubl", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"umaddl", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"umsubl", {false, {RoleOutput, RoleInput, RoleInput, RoleInput}}},
+      {"smnegl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"umnegl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON absolute difference (SABA/UABA accumulate into the
+      // destination; SABAL/UABAL widen; the accumulate is expressed with a
+      // tied "+w" output like mla above).
+      {"saba", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uaba", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sabal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sabal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uabal", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uabal2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // NEON pairwise arithmetic (SADALP/UADALP accumulate, expressed with
+      // a tied "+w" output; SADDLP/UADDLP do not read the destination).
+      {"sadalp", {false, {RoleOutput, RoleInput}}},
+      {"uadalp", {false, {RoleOutput, RoleInput}}},
+      {"saddlp", {false, {RoleOutput, RoleInput}}},
+      {"uaddlp", {false, {RoleOutput, RoleInput}}},
+      // NEON across-lane long additions (scalar destination).
+      {"saddlv", {false, {RoleOutput, RoleInput}}},
+      {"uaddlv", {false, {RoleOutput, RoleInput}}},
+      // NEON shifts by vector register (per-lane, scalar and vector
+      // shapes), narrowing rounding accumulate (SRSRA/URSRA, tied "+w"),
+      // and widening shifts.
+      {"sshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ushl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"srshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"urshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"uqrshl", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"srsra", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ursra", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shll", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"shll2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sshll", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"sshll2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ushll", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"ushll2", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // SXTL/UXTL are the zero-shift aliases of SSHLL/USHLL.
+      {"sxtl", {false, {RoleOutput, RoleInput}}},
+      {"sxtl2", {false, {RoleOutput, RoleInput}}},
+      {"uxtl", {false, {RoleOutput, RoleInput}}},
+      {"uxtl2", {false, {RoleOutput, RoleInput}}},
+      // Narrowing (truncate and saturating-unsigned; SQXTUN saturates its
+      // signed source into the unsigned result).
+      {"sqxtun", {false, {RoleOutput, RoleInput}}},
+      {"sqxtun2", {false, {RoleOutput, RoleInput}}},
+      {"xtn", {false, {RoleOutput, RoleInput}}},
+      {"xtn2", {false, {RoleOutput, RoleInput}}},
+      // BFloat16 long multiply-accumulate (FEAT_BF16) and matrix multiply:
+      // RMW-accumulate like fmlal/bfdot (tied "+w" destination).
+      {"bfmlalb", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bfmlalt", {false, {RoleOutput, RoleInput, RoleInput}}},
+      {"bfmmla", {false, {RoleOutput, RoleInput, RoleInput}}},
+      // UDF #imm is a permanently undefined instruction: executed at EL0 it
+      // raises SIGILL, which is uncatchable from Fil-C code - the same
+      // safe-trap reasoning as brk/hlt.
+      {"udf", {false, {RoleInput}}},
+    };
+
+    bool AnySetsFlags = false;
+    bool AnySetsFpFlags = false;
+
+    enum A64OperandKind {
+      A64OKReg,
+      A64OKPlaceholder,
+      A64OKImmediate,
+      A64OKMemory,
+      A64OKError
+    };
+
+    // Parse a $N or ${N:mod} operand placeholder starting at s[i] (s[i] must
+    // be '$'). On success, returns true, sets placeholderIndex to the operand
+    // index, and advances i past the placeholder (including any ":mod").
+    // On failure, returns false; error is only set when the '$' begins a
+    // syntactically malformed or out-of-range placeholder.
+    auto parsePlaceholder = [&](const std::string& s, size_t& i,
+                                int& placeholderIndex,
+                                size_t numOperandConstraints,
+                                std::string& error) -> bool {
+      placeholderIndex = -1;
+      error.clear();
+      if (i >= s.size() || s[i] != '$')
+        return false;
+      size_t j = i + 1;
+      size_t end = std::string::npos;
+      if (j < s.size() && s[j] == '{') {
+        end = s.find('}', j);
+        if (end == std::string::npos) {
+          error = "malformed operand placeholder";
+          return false;
+        }
+        ++j; // skip '{'
+      }
+      size_t numStart = j;
+      size_t stop;
+      if (end != std::string::npos) {
+        size_t colon = s.find(':', j);
+        stop = (colon != std::string::npos && colon < end) ? colon : end;
+      } else {
+        stop = j;
+        while (stop < s.size() && std::isdigit(static_cast<unsigned char>(s[stop])))
+          ++stop;
+      }
+      if (stop == numStart) {
+        if (end != std::string::npos)
+          error = "empty operand placeholder";
+        return false;
+      }
+      unsigned long long idx = 0;
+      for (size_t k = numStart; k < stop; ++k) {
+        if (!std::isdigit(static_cast<unsigned char>(s[k]))) {
+          error = "unknown operand name in inline asm: " + s.substr(numStart, stop - numStart);
+          return false;
+        }
+        idx = idx * 10 + static_cast<unsigned long long>(s[k] - '0');
+        if (idx > static_cast<unsigned long long>(INT_MAX)) {
+          error = "operand placeholder index too large";
+          return false;
+        }
+      }
+      if (idx >= numOperandConstraints) {
+        error = "operand placeholder out of range";
+        return false;
+      }
+      placeholderIndex = static_cast<int>(idx);
+      i = (end != std::string::npos) ? end + 1 : stop;
+      return true;
+    };
+
+    // Classify an operand text. Mirrors the x86 classifyOperand, with A64
+    // operand syntax: placeholders ($N/${N:mod}, possibly followed by a
+    // vector arrangement suffix and/or lane index), registers (possibly with
+    // arrangement suffix and lane index), and immediates (#imm, bare numbers,
+    // condition codes, barrier options).
+    auto classifyOperand = [&](const std::string& op, int& placeholderIndex,
+                               std::string& family,
+                               size_t numOperandConstraints,
+                               std::string& error) -> A64OperandKind {
+      placeholderIndex = -1;
+      family.clear();
+      error.clear();
+      if (op.empty())
+        return A64OKMemory;
+      if (op[0] == '$') {
+        if (op.size() >= 2 && op[1] == '$')
+          return A64OKImmediate;
+        A64OperandKind kind = A64OKImmediate;
+        size_t i = 0;
+        std::string placeholderError;
+        if (parsePlaceholder(op, i, placeholderIndex, numOperandConstraints,
+                             placeholderError)) {
+          kind = A64OKPlaceholder;
+          // A placeholder may be followed by a vector arrangement suffix
+          // (".4s", or a bare ".s" as in "umov w0, v1.s[2]") and/or a lane
+          // index ("[1]"); clang emits these as literal template text (e.g.
+          // "%0.4s[1]" becomes "$0.4s[1]").
+          if (i < op.size() && op[i] == '.') {
+            size_t j = i + 1;
+            while (j < op.size() && std::isdigit(static_cast<unsigned char>(op[j])))
+              ++j;
+            if (j >= op.size() ||
+                !std::strchr("bhsdq", std::tolower(static_cast<unsigned char>(op[j])))) {
+              error = "malformed vector arrangement suffix: " + op;
+              return A64OKError;
+            }
+            i = j + 1;
+          }
+          if (i < op.size() && op[i] == '[') {
+            size_t close = op.find(']', i);
+            if (close == std::string::npos) {
+              error = "malformed lane index: " + op;
+              return A64OKError;
+            }
+            std::string idx = op.substr(i + 1, close - i - 1);
+            if (idx.empty()) {
+              error = "malformed lane index: " + op;
+              return A64OKError;
+            }
+            for (char c : idx) {
+              if (!std::isdigit(static_cast<unsigned char>(c))) {
+                error = "malformed lane index: " + op;
+                return A64OKError;
+              }
+            }
+            i = close + 1;
+          }
+          if (i != op.size()) {
+            error = "malformed operand placeholder: " + op;
+            return A64OKError;
+          }
+          return kind;
+        }
+        if (!placeholderError.empty()) {
+          error = placeholderError + ": " + op;
+          return A64OKError;
+        }
+        return A64OKImmediate;
+      }
+      if (op[0] == '#') {
+        std::string body = op.substr(1);
+        if (isImmediateText(body, true))
+          return A64OKImmediate;
+        // Anything else beginning with '#' is a symbol reference or some
+        // other relocation expression (e.g. "#:lo12:sym"), which could
+        // smuggle in an address.
+        error = "symbolic/relocation operand not allowed in safe inline asm: " + op;
+        return A64OKError;
+      }
+      {
+        // Condition codes (for csel/ccmp families), barrier options (for
+        // dmb/dsb), and bti options are all immediate-like operands.
+        static const std::unordered_set<std::string> keywords = {
+          "eq", "ne", "cs", "hs", "cc", "lo", "mi", "pl", "vs", "vc",
+          "hi", "ls", "ge", "lt", "gt", "le", "al", "nv",
+          "sy", "ld", "st",
+          "ish", "ishld", "ishst",
+          "osh", "oshld", "oshst",
+          "nsh", "nshld", "nshst",
+          "c", "j", "hc", "jc"
+        };
+        if (keywords.count(op))
+          return A64OKImmediate;
+      }
+      if (isImmediateText(op, false))
+        return A64OKImmediate;
+      {
+        // A register operand: a bare register name, or a vector register with
+        // arrangement suffix and/or lane index (e.g. "v1.4s[1]"). getRegFamily
+        // strips and validates the suffixes.
+        std::string fam = getRegFamily(op);
+        if (!fam.empty()) {
+          family = fam;
+          return A64OKReg;
+        }
+      }
+      if (op.find_first_of("[]") != std::string::npos)
+        return A64OKMemory;
+      error = "unsupported operand '" + op + "' in safe inline asm (aarch64)";
+      return A64OKError;
+    };
+
+    // Check a literal register used in an output (write) position.
+    auto checkOutputReg = [&](const std::string& op, const std::string& family) -> bool {
+      if (family == "sp") {
+        Reason = "cannot write sp in safe inline asm: " + op;
+        return false;
+      }
+      if (family == "xzr") {
+        // Writing xzr discards the value, but some instructions that accept
+        // xzr as a destination are aliases for flag-setting forms (e.g.
+        // "adds xzr, x0, x1" is cmn). Treat any xzr destination as
+        // flags-setting so that a "cc" clobber is required.
+        AnySetsFlags = true;
+        return true;
+      }
+      if (!OutputFamilies.count(family) && !ClobberFamilies.count(family)) {
+        Reason = "instruction writes " + op + " but it is not covered by an output constraint or clobber";
+        return false;
+      }
+      return true;
+    };
+
+    // Split the asm string into statements on '\n' and ';'.
+    std::string AsmStr = IA->getAsmString();
+    std::vector<std::string> lines;
+    {
+      std::string cur;
+      for (char c : AsmStr) {
+        if (c == '\n' || c == ';') {
+          lines.push_back(trim(cur));
+          cur.clear();
+        } else
+          cur += c;
+      }
+      lines.push_back(trim(cur));
+    }
+
+    for (const std::string& rawLine : lines) {
+      std::string line = trim(rawLine);
+      if (line.empty())
+        continue;
+
+      // Strip A64 assembler comments ('@' to end of line, or "//"). Neither
+      // token can occur inside a legitimate operand.
+      {
+        size_t cut = line.find("//");
+        size_t at = line.find('@');
+        if (at != std::string::npos && (cut == std::string::npos || at < cut))
+          cut = at;
+        if (cut != std::string::npos)
+          line = trim(line.substr(0, cut));
+      }
+      if (line.empty())
+        continue;
+
+      size_t sp = line.find_first_of(" \t\r\v\f");
+      std::string mnemonic = toLowerStr(trim(line.substr(0, sp)));
+      std::string rest = (sp == std::string::npos) ? "" : trim(line.substr(sp));
+
+      if (mnemonic.empty()) {
+        Reason = "missing mnemonic in asm line";
+        return false;
+      }
+
+      // Labels are pointless without control flow, which is not allowed, and
+      // a label followed by a jump from elsewhere would be outright unsound.
+      if (mnemonic.back() == ':') {
+        Reason = "labels are not allowed in safe inline asm";
+        return false;
+      }
+
+      // Split operands on top-level commas, tracking bracket depth for
+      // memory operands ([...]) and ${...} placeholders.
+      std::vector<std::string> operands;
+      {
+        std::string cur;
+        int depth = 0;
+        bool inBracePlaceholder = false;
+        for (size_t i = 0; i < rest.size(); ++i) {
+          char c = rest[i];
+          if (c == '(' || c == '[') {
+            ++depth;
+          } else if (c == ')' || c == ']') {
+            if (depth <= 0) {
+              Reason = "malformed/unbalanced bracketing in asm operands: " + rest;
+              return false;
+            }
+            --depth;
+          } else if (c == '{' && i > 0 && rest[i - 1] == '$') {
+            ++depth;
+            inBracePlaceholder = true;
+          } else if (c == '}' && inBracePlaceholder) {
+            if (depth <= 0) {
+              Reason = "malformed/unbalanced brace placeholder in asm operands: " + rest;
+              return false;
+            }
+            --depth;
+            inBracePlaceholder = false;
+          } else if (c == ',' && depth == 0) {
+            operands.push_back(trim(cur));
+            cur.clear();
+            continue;
+          }
+          cur += c;
+        }
+        operands.push_back(trim(cur));
+      }
+      while (!operands.empty() && operands.back().empty())
+        operands.pop_back();
+
+      // MSR writes system registers; none of them may be written from safe
+      // inline asm. Give this its own error message since MSR is the most
+      // interesting system-register-write instruction to reject explicitly.
+      if (mnemonic == "msr") {
+        Reason = "msr (system register write) is not supported in safe inline asm";
+        return false;
+      }
+
+      // FCMP/FCMPE (and the conditional compares FCCMP/FCCMPE, whose
+      // comparisons behave the same way) set the FP flags in FPSR - a
+      // signaling comparison against a NaN raises the Invalid Operation
+      // cumulative exception. The compiler does not accept "fpsr" as a
+      // clobber name (the AArch64 frontend rejects it), so there is no way
+      // for the asm to declare that the FP flags are clobbered. Reject
+      // these instructions outright.
+      if (mnemonic == "fcmp" || mnemonic == "fcmpe" ||
+          mnemonic == "fccmp" || mnemonic == "fccmpe") {
+        Reason = "fcmp/fcmpe/fccmp/fccmpe set FP flags in FPSR, which cannot be declared as a clobber for safe inline asm";
+        return false;
+      }
+
+      // MRS reads a system register. Reading most system registers is
+      // harmless (reads of arbitrary registers are always safe), but keep an
+      // allowlist of well-understood registers rather than allowing every
+      // possible system register read.
+      if (mnemonic == "mrs") {
+        if (operands.size() != 2) {
+          Reason = "mrs expects 2 operands";
+          return false;
+        }
+        {
+          // The destination is an output like any other.
+          const std::string& dst = operands[0];
+          int ph = -1;
+          std::string family;
+          std::string operandError;
+          A64OperandKind kind = classifyOperand(dst, ph, family, numOperandConstraints,
+                                                operandError);
+          switch (kind) {
+          case A64OKError:
+            Reason = operandError;
+            return false;
+          case A64OKImmediate:
+            Reason = "mrs destination cannot be an immediate: " + dst;
+            return false;
+          case A64OKMemory:
+            Reason = "mrs destination cannot be a memory operand: " + dst;
+            return false;
+          case A64OKReg:
+            if (!checkOutputReg(dst, family))
+              return false;
+            break;
+          case A64OKPlaceholder:
+            if (ph < 0 || static_cast<size_t>(ph) >= numOperandConstraints) {
+              Reason = "operand placeholder out of range: " + dst;
+              return false;
+            }
+            if (!OperandConstraints[ph].IsRegister) {
+              Reason = "mrs destination placeholder refers to non-register constraint: " + dst;
+              return false;
+            }
+            if (OperandConstraints[ph].Kind != ParsedConstraint::Output) {
+              Reason = "mrs destination placeholder must refer to an output register constraint";
+              return false;
+            }
+            break;
+          }
+        }
+        static const std::unordered_set<std::string> sysregs = {
+          "ctr_el0", "dczid_el0", "cntvct_el0", "cntpct_el0", "cntfrq_el0",
+          "nzcv",
+          // FEAT_RNG random number registers (RNDR/RNDRRS): handled
+          // specially below - unlike everything else in this list, a read
+          // also writes PSTATE.Z, so it requires the "cc" clobber.
+          "rndr", "rndrrs"
+        };
+        std::string sysreg = toLowerStr(operands[1]);
+        if (!sysregs.count(sysreg)) {
+          Reason = "mrs of system register '" + operands[1] + "' is not supported in safe inline asm";
+          return false;
+        }
+        // RNDR/RNDRRS are not pure data sources (like x86's rdtsc): a read
+        // also writes PSTATE.Z, which is set to 0 when the entropy source
+        // delivered a fresh value and to 1 when it failed to produce one
+        // (FEAT_RNG's success/failure protocol - the same contract as x86's
+        // rdrand, which this validator classifies as flag-setting for the
+        // same reason). So reading these registers requires the "cc" clobber
+        // exactly like an adds/cmp, and we flag the line through the same
+        // sets-flags path that the database's SetsFlags bit feeds (the final
+        // AnySetsFlags && !HasCCClobber check). The other registers in the
+        // allowlist are pure data sources: the value is unobservable state,
+        // so reading them cannot corrupt anything and they touch no flags.
+        // On hardware without FEAT_RNG the read is undefined and raises
+        // SIGILL, which is uncatchable from Fil-C code (the same reasoning
+        // as hlt/brk), so acceptance remains sound; tests are gated on a
+        // hwcap probe.
+        if (sysreg == "rndr" || sysreg == "rndrrs")
+          AnySetsFlags = true;
+        continue;
+      }
+
+      // PRFM/PRFUM are non-faulting cache hints: the CPU computes the
+      // effective address from the operand but no load/store occurs and the
+      // instruction cannot trap. Like x86's prefetch instructions, the
+      // address expression is validated syntactically: it may only contain
+      // input registers (literal or placeholder), immediates, and commas.
+      if (mnemonic == "prfm" || mnemonic == "prfum") {
+        if (operands.size() != 2) {
+          Reason = mnemonic + " expects 2 operands (post-index forms write the base register and are not allowed)";
+          return false;
+        }
+        {
+          static const std::unordered_set<std::string> prfops = {
+            "pldl1keep", "pldl1strm", "pldl2keep", "pldl2strm",
+            "pldl3keep", "pldl3strm",
+            "pstl1keep", "pstl1strm", "pstl2keep", "pstl2strm",
+            "pstl3keep", "pstl3strm",
+            "plil1keep", "plil1strm", "plil2keep", "plil2strm",
+            "plil3keep", "plil3strm"
+          };
+          std::string prfop = toLowerStr(operands[0]);
+          bool immForm = !operands[0].empty() &&
+                         (operands[0][0] == '#' ||
+                          std::isdigit(static_cast<unsigned char>(operands[0][0])));
+          if (!prfops.count(prfop) && !immForm) {
+            Reason = "unsupported prfop '" + operands[0] + "' in safe inline asm";
+            return false;
+          }
+        }
+        std::string addr = trim(operands[1]);
+        if (!addr.empty() && addr.back() == '!') {
+          Reason = mnemonic + " pre-index writeback is not allowed in safe inline asm (it writes the base register)";
+          return false;
+        }
+        if (addr.size() < 2 || addr.front() != '[' || addr.back() != ']') {
+          Reason = mnemonic + " address must be a '...' memory operand: " + operands[1];
+          return false;
+        }
+        std::string inner = addr.substr(1, addr.size() - 2);
+
+        // Split the address expression into comma-separated pieces. A
+        // trailing shift/extend modifier (e.g. the "lsl #3" of
+        // "prfm pldl1keep, [x0, x1, lsl #3]" or the "sxtw" of
+        // "prfm pldl1keep, [x0, w1, sxtw]") is not an operand of its own - it
+        // modifies the preceding register piece - so reduce it away the same
+        // way the general operand parser reduces "add x0, x1, x2, lsl #3"
+        // below. The modifier grammar is the same closed set of exact forms,
+        // and a trailing modifier piece must attach to the previous register
+        // piece (a register placeholder is also fine; the loop below checks
+        // that it refers to an input register). Shift amounts are not
+        // range-checked, and modifier forms that the assembler would reject
+        // are harmless to accept here - the assembler is the final gate.
+        std::vector<std::string> pieces;
+        for (size_t start = 0; start <= inner.size(); ) {
+          size_t comma = inner.find(',', start);
+          if (comma == std::string::npos)
+            comma = inner.size();
+          std::string piece = trim(inner.substr(start, comma - start));
+          if (!piece.empty())
+            pieces.push_back(piece);
+          if (comma == inner.size())
+            break;
+          start = comma + 1;
+        }
+        if (!pieces.empty()) {
+          std::string last = toLowerStr(pieces.back());
+          bool isModifier = false;
+          for (const char* mod : {"lsl", "lsr", "asr", "ror", "asl", "msl",
+                                  "uxtb", "uxth", "uxtw", "uxtx", "sxtb",
+                                  "sxth", "sxtw", "sxtx"}) {
+            size_t n = std::strlen(mod);
+            if (last.compare(0, n, mod) != 0)
+              continue;
+            std::string tail = trim(last.substr(n));
+            if (tail.empty()) {
+              // A bare modifier is only legal for extends; shifts require an
+              // immediate amount.
+              if (mod[0] == 'u' || mod[0] == 's')
+                isModifier = true;
+              break;
+            }
+            if (tail[0] == '#' && isImmediateText(trim(tail.substr(1)), false)) {
+              isModifier = true;
+              break;
+            }
+          }
+          if (isModifier) {
+            if (pieces.size() < 2) {
+              Reason = "malformed " + mnemonic + " address: modifier '" +
+                       pieces.back() + "' has no register to attach to";
+              return false;
+            }
+            {
+              int ph = -1;
+              std::string family;
+              std::string operandError;
+              A64OperandKind kind =
+                  classifyOperand(pieces[pieces.size() - 2], ph, family,
+                                  numOperandConstraints, operandError);
+              if (kind != A64OKReg && kind != A64OKPlaceholder) {
+                Reason = "malformed " + mnemonic + " address: modifier '" +
+                         pieces.back() + "' must attach to a register: " +
+                         pieces[pieces.size() - 2];
+                return false;
+              }
+            }
+            pieces.pop_back();
+          }
+        }
+
+        for (const std::string& piece : pieces) {
+          int ph = -1;
+          std::string family;
+          std::string operandError;
+          A64OperandKind kind = classifyOperand(piece, ph, family, numOperandConstraints,
+                                                operandError);
+          switch (kind) {
+          case A64OKError:
+            Reason = operandError;
+            return false;
+          case A64OKImmediate:
+          case A64OKReg:
+            // Reading an undeclared register to form the address is
+            // harmless, and the hint access itself cannot trap or affect
+            // program behavior.
+            break;
+          case A64OKMemory:
+            Reason = "malformed " + mnemonic + " address: " + operands[1];
+            return false;
+          case A64OKPlaceholder:
+            if (ph < 0 || static_cast<size_t>(ph) >= numOperandConstraints) {
+              Reason = "operand placeholder out of range: " + piece;
+              return false;
+            }
+            if (!OperandConstraints[ph].IsRegister) {
+              Reason = mnemonic + " address placeholder refers to non-register constraint";
+              return false;
+            }
+            if (OperandConstraints[ph].Kind != ParsedConstraint::Input) {
+              Reason = mnemonic + " address placeholder must refer to an input register";
+              return false;
+            }
+            break;
+          }
+        }
+        continue;
+      }
+
+      // ISB and BTI take an optional single option operand (isb may omit it;
+      // bti's options are c/j/hc/jc). Everything else about them is inert.
+      if (mnemonic == "isb" || mnemonic == "bti") {
+        if (operands.size() > 1) {
+          Reason = mnemonic + " expects 0 or 1 operands";
+          return false;
+        }
+        for (const std::string& op : operands) {
+          int ph = -1;
+          std::string family;
+          std::string operandError;
+          A64OperandKind kind = classifyOperand(op, ph, family, numOperandConstraints,
+                                                operandError);
+          if (kind == A64OKError) {
+            Reason = operandError;
+            return false;
+          }
+          if (kind != A64OKImmediate) {
+            Reason = "unsupported " + mnemonic + " option: " + op;
+            return false;
+          }
+        }
+        continue;
+      }
+
+      // PSB CSYNC and TSB CSYNC are trace/profiling synchronization barriers
+      // (FEAT_SPE/FEAT_TRF). They have no architectural effect on registers,
+      // flags, or memory - the ISA pseudocode (CheckPSBTrap()/
+      // ProfilingSynchronizationBarrier(), CheckTSBTrap()/
+      // TraceSynchronizationBarrier()) touches nothing the asm could read or
+      // write; the only possible trap is a hypervisor-configured fine-grained
+      // one, which would surface as an uncatchable signal to the process.
+      // The single option token is always "csync".
+      if (mnemonic == "psb" || mnemonic == "tsb") {
+        if (operands.size() != 1 || toLowerStr(operands[0]) != "csync") {
+          Reason = mnemonic + " expects the single option 'csync'";
+          return false;
+        }
+        continue;
+      }
+
+      // The zero-operand system-class forms of the pointer authentication
+      // instructions (PACIASP, PACIAZ, PACIBSP, PACIBZ, AUTIASP, AUTIAZ,
+      // AUTIBSP, AUTIBZ, XPACLRI) rewrite a fixed register that no operand
+      // constraint can cover: the Decode pseudocode of the pacia/pacib/
+      // autia/autib/xpac pages sets d = 30 for all of them, so the write
+      // target is X30 (LR). Require an explicit "~{lr}" clobber, exactly
+      // like any other write to an undeclared register.
+      static const std::unordered_set<std::string> pacLRForms = {
+        "paciasp", "paciaz", "pacibsp", "pacibz",
+        "autiasp", "autiaz", "autibsp", "autibz", "xpaclri"
+      };
+      if (pacLRForms.count(mnemonic)) {
+        if (!operands.empty()) {
+          Reason = mnemonic + " takes no operands";
+          return false;
+        }
+        if (!checkOutputReg("x30 (lr)", "x30"))
+          return false;
+        continue;
+      }
+
+      // TBL/TBX perform register-based table lookups: TBL <Vd>, {<list>},
+      // <Vm> where the list holds one to four consecutive 16-byte V
+      // registers. They touch no memory and no flags; they only write the
+      // destination. The '{...}' register list is not a plain operand (the
+      // generic comma splitter would tear it apart), so re-split the
+      // operand text here with brace depth tracked.
+      if (mnemonic == "tbl" || mnemonic == "tbx") {
+        std::vector<std::string> ops;
+        {
+          std::string cur;
+          int depth = 0;
+          for (size_t i = 0; i < rest.size(); ++i) {
+            char c = rest[i];
+            if (c == '{')
+              ++depth;
+            else if (c == '}') {
+              if (depth <= 0) {
+                Reason = "malformed register list in " + mnemonic + ": " + rest;
+                return false;
+              }
+              --depth;
+            } else if (c == ',' && depth == 0) {
+              ops.push_back(trim(cur));
+              cur.clear();
+              continue;
+            }
+            cur += c;
+          }
+          ops.push_back(trim(cur));
+        }
+        while (!ops.empty() && ops.back().empty())
+          ops.pop_back();
+        if (ops.size() != 3) {
+          Reason = mnemonic + " expects 3 operands: destination, {register list}, index";
+          return false;
+        }
+        {
+          // The destination is an output like any other.
+          const std::string& dst = ops[0];
+          int ph = -1;
+          std::string family;
+          std::string operandError;
+          A64OperandKind kind = classifyOperand(dst, ph, family, numOperandConstraints,
+                                                operandError);
+          switch (kind) {
+          case A64OKError:
+            Reason = operandError;
+            return false;
+          case A64OKImmediate:
+            Reason = mnemonic + " destination cannot be an immediate: " + dst;
+            return false;
+          case A64OKMemory:
+            Reason = mnemonic + " destination cannot be a memory operand: " + dst;
+            return false;
+          case A64OKReg:
+            if (!checkOutputReg(dst, family))
+              return false;
+            break;
+          case A64OKPlaceholder:
+            if (ph < 0 || static_cast<size_t>(ph) >= numOperandConstraints) {
+              Reason = "operand placeholder out of range: " + dst;
+              return false;
+            }
+            if (!OperandConstraints[ph].IsRegister) {
+              Reason = mnemonic + " destination placeholder refers to non-register constraint: " + dst;
+              return false;
+            }
+            if (OperandConstraints[ph].Kind != ParsedConstraint::Output) {
+              Reason = mnemonic + " destination placeholder must refer to an output register constraint";
+              return false;
+            }
+            break;
+          }
+        }
+        {
+          // The table registers are only read, so any register (or any
+          // placeholder that refers to a register constraint) is safe.
+          std::string list = ops[1];
+          if (list.size() < 2 || list.front() != '{' || list.back() != '}') {
+            Reason = mnemonic + " second operand must be a '{...}' register list: " + ops[1];
+            return false;
+          }
+          std::string inner = list.substr(1, list.size() - 2);
+          for (size_t start = 0; start <= inner.size(); ) {
+            size_t comma = inner.find(',', start);
+            if (comma == std::string::npos)
+              comma = inner.size();
+            std::string piece = trim(inner.substr(start, comma - start));
+            if (piece.empty()) {
+              Reason = "malformed register list in " + mnemonic + ": " + ops[1];
+              return false;
+            }
+            int ph = -1;
+            std::string family;
+            std::string operandError;
+            A64OperandKind kind = classifyOperand(piece, ph, family, numOperandConstraints,
+                                                  operandError);
+            switch (kind) {
+            case A64OKError:
+              Reason = operandError;
+              return false;
+            case A64OKReg:
+            case A64OKPlaceholder:
+              break;
+            case A64OKImmediate:
+            case A64OKMemory:
+              Reason = mnemonic + " register list member must be a register: " + piece;
+              return false;
+            }
+            if (comma == inner.size())
+              break;
+            start = comma + 1;
+          }
+        }
+        {
+          // The index operand is an ordinary read.
+          const std::string& idx = ops[2];
+          int ph = -1;
+          std::string family;
+          std::string operandError;
+          A64OperandKind kind = classifyOperand(idx, ph, family, numOperandConstraints,
+                                                operandError);
+          switch (kind) {
+          case A64OKError:
+            Reason = operandError;
+            return false;
+          case A64OKMemory:
+            Reason = "memory operand not allowed in safe inline asm (aarch64): " + idx;
+            return false;
+          case A64OKImmediate:
+          case A64OKReg:
+          case A64OKPlaceholder:
+            break;
+          }
+        }
+        continue;
+      }
+
+      auto it = info.find(mnemonic);
+      if (it == info.end()) {
+        Reason = "unsupported mnemonic '" + mnemonic + "' in safe inline asm (aarch64)";
+        return false;
+      }
+      bool setsFlags = it->second.SetsFlags;
+      bool setsFpFlags = it->second.SetsFpFlags;
+      std::vector<OperandRole> roles = it->second.Roles;
+
+      // Reduce a trailing shift/extend modifier (e.g. "lsl #3", "uxtw") so
+      // that "add x0, x1, x2, lsl #3" and "add w0, w1, w2, uxtw" validate as
+      // 3-operand forms. The modifier grammar is a closed set of exact
+      // forms, so no database instruction's real last operand can collide
+      // with it. After reduction the new last operand may be a register,
+      // placeholder, or immediate (e.g. "movz x0, #0x1234, lsl #16" and the
+      // shifted-immediate "add x0, x1, #1, lsl #3"); immediates are always
+      // safe. "msl" (ones-shift-left, MOVI/MVNI only) is included: like
+      // "lsl" it is always followed by an immediate amount.
+      if (!operands.empty()) {
+        std::string last = toLowerStr(operands.back());
+        bool isModifier = false;
+        for (const char* mod : {"lsl", "lsr", "asr", "ror", "asl", "msl",
+                                "uxtb", "uxth", "uxtw", "uxtx", "sxtb",
+                                "sxth", "sxtw", "sxtx"}) {
+          size_t n = std::strlen(mod);
+          if (last.compare(0, n, mod) != 0)
+            continue;
+          std::string tail = trim(last.substr(n));
+          if (tail.empty()) {
+            // A bare modifier is only legal for extends; shifts require an
+            // immediate amount. Either way, no database instruction's real
+            // operand can be one of these words.
+            if (mod[0] == 'u' || mod[0] == 's')
+              isModifier = true;
+            break;
+          }
+          if (tail[0] == '#' && isImmediateText(trim(tail.substr(1)), false)) {
+            isModifier = true;
+            break;
+          }
+        }
+        if (isModifier)
+          operands.pop_back();
+      }
+
+      // ADDP/FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP have both a three-operand
+      // vector form and a two-operand scalar-pair form.
+      if (mnemonic == "addp" || mnemonic == "faddp" || mnemonic == "fmaxp" ||
+           mnemonic == "fminp" || mnemonic == "fmaxnmp" ||
+           mnemonic == "fminnmp") {
+        if (operands.size() == 2)
+          roles = {RoleOutput, RoleInput};
+      }
+
+      if (operands.size() != roles.size()) {
+        Reason = "wrong number of operands for '" + mnemonic + "' (expected " +
+                 std::to_string(roles.size()) + ", got " +
+                 std::to_string(operands.size()) + ")";
+        return false;
+      }
+
+      if (setsFlags)
+        AnySetsFlags = true;
+      if (setsFpFlags)
+        AnySetsFpFlags = true;
+
+      for (size_t i = 0; i < operands.size(); ++i) {
+        const std::string& op = operands[i];
+        int ph = -1;
+        std::string family;
+        std::string operandError;
+        A64OperandKind kind = classifyOperand(op, ph, family, numOperandConstraints,
+                                              operandError);
+        switch (kind) {
+        case A64OKError:
+          Reason = operandError;
+          return false;
+        case A64OKMemory:
+          Reason = "memory operand not allowed in safe inline asm (aarch64): " + op;
+          return false;
+        case A64OKImmediate:
+          break;
+        case A64OKReg: {
+          if (i >= roles.size()) {
+            Reason = "unexpected register operand position";
+            return false;
+          }
+          // Reading an arbitrary register is safe: the asm is otherwise
+          // effect-free, so it merely sees whatever value happened to be
+          // there. Writing a register requires it to be declared as an output
+          // or clobber.
+          if (roles[i] == RoleOutput) {
+            if (!checkOutputReg(op, family))
+              return false;
+          }
+          break;
+        }
+        case A64OKPlaceholder:
+          if (ph < 0 || static_cast<size_t>(ph) >= numOperandConstraints) {
+            Reason = "operand placeholder out of range: " + op;
+            return false;
+          }
+          if (!OperandConstraints[ph].IsRegister) {
+            Reason = "operand placeholder refers to non-register constraint: " + op;
+            return false;
+          }
+          if (roles[i] == RoleOutput &&
+              OperandConstraints[ph].Kind != ParsedConstraint::Output) {
+            Reason = "operand placeholder used as output but constraint is input-only: " + op;
+            return false;
+          }
+          break;
+        }
+      }
+    }
+
+    // Note: the FP-flags check below is currently unreachable: no database
+    // entry sets SetsFpFlags because fcmp/fcmpe (the only FP flag setters in
+    // scope) are rejected above, and "fpsr" clobbers cannot be expressed. It
+    // is kept for symmetry with the x86 validator and in case FP flag
+    // setters become expressible in the future.
+    if (AnySetsFpFlags && !HasFPSRClobber) {
+      Reason = "assembly sets FP flags but \"fpsr\" clobber is missing";
+      return false;
+    }
+
+    if (AnySetsFlags && !HasCCClobber) {
+      Reason = "assembly sets flags but \"cc\" clobber is missing";
+      return false;
+    }
+
+    return true;
+  }
+
   bool handleInlineAsm(CallBase* CI, std::string& Reason) {
     if (verbose)
       errs() << "Dealing with inline asm call: " << *CI << "\n";
@@ -10904,29 +12807,53 @@ class Pizlonator {
     }
 
     if (!IsEmptyAsm) {
-      if (Arch != Triple::x86_64) {
-        Reason = "inline assembly is only supported on x86_64";
-        return false;
-      }
-      if (IA->getDialect() != InlineAsm::AD_ATT) {
-        Reason = "only AT&T dialect inline assembly is supported";
-        return false;
-      }
-      if (hasPtrs(CI->getType())) {
-        Reason = "inline assembly with pointer return type is not supported";
-        return false;
-      }
-      for (size_t Index = CI->arg_size(); Index--;) {
-        if (hasPtrs(CI->getArgOperand(Index)->getType())) {
-          Reason = "inline assembly with pointer argument is not supported";
+      switch (Arch) {
+      case Triple::x86_64:
+        if (IA->getDialect() != InlineAsm::AD_ATT) {
+          Reason = "only AT&T dialect inline assembly is supported";
           return false;
         }
-      }
-      if (!validateSafeInlineAsm(CI, IA, Reason))
+        if (hasPtrs(CI->getType())) {
+          Reason = "inline assembly with pointer return type is not supported";
+          return false;
+        }
+        for (size_t Index = CI->arg_size(); Index--;) {
+          if (hasPtrs(CI->getArgOperand(Index)->getType())) {
+            Reason = "inline assembly with pointer argument is not supported";
+            return false;
+          }
+        }
+        if (!validateSafeInlineAsm(CI, IA, Reason))
+          return false;
+        if (verbose)
+          errs() << "Passing through safe inline asm call.\n";
+        return true;
+      case Triple::aarch64:
+        // clang always emits AT&T dialect inline asm on AArch64, but check
+        // defensively anyway.
+        if (IA->getDialect() != InlineAsm::AD_ATT) {
+          Reason = "only AT&T dialect inline assembly is supported";
+          return false;
+        }
+        if (hasPtrs(CI->getType())) {
+          Reason = "inline assembly with pointer return type is not supported";
+          return false;
+        }
+        for (size_t Index = CI->arg_size(); Index--;) {
+          if (hasPtrs(CI->getArgOperand(Index)->getType())) {
+            Reason = "inline assembly with pointer argument is not supported";
+            return false;
+          }
+        }
+        if (!validateSafeAArch64InlineAsm(CI, IA, Reason))
+          return false;
+        if (verbose)
+          errs() << "Passing through safe inline asm call.\n";
+        return true;
+      default:
+        Reason = "inline assembly is only supported on x86_64 and aarch64";
         return false;
-      if (verbose)
-        errs() << "Passing through safe inline asm call.\n";
-      return true;
+      }
     }
 
     // If the inline asm doesn't deal in pointers, then we can just pass it through.

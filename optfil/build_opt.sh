@@ -391,20 +391,20 @@ cd ..
 rm -rf ncurses-6.5
 hash -r
 
-tar -xf $FILCSRC/pizlix/readline-8.2.13.tar.gz
-cd readline-8.2.13
+tar -xf $FILCSRC/pizlix/readline-8.3.tar.gz
+cd readline-8.3
 sed -i '/MV.*old/d' Makefile.in
 sed -i '/{OLDSUFF}/c:' support/shlib-install
 sed -i 's/-Wl,-rpath,[^ ]*//' support/shobj-conf
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --disable-static \
     --with-curses \
-    --docdir=/opt/fil/share/doc/readline-8.2.13
+    --docdir=/opt/fil/share/doc/readline-8.3
 make -j `nproc` SHLIB_LIBS="-lncursesw"
 make -j `nproc` SHLIB_LIBS="-lncursesw" install
-install -v -m644 doc/*.{ps,pdf,html,dvi} /opt/fil/share/doc/readline-8.2.13
+install -v -m644 doc/*.{ps,pdf,html,dvi} /opt/fil/share/doc/readline-8.3
 cd ..
-rm -rf readline-8.2.13
+rm -rf readline-8.3
 hash -r
 
 tar -xf $FILCSRC/projects/libedit-20240808-3.1/pizlonated-libedit.tar.gz

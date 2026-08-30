@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/ncurses-6.5-20240720
+cd projects/ncurses-6.6
 extract_source
 PATH=$PWD/../../../pizfix/bin:$PATH CC="$PWD/../../../build/bin/clang -O -g" CXX="$PWD/../../../build/bin/clang++ -O -g" ./configure \
     --prefix="$PWD/../../../pizfix" --disable-lib-suffixes --with-shared --without-ada --enable-pc-files

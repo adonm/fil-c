@@ -136,7 +136,10 @@ All markers share the same semantics:
   code + annotation body. Text inside `"..."` string literals never forms an
   annotation, so `.asciz "a ;! b"` compiles (previously a spurious error); the
   string-aware scan covers all three markers on both architectures (`.asciz "a #! b"`
-  in an arm64 file and `.asciz "a //! b"` in an x86_64 file included).
+  in an arm64 file and `.asciz "a //! b"` in an x86_64 file included). The scan
+  honors `\"` escapes: a `\"` does not close the string, so nothing inside
+  `"a \" ;! b"` (still one ordinary string) forms an annotation on either
+  architecture — and on arm64 a `//` inside such a string is likewise not a comment.
 - **Comment text never fabricates an annotation.** On x86_64 a `#` NOT followed by `!`
   starts a comment that runs to end of line, so a full-line `# use ;! load ptr here`
   (or a trailing one on an instruction line that carries no marker) is just a comment;
@@ -147,10 +150,14 @@ All markers share the same semantics:
   arm64 the body is taken **verbatim**: `//` and `/* */` comments are removed before
   the marker is split, so whatever follows `//!` on the line is the whole body (a
   later `//` on the same line has already been stripped as a comment by that pass).
-- A **marker on an otherwise-empty line is a compile error** ("annotation 'load ptr'
-  on an otherwise-empty line (annotations go on the instruction's own line)") — an
-  annotation belongs on the instruction's own line, and silently dropping it could
-  skip a safety check.
+- A **marker on an otherwise-empty line inside a function body is a compile error**
+  ("annotation 'load ptr' on an otherwise-empty line (annotations go on the
+  instruction's own line)") — an annotation belongs on the instruction's own line,
+  and silently dropping it could skip a safety check. At top level this holds on
+  arm64 only, which rejects annotations on blank lines (and on directives) outside
+  functions; x86_64 historically ignores top-level content — its top-level content
+  scan does not exist — so a top-level marker on an otherwise-empty line is silently
+  dropped there.
 - The markers are **per-architecture**: `#!` is NOT a marker on arm64, and `//!` is
   NOT a marker on x86_64. The text stays in the code part and produces an ordinary
   parse error — `f: #! unsigned(ptr)` on arm64 fails with "function 'f' has no

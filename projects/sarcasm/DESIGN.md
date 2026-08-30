@@ -68,6 +68,10 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs) — both DONE + VALIDAT
   body at the EARLIEST annotation marker outside a string literal — `;!` on both
   architectures, plus `#!` on x86_64 and `//!` on arm64 (the recommended
   spellings, since they read as "a comment that means more" on their targets).
+  Every string-aware scan honors `\"` escapes: inside a string literal the
+  character after a `\` is skipped, so `"a \" ;! b"` is one ordinary string
+  whose `;!` is inert (and, on arm64, a `//` inside such a string is not a
+  comment); outside strings `\` is an ordinary character with no quoting power.
   The interplay with comments is per-architecture, and in both directions the
   invariant is that comment and string-literal text can never fabricate an
   annotation:

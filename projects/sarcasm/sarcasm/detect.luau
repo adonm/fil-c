@@ -103,7 +103,9 @@ function detect.detect(text)
 	-- SYMBOL with one of these mnemonic-shaped names (a label like `movq:` or `cbw:`
 	-- at any indent, or a mid-line reference like `bl movq`) from spoofing the
 	-- architecture, just like the rep/lock guard below (Lua's `^` would anchor to the
-	-- start of the whole string only).
+	-- start of the whole string only). The anchoring has a converse false-negative:
+	-- because the token must BEGIN a line, a same-line `label: movq ...` shape (label
+	-- and instruction on one line) is not matched by these checks.
 	local anchored = "\n" .. text
 	local att = string.find(anchored, "%%xmm%d") or string.find(anchored, "%%ymm%d")
 		-- vector/x87/opmask register names (x87 `%st` also covers `%st(1)`).

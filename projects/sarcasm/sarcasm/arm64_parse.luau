@@ -296,7 +296,10 @@ parse.parseOperands = parseOperands
 
 -- Line splitting ----------------------------------------------------------
 
--- Remove a trailing // comment that is not inside a string literal.
+-- Remove a trailing // comment that is not inside a string literal. A `\`
+-- inside a string escapes the following character (so `"a \" // x"` keeps its
+-- slashes), mirroring stripComments below; `\` has no quoting power outside
+-- strings.
 local function stripLineComment(s: string): string
 	local inStr = false
 	local i = 1
@@ -305,6 +308,11 @@ local function stripLineComment(s: string): string
 		local c = string.sub(s, i, i)
 		if c == '"' then
 			inStr = not inStr
+		elseif inStr and c == "\\" then
+			-- escaped character inside the string (e.g. the `"` of `\"`): skip it
+			-- whole so it cannot close the string and expose a `//` that is still
+			-- inside the string
+			i += 1
 		elseif not inStr and c == "/" and string.sub(s, i + 1, i + 1) == "/" then
 			return string.sub(s, 1, i - 1)
 		end
@@ -395,8 +403,10 @@ end
 -- outside a string literal wins; the body is the trimmed text after the marker,
 -- taken verbatim (stripComments already removed `//` and `/* */` comments). Text
 -- inside a double-quoted string never produces an annotation, so `.asciz "a ;! b"`
--- and `.asciz "a //! b"` are ordinary directives. `#!` is not a marker here: it
--- stays in the code part and produces a normal parse error.
+-- and `.asciz "a //! b"` are ordinary directives, and a `\` inside a string
+-- escapes the following character (so `"a \" ;! b"` keeps its `;!`), exactly as
+-- in stripComments above; `\` has no quoting power outside strings. `#!` is not
+-- a marker here: it stays in the code part and produces a normal parse error.
 local function splitAnnotation(s: string): (string, string?)
 	local inStr = false
 	local i, n = 1, #s
@@ -404,6 +414,11 @@ local function splitAnnotation(s: string): (string, string?)
 		local c = string.sub(s, i, i)
 		if c == '"' then
 			inStr = not inStr
+		elseif inStr and c == "\\" then
+			-- escaped character inside the string (e.g. the `"` of `\"`): skip it
+			-- whole so it can neither close the string nor be mistaken for a
+			-- marker; mirrors stripComments above
+			i += 1
 		elseif not inStr then
 			local d = string.sub(s, i + 1, i + 1)
 			if c == ";" and d == "!" then

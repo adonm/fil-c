@@ -323,31 +323,53 @@ end
 -- stripComment truncates `#`-to-EOL (string-aware). It is applied to the text
 -- after an annotation marker so a trailing comment is stripped from the body
 -- exactly as it was when the whole line was comment-stripped before the split:
--- `movq %rax, (%rbx) ;! store ptr # note` has body `store ptr`.
+-- `movq %rax, (%rbx) ;! store ptr # note` has body `store ptr`. Like the other
+-- string-aware scans, a `\` inside a string escapes the following character, so
+-- the `#` in `;! store "a \" # b"` is still inside the string; `\` has no
+-- quoting power outside strings.
 local function stripComment(s)
 	local inStr = false
-	for i = 1, #s do
+	local i = 1
+	while i <= #s do
 		local c = string.sub(s, i, i)
-		if c == '"' then inStr = not inStr
-		elseif not inStr and c == "#" then return string.sub(s, 1, i - 1) end
+		if c == '"' then
+			inStr = not inStr
+		elseif inStr and c == "\\" then
+			-- escaped character inside the string (e.g. the `"` of `\"`): skip it
+			-- whole so it can neither close the string nor start structure; this
+			-- mirrors arm64 stripComments and detect.luau's sanitize
+			i += 1
+		elseif not inStr and c == "#" then
+			return string.sub(s, 1, i - 1)
+		end
+		i += 1
 	end
 	return s
 end
 
 -- Split the EARLIEST `;!` or `#!` annotation marker off a line, string-aware
 -- (returns code, annotation-or-nil). Text inside a double-quoted string never
--- produces an annotation (`.asciz "a ;! b"` is an ordinary directive). A `#`
--- NOT immediately followed by `!` starts a comment: the rest of the line is
--- dropped and no annotation is fabricated, even if the comment text contains
+-- produces an annotation (`.asciz "a ;! b"` is an ordinary directive), and a
+-- `\` inside a string escapes the following character, so `"a \" ;! b"` keeps
+-- its `;!` (the string is still open); `\` has no quoting power outside
+-- strings. A `#` NOT immediately followed by `!` starts a comment: the rest
+-- of the line is dropped and no annotation is fabricated, even if the comment
+-- text contains
 -- `;!` or `#!` (e.g. `# use ;! load ptr here`). The annotation body is the
 -- text after the marker with any trailing `#` comment stripped and then
 -- trimmed (`movq %rax, (%rbx) #! store ptr # note` has body `store ptr`).
 local function splitAnnotation(s)
 	local inStr = false
-	for i = 1, #s do
+	local i = 1
+	while i <= #s do
 		local c = string.sub(s, i, i)
 		if c == '"' then
 			inStr = not inStr
+		elseif inStr and c == "\\" then
+			-- escaped character inside the string (e.g. the `"` of `\"`): skip it
+			-- whole so it can neither close the string nor be mistaken for a
+			-- marker; mirrors arm64 stripComments and detect.luau's sanitize
+			i += 1
 		elseif not inStr then
 			local d = string.sub(s, i + 1, i + 1)
 			if (c == ";" or c == "#") and d == "!" then
@@ -358,6 +380,7 @@ local function splitAnnotation(s)
 				return string.sub(s, 1, i - 1), nil
 			end
 		end
+		i += 1
 	end
 	return s, nil
 end

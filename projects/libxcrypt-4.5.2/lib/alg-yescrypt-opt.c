@@ -30,6 +30,9 @@
 
 #include "crypt-port.h"
 
+#undef __SSE2__
+#undef __SSE__
+
 #if INCLUDE_yescrypt || INCLUDE_scrypt || INCLUDE_gost_yescrypt || \
     INCLUDE_sm3_yescrypt
 

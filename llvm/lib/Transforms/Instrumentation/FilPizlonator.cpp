@@ -34,6 +34,7 @@
 #include <sstream>
 #include <cctype>
 #include <climits>
+#include <cstdlib>
 
 using namespace llvm;
 
@@ -10965,12 +10966,17 @@ class Pizlonator {
     // Map a register name to its canonical A64 family. Register families:
     // x0-x30 (with w0-w30 the 32-bit views, lr = x30), xzr (the zero register,
     // spelled xzr/wzr), sp (sp/wsp), v0-v31 (the FP/SIMD registers, with
-    // b/h/s/d/q the width views and z the SVE views), and p0-p15 (SVE
-    // predicate registers, accepted as clobbers/constraints only). A vector
-    // arrangement suffix (e.g. ".4s") and/or a lane index (e.g. "[1]") is
-    // stripped before lookup. fpsr/fpcr/nzcv map to themselves; they are only
-    // meaningful as clobber names or system register operands. Everything else
-    // maps to "" (unknown).
+    // b/h/s/d/q the width views), z0-z31 (the SVE vector registers), and
+    // p0-p15 (SVE predicate registers, accepted as clobbers/constraints
+    // only). Note that z0-z31 deliberately get their own families rather
+    // than aliasing v0-v31: z and v registers alias in hardware, but a write
+    // to z0 can touch up to the full SVE vector length (up to 512 bits) while
+    // a "v0" output/clobber only accounts for the low 128 bits, so a
+    // z-register write can only be covered by a z-register output constraint
+    // or clobber. A vector arrangement suffix (e.g. ".4s") and/or a lane
+    // index (e.g. "[1]") is stripped before lookup. fpsr/fpcr/nzcv map to
+    // themselves; they are only meaningful as clobber names or system
+    // register operands. Everything else maps to "" (unknown).
     auto getRegFamily = [&](StringRef reg) -> std::string {
       std::string r = toLowerStr(reg);
 
@@ -11029,7 +11035,13 @@ class Pizlonator {
           m["s" + base] = "v" + base;
           m["d" + base] = "v" + base;
           m["q" + base] = "v" + base;
-          m["z" + base] = "v" + base;
+          // z0-z31 get their own families, NOT the v families: z and v
+          // registers alias in hardware, but writing all of z0 (up to 512
+          // bits of SVE state) is not covered by declaring only v0 (128
+          // bits). A z-register write may only be covered by a z-register
+          // output constraint or clobber ("~{z0}"), which maps to the same
+          // "z0" family.
+          m["z" + base] = "z" + base;
         }
         for (int i = 0; i <= 15; ++i) {
           std::string base = "p" + std::to_string(i);
@@ -11443,7 +11455,11 @@ class Pizlonator {
       // undefined instruction), which is uncatchable from Fil-C code - the
       // same safe-trap reasoning as brk.
       {"hlt", {false, {RoleInput}}},
-      {"hint", {false, {RoleInput}}},
+      // Note: "hint" is NOT in the database. HINT takes an immediate that
+      // selects among wildly different instructions; some hint numbers are
+      // aliases for pointer-authentication and other instructions that write
+      // registers (e.g. hint #25 is paciasp, which writes LR). The hint
+      // special case below allowlists exactly the safe hint numbers.
       // Scalar FP. These read/write v-register scalars only. fcmp/fcmpe are
       // special-cased (they set FP flags in FPSR, which cannot be declared).
       {"fmov", {false, {RoleOutput, RoleInput}}},
@@ -12518,6 +12534,68 @@ class Pizlonator {
         }
         if (!checkOutputReg("x30 (lr)", "x30"))
           return false;
+        continue;
+      }
+
+      // HINT takes an immediate that selects among wildly different
+      // instructions. Most hint numbers are inert, but some are aliases for
+      // instructions that write registers: hint #7 is xpaclri and hint #8,
+      // #10, #12, #14 are the PAC/AUT *1716 forms (they rewrite x17), and
+      // hint #25-#31 are the zero-operand pointer-authentication forms
+      // (hint #25 = paciasp, hint #27 = pacibsp, hint #29 = autiasp,
+      // hint #31 = autibsp; #26/#28/#30 write LR too), which rewrite X30
+      // (LR) exactly like the pacLRForms above. Rather than enumerating
+      // what every hint number does, allowlist exactly the numbers that are
+      // known to be inert and reject everything else. We reject even if a
+      // clobber covers the register the hint would write: if in doubt,
+      // reject (users should write the alias mnemonic instead, e.g.
+      // "paciasp" with a "~{lr}" clobber, which is handled above).
+      static const std::unordered_set<unsigned long long> safeHints = {
+        0, 1, 2, 3, 4, 5, // nop/yield/wfe/wfi/sev/sevl
+        6,                // dgh (or a nop without FEAT_DGH)
+        16,               // esb
+        20,               // csdb
+        21,               // unallocated; decodes as a nop
+        22,               // clrbhb (or a nop without FEAT_CLRBHB)
+        32, 34, 36, 38    // bti/bti c/bti j/bti jc
+      };
+      if (mnemonic == "hint") {
+        if (operands.size() != 1) {
+          Reason = "hint expects exactly 1 immediate operand";
+          return false;
+        }
+        std::string body = operands[0];
+        if (!body.empty() && body[0] == '#')
+          body = body.substr(1);
+        unsigned long long value = 0;
+        bool ok = false;
+        if (body.size() > 2 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X')) {
+          ok = true;
+          for (size_t i = 2; i < body.size(); ++i) {
+            if (!std::isxdigit(static_cast<unsigned char>(body[i]))) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok)
+            value = std::strtoull(body.c_str() + 2, nullptr, 16);
+        } else if (!body.empty() &&
+                   body.find_first_not_of("0123456789") == std::string::npos) {
+          if (body.size() > 1 && body[0] == '0') {
+            // A non-hex operand with a redundant leading zero is ambiguous:
+            // the assembler reads it as octal (e.g. "hint #034" assembles
+            // to autiaz, since 034 octal is 28), so reject it rather than
+            // guessing what it means.
+            ok = false;
+          } else {
+            ok = true;
+            value = std::strtoull(body.c_str(), nullptr, 10);
+          }
+        }
+        if (!ok || !safeHints.count(value)) {
+          Reason = "hint number '" + operands[0] + "' is not supported in safe inline asm (hint #25-#31 are aliases of pointer-authentication instructions like paciasp that write lr)";
+          return false;
+        }
         continue;
       }
 
@@ -13649,6 +13727,22 @@ class Pizlonator {
   void lowerInstruction(Instruction *I) {
     if (verbose)
       errs() << "Lowering: " << *I << "\n";
+
+    if (isa<CallBrInst>(I)) {
+      // "asm goto" produces a CallBrInst. We cannot lower it: it is control
+      // flow out of the inline assembly, and the inline-asm lowering below
+      // assumes that it can erase the call and RAUW its result. Instead,
+      // emit a filc_error panic and leave the callbr in place, so the CFG
+      // stays valid; the process dies at the filc_error call before the
+      // callbr ever executes. (Don't call lowerConstantOperands on the
+      // callbr: it would assert on the BlockAddress operands.)
+      std::string str;
+      raw_string_ostream outs(str);
+      outs << "cannot handle inline asm (asm goto is not supported): " << *I;
+      CallInst::Create(Error, { getString(str), getOrigin(I->getDebugLoc()) }, "", I)
+        ->setDebugLoc(I->getDebugLoc());
+      return;
+    }
 
     if (PHINode* P = dyn_cast<PHINode>(I)) {
       for (unsigned Index = P->getNumIncomingValues(); Index--;) {
@@ -16994,8 +17088,12 @@ public:
           }
           if (InvokeInst* II = dyn_cast<InvokeInst>(I))
             recordLowers(I, &*II->getNormalDest()->getFirstInsertionPt());
-          else if (I->isTerminator())
-            assert(I->getType()->isVoidTy());
+          else if (I->isTerminator()) {
+            // asm goto produces a CallBrInst, which is a non-void terminator.
+            // We reject it in lowerInstruction (it turns into a filc_error
+            // panic), so we never need lower records for its result value.
+            assert(I->getType()->isVoidTy() || isa<CallBrInst>(I));
+          }
           else
             recordLowers(I, I->getNextNode());
         }

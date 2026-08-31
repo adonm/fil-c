@@ -11,7 +11,10 @@ int main(void)
     asm volatile("sev");
     asm volatile("sevl");
     asm volatile("csdb");
-    asm volatile("hint #8");
+    /* hint #16 is esb. (hint #8 used to be here, but hint #8 is an alias
+       of pacia1716, which writes x17 - the validator now allowlists only
+       the hint numbers that are known to be inert.) */
+    asm volatile("hint #16");
 
     /* Nops interleaved with real work. */
     unsigned long v = 1;

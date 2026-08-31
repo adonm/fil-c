@@ -168,6 +168,13 @@ raise unless $?.exited?
 raise unless $?.exitstatus == 0 or $?.exitstatus == 1
 $hasPACA = $?.exitstatus == 0
 
+# Check if we have SVE (FEAT_SVE)
+raise unless system("clang -O3 -g -o filc/tests/has_sve filc/tests/has_sve.c")
+system("filc/tests/has_sve > filc/tests/has_sve.log 2>&1")
+raise unless $?.exited?
+raise unless $?.exitstatus == 0 or $?.exitstatus == 1
+$hasSVE = $?.exitstatus == 0
+
 # Check if we have the architectural random number generator (mrs rndr)
 raise unless system("clang -O3 -g -o filc/tests/has_rng filc/tests/has_rng.c")
 system("filc/tests/has_rng > filc/tests/has_rng.log 2>&1")
@@ -315,6 +322,12 @@ $testDirectory.each_entry {
     if manifest["needsPACA"] and not $hasPACA
         if $verbose
             puts "Skipping #{testName}, requires ARM pointer authentication"
+        end
+        next
+    end
+    if manifest["needsSVE"] and not $hasSVE
+        if $verbose
+            puts "Skipping #{testName}, requires ARM SVE"
         end
         next
     end

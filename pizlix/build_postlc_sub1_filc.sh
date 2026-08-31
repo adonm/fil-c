@@ -55,4 +55,5 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/tar-1.35 pizlonated-tar
 ./package-source.sh projects/meson-1.5.1 pizlonated-meson
 ./package-source.sh projects/zstd-1.5.6 pizlonated-zstd
+./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
 

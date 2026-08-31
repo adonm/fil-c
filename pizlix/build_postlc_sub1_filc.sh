@@ -26,7 +26,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/gmp-6.3.0 pizlonated-gmp
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
-./package-source.sh projects/libxcrypt-4.4.36 pizlonated-libxcrypt
+./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/shadow-4.16.0 pizlonated-shadow
 ./package-source.sh projects/sed-4.10 pizlonated-sed
 ./package-source.sh projects/gettext-0.22.5 pizlonated-gettext

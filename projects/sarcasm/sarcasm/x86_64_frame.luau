@@ -25,18 +25,43 @@
 --     not that register's save (e.g. an unpaired `popq %rbx` after `pushq %rbp` reads the
 --     saved frame pointer — a live stack address — into rbx). Balanced pairs, epilogue
 --     restores of prologue saves, and verified-teardown pops all pair exactly and keep
---     being dropped;
+--     being dropped. Inside a VERIFIED epilogue teardown (a straight path to `ret` through
+--     callee-saved pops and frame-touch-free computation) a pop at an UNKNOWN depth pairs
+--     off the outstanding save stack by register alone: the slot position is unknowable
+--     there, but every statement in the span is dropped and the synthesized epilogue owns
+--     the real %rsp, so only the register identity matters;
 --   * reads of the frame pointer as a VALUE (`movq %rbp, %rax`, an rbp memory index) while
 --     rbp is the frame pointer — the same stack-address escape class as reading rsp, so the
 --     fall-through escape check treats rbp as a stack register whenever usesRbp holds;
---   * mid-function constant or non-constant rsp adjustments (`subq`/`addq`/`mov` to %rsp)
---     that are not epilogue teardown (teardown = an `addq $imm,%rsp` / `movq %rbp,%rsp`
---     leading to `ret` through callee-saved pops and ordinary computation only); dynamic
---     allocation must use the `;! alloca` annotation instead. A `;! alloca` dynamic
---     `subq %rax,%rsp` makes the depth unknown but pops nothing, so the abstract save
---     stack SURVIVES across it (and across the inert computation in its scope) until
---     `leave`/`movq %rbp,%rsp` restores a known depth — clang -O0's VLA epilogue
---     (`movq %rbp,%rsp; popq %rbp; ret`) pairs its pops exactly like `leave`;
+--   * mid-function constant or non-constant rsp adjustments (`subq`/`addq` to %rsp, and
+--     `mov %reg,%rsp` from an unvalidated source) that are neither prologue/epilogue
+--     frame setup, an `alloca`-idiom allocation, nor a recovery of a known-good saved
+--     stack pointer (dynamic allocation must use the `;! alloca` annotation instead).
+--     Recovering %rsp from a known-good value — `movq %rbp,%rsp`, `leaq N(%rbp),%rsp`,
+--     or a register the prologue saved %rsp into — is accepted and dropped anywhere,
+--     mid-function alloca "frees" included: rbp-relative virtualization is unaffected,
+--     and rsp-relative accesses, pops, and returns stay depth-gated. The prologue save
+--     itself (`movq %rsp,%rbx`) is prologue-transparent and DROPPED: the parked value
+--     has no meaning in the output (sarcasm synthesizes its own frame), so only the
+--     recovery is consumed — the save register may not be read while it holds the save,
+--     and only callee-saved registers may hold one (a call would clobber the rest). A
+--     `;! alloca`
+--     dynamic rsp adjustment makes the depth unknown but pops nothing, so the abstract
+--     save stack SURVIVES across it (and across the inert computation in its scope)
+--     until one of those recoveries restores a known depth (`movq %rbp,%rsp; popq %rbp;
+--     ret` pairs its pops exactly like `leave`);
+--   * a MID-FUNCTION `leave`: hardware `leave` also restores the CALLER's frame pointer
+--     into %rbp, which would desync every later rbp-relative virtualization — `leave` is
+--     accepted only as a proven epilogue teardown (leading straight to `ret` through
+--     callee-saved pops and ordinary computation), exactly like the `addq $imm,%rsp`
+--     starter. A teardown-verified `addq $imm,%rsp` (and the `ret` that terminates its
+--     span) is accepted even at a dynamic-alloca-poisoned depth: the adjustment cannot be
+--     PROVEN to undo the alloca, but everything in the span is dropped and the
+--     synthesized epilogue owns the real %rsp, so the output is correct either way.
+--     Per-point frame-pointer establishment (x86_fp) backs this up: rbp-relative
+--     accesses are accepted only where %rbp provably still holds the function's frame
+--     pointer on every path (an early-exit path that skipped the prologue, and any point
+--     after a paired `popq %rbp`, are "not established");
 --   * stack accesses and returns executed while rsp is perturbed, unbalanced, or of
 --     unknown depth (e.g. after a dynamic alloca with no rbp restore);
 --   * mid-function pushes/pops of non-callee-saved operands, pops of the frame pointer
@@ -127,6 +152,29 @@ local function insnWritesSp(st)
 	return b == "push" or b == "pop"
 end
 
+-- A full-width (64-bit) `movq %rsp, %reg` SAVE form: the register parks the stack
+-- pointer. The frame-pointer establishment `movq %rsp, %rbp` is NOT a save — every
+-- consumer checks the rbp case first. A sub-register form (`movl %esp, %ebx`) truncates
+-- the parked value and is not a save.
+local function isSpSaveForm(st)
+	local ops = st.operands
+	return x86.baseMnemonic(string.lower(st.mnemonic)) == "mov"
+		and ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+		and (ops[1].width == 64 or ops[1].width == nil)
+		and ops[2] and ops[2].rc == "sp" and (ops[2].width == 64 or ops[2].width == nil)
+end
+
+-- The matching `movq %reg, %rsp` RECOVERY form (writing %rsp from a register). The
+-- frame-pointer source `movq %rbp, %rsp` is NOT this form — every consumer checks it
+-- first. A sub-register form truncates and is not a recovery.
+local function isSpRecoverForm(st)
+	local ops = st.operands
+	return x86.baseMnemonic(string.lower(st.mnemonic)) == "mov"
+		and ops[1] and ops[1].rc == "sp" and (ops[1].width == 64 or ops[1].width == nil)
+		and ops[2] and ops[2].kind == "reg" and ops[2].rc == "gpr" and ops[2].name ~= "rbp"
+		and (ops[2].width == 64 or ops[2].width == nil)
+end
+
 -- Result of analyzeFrame that the per-statement rewrite needs but the shared frame.luau
 -- ctx does not carry (it only forwards frameSize/fpOffset/usesFp). analyzeFrame always
 -- runs (via frame.preprocess) before any rewrite call for the same body, single-threaded.
@@ -142,10 +190,29 @@ local D0 = 0  -- net rsp depth at the end of the prologue prefix (the frame base
 --   * st.x86_teardownStart — a post-prologue `addq $imm,%rsp` / `movq %rbp,%rsp` verified
 --                            as epilogue teardown (a straight path to `ret` involving only
 --                            callee-saved pops and ordinary, non-stack computation);
---   * st.x86_teardown      — inside such a verified teardown region.
+--   * st.x86_teardown      — inside such a verified teardown region (the terminating
+--                            `ret` is part of the span);
 -- The frame size for rbp-based normalization is D0 - fpDepth (so rbp = rsp + frameSize at
 -- the post-prologue rsp); without a frame pointer it is the net constant allocation.
 function x86_64_frame.analyzeFrame(body, sigDesc)
+	-- analyzeFrame may run more than once on the same body (the transform calls it for
+	-- frame geometry before frame.preprocess runs it again for the rewrite), and it may
+	-- see a DIFFERENT body state each time (the transform's deferred dynamic-alloca
+	-- discovery marks statements between the two runs). The per-statement fields below
+	-- are this analysis's OUTPUT: clear stale ones from a previous run so a conditional
+	-- mark (an unpaired pop, a teardown region) never survives from an analysis that
+	-- saw different marks.
+	for _, st in body do
+		st.x86_prologue = nil
+		st.x86_depth = nil
+		st.x86_saves = nil
+		st.x86_unpairedPop = nil
+		st.x86_teardownStart = nil
+		st.x86_teardown = nil
+		st.x86_fp = nil
+		st.x86_spRecover = nil
+	end
+
 	-- (sigDesc is the function's entry signature. A float/double argument or FP
 	-- return rides in the xmm registers EVEN when the body never names a vector
 	-- register — FP args are typically consumed by a call, an FP return produced,
@@ -214,7 +281,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				local m = string.lower(st.mnemonic)
 				local b = x86.baseMnemonic(m)
 				local ops = st.operands
-				if isAlloca(st) then prologueEnd = i break
+				if isAlloca(st) and insnWritesSp(st) then prologueEnd = i break
+				-- (an `alloca` annotation on an instruction that does NOT write rsp is the
+				-- deferred dynamic-alloca idiom's size definition — e.g. a load or an
+				-- arithmetic instruction annotated `;! alloca size (ptr)` — and is
+				-- prologue-transparent: the allocation happens at the later rsp
+				-- adjustment, so frame setup such as `movq %rsp, %rbp` may legitimately
+				-- follow it.)
 				elseif b == "push" and ops[1] and ops[1].kind == "reg" and x86.CALLEE_SAVED[ops[1].name] then
 					depth += 8
 					table.insert(pstack, { name = ops[1].name, depth = depth })
@@ -236,6 +309,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				elseif b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp"
 					and not usesRbp then
 					usesRbp = true; fpDepth = depth
+				elseif b == "mov" and ops[2] and ops[2].rc == "sp"
+					and ops[1] and ops[1].rc == "gpr" and ops[1].name ~= "rbp" then
+					-- `movq %rsp, %rbx`: the prologue parked the (known) stack pointer in
+					-- a register. Transparent to the frame geometry: the save is DROPPED
+					-- by the rewrite (sarcasm synthesizes its own frame, so the parked
+					-- value has no output meaning), the rsp-depth fixpoint tracks the
+					-- save (a later `movq %rbx, %rsp` recovery revives the saved depth),
+					-- and the rewrite rejects saves into anything but a callee-saved
+					-- register (a call would clobber the rest).
 				elseif b == "sub" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "imm" then
 					depth += immVal(ops[2]); subBytes += immVal(ops[2])
 				elseif b == "add" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "imm"
@@ -243,9 +325,26 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					-- undoes part of the prologue allocation: net it out (an epilogue add
 					-- is never reached here — the scan has long stopped at the body)
 					depth -= immVal(ops[2]); subBytes -= immVal(ops[2])
+				elseif insnWritesSp(st) then
+					-- any other rsp write (`leaq -N(%rbp), %rsp` teardown, register-source
+					-- `subq %reg, %rsp`, `movq %rbp, %rsp`) is not prologue frame setup
+					prologueEnd = i break
 				elseif b == "nop" then
 					-- endbr64 / padding: transparent
-				elseif b == "jmp" or b == "jcc" or b == "call" or b == "ret" or b == "leave"
+				elseif b == "jcc" then
+					-- A leading conditional branch is part of the prologue when it guards
+					-- the frame setup (an early-exit path that runs with the caller's rsp
+					-- and returns: `test %edi,%edi; je .Learly` before `pushq %rbp`).
+					-- Hand-written code and optimized builds both spell it this way. The
+					-- scan stays sound without inspecting the target path: a targeted
+					-- label anywhere ahead still ends the prefix, and the CFG depth/save
+					-- analysis merges the early path's depth 0 with the frame path's —
+					-- any shape where the guard can jump into or out of the middle of the
+					-- setup disagrees and is rejected downstream. Frame-pointer-relative
+					-- accesses are additionally gated on per-point frame-pointer
+					-- establishment (x86_fp), so a path that skipped the setup can never
+					-- virtualize against a frame pointer it does not have.
+				elseif b == "jmp" or b == "call" or b == "ret" or b == "leave"
 					or string.match(m, "^loop") then
 					prologueEnd = i break
 				elseif insnTouchesFrame(st, usesRbp) then
@@ -292,27 +391,65 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		end
 		return c
 	end
-	local function transfer(st, d, sv)
+	-- The core rsp-depth/save-stack/frame-pointer transition. `recoverDepth` is the depth
+	-- a `movq %reg, %rsp` recovery revives (non-nil only when the incoming smap holds an
+	-- outstanding, unredefined prologue rsp save for the source register — see transfer).
+	local function transferCore(st, d, sv, fp, recoverDepth)
 		local m = string.lower(st.mnemonic)
 		local b = x86.baseMnemonic(m)
 		local ops = st.operands
 		if b == "leave" then
 			-- `leave` = `movq %rbp, %rsp` + `popq %rbp`: recovers a known depth (and the
-			-- matching save shape) from the frame pointer; without one it is unprovable.
-			if not usesRbp then return "dyn", "dyn" end
+			-- matching save shape) from the frame pointer; without one — or when the
+			-- frame pointer is not provably established on every path to this point — it
+			-- is unprovable. Hardware `leave` also RESTORES the caller's frame pointer
+			-- into %rbp, so the frame-pointer state ends here either way.
+			if not usesRbp or fp ~= "est" then return "dyn", "dyn", fp end
 			local nd = fpDepth - 8
-			return nd, truncateSaves(sv, nd)
+			return nd, truncateSaves(sv, nd), "no"
 		end
 		if b == "mov" and ops[1] and ops[1].rc == "sp" then
-			-- `movq %rbp, %rsp` restores rsp from the frame pointer (epilogue teardown):
-			-- like `leave`, it recovers a known depth (and the surviving save shape)
-			-- from the frame pointer even when a dynamic alloca made the depth unknown
-			-- (clang -O0's VLA epilogue), so the teardown `popq %rbp` after it still
-			-- pairs with the prologue save. Any other write to rsp makes both unknown.
-			if usesRbp and ops[2] and ops[2].name == "rbp" then
-				return fpDepth, truncateSaves(sv, fpDepth)
+			-- The alloca idiom's rsp update (`movq %rA, %rsp` carrying the allocation
+			-- address): the depth becomes unknown, but the alloca pops nothing — the
+			-- outstanding saves survive at their slots exactly as for a marked sub.
+			if st.allocaPlace then
+				return "dyn", sv, fp
 			end
-			return "dyn", "dyn"
+			-- `movq %rbp, %rsp` restores rsp from the frame pointer — an epilogue
+			-- teardown, or a mid-function alloca "free". Like `leave`, it recovers a
+			-- known depth (and the surviving save shape) from the frame pointer even
+			-- when a dynamic alloca made the depth unknown, so the teardown `popq %rbp`
+			-- after it still pairs with the prologue save. Unlike `leave` it does not
+			-- touch %rbp, so the frame-pointer state is unchanged. Any other source
+			-- makes the depth unknown — except a recovery from a prologue rsp save
+			-- (validated by the smap in transfer below), which is just as known-good.
+			if usesRbp and fp == "est" and ops[2] and ops[2].name == "rbp" then
+				return fpDepth, truncateSaves(sv, fpDepth), fp
+			end
+			if recoverDepth then
+				return recoverDepth, truncateSaves(sv, recoverDepth), fp
+			end
+			return "dyn", "dyn", fp
+		end
+		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+			and usesRbp and fp == "est" and ops[2].base and ops[2].base.name == "rbp"
+			and not ops[2].index and not ops[2].dispSym then
+			-- `leaq -N(%rbp), %rsp` restores rsp from the frame pointer: the lea form of
+			-- `movq %rbp, %rsp`, used when callee-saved registers were pushed after the
+			-- frame pointer was established — as an epilogue teardown, or as a
+			-- mid-function alloca "free". Like `leave`/`movq %rbp, %rsp` it recovers a
+			-- known depth (fpDepth + N) and the surviving save shape from the frame
+			-- pointer even when a dynamic alloca made the depth unknown; the pops that
+			-- follow must still pair with the prologue saves — a mismatching depth is
+			-- caught by the save-pairing analysis at the pops themselves.
+			local nd = fpDepth - (ops[2].dispVal or 0)
+			return nd, truncateSaves(sv, nd), fp
+		end
+		if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then
+			-- Establishing the frame pointer (`movq %rsp, %rbp`): from here %rbp holds a
+			-- fixed frame-relative value on this path. Re-establishing it mid-function
+			-- is rejected by the rewrite, so this is the one transition to "est".
+			return d, sv, "est"
 		end
 		if d == "dyn" or sv == "dyn" then
 			-- Inside a dynamic-alloca region the DEPTH is unprovable, but the outstanding
@@ -320,14 +457,69 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- propagates the save stack unchanged so a later `leave`/`movq %rbp, %rsp`
 			-- can revive it (the rewrite rejects every stack access, push/pop, or
 			-- return that would execute at an unknown depth, so only inert computation
-			-- may carry it). A push/pop or a non-alloca rsp adjustment at an unknown
-			-- depth — or any state whose save shape is already unknown — is unprovable.
-			if sv == "dyn" then return "dyn", "dyn" end
-			if b == "push" or b == "pop" then return "dyn", "dyn" end
-			if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" and not isAlloca(st) then
-				return "dyn", "dyn"
+			-- may carry it). A push at an unknown depth — or any state whose save shape
+			-- is already unknown — is unprovable. A pop's slot position is unknowable
+			-- here, but it still consumes the most recent outstanding save: whether the
+			-- pop may be DROPPED as that save's restore is decided by the annotation
+			-- pass, which pairs it only inside a verified epilogue teardown and rejects
+			-- it everywhere else. A constant rsp adjustment pops nothing, so the save
+			-- stack survives it too (the annotation pass decides whether the adjustment
+			-- is a verified teardown `addq $imm, %rsp`). The frame-pointer state is
+			-- INDEPENDENT of the rsp poison: an alloca perturbs rsp, never rbp, so
+			-- rbp-relative spill traffic stays provable through the poisoned region and
+			-- fp is propagated unchanged.
+			if sv == "dyn" then return "dyn", "dyn", fp end
+			if b == "push" then return "dyn", "dyn", fp end
+			if b == "pop" then
+				local c = { table.unpack(sv) }
+				if #c > 0 then
+					table.remove(c)
+					return "dyn", c, fp
+				end
+				return "dyn", "dyn", fp
 			end
-			return "dyn", sv
+			if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp"
+				and not (isAlloca(st) or st.allocaPlace) then
+				return "dyn", sv, fp
+			end
+			-- Any modeled definition of a pushed register breaks the link between its
+			-- outstanding save and the register's CURRENT web exactly as at a known
+			-- depth (the def-marking below is reached only on the known-depth path,
+			-- which this branch returns before): mark the save redefined so a pop
+			-- paired after the depth is revived cannot silently drop a reload of a
+			-- stale value. (Never mutate the incoming list — it is shared across the
+			-- fixpoint.)
+			local c = classOf(st)
+			if #c.defs > 0 and #sv > 0 then
+				local hit = false
+				for _, e in sv do
+					if not e.redefined then
+						for _, dd in c.defs do
+							if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
+								hit = true break
+							end
+						end
+					end
+					if hit then break end
+				end
+				if hit then
+					local out = {}
+					for _, e in sv do
+						local redefined = e.redefined
+						if not redefined then
+							for _, dd in c.defs do
+								if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
+									redefined = true break
+								end
+							end
+						end
+						table.insert(out, { name = e.name, num = e.num, depth = e.depth,
+							redefined = redefined })
+					end
+					sv = out
+				end
+			end
+			return "dyn", sv, fp
 		end
 		if b == "push" then
 			local c = { table.unpack(sv) }
@@ -336,27 +528,36 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				num = (ops[1] and ops[1].kind == "reg") and ops[1].num or nil,
 				depth = d + 8,
 				redefined = false })
-			return d + 8, c
+			return d + 8, c, fp
 		end
 		if b == "pop" then
 			-- The pop consumes the slot at the current depth. Whether that slot holds a
 			-- matching save is verified from the INCOMING state at the pop (see the
 			-- x86_unpairedPop annotation); here only the stack shape is maintained.
 			local c = { table.unpack(sv) }
-			if #c > 0 and c[#c].depth == d then table.remove(c) else c = "dyn" end
-			return d - 8, c
+			if #c > 0 and c[#c].depth == d then
+				local poppedFp = usesRbp and c[#c].name == "rbp"
+				table.remove(c)
+				-- A paired `popq %rbp` restores the SAVED frame pointer — the caller's —
+				-- so %rbp stops being this function's frame pointer from here on: any
+				-- later rbp-relative access would address the caller's frame. The
+				-- per-point frame-pointer state records exactly that.
+				return d - 8, c, (poppedFp and "no") or fp
+			end
+			return d - 8, "dyn", fp
 		end
 		local nd = d
 		if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then
 			if ops[2] and ops[2].kind == "imm" then
 				nd = (b == "sub") and (d + immVal(ops[2])) or (d - immVal(ops[2]))
-			elseif isAlloca(st) then
-				-- dynamic alloca (`subq %rax, %rsp ;! alloca size (x)`): the depth
+			elseif isAlloca(st) or st.allocaPlace then
+				-- dynamic alloca (`subq %rax, %rsp ;! alloca size (x)`, or the deferred
+				-- idiom's unannotated adjustment marked st.allocaPlace): the depth
 				-- becomes unknown, but the alloca pops nothing — the outstanding saves
 				-- survive at their slots and a later fp restore revives them.
-				return "dyn", sv
+				return "dyn", sv, fp
 			else
-				return "dyn", "dyn"  -- unanalyzable rsp write
+				return "dyn", "dyn", fp  -- unanalyzable rsp write
 			end
 		end
 		if nd < d then sv = truncateSaves(sv, nd) end
@@ -426,11 +627,107 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					table.insert(out, { name = e.name, num = e.num, depth = e.depth,
 						redefined = redefined })
 				end
-				return nd, out
+				return nd, out, fp
 			end
 		end
-		return nd, sv
+		return nd, sv, fp
 	end
+
+	-- The full transition, adding the PROLOGUE RSP-SAVE MAP (smap) to the core state.
+	-- smap is { [regName] = { name, num, depth, redefined } } — the registers the
+	-- prologue parked %rsp into (`movq %rsp, %rbx`) and whether their saved value still
+	-- reaches this point. It behaves like a per-register resource, not a stack: a
+	-- register holds its save until it is redefined, CFG joins require per-register
+	-- agreement, and it rides UNCHANGED through dynamic-alloca "dyn" depths (an alloca
+	-- perturbs %rsp, never the GPRs) — which is exactly what lets a recovery revive a
+	-- KNOWN depth after an alloca poisoned the depth. Only CALLEE-SAVED registers can
+	-- hold a save (enforced by the rewrite at the save site): a call would clobber a
+	-- caller-saved one, and neither this analysis nor sarcasm's own injected runtime
+	-- calls model that.
+	local function transfer(st, d, sv, smap, fp, idx)
+		local ops = st.operands
+		-- The alloca machinery owns its statements outright (they are dropped or
+		-- replaced wholesale by the transform — frame.preprocess routes them around the
+		-- rewrite), so they are neither saves nor recoveries.
+		-- A CALLEE-SAVED prologue save form records its save (idx < prologueEnd: only
+		-- prologue saves are legal — a post-prologue `movq %rsp, %reg` stays an escape,
+		-- or, in the fixed-alloca-region corner, KEEPS executing with its destination
+		-- redirected to the allocation pointer, so it is no save at all and its
+		-- register may be read). Callee-saved only: these are exactly the saves the
+		-- rewrite drops — a caller-saved save is rejected by the rewrite (a call
+		-- clobbers it) unless the region corner keeps it alive with a redirected,
+		-- REAL value, and neither case leaves a dropped save behind. A prologue save
+		-- is recorded even when the deferred-idiom discovery marked it
+		-- allocaPlace/allocaOwned: those marks mean the statement is DROPPED by the
+		-- emitter (the discovery's coarse straight-line region around a dynamic-alloca
+		-- result swallows prologue frame setup, saves included) — and a dropped save is
+		-- exactly what the frame rewrite does with it, so the register keeps holding
+		-- the save either way. An ANNOTATED save form is excluded: a `;! alloca size`
+		-- definition STAYS and computes the size, not a parked %rsp.
+		local isSave = idx < prologueEnd and isSpSaveForm(st) and not isAlloca(st)
+			and x86.CALLEE_SAVED[ops[1].name] ~= nil
+		local owned = st.allocaPlace or st.allocaOwned or isAlloca(st)
+		local recoverDepth = nil
+		if not owned and isSpRecoverForm(st) then
+			local e = smap[ops[2].name]
+			if e and not e.redefined then recoverDepth = e.depth end
+		end
+		local nd, nsv, nfp = transferCore(st, d, sv, fp, recoverDepth)
+		if isSave then
+			-- A (re)definition of the save: the register freshly parks the CURRENT rsp
+			-- depth (always known where a save survives the rewrite — the prologue).
+			-- This must not run the def-marking below: the save re-registers itself.
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = d,
+				redefined = false }
+			return nd, nsv, out, nfp
+		end
+		if recoverDepth then
+			-- The recovery reads the save and writes %rsp; the save REGISTER is
+			-- unchanged, so it still holds the save — a second recovery from it stays
+			-- valid, and so does further traffic that does not read it.
+			return nd, nsv, smap, nfp
+		end
+		-- Any other instruction. A modeled def of a save register (an ordinary move, a
+		-- pop INTO it, an implicit clobber like cpuid's ebx) breaks the link between the
+		-- register and its saved value — mirroring the pushed-save redefinition logic
+		-- above. And while a save is OUTSTANDING (unredefined) the register's web IS the
+		-- dropped save: the rewrite removed the `movq %rsp, %reg` that defined it, so
+		-- the web holds no value the output computes — any read of it (as an operand,
+		-- through a memory base, or by pushing the register) would observe garbage.
+		-- Reject it. (Never mutate the incoming map — it is shared across the fixpoint.)
+		local c = classOf(st)
+		local out = smap
+		for name, e in pairs(smap) do
+			if not e.redefined then
+				for _, u in c.uses do
+					if u.kind == "reg" and u.rc == "gpr" and u.num == e.num then
+						error("sarcasm: reading %" .. name .. " while it holds the prologue"
+							.. " `movq %rsp, %" .. name .. "` save cannot be proven safe (the"
+							.. " save is dropped by the rewrite — the register's stack value"
+							.. " does not exist in the output; recover %rsp from it first or"
+							.. " redefine it): " .. (st.raw or st.mnemonic))
+					end
+				end
+			end
+			if not e.redefined then
+				for _, dd in c.defs do
+					if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
+						if out == smap then
+							out = {}
+							for k, v in pairs(smap) do out[k] = v end
+						end
+						out[name] = { name = e.name, num = e.num, depth = e.depth,
+							redefined = true }
+						break
+					end
+				end
+			end
+		end
+		return nd, nsv, out, nfp
+	end
+
 	local function mergeSaves(a, b)
 		if a == nil then return b end
 		if a == "dyn" or b == "dyn" then return "dyn" end
@@ -449,6 +746,31 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				redefined = a[k].redefined or b[k].redefined }
 		end
 		return c
+	end
+	local function mergeSmaps(a, b)
+		if a == nil then return b end
+		if b == nil then return a end
+		if a == b then return a end
+		-- Per-register agreement: a register's save must have the same depth and the
+		-- same redefined-ness on every incoming path. Any disagreement — including one
+		-- path carrying no save at all (it cannot have executed the save, or a path
+		-- through a redefinition) — poisons that register: its recovery becomes
+		-- unprovable and is rejected at the recovery site.
+		local out = a
+		for name, e in pairs(a) do
+			local f = b[name]
+			if not f or f.depth ~= e.depth or f.redefined ~= e.redefined then
+				if out == a then
+					out = {}
+					for k, v in pairs(a) do out[k] = v end
+				end
+				out[name] = nil
+			end
+		end
+		-- (A register only b holds is already absent from a — poisoned — so nothing to
+		-- do for it; returning a itself when nothing was removed keeps the fixpoint's
+		-- identity-based change detection stable.)
+		return out
 	end
 	local function successors(i)
 		local st = body[i]
@@ -469,7 +791,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		if nxt <= #body then table.insert(out, nxt) end
 		return out
 	end
-	local depthIn, savesIn = {}, {}
+	local depthIn, savesIn, fpIn, smapIn = {}, {}, {}, {}
 	do
 		local firstInsn
 		for i, st in body do
@@ -478,11 +800,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		if firstInsn then
 			depthIn[firstInsn] = 0
 			savesIn[firstInsn] = {}
+			smapIn[firstInsn] = {}
+			fpIn[firstInsn] = "no"
 			local worklist, inq = { firstInsn }, { [firstInsn] = true }
 			while #worklist > 0 do
 				local i = table.remove(worklist)
 				inq[i] = nil
-				local od, osv = transfer(body[i], depthIn[i], savesIn[i])
+				local od, osv, osmap, ofp = transfer(body[i], depthIn[i], savesIn[i],
+					smapIn[i], fpIn[i], i)
 				for _, s in successors(i) do
 					local cur = depthIn[s]
 					local merged
@@ -491,9 +816,18 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					elseif cur == od then merged = cur
 					else merged = "dyn" end
 					local mergedSv = mergeSaves(savesIn[s], osv)
-					if merged ~= cur or mergedSv ~= savesIn[s] then
+					local mergedSmap = mergeSmaps(smapIn[s], osmap)
+					local curFp, mergedFp = fpIn[s], nil
+					if curFp == nil then mergedFp = ofp
+					elseif curFp == "dyn" or ofp == "dyn" then mergedFp = "dyn"
+					elseif curFp == ofp then mergedFp = curFp
+					else mergedFp = "dyn" end
+					if merged ~= cur or mergedSv ~= savesIn[s] or mergedSmap ~= smapIn[s]
+						or mergedFp ~= curFp then
 						depthIn[s] = merged
 						savesIn[s] = mergedSv
+						smapIn[s] = mergedSmap
+						fpIn[s] = mergedFp
 						if not inq[s] then inq[s] = true table.insert(worklist, s) end
 					end
 				end
@@ -515,7 +849,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				local b = x86.baseMnemonic(m)
 				local ops = st.operands
 				if isAlloca(st) then return nil end
-				if b == "ret" then return marks end
+				-- The terminating `ret` is part of the verified span (the annotation pass
+				-- accepts a return at an UNKNOWN depth only inside such a span).
+				if b == "ret" then table.insert(marks, j) return marks end
 				if b == "jmp" or b == "jcc" or b == "call" or string.match(m, "^loop") then return nil end
 				if b == "leave" then
 					table.insert(marks, j)
@@ -576,6 +912,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		if st.kind == "insn" then
 			st.x86_prologue = i < prologueEnd
 			st.x86_depth = depthIn[i]
+			-- Whether the frame pointer is provably established (its prologue value
+			-- intact) on EVERY path reaching this instruction: "est", "no" (not
+			-- established — an early-exit path that skipped the prologue, or a point
+			-- after a paired `popq %rbp` restored the caller's frame pointer), "dyn"
+			-- (paths disagree), or nil (unreachable code). Gates every rbp-relative
+			-- virtualization: a static slot is only what the access addresses when
+			-- %rbp provably still holds this function's frame pointer.
+			st.x86_fp = fpIn[i]
 			-- The outstanding pushed-register save stack at this instruction (or
 			-- "dyn" when the paths disagree, or nil for unreachable code). Consumed
 			-- by the rewrite: a stack access that aliases one of these save slots
@@ -584,19 +928,49 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- mirrored by the pushed register's web, because the matching pop (which
 			-- the pairing analysis proves restores exactly this register) is dropped.
 			st.x86_saves = savesIn[i]
+			-- A `movq %rbx, %rsp` whose source register still holds an UNREDEFINED
+			-- prologue rsp save in the converged smap at this point recovers a
+			-- known-good stack pointer: the rewrite drops it and the transfer revived
+			-- the depth to the saved value (even out of a dynamic-alloca "dyn" — the
+			-- smap rides through the poison exactly like the save stack does). The
+			-- alloca machinery's statements are excluded: they bypass the frame rewrite
+			-- entirely (frame.preprocess routes them around it), so they must not
+			-- double as recoveries. Anything else is rejected by the rewrite with a
+			-- diagnostic naming the register.
+			if isSpRecoverForm(st) and not (st.allocaPlace or st.allocaOwned or isAlloca(st)) then
+				local e = smapIn[i] and smapIn[i][st.operands[2].name]
+				if e and not e.redefined then
+					st.x86_spRecover = true
+				end
+			end
 			-- A pop provably restores a matching save only when the incoming abstract save
 			-- stack shows the LAST outstanding push as the same register at the same slot
 			-- depth on every path. Anything else (no outstanding push, a different register
 			-- on top, an unprovable stack) loads a slot that is not that register's save.
+			-- At an UNKNOWN depth (dynamic-alloca poison) the slot position cannot be
+			-- checked; there the pop pairs off the outstanding save stack only inside a
+			-- VERIFIED epilogue teardown (validateTeardown above: a straight path to a
+			-- `ret` through callee-saved pops and frame-touch-free computation). Every
+			-- statement in such a span is dropped and the synthesized epilogue owns the
+			-- real %rsp, so the pairing only has to prove that the pop restores the same
+			-- register a dropped push saved — the slot it reads is never emitted.
 			if x86.baseMnemonic(string.lower(st.mnemonic)) == "pop" and depthIn[i] ~= nil then
 				local sv, d = savesIn[i], depthIn[i]
 				local n = (st.operands[1] and st.operands[1].kind == "reg")
 					and st.operands[1].name or "?"
-				if sv == "dyn" or d == "dyn" or #sv == 0
-					or sv[#sv].name ~= n or sv[#sv].depth ~= d then
+				if d ~= "dyn" then
+					if sv == "dyn" or #sv == 0
+						or sv[#sv].name ~= n or sv[#sv].depth ~= d then
+						st.x86_unpairedPop = true
+					elseif sv[#sv].redefined then
+						checkLostReload(i, sv[#sv])
+					end
+				elseif st.x86_teardown and sv ~= "dyn" and #sv > 0 and sv[#sv].name == n then
+					if sv[#sv].redefined then
+						checkLostReload(i, sv[#sv])
+					end
+				else
 					st.x86_unpairedPop = true
-				elseif sv[#sv].redefined then
-					checkLostReload(i, sv[#sv])
 				end
 			end
 			if not st.x86_prologue then
@@ -606,6 +980,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 						and ops[2] and ops[2].kind == "imm")
 					or (b == "mov" and ops[1] and ops[1].rc == "sp" and ops[2]
 						and ops[2].name == "rbp" and usesRbp)
+					or (b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2]
+						and ops[2].kind == "mem" and ops[2].base and ops[2].base.name == "rbp"
+						and usesRbp and not ops[2].index and not ops[2].dispSym)
+					or (b == "leave" and usesRbp)
 				if isTeardownStart then
 					local marks = validateTeardown(nextInsn[i])
 					if marks then
@@ -629,7 +1007,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	-- to its final offset.
 	local intervals = {}
 	for _, st in body do
-		if st.kind == "insn" and not isAlloca(st) then  -- alloca machinery owns its accesses
+		if st.kind == "insn" and not (isAlloca(st) or st.allocaPlace or st.allocaOwned) then
+			-- alloca machinery owns its accesses
 			local mem
 			for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
 			-- Mirror exactly the rewrite's stack-mem gate: stack base, no symbolic
@@ -756,6 +1135,38 @@ function x86_64_frame.rewrite(st, ctx)
 			.. " push %rbp / mov %rsp,%rbp / sub $imm,%rsp frame setup): " .. (st.raw or m))
 	end
 
+	-- A stack-register name that did not parse as a REGISTER: in an AT&T-parsed file
+	-- a bare (un-%-ed) operand field falls through to the symbol parse, so a
+	-- dest-first Intel spelling inside an AT&T file (`lea rsp, [rax+15]`) parses as
+	-- a symbol source over a non-register destination. Every other mnemonic treats
+	-- a symbol operand as memory and is rejected as global data access, but a lea's
+	-- symbol operands are address materializations — so the model here sees neither
+	-- a %rsp write nor a memory access: the rsp-write enforcement, the depth
+	-- analysis, and the escape scan all pass, and the statement is emitted
+	-- VERBATIM — a live hardware-%rsp write wherever the text assembles, and a bare
+	-- `as` "operand type mismatch" (no sarcasm diagnostic) where it does not. A lea
+	-- whose destination is not a register never assembles anyway (GAS lea computes
+	-- into a register), so gating on that keeps every assemblable lea (including
+	-- `leaq myglobal, %rax` address materializations) working while any
+	-- stack-register name hiding in the operands of the malformed spelling — an
+	-- unmodeled %rsp write, whatever operand carries it — is rejected with the
+	-- stack-pointer-write error. (The prologue prefix scan treats such a statement
+	-- as transparent, but the rewrite runs on prologue statements too, so this
+	-- rejection covers the prefix as well.)
+	if b == "lea" and not (ops[1] and ops[1].kind == "reg") then
+		for _, o in ops do
+			if o.kind == "sym" then
+				local t = string.gsub(string.lower(o.text or ""), "^%%", "")
+				t = string.gsub(string.gsub(t, "^%[", ""), "%]$", "")
+				if string.match(t, "^[re]?[sb]p%f[^%w]") then
+					error("sarcasm: writing the stack pointer through an operand that parsed"
+						.. " as a symbol rather than a register (mixed AT&T/Intel operand"
+						.. " syntax) cannot be proven safe: " .. (st.raw or m))
+				end
+			end
+		end
+	end
+
 	-- Vector-indexed memory (gather/scatter: an xmm-class register as the memory base
 	-- or index) touches multiple discrete addresses that cannot be bounds-checked.
 	-- Reject it cleanly. (The x86_64_fp table also hard-rejects the gather/scatter
@@ -778,6 +1189,21 @@ function x86_64_frame.rewrite(st, ctx)
 				error("sarcasm: `leave` without a frame pointer established in the prologue"
 					.. " cannot be proven safe: " .. (st.raw or m))
 			end
+			-- `leave` is an epilogue teardown only when the teardown analysis proved that
+			-- it STARTS (or sits inside) a region leading straight to a `ret` through
+			-- callee-saved pops and frame-touch-free computation, with the frame pointer
+			-- provably established on entry. Any other `leave` is a MID-FUNCTION one and
+			-- stays rejected even though the plain rsp-recovery forms (`movq %rbp, %rsp`,
+			-- `leaq -N(%rbp), %rsp`) are now accepted mid-function: hardware `leave` also
+			-- restores the CALLER's frame pointer into %rbp, breaking the static-frame-
+			-- pointer premise every later rbp-relative virtualization rests on — silently
+			-- miscompiled reads and writes. The plain recoveries touch only %rsp, which
+			-- is why they can be dropped anywhere.
+			if not (st.x86_teardownStart or st.x86_teardown) or st.x86_fp ~= "est" then
+				error("sarcasm: mid-function `leave` cannot be proven safe (a leave that does"
+					.. " not lead directly to a ret may observe the caller's frame): "
+					.. (st.raw or m))
+			end
 			return
 		end
 		if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then
@@ -792,10 +1218,39 @@ function x86_64_frame.rewrite(st, ctx)
 			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
 				.. " be proven safe: " .. (st.raw or m))
 		end
-		if b == "mov" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].name == "rbp" then
-			if st.x86_teardownStart then return end  -- `movq %rbp, %rsp` epilogue teardown
-			error("sarcasm: restoring %rsp from %rbp outside epilogue teardown cannot be"
-				.. " proven safe: " .. (st.raw or m))
+		if b == "mov" and ops[1] and ops[1].rc == "sp" then
+			if ops[2] and ops[2].name == "rbp" then
+				-- Recovering %rsp from the frame pointer is sound wherever the frame
+				-- pointer is provably established, and is DROPPED: the recovery cannot
+				-- perturb any rbp-relative virtualization (rbp is untouched), every
+				-- rsp-relative access stays gated on the revived depth, every pop stays
+				-- gated on save pairing, and every return stays gated on depth 0. This
+				-- accepts mid-function alloca "frees" as readily as the classic epilogue
+				-- teardown — no straight-line-to-ret proof is required.
+				if st.x86_fp == "est" then return end
+				error("sarcasm: restoring %rsp from %rbp while the frame pointer is not"
+					.. " provably established cannot be proven safe: " .. (st.raw or m))
+			end
+			if st.x86_spRecover then
+				-- Recovery from a register the prologue saved %rsp into: the value is
+				-- fixed at function entry (the fixpoint proved the save still reaches
+				-- this point unredefined), so dropping the write is exactly as sound as
+				-- dropping the rbp forms.
+				return
+			end
+			local rn = (ops[2] and ops[2].name) and "%" .. ops[2].name or "a register"
+			error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+				.. " `movq %rsp, " .. rn .. "` that has not been redefined (or recover it"
+				.. " from %rbp, or use an `alloca` annotation): "
+				.. (st.raw or m))
+		end
+		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+			and ops[2].base and ops[2].base.name == "rbp" and usesRbp
+			and not ops[2].index and not ops[2].dispSym then
+			-- Same proof as the movq form: a frame-pointer-relative rsp recovery, dropped.
+			if st.x86_fp == "est" then return end
+			error("sarcasm: restoring %rsp from %rbp via lea while the frame pointer is not"
+				.. " provably established cannot be proven safe: " .. (st.raw or m))
 		end
 		if b == "push" then
 			-- Balanced callee-saved save/restore pairs are dropped; the rsp-depth analysis
@@ -837,7 +1292,12 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		-- d is nil for unreachable instructions (dead code: no depth checks — the drops and
 		-- rejections above still apply, and surviving accesses stay virtualized).
-		if b == "ret" and d ~= nil and d ~= 0 then
+		-- A return at an UNKNOWN depth is accepted only inside a verified epilogue
+		-- teardown (x86_teardown: everything in the span is dropped and the synthesized
+		-- epilogue owns the real %rsp — see the pop pairing above); anywhere else a
+		-- return must provably sit at the entry rsp.
+		if b == "ret" and d ~= nil and d ~= 0
+			and not (d == "dyn" and st.x86_teardown) then
 			error("sarcasm: return with a perturbed or unknown stack pointer cannot be proven"
 				.. " safe: " .. (st.raw or m))
 		end
@@ -859,10 +1319,39 @@ function x86_64_frame.rewrite(st, ctx)
 		emit(st)
 		return
 	end
-	if b == "leave" then return end
+	-- (A `leave` is never prologue-transparent — the prologue prefix scan above ends at
+	-- one — and every post-prologue `leave` is handled by the enforcement block above, so
+	-- this legacy drop cannot be reached for it. It stays consistent with that block so a
+	-- future prologue-scan change cannot silently drop an unproven `leave` here. The same
+	-- holds for the %rsp-recovery forms below: the prologue scan ends at any rsp write,
+	-- so they too are always handled — and gated on the frame-pointer state — above.)
+	if b == "leave" then
+		if not (st.x86_teardownStart or st.x86_teardown) or st.x86_fp ~= "est" then
+			error("sarcasm: mid-function `leave` cannot be proven safe (a leave that does"
+				.. " not lead directly to a ret may observe the caller's frame): "
+				.. (st.raw or m))
+		end
+		return
+	end
 	if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then return end
 	if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then return end
-	if b == "mov" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].name == "rbp" then return end
+	if b == "mov" and ops[1] and ops[1].rc == "sp" then
+		if (ops[2] and ops[2].name == "rbp" and st.x86_fp == "est") or st.x86_spRecover then
+			return
+		end
+		local rn = (ops[2] and ops[2].name) and "%" .. ops[2].name or "a register"
+		error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+			.. " `movq %rsp, " .. rn .. "` that has not been redefined (or recover it"
+			.. " from %rbp, or use an `alloca` annotation): "
+			.. (st.raw or m))
+	end
+	if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+		and ops[2].base and ops[2].base.name == "rbp" and usesRbp
+		and not ops[2].index and not ops[2].dispSym then
+		if st.x86_fp == "est" then return end
+		error("sarcasm: restoring %rsp from %rbp via lea while the frame pointer is not"
+			.. " provably established cannot be proven safe: " .. (st.raw or m))
+	end
 
 	-- push/pop of callee-saved registers (and rbp frame pointer): save/restore round-trips -> drop.
 	if b == "push" and ops[1] and ops[1].kind == "reg" and (x86.CALLEE_SAVED[ops[1].name] or ops[1].name == "rbp") then return end
@@ -917,7 +1406,17 @@ function x86_64_frame.rewrite(st, ctx)
 		-- A stack access is only keyable to a frame slot when rsp provably sits at the
 		-- post-prologue frame base; anything else (mid-function push/sub region, dynamic
 		-- alloca aftermath, unbalanced merge) is unprovable: reject. (nil depth = dead code.)
-		if not st.x86_prologue and d ~= nil and d ~= D0 then
+		-- EXCEPTION: an rbp-relative access while rbp provably holds the frame pointer
+		-- (x86_fp == "est"). rbp's value is static — established once in the prologue,
+		-- with every re-establishment, clobber, and restore rejected or tracked by the
+		-- frame-pointer state — so the slot this access touches is keyed by a static
+		-- offset regardless of the rsp depth. This is what lets alloca-using code spill
+		-- and reload locals (the size, the buffer pointer) through rbp-relative slots
+		-- AFTER the alloca perturbed rsp — hand-written code and optimized builds alike
+		-- rely on it — and the arm64 backend has always allowed the analogous
+		-- x29-relative accesses there.
+		if not st.x86_prologue and d ~= nil and d ~= D0
+			and not (usesRbp and mem.base.name == "rbp" and st.x86_fp == "est") then
 			error("sarcasm: stack access while the stack pointer is perturbed or unknown"
 				.. " (cannot prove which frame slot this is): " .. (st.raw or m))
 		end
@@ -993,20 +1492,31 @@ function x86_64_frame.rewrite(st, ctx)
 		-- here — it sits above the frame and the bounds check rejects accesses to it.
 		local sv = st.x86_saves
 		if sv == "dyn" then
-			-- The save state is unprovable at this (provably frame-base) depth: the
-			-- paths disagree on which registers are pushed, so a store here may alias
-			-- some path's save slot with no provable mapping. Reject rather than guess.
-			error("sarcasm: stack access while the outstanding pushed-register saves are"
-				.. " unprovable (cannot prove which register's save slot this access"
-				.. " aliases): " .. (st.raw or m))
+			-- The save state is unprovable here: the paths disagree on which registers
+			-- are pushed (or a push happened while rsp was poisoned). The access cannot
+			-- be checked against individual save slots — but it also cannot DESYNC one
+			-- in any function sarcasm accepts: an unprovable save state always carries
+			-- an unprovable rsp depth with it (each outstanding push is 8 bytes of
+			-- depth, and paths that disagree on outstanding pushes disagree on depth),
+			-- so this point is reachable only for rbp-relative accesses (rsp-relative
+			-- ones were already rejected above at d ~= D0), and every push that made
+			-- the state unprovable makes its own pop unpairable — a body with an
+			-- unpairable pop or a return at a poisoned depth is rejected downstream.
+			-- Virtualize without the aliasing model.
 		end
 		local aliasHit, aliasDisp, aliasW = nil, nil, nil
-		if sv and #sv > 0 and not isFpInsn(fpEntry, st) then
+		if sv and sv ~= "dyn" and #sv > 0 and not isFpInsn(fpEntry, st) then
 			local w0 = gprStackWidth(m, mem)
 			if w0 then
 				for _, s in sv do
 					if usesRbp and s.name == "rbp" then continue end  -- saved frame pointer
-					local sd = d - s.depth  -- that save slot's displacement from rsp (>= 0)
+					-- The save slot's NORMALIZED frame offset: its displacement from the
+					-- post-prologue frame base (D0). Computed from D0 rather than the
+					-- current depth d so the aliasing identity holds in normalized
+					-- coordinates even for an rbp-relative access at a perturbed/unknown
+					-- rsp depth (both the access's offset and the save slot's are static
+					-- in these coordinates).
+					local sd = D0 - s.depth  -- that save slot's frame offset (>= 0)
 					if off < sd + 8 and off + w0 > sd then
 						aliasHit, aliasDisp, aliasW = s, sd, w0
 						break
@@ -1109,7 +1619,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- rsp-relative offsets address the frame [0, frameSize) plus the 128-byte SysV red
 		-- zone below rsp. NORMALIZED rbp-relative offsets range over the same [-128,
 		-- frameSize): with rbp = rsp + frameSize, an rbp-relative d in [-frameSize-128,
-		-- -frameSize) — e.g. the gcc -O0 leaf shape `-8(%rbp)` with no `subq` at all — IS
+		-- -frameSize) — e.g. the leaf-function shape `-8(%rbp)` with no `subq` at all — IS
 		-- the red zone. (Pre-normalization rbp-relative d >= 0 hits the saved rbp, the
 		-- return address, or the caller's argument area.) Anything outside cannot be
 		-- proven safe: reject (a virtualized slot would silently fabricate garbage reads /
@@ -1172,6 +1682,31 @@ function x86_64_frame.rewrite(st, ctx)
 	-- (a lea of a stack address is handled — and rejected — inside the slot block above:
 	-- in-region leas pass through for the transform's region redirect, symbolic-displacement
 	-- stack operands were rejected above, and every other stack-based lea hits rejectEscape.)
+
+	-- A PROLOGUE `movq %rsp, %reg` save (the prefix scan treats it as transparent and the
+	-- rsp-depth fixpoint tracks it as the save a later `movq %reg, %rsp` recovery
+	-- restores from). CALLEE-SAVED destinations: DROP it — sarcasm synthesizes its own
+	-- frame, so the parked value has no meaning in the output; the recovery is dropped
+	-- with it, and the analysis rejects every read of the register while the save is
+	-- outstanding. Caller-saved destinations are REJECTED outright unless the
+	-- fixed-alloca-region passthrough below keeps the read alive: every SysV callee and
+	-- every runtime call sarcasm injects (pollcheck, allocation, bounds-check slow
+	-- paths) clobbers caller-saved registers, and this analysis models no call clobbers.
+	-- Post-prologue `movq %rsp, %reg` stays an escape (only prologue saves are legal).
+	if st.x86_prologue and isSpSaveForm(st) then
+		if x86.CALLEE_SAVED[ops[1].name] then
+			return
+		end
+		if not ctx.regionOf(0) then
+			error("sarcasm: saving %rsp into %" .. ops[1].name .. " cannot be proven safe (a"
+				.. " call clobbers caller-saved registers; park it in a callee-saved register"
+				.. " such as %rbx or %r12-%r15): " .. (st.raw or m))
+		end
+		-- Caller-saved with a fixed-alloca region based at rsp+0: fall through to the
+		-- region passthrough below, which KEEPS the read with its destination
+		-- redirected to the allocation pointer — a real value, so the register may
+		-- still be read (this corner predates the rsp-save machinery).
+	end
 
 	-- `movq %rsp, %reg`: when a fixed-alloca region is based at rsp+0 the transform redirects
 	-- this to the allocation pointer (mirrors arm64's `mov xD, sp` handling); pass through.

@@ -378,8 +378,351 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if bodyUsesFp then fctx.fp.saveBytes = backend.frame.VEC_SAVE_BYTES end
 	end
 
-	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size); gcc -O0
-	-- re-derives the buffer address per use, so we redirect such sp math into the allocation.
+	-- Deferred dynamic-alloca idiom discovery (x86_64). The idiom, however it is spelled
+	-- — hand-written assembly or compiler output at any optimization level — is:
+	--
+	--   * an instruction annotated `;! alloca size (x)` computes the byte size into a
+	--     register and STAYS (lowered ordinarily; its def feeds the allocation);
+	--   * an instruction annotated `;! alloca result (x)` produces the buffer address and
+	--     is REPLACED by the allocation (filc_allocate defines its destination register);
+	--   * around the result, the code perturbs rsp and derives the buffer address from
+	--     the perturbed rsp — `subq %reg, %rsp`, `movq %reg, %rsp`, `leaq disp(%rsp), %rA`,
+	--     copies, alignment masks, sign extensions, ... The input's stack math must not
+	--     execute (sarcasm synthesizes its own frame) and the derived address must not be
+	--     modeled (the allocation pointer replaces it), so the discovery MARKS the
+	--     unannotated machinery: st.allocaPlace on every rsp-writing instruction in the
+	--     result's straight-line region, st.allocaOwned on every rsp-reading one, and on
+	--     the register-to-register derivation chain that feeds the result's destination
+	--     web. The frame pass lets marked statements through untouched and the emitter
+	--     drops them; dead-code elimination then removes the leftover arithmetic.
+	--     %rsp RECOVERY/teardown forms are excluded from the marking: they are the
+	--     epilogue's `movq %rbp, %rsp` / `leaq disp(%rbp), %rsp` / prologue-save
+	--     `movq %reg, %rsp` and the teardown `addq $imm, %rsp`, and the frame pass owns
+	--     their validity (a proven recovery is dropped there and revives the depth, an
+	--     unprovable one is rejected at the recovery instruction itself). Swallowing one
+	--     into the idiom machinery would drop the recovery without the frame pass ever
+	--     reviving the depth, so the epilogue pops that follow it in the same straight-line
+	--     region would be rejected as unpaired. The allocation's own rsp-writing setup —
+	--     the constant `subq $imm, %rsp`, the register-source `subq %reg, %rsp`, and the
+	--     register-carried `movq %rA, %rsp` update — is marked exactly as before.
+	--
+	-- The size must DOMINATE the result — checked with a reachability pass over the
+	-- body CFG: the result must be unreachable from entry when the size is removed —
+	-- and precede it in body order, so the emitter's walk-order alloca-size table has
+	-- the captured size temp initialized when the allocation runs. The size definition
+	-- may sit anywhere dominating the result (before a label or a branch merge); the
+	-- marked region around the result is discovered independently of the size's
+	-- position. The dropped values are verified after the lift (consumed by nothing
+	-- outside the idiom) — any doubt and nothing is marked, so the frame pass rejects
+	-- the body with its ordinary diagnostics.
+	local idiomInsns, idiomOrd = {}, {}
+	for _, st in body do
+		if st.kind == "insn" then
+			table.insert(idiomInsns, st)
+			idiomOrd[st] = #idiomInsns
+		end
+	end
+	local function idiomWritesSp(st)
+		local ops = st.operands or {}
+		return ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+	end
+	-- Is `st` a recognizable %rsp recovery/teardown form rather than alloca machinery?
+	-- Recognized through the parsers' dest-first operands and baseMnemonic so the Intel
+	-- spellings of the same forms are covered:
+	--   * `mov` with a full-width %rsp destination and a register source — the
+	--     frame-pointer recovery `movq %rbp, %rsp`, or a recovery from a prologue
+	--     rsp save (`movq %rbx, %rsp`);
+	--   * `lea` with a full-width %rsp destination and a displacement-only memory
+	--     operand based on %rbp (`leaq -40(%rbp), %rsp`);
+	--   * `add` with a full-width %rsp destination and an immediate source (the
+	--     epilogue teardown `addq $imm, %rsp`).
+	-- The frame pass owns each form's validity, so recognition here is deliberately
+	-- form-shaped only: a recovery the frame pass cannot prove is rejected there, at
+	-- the recovery instruction itself.
+	local function idiomIsSpRecovery(st)
+		local ops = st.operands or {}
+		local b = cgm.baseMnemonic(string.lower(st.mnemonic))
+		if b == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+			and (ops[1].width == 64 or ops[1].width == nil) then
+			return ops[2] and ops[2].kind == "reg" or false
+		end
+		if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+			and (ops[1].width == 64 or ops[1].width == nil)
+			and ops[2] and ops[2].kind == "mem" and ops[2].base
+			and ops[2].base.name == "rbp"
+			and not ops[2].index and not ops[2].dispSym then
+			return true
+		end
+		if b == "add" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+			and (ops[1].width == 64 or ops[1].width == nil)
+			and ops[2] and ops[2].kind == "imm" then
+			return true
+		end
+		return false
+	end
+	-- Does the `movq %rA, %rsp` statement `st` instead INSTALL THE ALLOCATION — i.e. is
+	-- its source register's reaching definition the result instruction (whose web the
+	-- allocation replaces), or an unannotated full-width register copy of it? Compiler
+	-- output computes the new stack pointer into the result's register (or a copy of it)
+	-- and moves it into %rsp — that update is alloca machinery and stays marked, exactly
+	-- like the register-source `subq %reg, %rsp`; a recovery loads a stack pointer saved
+	-- BEFORE the allocation, which its source register's reaching definition cannot be.
+	local function idiomInstallsResult(resultInsn, st)
+		local ops = st.operands or {}
+		if not (ops[2] and ops[2].kind == "reg") then return false end
+		local reg = ops[2].name
+		for i = idiomOrd[st] - 1, 1, -1 do
+			local d = idiomInsns[i]
+			local dops = d.operands or {}
+			if dops[1] and dops[1].kind == "reg" and dops[1].name == reg then
+				if d == resultInsn then return true end
+				local m = string.lower(d.mnemonic)
+				if m == "mov" and dops[1].width == 64 then m = "movq" end
+				if m == "movq" and not d.annotation
+					and dops[2] and dops[2].kind == "reg" then
+					reg = dops[2].name  -- a register copy of the result: keep walking
+				else
+					return false
+				end
+			end
+		end
+		return false
+	end
+	local idiomSizeDefs, idiomResultDefs = {}, {}
+	for _, st in idiomInsns do
+		local al = parseAlloca(st.annotation)
+		if al then
+			if al.kind == "size" and not idiomWritesSp(st) then
+				if idiomSizeDefs[al.name] == nil then idiomSizeDefs[al.name] = st end
+			elseif al.kind == "result" then
+				if idiomResultDefs[al.name] == nil then idiomResultDefs[al.name] = st end
+			end
+		end
+	end
+	-- (The idiom is x86_64's: the marking driver below is gated on the backend arch, and
+	-- an arm64 `;! alloca size (x)` — which always sits on the rsp-writing
+	-- `sub sp, sp, x0` — is excluded from idiomSizeDefs by the writesSp check anyway.)
+	if backend.arch == "x86_64" and next(idiomSizeDefs) then
+		local bodyOrd = {}
+		for i, st in body do bodyOrd[st] = i end
+		local function idiomControl(st)
+			local m = string.lower(st.mnemonic)
+			local b = cgm.baseMnemonic(m)
+			return b == "jmp" or b == "jcc" or b == "call" or b == "ret" or b == "leave"
+				or string.match(m, "^loop") ~= nil
+		end
+		-- The straight-line region around `st`: from the preceding label or control
+		-- instruction to the following one. Everything in it is control-flow-equivalent
+		-- with everything else in it.
+		local function idiomRegion(st)
+			local lo, hi = bodyOrd[st], bodyOrd[st]
+			while lo > 1 do
+				local p = body[lo - 1]
+				if p.kind == "label" then break end
+				if p.kind == "insn" and idiomControl(p) then break end
+				lo -= 1
+			end
+			while hi < #body do
+				local n = body[hi + 1]
+				if n.kind == "label" then break end
+				if n.kind == "insn" and idiomControl(n) then break end
+				hi += 1
+			end
+			return lo, hi
+		end
+		-- Does `from` dominate `to`? True iff `to` is NOT reachable from function entry
+		-- when `from` is removed (labels are transparent; a call falls through; an
+		-- indirect jump leaves the function).
+		local function idiomDominates(from, to)
+			local labelAt = {}
+			for i, st in body do
+				if st.kind == "label" and labelAt[st.name] == nil then labelAt[st.name] = i end
+			end
+			local blocked, seen, work = { [bodyOrd[from]] = true }, {}, {}
+			for i = 1, #body do
+				if body[i].kind == "insn" then table.insert(work, i) break end
+			end
+			while #work > 0 do
+				local i = table.remove(work)
+				if seen[i] or blocked[i] then continue end
+				seen[i] = true
+				if i == bodyOrd[to] then return false end
+				local st = body[i]
+				if st.kind ~= "insn" then
+					if i < #body then table.insert(work, i + 1) end
+					continue
+				end
+				local m = string.lower(st.mnemonic)
+				local b = cgm.baseMnemonic(m)
+				if b == "jmp" then
+					local indirect = true
+					for _, o in st.operands do
+						if o.kind == "sym" then
+							indirect = false
+							if labelAt[o.text] then table.insert(work, labelAt[o.text]) end
+						end
+					end
+					if indirect then continue end
+				elseif b == "jcc" or string.match(m, "^loop") then
+					for _, o in st.operands do
+						if o.kind == "sym" and labelAt[o.text] then
+							table.insert(work, labelAt[o.text])
+						end
+					end
+					if i < #body then table.insert(work, i + 1) end
+				elseif b == "ret" or b == "leave" then
+					-- no successors
+				else
+					if i < #body then table.insert(work, i + 1) end
+				end
+			end
+			return true
+		end
+		-- Does `st` read rsp as a VALUE (not merely write it)? A register source of
+		-- sp-class, or a lea address template based on rsp.
+		local function idiomReadsSp(st)
+			local ops = st.operands or {}
+			for k, o in ops do
+				if o.kind == "reg" and o.rc == "sp" and not (k == 1 and idiomWritesSp(st)) then
+					return true
+				end
+			end
+			local b = cgm.baseMnemonic(string.lower(st.mnemonic))
+			if b == "lea" and ops[2] and ops[2].kind == "mem"
+				and ops[2].base and ops[2].base.rc == "sp" then
+				return true
+			end
+			return false
+		end
+		-- The last insn defining `reg` as a full-width movq/leaq before `beforeOrd`;
+		-- any OTHER def form of the register (a 32-bit write, an ALU op, a load) bails —
+		-- the chain must be pure address derivation. (Insns the walk cannot model are
+		-- simply not marked: they stay as ordinary dead computation for the DCE, or trip
+		-- the dropped-value verification if they are live.)
+		local function idiomDefOf(reg, beforeOrd)
+			for i = beforeOrd - 1, 1, -1 do
+				local st = idiomInsns[i]
+				local ops = st.operands or {}
+				if ops[1] and ops[1].kind == "reg" and ops[1].name == reg then
+					local m = string.lower(st.mnemonic)
+					-- Intel syntax spells the same full-width forms without the `q`
+					-- suffix (`mov rdi, rax`, `lea rax, [rsp+15]`): normalize a
+					-- 64-bit-destination `mov`/`lea` to its movq/leaq spelling so an
+					-- Intel translation of the identical idiom is recognized too.
+					if m == "mov" and ops[1].width == 64 then m = "movq" end
+					if m == "lea" and ops[1].width == 64 then m = "leaq" end
+					if (m == "movq" or m == "leaq") and not st.annotation then
+						return st, i
+					end
+					return nil  -- a reaching def we cannot model: bail
+				end
+			end
+			return nil
+		end
+		-- Walk backward from the result insn over its value sources to the rsp-derived
+		-- root, collecting the register-copy chain. (The rsp-reading ROOT itself is
+		-- already marked by the region scan below; this extends ownership over the
+		-- copies so the dropped root's value is provably consumed only by the idiom.)
+		local function idiomChain(resultInsn)
+			local chain = {}
+			local function walk(insn, reg)
+				local d, i = idiomDefOf(reg, idiomOrd[insn])
+				if not d then return nil end
+				table.insert(chain, d)
+				local ops = d.operands or {}
+				local m = string.lower(d.mnemonic)
+				-- Same Intel full-width spelling normalization as idiomDefOf above.
+				if m == "mov" and ops[1].width == 64 then m = "movq" end
+				if m == "lea" and ops[1].width == 64 then m = "leaq" end
+				if m == "leaq" and ops[1] and ops[1].kind == "reg" and ops[1].name == reg
+					and ops[2] and ops[2].kind == "mem"
+					and ops[2].base and ops[2].base.rc == "sp"
+					and not ops[2].index and not ops[2].dispSym then
+					return chain  -- rooted at rsp: done
+				end
+				if m == "movq" and ops[1] and ops[1].kind == "reg" and ops[1].name == reg
+					and ops[2] and ops[2].kind == "reg" then
+					return walk(d, ops[2].name)
+				end
+				return nil
+			end
+			-- The result insn's value sources: a mov's src register, a lea's memory
+			-- base/index, or (for an RMW ALU form like `andq $-16, %rdi`) its own
+			-- destination register.
+			local ops = resultInsn.operands or {}
+			local m = string.lower(resultInsn.mnemonic)
+			-- Same Intel full-width spelling normalization as idiomDefOf above.
+			if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].width == 64 then
+				m = "movq"
+			end
+			if m == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].width == 64 then
+				m = "leaq"
+			end
+			local srcs = {}
+			if m == "movq" then
+				if ops[2] and ops[2].kind == "reg" then srcs[ops[2].name] = true end
+			elseif m == "leaq" then
+				local mem = ops[2]
+				if mem and mem.kind == "mem" then
+					if mem.base and mem.base.kind == "reg" then srcs[mem.base.name] = true end
+					if mem.index and mem.index.kind == "reg" then srcs[mem.index.name] = true end
+				end
+			elseif ops[1] and ops[1].kind == "reg" then
+				srcs[ops[1].name] = true
+				if ops[2] and ops[2].kind == "reg" then srcs[ops[2].name] = true end
+			end
+			for reg in srcs do
+				if reg ~= "rsp" and not walk(resultInsn, reg) then return nil end
+			end
+			return chain
+		end
+		for tag, sizeInsn in idiomSizeDefs do
+			local resultInsn = idiomResultDefs[tag]
+			if resultInsn and not idiomWritesSp(resultInsn) then
+				local lo, hi = idiomRegion(resultInsn)
+				local so = bodyOrd[sizeInsn]
+				if so < bodyOrd[resultInsn] and idiomDominates(sizeInsn, resultInsn) then
+					for j = lo, hi do
+						local st = body[j]
+						if st.kind == "insn" and not st.annotation
+							and not (idiomIsSpRecovery(st)
+								and not idiomInstallsResult(resultInsn, st)) then
+							if idiomWritesSp(st) then
+								st.allocaPlace = tag
+							elseif idiomReadsSp(st) then
+								st.allocaOwned = true
+							end
+						end
+					end
+					local chain = idiomChain(resultInsn)
+					if chain then
+						for _, st in chain do
+							if not (st.annotation or st.allocaPlace)
+								and not idiomIsSpRecovery(st) then
+								st.allocaOwned = true
+							end
+						end
+					end
+				else
+					-- A same-name pair whose size definition does not dominate the
+					-- result (or follows it in body order) can never be paired: the
+					-- idiom machinery stays unmarked and the frame pass would reject
+					-- the allocation's rsp write with its generic mid-function
+					-- diagnostic. Report the pairing problem instead.
+					error("sarcasm: `alloca size (" .. tag .. ")` must dominate `alloca"
+						.. " result (" .. tag .. ")`: every path from function entry to the"
+						.. " result must execute the size definition, which must also"
+						.. " precede the result in the body; size definition: "
+						.. (sizeInsn.raw or "?") .. "; result instruction: "
+						.. (resultInsn.raw or "?"))
+				end
+			end
+		end
+	end
+
+	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size): the
+	-- code re-derives the buffer address per use, so we redirect such sp math into the
+	-- allocation.
 	local allocaRegions = {}
 	for _, st in body do
 		if st.kind == "insn" then
@@ -634,6 +977,244 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 	end
 
+	-- Dead-code elimination over the lifted webs. An instruction whose every modeled
+	-- definition (its GPR webs, plus the condition flags when it writes them) is dead at
+	-- that point, and which has no other effect — no memory access, no control transfer,
+	-- no stack movement, no annotation — is removed. This cleans up the alloca-related
+	-- arithmetic that the allocation replacement orphans (the input computed real stack
+	-- addresses; sarcasm replaces the result with a GC allocation, so the leftover size /
+	-- alignment / derivation computation is both unnecessary and, when it writes the
+	-- condition flags, actively harmful: a dead flag write sitting between a cmp and its
+	-- branch would corrupt the pending condition). Liveness is computed on the CFG over
+	-- webs (each web is one temp shared by all its defs and uses), with the flags as a
+	-- pseudo-temp — loop-carried uses keep their defs alive, and removing one def never
+	-- desyncs a web that is read anywhere reachable. Dropped idiom machinery
+	-- (st.allocaPlace / st.allocaOwned) is transparent to liveness (it is removed
+	-- wholesale), and a `;! alloca result` instruction is transparent too: its
+	-- replacement defines its destination web and preserves the flags, so operand webs
+	-- feeding it stay alive only if something else reads them.
+	local function dceEligible(node)
+		if node.kind ~= "insn" then return false end
+		local st, c = node.stmt, node.c
+		-- annotated instructions are load-bearing (`;! alloca size` defines the size
+		-- the allocation reads; every other annotation routes the node through a
+		-- special lowering — alloca/atomic/ptr/call) and never dead
+		if st.annotation then return false end
+		-- the deferred-idiom machinery (st.allocaPlace / st.allocaOwned) is dropped
+		-- wholesale by the emitter; DCE has no business deciding its fate. (It is
+		-- also transparent to the liveness below, so it never has a live def to
+		-- protect — but leaving it in place keeps the two passes independent.)
+		if st.allocaPlace or st.allocaOwned then return false end
+		if allocaNodes[node] then return false end
+		-- unknown semantics (classify could not fully model the effects) and pinned
+		-- implicit-register instructions (div/mul/cmpxchg/... — the pin moves around
+		-- them are part of their lowering) are never dead; control flow (jmp/jcc/
+		-- ret/call/leave/loop-family — anything with c.control or branch targets)
+		-- transfers or observes state no def-set can express
+		if not c or c.unknown or c.pin or c.control ~= "none" then return false end
+		if c.targets and #c.targets > 0 then return false end
+		local m = string.lower(st.mnemonic)
+		local b = cgm.baseMnemonic(m)
+		-- faulting, serializing, stack-moving, or otherwise effectful instructions are
+		-- never dead code, whatever their modeled defs say
+		if b == "div" or b == "idiv" or b == "cpuid" or b == "rdtsc" or b == "rdtscp"
+			or b == "push" or b == "pop" or b == "leave" or b == "enter"
+			or string.match(m, "^loop") then
+			return false
+		end
+		local mem = nil
+		for _, o in st.operands do
+			if o.kind == "mem" then mem = o end
+			if o.kind == "reg" then
+				if o.rc == "sp" then return false end
+				if fctx and fctx.usesFp and o.name == "rbp" then return false end
+			end
+		end
+		-- only `lea` may name memory (an address computation, not an access). Every
+		-- real access is excluded: a checked load/store's TRAP is observable behavior
+		-- (removing it would remove a safety check), and the frame rewrite has already
+		-- turned the input's own stack slots into virtual slot-web register operands —
+		-- which is why a frame-slot load/store reaches here WITHOUT a memory operand
+		-- and is DCE-eligible (a slot web is a register web; its liveness below is
+		-- exact, and a dead slot store can no longer trap or be observed).
+		if mem and b ~= "lea" then return false end
+		local hasDef = false
+		for _, r in c.defs do
+			if r.rc ~= "gpr" then return false end
+			hasDef = true
+		end
+		if not hasDef and not (cgm.flagDef and cgm.flagDef(st)) then return false end
+		return true
+	end
+	do
+		local FLAGSENT = "FLAGS"
+		local function sameSet(a, b)
+			for t in pairs(a) do if not b[t] then return false end end
+			for t in pairs(b) do if not a[t] then return false end end
+			return true
+		end
+		local function dceRound(nodes)
+			-- node-level CFG (labels are nodes; a branch targets the label node, whose
+			-- successors carry the flow on)
+			local labelAt = {}
+			for i, nd in nodes do
+				if nd.kind == "label" and labelAt[nd.name] == nil then
+					labelAt[nd.name] = i
+				end
+			end
+			local succ = {}
+			for i = 1, #nodes do
+				local s = {}
+				local nd = nodes[i]
+				if nd.kind == "insn" and nd.c and nd.c.targets then
+					for _, t in nd.c.targets do
+						if labelAt[t] then table.insert(s, labelAt[t]) end
+					end
+				end
+				if (nd.kind ~= "insn" or not nd.c or nd.c.fallsThrough ~= false)
+					and i < #nodes then
+					table.insert(s, i + 1)
+				end
+				succ[i] = s
+			end
+			-- per-node use/def sets over webs plus the flags pseudo-temp. The flags are
+			-- ONE shared resource classified by the SAME cgm.flagUse/cgm.flagDef
+			-- predicates the flag-save machinery uses (flagsLiveFrom), so DCE and the
+			-- injected-sequence bracketing can never disagree about which instructions
+			-- read or write them.
+			local nodeUse, nodeDef = {}, {}
+			for i = 1, #nodes do
+				local u, d = {}, {}
+				local nd = nodes[i]
+				if nd.kind == "insn" then
+					local st = nd.stmt
+					if not (st.allocaPlace or st.allocaOwned) then
+						local al = parseAlloca(st.annotation)
+						if al and al.kind == "result" then
+							-- replaced by the allocation: defines the destination web,
+							-- preserves the flags, reads nothing
+							for _, t in (nd.defTemps or {}) do d[t] = true end
+						else
+							for _, t in (nd.useTemps or {}) do u[t] = true end
+							for _, t in (nd.defTemps or {}) do d[t] = true end
+							if cgm.flagUse and cgm.flagUse(st) then u[FLAGSENT] = true end
+							if cgm.flagDef and cgm.flagDef(st) then d[FLAGSENT] = true end
+						end
+					end
+				end
+				nodeUse[i], nodeDef[i] = u, d
+			end
+			-- Backward liveness fixpoint; liveOut[i] is the set live on EXIT from node
+			-- i. The equations are liveOut[i] = ∪ liveIn[succ] and liveIn[j] =
+			-- use[j] ∪ (liveOut[j] − def[j]): a node's own defs are killed only at its
+			-- own live-IN boundary — they must stay visible in its live-OUT set, where
+			-- a def this node just produced is exactly what a forward-reachable reader
+			-- consumes. (Killing a node's defs in its own liveOut — as an earlier
+			-- revision did — hid every def from its own exit set, so any def whose
+			-- readers were not on a loop back-edge looked dead and its instruction was
+			-- deleted: flag writes feeding a forward branch, and the register/slot
+			-- store+load webs of the frame's virtualized slots.) The least fixpoint is
+			-- order-independent; iterating nodes in fixed reverse index order keeps the
+			-- iteration itself deterministic, and the sets are keyed by temp ids, so
+			-- the result is byte-identical across processes.
+			local liveOut = {}
+			for i = 1, #nodes do liveOut[i] = {} end
+			local changed = true
+			while changed do
+				changed = false
+				for i = #nodes, 1, -1 do
+					local out = {}
+					for _, j in succ[i] do
+						for t in pairs(nodeUse[j]) do out[t] = true end
+						for t in pairs(liveOut[j]) do
+							if not nodeDef[j][t] then out[t] = true end
+						end
+					end
+					if not sameSet(out, liveOut[i]) then
+						liveOut[i] = out
+						changed = true
+					end
+				end
+			end
+			local kept, removed = {}, false
+			for i, nd in nodes do
+				local dead = false
+				if nd.kind == "insn" and dceEligible(nd) then
+					dead = true
+					local st = nd.stmt
+					-- a def is dead only when nothing forward-reachable reads it: the
+					-- check is against the LIVE-OUT set, where this node's own defs are
+					-- still visible (only a successor's live-in subtracts defs)
+					for _, t in (nd.defTemps or {}) do
+						if liveOut[i][t] then dead = false break end
+					end
+					-- the flags: a full flag write is a modeled def (FLAGSENT entered
+					-- the fixpoint's def set), so liveness protects it the same way; an
+					-- instruction whose flag writes the model deliberately does NOT
+					-- track as a def (the read-and-write adc/sbb family, and partial
+					-- writes like inc/dec/rol/bt — see flagWriteNoDef) must also stay
+					-- while a flag consumer is forward-reachable, because deleting it
+					-- would change the flags that consumer reads. Flag consumers that
+					-- write nothing (jcc/setcc/cmov, arm csel/cset) are unaffected:
+					-- deleting them cannot change any flags.
+					if dead and liveOut[i][FLAGSENT] then
+						if (cgm.flagDef and cgm.flagDef(st))
+							or (cgm.flagWriteNoDef and cgm.flagWriteNoDef(st)) then
+							dead = false
+						end
+					end
+				end
+				if dead then removed = true else table.insert(kept, nd) end
+			end
+			return kept, removed
+		end
+		while true do
+			local kept, removed = dceRound(lf.nodes)
+			lf.nodes = kept
+			if not removed then break end
+		end
+	end
+
+	-- The deferred dynamic-alloca idiom's dropped machinery (st.allocaPlace allocation
+	-- point, st.allocaOwned rsp-derived feeder chain) defines values that must never be
+	-- OBSERVED outside the idiom: a dropped def is harmless only when every consumer of
+	-- its register web outside the idiom reads a LATER definition of that web (the
+	-- result annotation's filc_allocate lowering redefines the result web; other webs
+	-- must be redefined before any outside use). x86_64's lifted IR is web-based — a
+	-- register's defs and uses share one temp — so this walks the nodes in body order:
+	-- from each dropped def, a consumer of the web outside the idiom is accepted only
+	-- when some other def of the web intervened; otherwise the dropped value would be
+	-- observed and the idiom is rejected.
+	for _, node in lf.nodes do
+		if node.kind == "insn" and node.stmt and node.stmt.allocaOwned then
+			local w = node.defTemps and node.defTemps[1]
+			if w then
+				local seenNode, redefined = false, false
+				for _, n2 in lf.nodes do
+					if n2 == node then
+						seenNode = true
+					elseif seenNode then
+						local isDef, usesW = false, false
+						for _, dd in (n2.defTemps or {}) do if dd == w then isDef = true end end
+						for _, u in (n2.useTemps or {}) do if u == w then usesW = true end end
+						if usesW and not redefined then
+							local cs = n2.stmt
+							local owned = cs and (cs.allocaOwned or cs.allocaPlace
+								or (allocaNodes[n2] and allocaNodes[n2].kind == "result"))
+							if not owned then
+								error("sarcasm: `alloca` idiom machinery (" .. (node.stmt.raw or "?")
+									.. ") defines a value consumed outside the idiom (by "
+									.. (cs and (cs.raw or cs.mnemonic) or "?")
+									.. "); the dropped stack math may only feed the alloca result")
+							end
+						end
+						if isDef then redefined = true end
+					end
+				end
+			end
+		end
+	end
+
 	-- The atomic pointer load (`;! atomic load ptr`) and the pointer compare-exchange
 	-- (`;! atomic ptr` on cmpxchg — its def temp is the implicit accumulator def web)
 	-- define pointer results exactly like `;! load ptr`: seed them the same way so
@@ -743,11 +1324,21 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		while j <= #lf.nodes do
 			local nd = lf.nodes[j]
 			if nd.kind == "insn" then
+				local st = nd.stmt
 				local ctrl = nd.c and nd.c.control or "none"
-				if cgm.flagUse(nd.stmt) then res = true; break
-				elseif cgm.flagDef(nd.stmt) then res = false; break
-				elseif ctrl == "call" or ctrl == "indcall" then res = false; break
-				elseif ctrl ~= "none" then res = true; break
+				-- dropped idiom machinery (allocaPlace/allocaOwned) has no flag effect
+				-- (it is removed wholesale), and a `;! alloca result` instruction is
+				-- replaced by the allocation — its own flag write vanishes, and the
+				-- bracketing below is exactly what preserves the program's flags across
+				-- the injected call. Skip both when scanning for the next flag effect.
+				local transparent = st.allocaPlace or st.allocaOwned
+					or (parseAlloca(st.annotation) or {}).kind == "result"
+				if not transparent then
+					if cgm.flagUse(nd.stmt) then res = true; break
+					elseif cgm.flagDef(nd.stmt) then res = false; break
+					elseif ctrl == "call" or ctrl == "indcall" then res = false; break
+					elseif ctrl ~= "none" then res = true; break
+					end
 				end
 			elseif nd.kind == "label" then
 				res = true; break
@@ -1939,6 +2530,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- Stack allocations. `;! alloca size (x)` captures the byte size; `;! alloca result (x)` /
 	-- `;! alloca result size=N` becomes filc_allocate(myth, size); payload = allocation+16.
 	local allocaSizes = {}
+	-- Does the statement write rsp as its destination operand (the x86_64 dynamic-alloca
+	-- allocation form `subq %reg, %rsp`)? A `;! alloca size (x)` annotation on such an
+	-- instruction IS the allocation (the current model); on any other instruction it is
+	-- the deferred idiom's size definition (see the discovery pass).
+	local function allocaSizeOnSp(stmt)
+		local ops = stmt.operands or {}
+		return ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+	end
 	local function emitAlloca(node, al)
 		if al.kind == "size" then
 			local sizeOp = cgm.allocaSizeOperand(node.stmt)
@@ -1986,7 +2585,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- Redirect an sp-relative address computation that lands inside a fixed alloca region to
-	-- the allocation pointer (gcc -O0). Arch-specific; returns true if it replaced the node.
+	-- the allocation pointer. Arch-specific; returns true if it replaced the node.
 	local function emitRegionRedirect(node)
 		if #allocaRegions == 0 or not cg.regionRedirect then return false end
 		return cg.regionRedirect(node, regionOf)
@@ -2008,6 +2607,33 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		elseif node.kind == "insn" then
 			local c = node.c
 			curLine = (node.stmt and node.stmt.line) or curLine
+			if node.stmt.allocaPlace or node.stmt.allocaOwned then
+				-- Deferred dynamic-alloca idiom machinery (see the discovery pass):
+				-- DROPPED. The input's rsp adjustment must not execute — sarcasm
+				-- synthesizes its own frame, and the allocation is emitted at the
+				-- result annotation — and the rsp-derived address chain is replaced
+				-- by the allocation pointer. (The verification pass proved their
+				-- values feed nothing outside the idiom.)
+				continue
+			end
+			local sizeMoveAfter = nil
+			local al0 = allocaNodes[node]
+			if al0 and al0.kind == "size" and not allocaSizeOnSp(node.stmt) then
+				-- Deferred-idiom size definition: the annotated instruction computes
+				-- the alloca size into its destination register and STAYS (lowered
+				-- ordinarily below — its result may be used elsewhere, e.g. the size
+				-- stays live in a spill slot across a loop). A fresh alloca-size temp
+				-- is fed from the def; the allocation itself happens at the result
+				-- annotation.
+				local dst = node.defTemps and node.defTemps[1]
+				if not dst then
+					error("sarcasm: `alloca size` instruction has no modeled (GPR)"
+						.. " destination register: " .. (node.stmt.raw or "?"))
+				end
+				sizeMoveAfter = allocTemp({ role = "allocasize" })
+				allocaSizes[al0.name] = sizeMoveAfter
+				allocaNodes[node] = nil  -- lower the instruction itself ordinarily
+			end
 			if allocaNodes[node] then
 				withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 					emitAlloca(node, allocaNodes[node])
@@ -2115,6 +2741,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				else
 					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
 				end
+			end
+			-- The deferred-idiom size definition lowered above: feed the fresh
+			-- alloca-size temp from the instruction's def (after the instruction
+			-- itself, so the def is available).
+			if sizeMoveAfter then
+				cg.move(sizeMoveAfter, node.defTemps[1])
 			end
 		else
 			emit(node)

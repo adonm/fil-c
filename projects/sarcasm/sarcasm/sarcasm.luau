@@ -31,7 +31,7 @@ local sarcasm = {}
 -- a spilled temp at frame offset `off`; `emitFip` renders (x86 always emits AT&T output).
 local function makeTarget(arch, syntax)
 	if arch == "x86_64" then
-		local backend = { cg = x86_64_codegen, frame = x86_64_frame }
+		local backend = { cg = x86_64_codegen, frame = x86_64_frame, arch = "x86_64" }
 		return {
 			arch = "x86_64", syntax = syntax,
 			transformFunction = function(nm, sd, body) return transform.transformFunction(nm, sd, body, backend) end,
@@ -48,7 +48,7 @@ local function makeTarget(arch, syntax)
 			end,
 		}
 	end
-	local backend = { cg = arm64_codegen, frame = arm64_frame }
+	local backend = { cg = arm64_codegen, frame = arm64_frame, arch = "arm64" }
 	return {
 		arch = "arm64", syntax = nil,
 		transformFunction = function(nm, sd, body) return transform.transformFunction(nm, sd, body, backend) end,

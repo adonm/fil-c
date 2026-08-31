@@ -524,6 +524,15 @@ function arm64.flagDef(stmt)
 	return false
 end
 
+-- AArch64 has no partial flag writes: NZCV is written all-or-nothing by every
+-- flag-setting instruction, and each of them is a full def (FLAG_DEF above). The
+-- flag-reading-but-not-writing family (csel/cset/.../adc/sbc/mrs/b.cond) writes
+-- nothing, so deleting one can never change any flags. Dead-code elimination
+-- therefore needs no complement to flagUse/flagDef here — flagWriteNoDef is always
+-- false. (FlagM's cfinv/rmif/setf* are not modeled at all: they fall into the
+-- unknown-mnemonic classification, which DCE never deletes.)
+function arm64.flagWriteNoDef(stmt) return false end
+
 -- NEON width-liveness effects (arm64_codegen.expandFpSaves) -------------------
 -- Mirrors x86_64_fp.vecEffects: per vector register NUMBER (0-31), report a USE
 -- width in bytes (the instruction reads [0, w)) and a DEF "provided width" (the

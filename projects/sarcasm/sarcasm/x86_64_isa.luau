@@ -162,6 +162,43 @@ function x86.flagDef(stmt)
 	return FLAG_DEF[m] == true
 end
 
+-- Does `stmt` WRITE flags that the model does not track as a full def? This is the
+-- dead-code-elimination complement of flagUse/flagDef (same normalization): flagDef
+-- insns def the flags pseudo-temp, so liveness already protects their writes; the
+-- read-and-write family counted as USES by the scan (adc/sbb write all six, adcx/
+-- adox/rcl/rcr write CF/OF) and every PARTIAL write (inc/dec preserve CF; rol/ror,
+-- shld/shrd, bt/bts/btr/btc, stc/clc/cmc write only CF; sahf writes all but OF)
+-- also CHANGE the flags without def-ing them. Deleting such an instruction while a
+-- flag consumer is forward-reachable would change the flags that consumer reads,
+-- so DCE keeps it. (The flag-SAVE scan deliberately ignores these instructions —
+-- a save/restore bracket passes the flags through unchanged, so for bracketing a
+-- partial write is correctly invisible; removal is the one decision that must
+-- respect them.) Pure flag CONSUMERS that write nothing (jcc/setcc/cmov/lahf) are
+-- NOT here: deleting them cannot change any flags.
+local FLAG_WRITE_NO_DEF = {}
+for _, m in {
+	"adc","sbb",              -- full six-flag writes (counted as uses for the scan)
+	"adcx","adox",            -- carry / overflow out
+	"rcl","rcr",              -- CF/OF out
+	"inc","dec",              -- all but CF
+	"rol","ror",              -- OF/CF
+	"shld","shrd",            -- CF
+	"bt","bts","btr","btc",   -- CF
+	"stc","clc","cmc",        -- CF
+	"sahf",                   -- all but OF (also pinned; unreachable in DCE)
+} do FLAG_WRITE_NO_DEF[m] = true end
+
+function x86.flagWriteNoDef(stmt)
+	if not stmt then return false end
+	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	if FLAG_WRITE_NO_DEF[m] then return true end
+	-- same suffix fallback as flagUse: baseMnemonic only normalizes mnemonics in
+	-- its BASE/FIXED tables; the rest keep their AT&T size suffix (adcxq, rclq,
+	-- shldq, btq, incq, ...).
+	m = string.gsub(m, "[bwlq]$", "")
+	return FLAG_WRITE_NO_DEF[m] == true
+end
+
 -- condition -> whether it's an unsigned/eq branch we generate; classify only needs control.
 local COND_JMP = { jcc = true }
 

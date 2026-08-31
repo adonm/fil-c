@@ -84,11 +84,30 @@ function frame.preprocess(body, regions, policy, sigDesc)
 	for _, st in body do
 		if st.kind ~= "insn" then
 			emit(st)
-		elseif st.annotation and string.find(st.annotation, "alloca", 1, true) then
-			-- alloca-annotated instructions are turned into GC allocations by the transform;
-			-- pass them through untouched (no setup drop, escape check, or slot conversion).
+		elseif st.allocaPlace or st.allocaOwned then
+			-- The deferred dynamic-alloca idiom's unannotated machinery (x86_64 -- see
+			-- the transform's idiom discovery): the input's stack math must not execute
+			-- (the allocation pointer replaces it), so it passes through untouched (no
+			-- setup drop, escape check, or slot conversion) and the emitter drops it.
+			emit(st)
+		elseif not (st.annotation and string.find(st.annotation, "alloca", 1, true)) then
+			policy.rewrite(st, ctx)
+		elseif string.match(st.annotation, "^alloca%s+result")
+			or (string.match(st.annotation, "^alloca%s+size")
+				and st.operands[1] and st.operands[1].kind == "reg"
+				and st.operands[1].rc == "sp") then
+			-- The instruction the transform replaces wholesale: the allocation-form
+			-- `;! alloca size` sitting on the rsp-writing adjustment itself, and the
+			-- `;! alloca result` / `;! alloca result size=N` forms. Bypass the rewrite.
 			emit(st)
 		else
+			-- A deferred-idiom `;! alloca size` definition on an ordinary value-producing
+			-- instruction (a load, an ALU op, ...): the instruction STAYS and lowers
+			-- ordinarily, so its memory operands are ordinary frame accesses and must be
+			-- virtualized / bounds-checked exactly like unannotated traffic. (Passing it
+			-- through raw left a live %rbp/%rsp memory operand in the lifted IR, which
+			-- the transform then checked as a HEAP access through a non-pointer web --
+			-- an unconditional always-trap at runtime.)
 			policy.rewrite(st, ctx)
 		end
 	end

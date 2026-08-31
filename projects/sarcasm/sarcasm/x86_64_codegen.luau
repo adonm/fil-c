@@ -19,6 +19,7 @@ M.classify = isa.classify
 M.baseMnemonic = isa.baseMnemonic
 M.flagUse = isa.flagUse
 M.flagDef = isa.flagDef
+M.flagWriteNoDef = isa.flagWriteNoDef
 M.precolorName = function(num) return xparse.regName(num, 64) end
 M.ALLOCATABLE = isa.ALLOCATABLE
 

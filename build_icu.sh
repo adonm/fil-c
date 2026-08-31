@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/icu-76.1
+cd projects/icu-78.3
 extract_source
 cd icu4c/source
 THE_OS=Linux THE_COMP="the Clang C++" CC=$PWD/../../../../../build/bin/clang CXX=$PWD/../../../../../build/bin/clang++ CFLAGS="-O3 -g" CXXFLAGS="-O3 -g" ./configure --enable-debug --prefix="$PWD/../../../../../pizfix"

@@ -271,7 +271,7 @@ cd ..
 rm -rf lz4-1.10.0
 hash -r
 
-tar -xf $FILCSRC/projects/zstd-1.5.6/pizlonated-zstd.tar.gz
+tar -xf $FILCSRC/projects/zstd-1.5.7/pizlonated-zstd.tar.gz
 cd pizlonated-zstd
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ZSTD_NO_ASM=1 make -j `nproc` prefix=/opt/fil
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ZSTD_NO_ASM=1 make -j `nproc` prefix=/opt/fil install

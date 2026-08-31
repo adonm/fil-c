@@ -630,7 +630,7 @@ MEM_STATIC int ZSTD_cParam_withinBounds(ZSTD_cParameter cParam, int value)
 MEM_STATIC const BYTE*
 ZSTD_selectAddr(U32 index, U32 lowLimit, const BYTE* candidate, const BYTE* backup)
 {
-#if defined(__GNUC__) && defined(__x86_64__)
+#if defined(__GNUC__) && defined(__x86_64__) && !defined(__FILC__)
     __asm__ (
         "cmp %1, %2\n"
         "cmova %3, %0\n"

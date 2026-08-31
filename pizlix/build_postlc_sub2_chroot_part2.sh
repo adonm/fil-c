@@ -239,7 +239,7 @@ hash -r
 ./build_postlc_chroot_project_meson.sh
 hash -r
 
-tar -xf pizlonated-coreutils.tar.xz
+tar -xf pizlonated-coreutils.tar.gz
 cd pizlonated-coreutils
 FORCE_UNSAFE_CONFIGURE=1 ./configure \
     --prefix=/usr \

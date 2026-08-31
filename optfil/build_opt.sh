@@ -767,7 +767,7 @@ cd ..
 rm -rf pizlonated-tar
 hash -r
 
-tar -xf $FILCSRC/projects/icu-76.1/pizlonated-icu.tar.gz
+tar -xf $FILCSRC/projects/icu-78.3/pizlonated-icu.tar.gz
 cd pizlonated-icu/icu4c/source
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

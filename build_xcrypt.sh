@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/libxcrypt-4.4.36
+cd projects/libxcrypt-4.5.2
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

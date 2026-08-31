@@ -368,7 +368,19 @@ local function stripComments(text: string): string
 			table.insert(out, c)
 			if c == "\\" then
 				local e = string.sub(text, i + 1, i + 1)
-				if e ~= "" then table.insert(out, e); i += 1 end
+				if e ~= "" then
+					table.insert(out, e)
+					i += 1
+					if e == "\n" then
+						-- a backslash-newline continues the string on the next line,
+						-- but the per-line scanners below (splitAnnotation, parseLine)
+						-- reset at the line boundary, so resync to code here too, like
+						-- the unterminated-string case below; carrying string state
+						-- across the newline would let the continuation line swallow a
+						-- `//!` marker or reach the output with an unbalanced quote
+						state = "code"
+					end
+				end
 			elseif c == '"' then
 				state = "code"
 			elseif c == "\n" then
@@ -432,8 +444,72 @@ local function splitAnnotation(s: string): (string, string?)
 	return s, nil
 end
 
+-- Cut a code-position `#` comment off the front of a line. On arm64 GAS treats
+-- a `#` at the START of the code portion as a comment (`# note`, and cpp
+-- linemarkers like `# 1 "foo.s"`), while a `#` anywhere else in the code
+-- introduces an immediate (`mov x0, #1`) -- so stripComments above must not
+-- treat `#` as a comment introducer, and this scan only cuts at the first `#`
+-- that sits where a comment could. That is the case exactly when everything
+-- before it consists solely of label definitions and whitespace (the same
+-- labels `parseLine` below peels, with that peel matching against trimmed
+-- text so that an indented label counts as code position too); otherwise the
+-- `#` is an immediate introducer and the line is returned unchanged. A later
+-- `#` can then never
+-- start a comment either, since its prefix only grows. Scanning is
+-- string-aware, mirroring stripLineComment above: a `"` toggles a string and a
+-- `\` inside a string escapes the next character, so `.asciz "a # b"` keeps
+-- its `#`. GAS aarch64 rejects `@` even at code position ("junk at end of
+-- line"), so there is no `@` case here. Comments never fabricate annotations:
+-- the comment text (including any `//!`/`;!` marker text) is dropped with the
+-- `#`, and the labels before it survive. The one exception: `#!` is diagnosed
+-- with a targeted error instead of being dropped, because silently losing a
+-- would-be annotation would make annotated code assemble as if the annotation
+-- was never written.
+local function cutCodeHash(s: string): string
+	local inStr = false
+	local i, n = 1, #s
+	while i <= n do
+		local c = string.sub(s, i, i)
+		if c == '"' then
+			inStr = not inStr
+		elseif inStr and c == "\\" then
+			-- escaped character inside the string (e.g. the `"` of `\"`): skip it
+			-- whole so it cannot close the string and expose a `#` that is still
+			-- inside the string; mirrors stripLineComment above
+			i += 1
+		elseif c == "#" then
+			local prefix = string.sub(s, 1, i - 1)
+			local rest = trim(prefix)
+			while true do
+				local name, after = string.match(rest, "^([%w_.$][%w_.$@]*):%s*(.*)$")
+				if not name then
+					break
+				end
+				rest = trim(after)
+			end
+			if rest ~= "" then
+				-- `#` in the middle of code: it introduces an immediate
+				return s
+			end
+			if string.sub(s, i + 1, i + 1) == "!" then
+				error("sarcasm: '#!' is not an annotation marker on arm64 (use '//!' or ';!'): " .. s)
+			end
+			-- comment: keep only the labels before it
+			return prefix
+		end
+		i += 1
+	end
+	return s
+end
+
 -- Parse one source line into zero or more statements, appending to `out`.
 local function parseLine(rawLine: string, out)
+	-- A `#` at the start of the code portion is a comment on arm64 (GAS `# note`,
+	-- cpp linemarkers `# 1 "foo.s"`); anywhere else in the code it introduces an
+	-- immediate. Cut the comment off before splitAnnotation runs so that comment
+	-- text can never fabricate an annotation (e.g. `# use //! load ptr here`
+	-- must stay inert); see cutCodeHash above.
+	rawLine = cutCodeHash(rawLine)
 	local code, annotation = splitAnnotation(rawLine)
 	code = stripLineComment(code)
 	local trimmed = trim(code)
@@ -473,8 +549,11 @@ local function parseLine(rawLine: string, out)
 	-- Directive or instruction.
 	local mnemonic, rest = string.match(trimmed, "^([%.%w_][%w_.]*)%s*(.*)$")
 	if not mnemonic then
-		table.insert(out, { kind = "directive", name = trimmed, args = "", raw = trimmed, annotation = annotation })
-		return
+		-- The line starts with something that can neither begin a mnemonic nor a
+		-- directive (`#`-initial comments are cut by cutCodeHash above, so this is
+		-- junk like a stray `"` or `@`). Fabricating a statement for it would
+		-- silently drop the line downstream; raise a normal parse error instead.
+		error("sarcasm: cannot parse line: " .. trimmed)
 	end
 	rest = trim(rest)
 
@@ -490,6 +569,15 @@ local function parseLine(rawLine: string, out)
 	end
 
 	-- Instruction. Split optional condition suffix off branch mnemonics like b.hs.
+	-- A `"` can never appear in a legitimate A64 operand (comments and string
+	-- literals are already stripped above), so one here is junk -- for example a
+	-- line left malformed by a backslash-newline inside a string literal.
+	-- Rejecting it here keeps such junk out of the rendered output, where an
+	-- unbalanced quote would swallow the rest of the file in the final GNU-as
+	-- pass.
+	if string.find(rest, '"', 1, true) then
+		error("sarcasm: cannot parse line: " .. trimmed)
+	end
 	local operands = parseOperands(rest)
 	table.insert(out, {
 		kind = "insn",

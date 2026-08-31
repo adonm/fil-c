@@ -16,6 +16,13 @@ local SUFFIX = { [8] = "b", [16] = "w", [32] = "l", [64] = "q" }
 -- mnemonics that take an AT&T size suffix when synthesized (bare)
 local SUFFIXABLE = {
 	mov=true, add=true, sub=true, ["and"]=true, ["or"]=true, xor=true, cmp=true, test=true,
+	-- adc/sbb: same story as add/sub (their only width-less rendering is imm+mem),
+	-- but they were missing until locked imm+mem RMWs exposed it: a lifted
+	-- `lock adc QWORD PTR [rdi], 3` has NO register operand to imply a width, so
+	-- the bare AT&T rendering (`lock adc $3, (%rbx)`) assembled as gas's silent
+	-- l-default (32-bit `f0 83 /2 ib` = adcl) while the injected bounds check
+	-- covered the requested 8 bytes — a silent width-changing miscompile.
+	adc=true, sbb=true,
 	shl=true, shr=true, sal=true, sar=true, imul=true, inc=true, dec=true, neg=true, ["not"]=true,
 	-- the one-operand mul/div family: an Intel PTR-sized memory form (`div QWORD
 	-- PTR [rdi]`) carries its width only in mem.size, and a bare AT&T rendering

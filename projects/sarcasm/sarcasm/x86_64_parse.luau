@@ -276,8 +276,10 @@ local function parseIntelOperandRaw(field)
 	end
 	local indirect = false
 	local size = nil
-	-- size specifier: BYTE PTR / WORD PTR / ...
-	local sz, rest = string.match(field, "^(%a+)%s+PTR%s+(.*)$")
+	-- size specifier: BYTE PTR / WORD PTR / ... — the PTR keyword itself is
+	-- matched in any case (real assemblers accept `qword ptr`, `QWORD PTR`,
+	-- `Qword Ptr`, ... alike); the size word is lowercased for PTRSIZE below.
+	local sz, rest = string.match(field, "^(%a+)%s+[Pp][Tt][Rr]%s+(.*)$")
 	if sz and PTRSIZE[string.lower(sz)] then size = PTRSIZE[string.lower(sz)]; field = trim(rest) end
 	-- memory: optional leading disp then [ ... ]  (GAS Intel: `8[rbx]`, `[rbx+8]`, `[rip+sym]`)
 	local pre, inside = string.match(field, "^(.-)%[(.*)%]$")

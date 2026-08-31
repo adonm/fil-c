@@ -64,7 +64,7 @@ tar -czf pizlonated-user-glibc.tar.gz pizlonated-user-glibc
 rm -rf pizlonated-user-glibc
 cd ../..
 
-./package-source.sh projects/libxcrypt-4.4.36 pizlonated-libxcrypt
+./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/xz-5.8.3 pizlonated-xz
 ./package-source.sh projects/pkgconf-2.3.0 pizlonated-pkgconf
 ./package-source.sh projects/bash-5.3 pizlonated-bash

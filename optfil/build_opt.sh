@@ -429,7 +429,7 @@ cd ..
 rm -rf pizlonated-pkgconf
 hash -r
 
-tar -xf $FILCSRC/projects/libxcrypt-4.4.36/pizlonated-libxcrypt.tar.gz
+tar -xf $FILCSRC/projects/libxcrypt-4.5.2/pizlonated-libxcrypt.tar.gz
 cd pizlonated-libxcrypt
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --enable-hashes=strong,glibc \

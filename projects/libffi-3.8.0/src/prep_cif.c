@@ -388,7 +388,7 @@ ffi_get_struct_offsets (ffi_abi abi, ffi_type *struct_type, size_t *offsets)
    exclude the fallback only when ffi64.c actually provides it; everywhere else
    this plan just records the cif and invoke calls ffi_call, so the API is
    always present and links on all targets.  The cif must outlive the plan. */
-#if !(defined(__x86_64__) && !defined(__ILP32__) && !defined(X86_WIN64))
+#if !(defined(__x86_64__) && !defined(__ILP32__) && !defined(X86_WIN64)) || defined(__FILC__)
 
 struct ffi_call_plan
 {

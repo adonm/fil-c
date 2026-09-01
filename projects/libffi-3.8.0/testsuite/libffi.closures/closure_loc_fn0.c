@@ -82,9 +82,12 @@ int main (void)
 			 (void *) 3 /* userdata */, codeloc) == FFI_OK);
 
 #if !defined(FFI_EXEC_STATIC_TRAMP) && !defined(__EMSCRIPTEN__) \
-    && !(defined(FFI_EXEC_TRAMPOLINE_TABLE) && FFI_EXEC_TRAMPOLINE_TABLE)
+    && !(defined(FFI_EXEC_TRAMPOLINE_TABLE) && FFI_EXEC_TRAMPOLINE_TABLE) \
+    && !defined(__FILC__)
   /* With static trampolines or a trampoline table (Apple aarch64), the
-     codeloc does not point to the closure */
+     codeloc does not point to the closure.  Under Fil-C, codeloc is a
+     zclosure created by zclosure_new(), which does not alias the closure
+     struct either.  */
   CHECK(memcmp(pcl, FFI_CL(codeloc), sizeof(*pcl)) == 0);
 #endif
 

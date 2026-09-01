@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/libffi-3.4.6
+cd projects/libffi-3.8.0
 extract_source
 CC="$PWD/../../../build/bin/clang -g" CXX="$PWD/../../../build/bin/clang++ -g" ./configure --prefix=$PWD/../../../pizfix --disable-exec-static-tramp
 make -j $NCPU

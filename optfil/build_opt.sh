@@ -483,7 +483,7 @@ cd ..
 rm -rf pizlonated-openssl
 hash -r
 
-tar -xf $FILCSRC/projects/libffi-3.4.6/pizlonated-libffi.tar.gz
+tar -xf $FILCSRC/projects/libffi-3.8.0/pizlonated-libffi.tar.gz
 cd pizlonated-libffi
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --disable-static \

@@ -25,33 +25,42 @@ function glue_x86.getter(out, name)
 	table.insert(out, "")
 end
 
--- Dense fast-CC arg registers: (iv[, lo]) pairs packed consecutively; a scalar arg
+-- Dense fast-CC arg LOCATIONS: (iv[, lo]) words packed consecutively; a scalar arg
 -- consumes one slot, a pointer arg two. FLOAT/DOUBLE args consume NO GPR slot: they
 -- pass in the vector registers xmm0..xmm7, in declaration order among the FP args
 -- alone (a float in the low 32 bits, a double in the full 64), matching pizlonated
 -- clang output (long(double,int,float,long): double->xmm0, int->rdx, float->xmm1,
 -- long->rcx). Must stay in lockstep with denseArgSlot in x86_64_isa.luau.
--- Clang's x86_64 fast CC has only FOUR dense argument GPRs (rdx, rcx, r8, r9) --
--- wider arguments go on the stack, which sarcasm does not marshal; signatures
--- needing more than 4 GPR register argument words are rejected, so slots 5-6 below
--- are unreachable. FP args are bounded separately: at most 8 (xmm0..xmm7).
-local DENSE_ARG_REGS = { "%rdx", "%rcx", "%r8", "%r9", "%r10", "%r11" }
-local function denseArgRegs(argTypes, argWords)
-	local ivReg, loReg = {}, {}
+-- Clang's x86_64 fast CC has only FOUR dense argument GPRs (rdx, rcx, r8, r9):
+-- slots 1..4 below. Slot 5+ travels on the STACK as densely packed 8-byte words in
+-- declaration word order (verified against pizlonated clang for 5..14-word
+-- signatures, incl. a pointer straddling the r9/stack boundary: its intval rides
+-- slot 4 = r9 while its lower is stack word 0). denseArgLoc returns per-argument
+-- location tables ivLoc[k]/loLoc[k]: { reg = "%rdx" } or { stack = j } with j the
+-- 0-based outgoing stack word index (the word sits at 8*j(%rsp) at the call, i.e.
+-- at 8+8*j(%rsp) from the callee's view). FP args are bounded separately: at most
+-- 8 (xmm0..xmm7).
+local DENSE_ARG_REGS = { "%rdx", "%rcx", "%r8", "%r9" }
+local function denseArgLoc(argTypes, argWords)
+	local ivLoc, loLoc = {}, {}
 	local slot = 1
+	local function loc(s)
+		if s <= #DENSE_ARG_REGS then return { reg = DENSE_ARG_REGS[s] } end
+		return { stack = s - 1 - #DENSE_ARG_REGS }
+	end
 	for k = 1, argWords do
 		if sig.isFpClass(argTypes[k]) then
 			-- FP arg: passes in an xmm register, consumes no GPR slot
 		elseif argTypes[k] == 7 then   -- TYPE_PTR
-			ivReg[k] = DENSE_ARG_REGS[slot]
-			loReg[k] = DENSE_ARG_REGS[slot + 1]
+			ivLoc[k] = loc(slot)
+			loLoc[k] = loc(slot + 1)
 			slot += 2
 		else
-			ivReg[k] = DENSE_ARG_REGS[slot]
+			ivLoc[k] = loc(slot)
 			slot += 1
 		end
 	end
-	return ivReg, loReg
+	return ivLoc, loLoc
 end
 
 -- FP instruction form + xmm-register name of FP argument k: float = "movss" /
@@ -68,27 +77,25 @@ local function fpArgForm(argTypes, k)
 	return (w == 4 and "movss" or "movsd"), "%xmm" .. tostring(m)
 end
 
--- Number of fast-CC GPR argument words a signature needs (ptr args = 2; FP args
--- pass in the xmm registers and consume none).
-local function argRegWords(argTypes, argWords)
-	local words = 0
-	for k = 1, argWords do
-		if not sig.isFpClass(argTypes[k]) then words += (argTypes[k] == 7) and 2 or 1 end
-	end
-	return words
-end
-
 -- generic (buffer) entrypoint pizlonated2ET<sig>.
 function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr, argTypes, retTypes)
-	assert(argRegWords(argTypes, argWords) <= 4, "sarcasm: >4 register args not yet supported")
 	local sym = "pizlonated2ET" .. tostring(signature)
 	local argBytes = argWords * 8
 	local retBytes = retWords * 8
 	local L = ".LBB_2ET" .. signature
 	local function e(s) table.insert(out, s) end
-	-- dense CC iv/lo registers for arg k (1-based); lo only for pointer args. FP args
-	-- have no GPR register (they load straight into their xmm registers).
-	local ivReg, loReg = denseArgRegs(argTypes, argWords)
+	-- dense CC iv/lo locations for arg k (1-based); lo only for pointer args. FP args
+	-- have no GPR location (they load straight into their xmm registers).
+	local ivLoc, loLoc = denseArgLoc(argTypes, argWords)
+	-- outgoing stack words needed (dense words beyond the four CC registers), and
+	-- the window size (16-byte multiple so rsp stays 16-aligned at the call).
+	local stackWords, winN = 0, 0
+	for k = 1, argWords do
+		for _, lc in { ivLoc[k], loLoc[k] } do
+			if lc and lc.stack then stackWords = math.max(stackWords, lc.stack + 1) end
+		end
+	end
+	if stackWords > 0 then winN = math.ceil(8 * stackWords / 16) * 16 end
 	local retFpForm, retFpReg = nil, nil
 	if retTypes and retTypes[1] and sig.isFpClass(retTypes[1]) then
 		retFpForm, retFpReg = fpArgForm(retTypes, 1)
@@ -111,20 +118,42 @@ function glue_x86.genericThunk(out, signature, argWords, retWords, retIsPtr, arg
 	-- load args from the per-argument buffer slots (iv at 128+8i, lower at 384+8i)
 	-- into the densely packed CC registers; FP args load into their xmm registers
 	-- (declaration order among the FP args), also from 128+8i (a float loads the
-	-- low 4 bytes of the 8-byte slot).
+	-- low 4 bytes of the 8-byte slot). Words beyond the four CC registers are
+	-- stored into the outgoing-args area at 8*j(%rsp) — exactly clang's placement
+	-- (the buffer loads are %rbx-relative, unaffected by the stack adjustment;
+	-- %rax is dead scratch here).
 	for i = 0, argWords - 1 do
 		local k = i + 1
 		if sig.isFpClass(argTypes[k]) then
 			local form, reg = fpArgForm(argTypes, k)
 			e("\t" .. form .. "\t" .. tostring(128 + 8 * i) .. "(%rdi), " .. reg)
 		else
-			e("\tmovq\t" .. tostring(128 + 8 * i) .. "(%rdi), " .. ivReg[i + 1])
-			if loReg[i + 1] then
-				e("\tmovq\t" .. tostring(384 + 8 * i) .. "(%rdi), " .. loReg[i + 1])
+			if ivLoc[k].reg then
+				e("\tmovq\t" .. tostring(128 + 8 * i) .. "(%rdi), " .. ivLoc[k].reg)
+			end
+			if loLoc[k] and loLoc[k].reg then
+				e("\tmovq\t" .. tostring(384 + 8 * i) .. "(%rdi), " .. loLoc[k].reg)
+			end
+		end
+	end
+	if winN > 0 then e("\tsubq\t$" .. tostring(winN) .. ", %rsp") end
+	for i = 0, argWords - 1 do
+		local k = i + 1
+		if not sig.isFpClass(argTypes[k]) then
+			if ivLoc[k].stack then
+				e("\tmovq\t" .. tostring(128 + 8 * i) .. "(%rbx), %rax")
+				e("\tmovq\t%rax, " .. tostring(8 * ivLoc[k].stack) .. "(%rsp)")
+			end
+			if loLoc[k] and loLoc[k].stack then
+				e("\tmovq\t" .. tostring(384 + 8 * i) .. "(%rbx), %rax")
+				e("\tmovq\t%rax, " .. tostring(8 * loLoc[k].stack) .. "(%rsp)")
 			end
 		end
 	end
 	e("\tcallq\t*(%rsi)")
+	-- restore rsp BEFORE the exception-flag test: both paths see a balanced stack
+	-- (the flag rides the %al result register, which the add does not touch).
+	if winN > 0 then e("\taddq\t$" .. tostring(winN) .. ", %rsp") end
 	e("\ttestb\t$1, %al")
 	e("\tjne\t" .. L .. "_exc")
 	if retWords >= 1 then
@@ -295,38 +324,38 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 	local signum = sigDesc.signature
 	local sym = "pizlonatedFI" .. tostring(signum) .. "_" .. callee
 	local L = ".Lcsr_" .. callee .. "_" .. tostring(signum)
-	-- incoming fast-call args arrive densely packed; lo registers only for ptr args.
+	-- incoming fast-call args arrive densely packed; lo words only for ptr args.
 	-- FP args arrive in their xmm registers (fpArgForm) and pass through unmodeled —
-	-- ivReg[k] is nil for them.
-	local ivReg, loReg = denseArgRegs(sigDesc.argTypes, sigDesc.argWords)
+	-- ivLoc[k] is nil for them. Dense words beyond the four CC registers arrive on
+	-- the STACK at [entry_rsp + 8 + 8*j] (dense word 4+j) — densely packed 8-byte
+	-- slots in declaration word order, exactly as the callee's fast entrypoint
+	-- expects them, so the direct fast tail call needs NO marshalling for them
+	-- (they flow through in place; the getter call between touches no stack above
+	-- its own return address).
+	local ivLoc, loLoc = denseArgLoc(sigDesc.argTypes, sigDesc.argWords)
 	local myth = "%rbx"
 	local pool = { "%r12", "%r13", "%r14", "%r15" }
-	-- Hold-pool capacity check: stashing the incoming CC across the resolver call takes
-	-- one callee-saved hold per GPR argument word (two per pointer arg: intval + lower).
-	-- FP args need no hold: they stay in the xmm registers. A signature needing more
-	-- GPR words than the pool holds cannot be marshalled -- reject it cleanly rather
-	-- than running off the end of the pool.
-	local holdWords = 0
-	for k = 1, sigDesc.argWords do
-		if not sig.isFpClass(sigDesc.argTypes[k]) then
-			holdWords += (sigDesc.argTypes[k] == 7) and 2 or 1
-		end
-	end
-	if holdWords > #pool then
-		error("sarcasm: callsite thunk for '" .. callee .. "': >" .. tostring(#pool)
-			.. " register argument words not yet supported (this call's signature needs "
-			.. tostring(holdWords) .. ")")
-	end
+	-- Stashing the incoming CC across the resolver call takes one callee-saved hold
+	-- per REGISTER-RESIDENT GPR argument word (two per pointer arg whose intval and
+	-- lower both fit in registers: intval + lower). FP args need no hold (they stay
+	-- in the xmm registers), and stack-resident words need no hold either (they stay
+	-- on the stack). At most four words are register-resident — exactly the pool.
 	local nextHold = 1
 	local args = {}
 	for k = 1, sigDesc.argWords do
-		if ivReg[k] then
+		if ivLoc[k] then
 			local isPtr = sigDesc.argTypes[k] == 7
-			local ent = { iv = pool[nextHold], isPtr = isPtr }; nextHold += 1
-			if isPtr then ent.lo = pool[nextHold]; nextHold += 1 end
+			local ent = { isPtr = isPtr }
+			if ivLoc[k].reg then ent.iv = pool[nextHold]; nextHold += 1
+			else ent.ivStack = ivLoc[k].stack end
+			if isPtr then
+				if loLoc[k].reg then ent.lo = pool[nextHold]; nextHold += 1
+				else ent.loStack = loLoc[k].stack end
+			end
 			args[k] = ent
 		end
 	end
+	assert(nextHold - 1 <= #pool, "sarcasm: internal error: callsite thunk hold pool overflow")
 	local argBytes = sigDesc.argWords * 8
 	local retBytes = sigDesc.retWords * 8
 	local retFpForm, retFpReg = nil, nil
@@ -339,7 +368,7 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 	local pushList = { myth }
 	for k = 1, sigDesc.argWords do
 		if args[k] then
-			table.insert(pushList, args[k].iv)
+			if args[k].iv then table.insert(pushList, args[k].iv) end
 			if args[k].lo then table.insert(pushList, args[k].lo) end
 		end
 	end
@@ -357,14 +386,15 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 	e(sym .. ":")
 	for _, r in pushList do e("\tpushq\t" .. r) end
 	if filler then e("\tpushq\t%rax") end
-	-- stash incoming CC (myth + GPR args) into callee-saved holds. The xmm registers
-	-- are untouched here (and by everything up to the calls below), so the FP args
-	-- ride across the getter call in them.
+	-- stash incoming CC (myth + register-resident GPR args) into callee-saved holds.
+	-- The xmm registers are untouched here (and by everything up to the calls below),
+	-- so the FP args ride across the getter call in them; stack-resident argument
+	-- words stay on the stack.
 	e("\tmovq\t%rdi, " .. myth)
 	for k = 1, sigDesc.argWords do
 		if args[k] then
-			e("\tmovq\t" .. ivReg[k] .. ", " .. args[k].iv)
-			if args[k].lo then e("\tmovq\t" .. loReg[k] .. ", " .. args[k].lo) end
+			if args[k].iv then e("\tmovq\t" .. ivLoc[k].reg .. ", " .. args[k].iv) end
+			if args[k].lo then e("\tmovq\t" .. loLoc[k].reg .. ", " .. args[k].lo) end
 		end
 	end
 	-- resolve FO
@@ -400,14 +430,19 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 	e("\tmovq\t" .. myth .. ", %rdi")
 	for k = 1, sigDesc.argWords do
 		if args[k] then
-			e("\tmovq\t" .. args[k].iv .. ", " .. ivReg[k])
-			if args[k].lo then e("\tmovq\t" .. args[k].lo .. ", " .. loReg[k]) end
+			if args[k].iv then e("\tmovq\t" .. args[k].iv .. ", " .. ivLoc[k].reg) end
+			if args[k].lo then e("\tmovq\t" .. args[k].lo .. ", " .. loLoc[k].reg) end
+			-- stack-resident words flow through in place: the tail call keeps rsp
+			-- (and the outgoing area above it) exactly as the caller left it.
 		end
 	end
 	restore()
 	e("\tjmpq\t*%rax")
-	-- generic (buffer) call
+	-- generic (buffer) call. A stack-resident incoming word j sits at
+	-- [entry_rsp + 8 + 8*j]; rsp here is entry_rsp - 8*#pushList - (filler and 8 or 0),
+	-- so it is read back at that offset from the current rsp (%rax is dead scratch).
 	e(L .. "_generic:")
+	local stackAdj = 8 * #pushList + (filler and 8 or 0)
 	for k = 1, sigDesc.argWords do
 		if sig.isFpClass(sigDesc.argTypes[k]) then
 			-- FP arg: still live in its xmm register (nothing clobbered the xmm
@@ -417,9 +452,17 @@ function glue_x86.callsiteThunk(out, callee, sigDesc)
 			e("\t" .. form .. "\t" .. reg .. ", " .. tostring(128 + 8 * (k - 1)) .. "(" .. myth .. ")")
 			e("\tmovq\t$0, " .. tostring(384 + 8 * (k - 1)) .. "(" .. myth .. ")")
 		else
-			e("\tmovq\t" .. args[k].iv .. ", " .. tostring(128 + 8 * (k - 1)) .. "(" .. myth .. ")")
+			if args[k].iv then
+				e("\tmovq\t" .. args[k].iv .. ", " .. tostring(128 + 8 * (k - 1)) .. "(" .. myth .. ")")
+			else
+				e("\tmovq\t" .. tostring(stackAdj + 8 + 8 * args[k].ivStack) .. "(%rsp), %rax")
+				e("\tmovq\t%rax, " .. tostring(128 + 8 * (k - 1)) .. "(" .. myth .. ")")
+			end
 			if args[k].lo then
 				e("\tmovq\t" .. args[k].lo .. ", " .. tostring(384 + 8 * (k - 1)) .. "(" .. myth .. ")")
+			elseif args[k].loStack then
+				e("\tmovq\t" .. tostring(stackAdj + 8 + 8 * args[k].loStack) .. "(%rsp), %rax")
+				e("\tmovq\t%rax, " .. tostring(384 + 8 * (k - 1)) .. "(" .. myth .. ")")
 			else
 				e("\tmovq\t$0, " .. tostring(384 + 8 * (k - 1)) .. "(" .. myth .. ")")
 			end

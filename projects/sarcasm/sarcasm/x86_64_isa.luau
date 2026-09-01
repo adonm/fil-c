@@ -851,12 +851,17 @@ x86.CALLER_SAVED_NUMS = { 0, 1, 2, 6, 7, 8, 9, 10 }
 -- never pack one register), exactly like pizlonated clang (verified:
 -- long(double,int,float,long) places the double in xmm0, the int in rdx, the
 -- float in xmm1, the long in rcx). Clang's x86_64 fast CC has only FOUR dense
--- argument GPRs (rdx, rcx, r8, r9); arguments beyond the fourth GPR word are
--- passed on the stack, which sarcasm does not marshal -- it rejects signatures
--- needing more than 4 GPR argument words (see sarcasm.luau /
--- x86_64_codegen.luau), so only the first four slots below are ever used. FP args
--- beyond the eighth (xmm0..xmm7) are likewise rejected.
-local DENSE_ARG_REGS = { 2, 1, 8, 9, 10, 11 }  -- rdx, rcx, r8, r9, (r10, r11: unreachable)
+-- argument GPRs (rdx, rcx, r8, r9); GPR argument WORDS beyond the fourth are
+-- passed on the stack as densely packed 8-byte slots in declaration word order,
+-- the caller storing word w (0-based, w >= 4) at 8*(w-4)(%rsp) before the call
+-- (the callee reads it at 8+8*(w-4)(%rsp), above its return address) — verified
+-- against pizlonated clang callers and callees for 5..14-word signatures, incl.
+-- a pointer straddling the r9/stack boundary (void(int,int,int,ptr): p.iv in r9,
+-- p.lo on the stack). sarcasm marshals those stack words in both directions
+-- (see transform.luau's entry unpack and callsite marshalling). FP args beyond
+-- the eighth (xmm0..xmm7) are still rejected.
+local DENSE_ARG_REGS = { 2, 1, 8, 9 }        -- rdx, rcx, r8, r9
+local DENSE_ARG_REG_COUNT = 4                -- words beyond go on the stack
 local function denseArgSlot(argTypes, k)
 	local slot = 1
 	for i = 1, k - 1 do
@@ -890,6 +895,15 @@ x86.CC = {
 	fo = 6,         -- rsi
 	argIv = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k)] end,
 	argLo = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k) + 1] end,  -- ptr args only
+	-- number of dense argument words that fit in registers; word w (0-based) with
+	-- w >= argRegCount travels on the stack (see the DENSE_ARG_REGS comment).
+	argRegCount = DENSE_ARG_REG_COUNT,
+	-- 0-based dense word index of argument k's intval word (a pointer's lower word
+	-- is at denseSlot+1). FP args consume no dense words.
+	denseSlot = function(argTypes, k) return denseArgSlot(argTypes, k) - 1 end,
+	-- yolo (SysV) integer-argument register count: args 1..6 ride rdi..r9; the 7th
+	-- and later integer-class arguments live on the stack at entry (8+8i(%rsp)).
+	yoloRegCount = 6,
 	retFlag = 0,    -- al (rax)
 	retIv = 2,      -- rdx
 	retLo = 1,      -- rcx

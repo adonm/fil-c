@@ -34,6 +34,11 @@ local function makeTarget(arch, syntax)
 		local backend = { cg = x86_64_codegen, frame = x86_64_frame, arch = "x86_64" }
 		return {
 			arch = "x86_64", syntax = syntax,
+			-- OpenSSL perlasm emits instructions as raw .byte sequences in
+			-- function bodies (legacy-gas workarounds); decode the known
+			-- encodings back into ordinary instructions at parse time, so every
+			-- downstream pass sees spelled ones (x86_64_parse.decodeByteInsns).
+			decodeBody = x86_64_parse.decodeByteInsns,
 			transformFunction = function(nm, sd, body) return transform.transformFunction(nm, sd, body, backend) end,
 			emitFip = function(out, tr, cr) return emit.emitFip(out, tr, cr, x86_64_render, "att") end,
 			glue = x86_64_glue,
@@ -227,8 +232,16 @@ end
 -- Rewrite spilled temps: around each def/use of a spilled temp, insert a store/reload
 -- through a fresh short-lived temp (tagged so the emitter can eliminate redundant
 -- reloads and size the frame). Returns the new node list.
+--
+-- Outgoing stack-arg windows (x86_64: cg.beginStackArgs/endStackArgs around a
+-- call's stack-argument marshalling) drop rsp by N for their span, so a spill
+-- reload/store created INSIDE one would address the wrong frame slot: stamp it
+-- with the window's shift (node.spillShift); the renderer adds it back
+-- (x86_64_render.renderInsn). The spillOff slot key stays unshifted so slot
+-- packing and reload elimination keep working on the logical slot.
 local function rewriteSpills(nodes, spilledSet, slotOf, allocTemp, spillBase, target)
 	local out = {}
+	local curShift = 0
 	for _, node in nodes do
 		if node.kind ~= "insn" then
 			table.insert(out, node)
@@ -242,21 +255,29 @@ local function rewriteSpills(nodes, spilledSet, slotOf, allocTemp, spillBase, ta
 			if spilledSet[t] then remap[t] = remap[t] or allocTemp(); isDef[t] = true end
 		end
 		if not next(remap) then
+			if node.shiftBegin then curShift = node.shiftBegin
+			elseif node.shiftEnd then curShift = 0 end
 			table.insert(out, node)
 			continue
 		end
 		for t, f in remap do
 			if isUse[t] then
-				table.insert(out, target.spillReload(f, spillBase + 8 * slotOf[t]))
+				local n = target.spillReload(f, spillBase + 8 * slotOf[t])
+				if curShift ~= 0 then n.spillShift = curShift end
+				table.insert(out, n)
 			end
 		end
 		remapNodeTemps(node, remap)
 		table.insert(out, node)
 		for t, f in remap do
 			if isDef[t] then
-				table.insert(out, target.spillStore(f, spillBase + 8 * slotOf[t]))
+				local n = target.spillStore(f, spillBase + 8 * slotOf[t])
+				if curShift ~= 0 then n.spillShift = curShift end
+				table.insert(out, n)
 			end
 		end
+		if node.shiftBegin then curShift = node.shiftBegin
+		elseif node.shiftEnd then curShift = 0 end
 	end
 	return out
 end
@@ -325,11 +346,15 @@ local function packSpillSlots(tr, spillBase, numSlots, target)
 	-- Rewrite spill nodes to their packed offset. The offset lives inside the memory
 	-- operand (target-specific shape), so rebuild the node via the target constructor rather
 	-- than poking a field; that keeps the rendered address and the reload-elim key in sync.
+	-- A spillShift (outgoing stack-arg window re-basing, see rewriteSpills) rides
+	-- along: it is a property of the node's POSITION, not of its slot offset.
 	for i, node in tr.fipNodes do
 		if node.kind == "insn" and node.spillReload then
 			tr.fipNodes[i] = target.spillReload(node.spillTemp, spillBase + 8 * color[slotIdOf(node.spillOff)])
+			tr.fipNodes[i].spillShift = node.spillShift
 		elseif node.kind == "insn" and node.spillStore then
 			tr.fipNodes[i] = target.spillStore(node.spillTemp, spillBase + 8 * color[slotIdOf(node.spillOff)])
+			tr.fipNodes[i].spillShift = node.spillShift
 		end
 	end
 	return ncolors
@@ -347,11 +372,13 @@ local function allocateWithSpilling(tr, target)
 	local slotOf, numSlots = {}, 0
 	-- Spill slots sit above the frame header, the GC root slots, and the (x86_64-only,
 	-- 16-byte-aligned) FP/SIMD region: reserved vector-save area + materialized FP
-	-- frame-slot clusters + its alignment pad. Must match the target render's
-	-- computeLayout (x86_64_render.luau / arm64_render.luau).
+	-- frame-slot clusters + the materialized incoming yolo stack-argument area + its
+	-- alignment pad. Must match the target render's computeLayout
+	-- (x86_64_render.luau / arm64_render.luau).
 	local numRoots = tr.numRoots or 0
-	local fpPad = (((tr.fpSaveBytes or 0) + (tr.fpBytes or 0)) > 0 and numRoots % 2 == 1) and 8 or 0
-	local spillBase = 16 + 8 * numRoots + fpPad + (tr.fpSaveBytes or 0) + (tr.fpBytes or 0)
+	local fpRegion = (tr.fpSaveBytes or 0) + (tr.fpBytes or 0) + (tr.yoloBytes or 0)
+	local fpPad = (fpRegion > 0 and numRoots % 2 == 1) and 8 or 0
+	local spillBase = 16 + 8 * numRoots + fpPad + fpRegion
 	for _ = 1, 32 do
 		-- spill-cost heuristic: cost ~ number of def/use occurrences, so IRC prefers
 		-- spilling rarely-used temps (a value used once is cheap to reload; a value used
@@ -525,29 +552,35 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		-- signature would need q-register / xmm-quad CC machinery).
 		sig.checkSupportedClasses(sigDesc, nil, { arch = target.arch })
 		-- Entry-signature arity limits. The fast CC packs GPR argument words DENSELY
-		-- (a pointer arg = 2 words; anything wider is passed on the stack, which
-		-- sarcasm does not yet marshal), so only GPR-class args count here — FP args
-		-- (float/double, both arches) pass in the FP registers instead and are
-		-- bounded separately (at most 8: xmm0..xmm7 on x86_64, v0..v7 on arm64):
-		-- x86_64 packs into the FOUR registers rdx,rcx,r8,r9 (4 words max); arm64
-		-- packs into the SIX registers x2..x7.
-		local gprArgs, fpArgs, words = 0, 0, 0
-		for k = 1, sigDesc.argWords do
-			if sig.isFpClass(sigDesc.argTypes[k]) then
-				fpArgs += 1
-			else
-				gprArgs += 1
-				words += (sigDesc.argTypes[k] == 7) and 2 or 1
+		-- (a pointer arg = 2 words); x86_64 packs the first FOUR into rdx,rcx,r8,r9
+		-- and passes the rest on the stack as densely packed 8-byte slots, which
+		-- sarcasm now marshals in both directions (entry unpack + yolo stack-arg
+		-- redirection; the SysV 7th+ integer arguments are read from 8+8i(%rsp) at
+		-- entry), so x86_64 signatures have NO GPR word limit. arm64 packs into the
+		-- SIX registers x2..x7 and keeps its 3-argument/6-word limit (stack words
+		-- are not marshalled there). FP args (float/double, both arches) pass in
+		-- the FP registers instead and are bounded separately (at most 8:
+		-- xmm0..xmm7 on x86_64, v0..v7 on arm64).
+		if target.arch ~= "x86_64" then
+			local gprArgs, words = 0, 0
+			for k = 1, sigDesc.argWords do
+				if not sig.isFpClass(sigDesc.argTypes[k]) then
+					gprArgs += 1
+					words += (sigDesc.argTypes[k] == 7) and 2 or 1
+				end
+			end
+			if gprArgs > 3 then
+				error("sarcasm: >3 register args not yet supported")
+			end
+			if words > 6 then
+				error("sarcasm: function '" .. fn.name
+					.. "': >6 register argument words not yet supported (this signature needs "
+					.. tostring(words) .. ")")
 			end
 		end
-		if gprArgs > 3 then
-			error("sarcasm: >3 register args not yet supported")
-		end
-		local maxWords = (target.arch == "x86_64") and 4 or 6
-		if words > maxWords then
-			error("sarcasm: function '" .. fn.name
-				.. "': >" .. tostring(maxWords) .. " register argument words not yet supported (this signature needs "
-				.. tostring(words) .. ")")
+		local fpArgs = 0
+		for k = 1, sigDesc.argWords do
+			if sig.isFpClass(sigDesc.argTypes[k]) then fpArgs += 1 end
 		end
 		if fpArgs > 8 then
 			error("sarcasm: function '" .. fn.name
@@ -557,6 +590,12 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		-- body = statements after the function label up to (not incl) .size
 		local body = {}
 		for _, st in fn.body do table.insert(body, st) end
+		-- x86_64 only: decode .byte-encoded instructions (OpenSSL perlasm
+		-- legacy-gas workarounds) before any other pass sees the body, so
+		-- validation, the frame pass and codegen all see ordinary spelled
+		-- instructions. Undecodable sequences stay `.byte` directives and keep
+		-- hitting the usual in-body data rejection.
+		if target.decodeBody then body = target.decodeBody(body) end
 		local tr = target.transformFunction(fn.name, sigDesc, body)
 		tr.fileUserLabels = fileUserLabels
 

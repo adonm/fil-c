@@ -341,9 +341,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- 4th return (x86_64 only): FP/SIMD stack-slot materialization info. The
 		-- signature is passed so the frame analysis can force the vector-save
 		-- reservation for FP-signature functions (see arm64_frame.analyzeFrame and
-		-- x86_64_frame.analyzeFrame).
-		local fs, fpo, ufp, fpinfo = framePolicy.analyzeFrame(body, sigDesc)
-		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo }
+		-- x86_64_frame.analyzeFrame). 5th return (x86_64 only): the incoming yolo
+		-- stack-argument info (slot count, which slots FP instructions read, and the
+		-- materialized area's base offset when any do).
+		local fs, fpo, ufp, fpinfo, yolo = framePolicy.analyzeFrame(body, sigDesc)
+		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo, yolo = yolo }
 	end
 
 	-- FP values ride in the arch's vector registers (xmm on x86_64, v on arm64)
@@ -775,6 +777,21 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 		return callSigCache[stmt]
 	end
+	-- The yolo SOURCE of callsite argument k: its SysV argument register (the first
+	-- cc.yoloRegCount integer-class arguments), or — x86_64 only, for the 7th and
+	-- later integer-class argument — the frame-slot pseudo-register of the body's
+	-- OUTGOING stack-argument area (the compiler-style placement: the caller stores
+	-- outgoing stack argument o (0-based) at 8*o(%rsp) relative to its frame base,
+	-- so the callee finds it above the return address). Reaching-definitions then
+	-- connects the body's store of that slot to the call's use of its value.
+	local function callArgSource(cs, k)
+		local yreg = cc.yoloArg(k, cs.argTypes)
+		if yreg then return yreg end
+		local n = 0
+		for i = 1, k - 1 do if not isFp(cs.argTypes[i]) then n += 1 end end
+		return framePass.SLOT_BASE + 8 * (n - cc.yoloRegCount)
+	end
+
 	local function callInfo(stmt)
 		local cs = callSigOf(stmt)
 		if not cs then return nil end
@@ -784,7 +801,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local argRegs = {}
 		for k = 1, cs.argWords do
 			if not isFp(cs.argTypes[k]) then
-				table.insert(argRegs, cc.yoloArg(k, cs.argTypes))
+				table.insert(argRegs, callArgSource(cs, k))
 			end
 		end
 		local resultReg = (cs.isVoid or (cs.retTypes[1] and isFp(cs.retTypes[1]))) and nil or 0
@@ -858,19 +875,33 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		return pregTemps[num]
 	end
 
-	-- Seeds for pointer flow: pointer args occupy their yolo argument registers.
-	-- FP args (float/double) pass in the arch's vector registers unmodeled: no
-	-- yolo GPR, no entry temp — the entry unpack below skips them entirely.
+	-- Seeds for pointer flow: pointer args occupy their yolo argument registers (or,
+	-- for the SysV 7th+ integer-class arguments on x86_64, their yolo incoming
+	-- stack-argument slots — virtual webs the frame rewrite redirects the body's
+	-- entry-time 8+8i(%rsp) reads to). FP args (float/double) pass in the arch's
+	-- vector registers unmodeled: no yolo GPR, no entry temp — the entry unpack
+	-- below skips them entirely.
 	local argPtrTemps = {}
 	local argInfo = {}
+	local yoloArgAt = {}   -- yolo incoming stack-arg slot index -> signature arg index
+	local yoloOrdinal = 0  -- 0-based ordinal among the non-FP args (SysV placement)
 	for k, ty in sigDesc.argTypes do
 		if isFp(ty) then
 			argInfo[k] = { isPtr = false, fp = true, fpOrdinal = fpOrdinalOf(sigDesc.argTypes, k),
 				yoloReg = nil, entryTemp = nil }
 		else
+			local j = yoloOrdinal
+			yoloOrdinal += 1
 			local yreg = cc.yoloArg(k, sigDesc.argTypes)
-			local et = yreg and lf.entryTemp[yreg] or nil
-			argInfo[k] = { isPtr = (ty == 7), yoloReg = yreg, entryTemp = et }
+			local yslot = nil
+			if not yreg and cgm.yoloStackArgs then
+				yslot = j - cc.yoloRegCount  -- 0-based incoming stack-arg slot
+				yoloArgAt[yslot] = k
+			end
+			local et = nil
+			if yslot then et = lf.entryTemp[framePass.yoloSlotNum(yslot)]
+			elseif yreg then et = lf.entryTemp[yreg] end
+			argInfo[k] = { isPtr = (ty == 7), yoloReg = yreg, yoloSlot = yslot, entryTemp = et }
 			if ty == 7 and et then table.insert(argPtrTemps, et) end
 		end
 	end
@@ -1373,15 +1404,55 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- FP args (float/double) are SKIPPED entirely: their value is already in its
 	-- vector register (xmm0..xmm7 / v0..v7, in declaration order among the FP args)
 	-- and the body reads it there — no move, no entry temp, no rooting.
+	-- A dense argument word beyond the arch's CC register count (x86_64: beyond the
+	-- fourth, in rdx,rcx,r8,r9) arrives on the stack in the caller's outgoing-args
+	-- area ([entry_rsp + 8 + 8*w] above the return address, densely packed in
+	-- declaration word order — pizlonated clang's exact placement, verified for
+	-- 5..14-word signatures incl. a pointer straddling the r9/stack boundary); the
+	-- cg.loadInArg loads read it there (read-only), whatever yolo register or slot
+	-- the word feeds — e.g. void(ptr,ptr,size_t) delivers size_t at [rsp+8], which
+	-- the yolo SysV placement wants in %rdx.
 	cg.move(vMyth, pColored(cc.myth), true)
 	for k, ty in sigDesc.argTypes do
 		local info = argInfo[k]
 		if info.entryTemp then
-			cg.move(info.entryTemp, pColored(cc.argIv(sigDesc.argTypes, k)), true)
+			local s = cc.denseSlot(sigDesc.argTypes, k)   -- 0-based dense intval word
+			if s < cc.argRegCount then
+				cg.move(info.entryTemp, pColored(cc.argIv(sigDesc.argTypes, k)), true)
+			else
+				cg.loadInArg(info.entryTemp, s - cc.argRegCount)
+			end
 			if info.isPtr then
 				local loT = pf.lowerTemp[info.entryTemp]
-				cg.move(loT, pColored(cc.argLo(sigDesc.argTypes, k)), true)
+				if s + 1 < cc.argRegCount then
+					cg.move(loT, pColored(cc.argLo(sigDesc.argTypes, k)), true)
+				else
+					cg.loadInArg(loT, s + 1 - cc.argRegCount)
+				end
 				emitRootStore(loT)
+			end
+		end
+	end
+	-- Materialized incoming yolo stack-argument area (x86_64): FP/vector instructions
+	-- cannot ride the GPR slot webs, so the frame rewrite materializes their
+	-- entry-time reads of the incoming SysV stack arguments (e.g.
+	-- `movd 8(%rsp), %xmm5`) into a reserved frame area (yolo.base). Fill each
+	-- FP-read slot from the same incoming fast-CC word the slot web takes. The word
+	-- is always stack-resident: a yolo stack argument has at least yoloRegCount
+	-- integer-class predecessors, hence a dense word index >= yoloRegCount >=
+	-- argRegCount (both 6/4 on x86_64).
+	local yolo = fctx and fctx.yolo
+	if yolo and yolo.base then
+		for i = 0, yolo.count - 1 do
+			if yolo.fpRead[i] then
+				local k = yoloArgAt[i]
+				local s = cc.denseSlot(sigDesc.argTypes, k)
+				local scratch = allocTemp({ role = "yoloarg" })
+				cg.loadInArg(scratch, s - cc.argRegCount)
+				local slot = build.memx(build.rp(4), { dispVal = yolo.base + 8 * i })
+				slot.frameSlot = true   -- shifted past the GC root area with everything else
+				slot.size = 8           -- lets the renderer synthesize the movq suffix
+				emit(build.insn("mov", { slot, build.rt(scratch) }, { uses = { scratch } }))
 			end
 		end
 	end
@@ -2213,6 +2284,93 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		return pDest
 	end
 
+	-- Fast-CC argument marshalling for a call with signature cs whose yolo argument
+	-- webs are argTemps (keyed by yolo argument SOURCE — SysV register number, or
+	-- the outgoing-area slot register for a 7th+ integer argument; see callArgSource).
+	-- Appends the precolored dense argument registers to `uses` and returns the FP
+	-- vector uses ({[xmm/v reg] = widthBytes} or nil) and the outgoing stack-arg
+	-- window size (0 when the signature's dense GPR words fit in the CC registers).
+	--
+	-- Dense words beyond cc.argRegCount travel on the stack, densely packed in
+	-- declaration word order at 8*j(%rsp) AT the call — pizlonated clang's exact
+	-- placement (verified for 5..14-word signatures incl. a pointer straddling the
+	-- r9/stack boundary). The stores execute inside an outgoing stack-arg window:
+	-- rsp is dropped over the area BEFORE the stores (cg.beginStackArgs) and
+	-- restored right after the call (cg.endStackArgs, which the caller emits BEFORE
+	-- the exception-flag test so both the normal and the exception path leave rsp
+	-- balanced). Any spill reloads regalloc inserts for the stores' sources are
+	-- stamped with the window's shift and re-based at render time (node.spillShift;
+	-- see sarcasm.luau's rewriteSpills and x86_64_render.renderInsn).
+	local function marshalFastArgs(cs, argTemps, uses)
+		local fpVecUses = nil
+		local stackWords = nil
+		for k = 1, cs.argWords do
+			if isFp(cs.argTypes[k]) then
+				-- FP arg: passes through its v register (placed there by the source
+				-- program, per the fast CC) — no GPR marshalling, but the value must
+				-- stay live up to the call for the FP save/restore liveness.
+				local m = fpOrdinalOf(cs.argTypes, k)
+				fpVecUses = fpVecUses or {}
+				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
+			else
+				local aTemp = argTemps[callArgSource(cs, k)]
+				local s = cc.denseSlot(cs.argTypes, k)
+				if s < cc.argRegCount then
+					cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
+					table.insert(uses, pColored(cc.argIv(cs.argTypes, k)))
+				else
+					stackWords = stackWords or {}
+					table.insert(stackWords, { off = 8 * (s - cc.argRegCount), temp = aTemp })
+				end
+				if cs.argTypes[k] == 7 then
+					if s + 1 < cc.argRegCount then
+						table.insert(uses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp))
+					else
+						-- the pointer's lower word is stack-resident: marshal the
+						-- web's capability, or a null lower when it carries none
+						-- (exactly emitCapMove's moveZero case). Re-read the lower
+						-- from its GC ROOT SLOT (a fixed frame offset) rather than
+						-- keeping the lower web live up to the call: lower webs are
+						-- no-spill (they must stay available for root stores), so a
+						-- call with many pointer arguments would otherwise run out
+						-- of registers at the marshalling point. The slot is
+						-- guaranteed current — every lower is rooted where its web
+						-- is defined (entry, ptr loads, ptr-returning calls,
+						-- allocations) — and the scratch temp rides the window like
+						-- any other store source (spill reloads re-base there).
+						local loT = pf.lowerTemp[aTemp]
+						local slotIdx = loT and loToSlot[loT]
+						if slotIdx then
+							local scratch = allocTemp({ role = "capreload" })
+							cg.loadFrameSlot(scratch, 16 + 8 * slotIdx)
+							stackWords = stackWords or {}
+							table.insert(stackWords, { off = 8 * (s + 1 - cc.argRegCount), temp = scratch })
+						else
+							stackWords = stackWords or {}
+							table.insert(stackWords, { off = 8 * (s + 1 - cc.argRegCount),
+								temp = loT, cap = true })
+						end
+					end
+				end
+			end
+		end
+		local winN = 0
+		if stackWords then
+			local maxOff = 0
+			for _, sw in stackWords do if sw.off > maxOff then maxOff = sw.off end end
+			winN = math.ceil((maxOff + 8) / 16) * 16
+			cg.beginStackArgs(winN)
+			for _, sw in stackWords do
+				if sw.cap and not sw.temp then
+					cg.storeStackArgZero(sw.off)
+				else
+					cg.storeStackArg(sw.temp, sw.off)
+				end
+			end
+		end
+		return fpVecUses, winN
+	end
+
 	local function emitCall(node)
 		local cs = callSigOf(node.stmt)
 		local callee = node.stmt.operands[1].text
@@ -2245,24 +2403,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if not wireCounterFromLower then rcxSave = counterGuardArm() end
 		cg.move(pColored(cc.myth), vMyth)
 		local callUses = { pColored(cc.myth) }
-		local fpVecUses = nil
-		for k = 1, cs.argWords do
-			if isFp(cs.argTypes[k]) then
-				-- FP arg: passes through its v register (placed there by the source
-				-- program, per AAPCS) — no GPR marshalling, but the value must stay
-				-- live up to the call for the FP save/restore liveness.
-				local m = fpOrdinalOf(cs.argTypes, k)
-				fpVecUses = fpVecUses or {}
-				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
-			else
-				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
-				cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
-				table.insert(callUses, pColored(cc.argIv(cs.argTypes, k)))
-				if cs.argTypes[k] == 7 then table.insert(callUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
-			end
-		end
+		local fpVecUses, winN = marshalFastArgs(cs, argTemps, callUses)
 		local callNode = cg.call("pizlonatedFI" .. cs.signature .. "_" .. callee, callUses, cg.callerSavedClobbers())
 		if fpVecUses then callNode.fpVecUses = fpVecUses end
+		-- restore rsp over the outgoing stack-arg area BEFORE the exception-flag
+		-- test: both the normal and the exception path then see a balanced stack
+		-- (the flag rides the %al result register, which the add does not touch).
+		if winN > 0 then cg.endStackArgs(winN) end
 		cg.exceptionBranch(ensureExcLabel())
 		if not cs.isVoid and not isFp(cs.retTypes[1]) then
 			cg.move(node.defTemps[1], pColored(cc.retIv))
@@ -2410,21 +2557,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.move(pColored(cc.myth), vMyth)
 		cg.move(pColored(cc.fo), fpLo)
 		local fastUses = { pColored(cc.myth), pColored(cc.fo), fnT }
-		local fpVecUses = nil
-		for k = 1, cs.argWords do
-			if isFp(cs.argTypes[k]) then
-				local m = fpOrdinalOf(cs.argTypes, k)
-				fpVecUses = fpVecUses or {}
-				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
-			else
-				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
-				cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
-				table.insert(fastUses, pColored(cc.argIv(cs.argTypes, k)))
-				if cs.argTypes[k] == 7 then table.insert(fastUses, emitCapMove(cc.argLo(cs.argTypes, k), aTemp)) end
-			end
-		end
+		local fpVecUses, winN = marshalFastArgs(cs, argTemps, fastUses)
 		local fastNode = cg.emitIndirectCallInsn(fnT, fastUses, cg.callerSavedClobbers())
 		if fpVecUses then fastNode.fpVecUses = fpVecUses end
+		-- restore rsp over the outgoing stack-arg area before rejoining (the generic
+		-- path never entered the window — it branched away before the marshalling).
+		if winN > 0 then cg.endStackArgs(winN) end
 		cg.jump(rejoinL)
 		-- generic (buffer-CC) path for a signature mismatch: marshal the args into
 		-- my_thread's CC buffer, set the argument byte size, call *[L+8]. The buffer
@@ -2446,7 +2584,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				if not zeroT then zeroT = allocTemp({ role = "scratch" }); cg.moveZero(zeroT) end
 				cg.store(zeroT, vMyth, loOff)
 			else
-				local aTemp = argTemps[cc.yoloArg(k, cs.argTypes)]
+				local aTemp = argTemps[callArgSource(cs, k)]
 				cg.store(aTemp, vMyth, bufOff)
 				local loT = (ty == 7) and pf.lowerTemp[aTemp] or nil
 				if loT then
@@ -2787,16 +2925,19 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- GC root-slot ABI fixup (x86_64 FP/SIMD): the Fil-C GC reads a frame's roots as
 	-- frame->lowers[index] (filc_frame: parent, origin, then lowers[]), so the root
 	-- slots MUST occupy frame offsets [16, 16+8*numRoots). The FP/SIMD regions — the
-	-- vector-save area and the materialized frame-slot clusters, all marked
-	-- frameSlot — were assigned offsets relative to base 16 by analyzeFrame /
-	-- preprocess / codegen before numRoots was known; shift them past the root area
-	-- (and its 16-byte alignment pad, matching computeLayout) now. The shift is a
-	-- multiple of 16, preserving the clusters' mod-16 alignment residues
-	-- (movaps-class accesses). No-op on arm64 (no frameSlot operands) and whenever
-	-- there are no roots.
+	-- vector-save area, the materialized frame-slot clusters, and the materialized
+	-- incoming yolo stack-argument area, all marked frameSlot — were assigned
+	-- offsets relative to base 16 by analyzeFrame / preprocess / codegen before
+	-- numRoots was known; shift them past the root area (and its 16-byte alignment
+	-- pad, matching computeLayout) now. The shift is a multiple of 16, preserving
+	-- the clusters' and the yolo area's mod-16 alignment residues (movaps-class
+	-- accesses). No-op on arm64 (no frameSlot operands) and whenever there are no
+	-- roots.
 	do
 		local shift = 8 * #rootTemps
-		if fctx and fctx.fp and (fctx.fp.bytes + fctx.fp.saveBytes) > 0 and #rootTemps % 2 == 1 then
+		local fpRegion = (fctx and fctx.fp and (fctx.fp.bytes + fctx.fp.saveBytes) or 0)
+			+ (fctx and fctx.yolo and fctx.yolo.bytes or 0)
+		if fpRegion > 0 and #rootTemps % 2 == 1 then
 			shift += 8
 		end
 		if shift > 0 then
@@ -2830,6 +2971,9 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- stack slot was materialized).
 		fpBytes = (fctx and fctx.fp and fctx.fp.bytes) or 0,
 		fpSaveBytes = (fctx and fctx.fp and fctx.fp.saveBytes) or 0,
+		-- materialized incoming yolo stack-argument area size for the layout
+		-- (x86_64 only; 0 when no FP instruction reads an incoming stack argument).
+		yoloBytes = (fctx and fctx.yolo and fctx.yolo.bytes) or 0,
 	}
 end
 

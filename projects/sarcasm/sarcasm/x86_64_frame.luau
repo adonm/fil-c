@@ -93,6 +93,7 @@ local x86 = require("./x86_64_isa")
 local x86parse = require("./x86_64_parse")
 local fp = require("./x86_64_fp")
 local sig = require("./sig")
+local frameShared = require("./frame")
 
 local x86_64_frame = {}
 
@@ -180,6 +181,60 @@ end
 -- runs (via frame.preprocess) before any rewrite call for the same body, single-threaded.
 local D0 = 0  -- net rsp depth at the end of the prologue prefix (the frame base)
 
+-- Incoming yolo stack-argument state for the CURRENT function (set by analyzeFrame,
+-- consumed by the rewrite — same single-threaded discipline as D0):
+--   yoloCount — number of SysV stack (7th+ integer-class) arguments in the entry
+--     signature; they arrive at 8+8i(%rsp) at entry, ABOVE the return address —
+--     outside the analyzed frame — so their entry-time reads get redirected to
+--     virtual slot webs (GPR) or the materialized area (FP/vector).
+--   yoloBase — base-16-relative offset of that materialized area (nil when no FP
+--     instruction reads an incoming stack argument); the transform fills it from
+--     the incoming fast-CC words and the layout reserves yoloBytes for it.
+local yoloCount = 0
+local yoloBase = nil
+
+-- Map a memory read to its incoming yolo stack-argument slot: return the 0-based
+-- slot index i when `st` is a LOAD-LIKE instruction (the memory operand is a pure
+-- source — not a store/RMW destination, not an address-taking lea) whose memory
+-- operand reads exactly entry_rsp + 8 + 8*i with 0 <= i < yoloCount. `baseName` is
+-- the expected base register ("rsp" for a direct read at depth 0, the alias
+-- register otherwise) and `saveDepth` the depth at which that register's value
+-- equals entry_rsp (0 for %rsp itself at depth 0; the alias save's depth).
+local function yoloArgSlotOf(st, baseName, saveDepth)
+	if yoloCount == 0 then return nil end
+	local ops = st.operands
+	local mem
+	for _, o in ops do if o.kind == "mem" then mem = o end end
+	if not mem then return nil end
+	if not (mem.base and mem.base.name == baseName and mem.base.kind == "reg") then return nil end
+	if mem.index or mem.dispSym then return nil end
+	if ops[1] == mem then return nil end              -- store / RMW destination
+	if x86.isMemRmw(st) then return nil end
+	local b = x86.baseMnemonic(string.lower(st.mnemonic))
+	if b == "lea" then return nil end                 -- address escape, not a read
+	local i = (mem.dispVal or 0) - saveDepth - 8
+	if i < 0 or i % 8 ~= 0 then return nil end
+	i = i / 8
+	if i >= yoloCount then return nil end
+	return i
+end
+
+-- Is `st` an entry-rsp materialization that may serve as an alias for reading the
+-- incoming yolo stack arguments (`leaq 0(%rsp), %reg` — the aesni_ocb prologue
+-- shape — at a provable rsp depth)? (The `movq %rsp, %reg` form is recognized by
+-- isSpSaveForm instead.)
+local function isYoloLeaSave(st, d)
+	if yoloCount == 0 then return false end
+	if d == nil or d == "dyn" then return false end
+	if isAlloca(st) or st.allocaPlace or st.allocaOwned then return false end
+	local ops = st.operands
+	if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea" then return false end
+	if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp") then return false end
+	local mem = ops[2]
+	return mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
+		and not mem.index and not mem.dispSym and (mem.dispVal or 0) == 0
+end
+
 -- Pre-scan the frame: derive its geometry from the PROLOGUE PREFIX (net depth at the first
 -- instruction that is not frame setup and cannot be prologue-transparent), determine
 -- whether rbp is established as the frame pointer there, and annotate every statement with
@@ -228,6 +283,22 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		else
 			for _, t in (sigDesc.argTypes or {}) do
 				if sig.isFpClass(t) then sigHasFp = true break end
+			end
+		end
+	end
+
+	-- Incoming yolo stack arguments (see the yoloCount/yoloBase comment above): the
+	-- SysV 7th+ integer-class arguments live at 8+8i(%rsp) at entry. Count them
+	-- from the signature (FP args pass in xmm0..xmm7 and never reach the stack —
+	-- signatures with >8 FP args are rejected before the frame pass runs).
+	yoloCount = 0
+	yoloBase = nil
+	if sigDesc then
+		local nf = 0
+		for _, t in (sigDesc.argTypes or {}) do
+			if not sig.isFpClass(t) then
+				nf += 1
+				if nf > 6 then yoloCount += 1 end
 			end
 		end
 	end
@@ -643,7 +714,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	-- KNOWN depth after an alloca poisoned the depth. Only CALLEE-SAVED registers can
 	-- hold a save (enforced by the rewrite at the save site): a call would clobber a
 	-- caller-saved one, and neither this analysis nor sarcasm's own injected runtime
-	-- calls model that.
+	-- calls model that. EXCEPTION: when the entry signature has incoming yolo STACK
+	-- ARGUMENTS (yoloCount > 0), a save in ANY register is recorded — not for %rsp
+	-- recovery (a caller-saved save still cannot recover, gated below) but as an
+	-- entry-rsp ALIAS whose entry-time reads of the incoming stack arguments the
+	-- rewrite redirects to the arguments' slots. Those reads REMOVE the register use
+	-- entirely, so injected calls cannot corrupt anything (and a modeled call still
+	-- marks the alias redefined, killing it).
 	local function transfer(st, d, sv, smap, fp, idx)
 		local ops = st.operands
 		-- The alloca machinery owns its statements outright (they are dropped or
@@ -664,23 +741,35 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		-- exactly what the frame rewrite does with it, so the register keeps holding
 		-- the save either way. An ANNOTATED save form is excluded: a `;! alloca size`
 		-- definition STAYS and computes the size, not a parked %rsp.
+		-- (With yolo stack arguments the save's register class is unrestricted — see
+		-- the smap comment above; a caller-saved save combined with the region corner
+		-- is rejected at the rewrite rather than given the alias treatment.)
 		local isSave = idx < prologueEnd and isSpSaveForm(st) and not isAlloca(st)
-			and x86.CALLEE_SAVED[ops[1].name] ~= nil
+			and (x86.CALLEE_SAVED[ops[1].name] ~= nil or yoloCount > 0)
+		-- An entry-rsp materialization via lea (`leaq 0(%rsp), %reg`, the aesni_ocb
+		-- prologue shape) is the same kind of save: it ENDS the prologue prefix (it
+		-- reads rsp), so it is not covered by isSave; record it at any statement
+		-- whose depth is provable. The rewrite drops it like the mov form, and reads
+		-- through the register are redirected the same way.
+		local isLeaSave = isYoloLeaSave(st, d)
 		local owned = st.allocaPlace or st.allocaOwned or isAlloca(st)
 		local recoverDepth = nil
 		if not owned and isSpRecoverForm(st) then
 			local e = smap[ops[2].name]
-			if e and not e.redefined then recoverDepth = e.depth end
+			-- a %rsp recovery needs the save to survive CALLS, which a caller-saved
+			-- register cannot do (injected runtime calls are invisible to this
+			-- analysis): those stay rejected at the rewrite, as without yolo args.
+			if e and not e.redefined and x86.CALLEE_SAVED[e.name] then recoverDepth = e.depth end
 		end
 		local nd, nsv, nfp = transferCore(st, d, sv, fp, recoverDepth)
-		if isSave then
+		if isSave or isLeaSave then
 			-- A (re)definition of the save: the register freshly parks the CURRENT rsp
 			-- depth (always known where a save survives the rewrite — the prologue).
 			-- This must not run the def-marking below: the save re-registers itself.
 			local out = {}
 			for k, e in pairs(smap) do out[k] = e end
 			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = d,
-				redefined = false }
+				redefined = false, form = isLeaSave and "leaq 0(%rsp)" or nil }
 			return nd, nsv, out, nfp
 		end
 		if recoverDepth then
@@ -701,14 +790,36 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		local out = smap
 		for name, e in pairs(smap) do
 			if not e.redefined then
-				for _, u in c.uses do
-					if u.kind == "reg" and u.rc == "gpr" and u.num == e.num then
-						error("sarcasm: reading %" .. name .. " while it holds the prologue"
-							.. " `movq %rsp, %" .. name .. "` save cannot be proven safe (the"
-							.. " save is dropped by the rewrite — the register's stack value"
-							.. " does not exist in the output; recover %rsp from it first or"
-							.. " redefine it): " .. (st.raw or st.mnemonic))
+				-- Count this instruction's modeled uses of the save register. The ONE
+				-- use allowed to survive is the memory base of an entry-time read of
+				-- an incoming yolo stack argument (the rewrite redirects it to the
+				-- argument's slot, removing the register use entirely); anything else
+				-- — a value use, a second use, a write through the register — observes
+				-- the dropped save and is rejected. EXCEPT the self-xor/self-sub
+				-- zeroing idiom (`xorl %eax, %eax`): the value written does not
+				-- depend on the register's old value, so the modeled use observes
+				-- nothing (and the def below kills the alias, exactly as a plain
+				-- redefinition).
+				local zeroing = false
+				do
+					local bb = x86.baseMnemonic(string.lower(st.mnemonic))
+					if (bb == "xor" or bb == "sub") and ops[1] and ops[2]
+						and ops[1].kind == "reg" and ops[2].kind == "reg"
+						and ops[1].num == e.num and ops[2].num == e.num then
+						zeroing = true
 					end
+				end
+				local nUses = 0
+				for _, u in c.uses do
+					if u.kind == "reg" and u.rc == "gpr" and u.num == e.num then nUses += 1 end
+				end
+				if nUses > 0 and not zeroing
+					and not (nUses == 1 and yoloArgSlotOf(st, name, e.depth)) then
+					error("sarcasm: reading %" .. name .. " while it holds the prologue"
+						.. " `" .. (e.form or "movq %rsp") .. ", %" .. name .. "` save cannot be proven safe (the"
+						.. " save is dropped by the rewrite — the register's stack value"
+						.. " does not exist in the output; recover %rsp from it first or"
+						.. " redefine it): " .. (st.raw or st.mnemonic))
 				end
 			end
 			if not e.redefined then
@@ -876,8 +987,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	-- is OBSERVED after the pop — so walk forward from the pop (CFG, stopping at a
 	-- fresh definition of the register) and reject at the first use that would read
 	-- the wrong value. The standard prologue/epilogue shapes read nothing after the
-	-- epilogue pops and stay accepted.
-	local function checkLostReload(popIdx, save)
+	-- epilogue pops and stay accepted. The same walk guards the dropped
+	-- movq-restore loads below (there `why` names the shape).
+	local function checkLostReload(popIdx, save, why)
 		local work, seen = {}, {}
 		for _, s in successors(popIdx) do table.insert(work, s) end
 		while #work > 0 do
@@ -890,11 +1002,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			for _, u in c.uses do
 				if u.kind == "reg" and u.rc == "gpr" and u.num == save.num then
 					error("sarcasm: register " .. save.name .. " is read after the"
-						.. " transient-pad pop that restores its save (the register was"
-						.. " redefined between its push and that pop, so the pop's"
-						.. " reload cannot be modeled and this read would see the"
-						.. " redefined value; read it before the pop or don't redefine"
-						.. " it inside the pad): " .. (st.raw or st.mnemonic))
+						.. " " .. (why or ("transient-pad pop that restores its save (the"
+							.. " register was redefined between its push and that pop, so the"
+							.. " pop's reload cannot be modeled and this read would see the"
+							.. " redefined value; read it before the pop or don't redefine"
+							.. " it inside the pad)")) .. ": " .. (st.raw or st.mnemonic))
 				end
 			end
 			local defined = false
@@ -928,6 +1040,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- mirrored by the pushed register's web, because the matching pop (which
 			-- the pairing analysis proves restores exactly this register) is dropped.
 			st.x86_saves = savesIn[i]
+			-- The prologue rsp-save map at this instruction: consumed by the rewrite
+			-- to redirect entry-time reads of the incoming yolo stack arguments
+			-- through an entry-rsp alias register (and to gate %rsp recoveries).
+			st.x86_smap = smapIn[i]
 			-- A `movq %rbx, %rsp` whose source register still holds an UNREDEFINED
 			-- prologue rsp save in the converged smap at this point recovers a
 			-- known-good stack pointer: the rewrite drops it and the transfer revived
@@ -939,7 +1055,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- diagnostic naming the register.
 			if isSpRecoverForm(st) and not (st.allocaPlace or st.allocaOwned or isAlloca(st)) then
 				local e = smapIn[i] and smapIn[i][st.operands[2].name]
-				if e and not e.redefined then
+				-- caller-saved saves (recorded only when yolo stack arguments exist)
+				-- cannot recover %rsp: an injected runtime call could clobber them.
+				if e and not e.redefined and x86.CALLEE_SAVED[e.name] then
 					st.x86_spRecover = true
 				end
 			end
@@ -995,6 +1113,57 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		end
 	end
 
+	-- Epilogue movq-restore loads (the perlasm shape: `movq (%rsp), %r15; movq
+	-- 8(%rsp), %r14; ...; addq $K, %rsp; ret`). The save-slot model rewrites a
+	-- load from a pushed register's save slot to a read of that register's web
+	-- — but when the register was REDEFINED after the push (perlasm uses the
+	-- saved registers as scratch inside the body), that web holds the redefined
+	-- value while the hardware slot holds the pre-push one, so the model cannot
+	-- express the load and the rewrite rejects it. Yet the load's result is dead
+	-- weight whenever the register is never read afterwards (the standard
+	-- epilogue reads nothing but the return registers before `ret`) — exactly
+	-- the situation checkLostReload proves for pops. Detect those loads here
+	-- (EXACTLY the rewrite's save-slot alias computation), prove unobservability
+	-- with the same forward walk, and mark them x86_dropRestore: the rewrite
+	-- then drops them like the pops it already drops. A restore into the
+	-- integer return register can never be proven unobservable (the frame
+	-- analysis does not model `ret`'s operand read), so it stays rejected.
+	local retIsGpr = sigDesc and not sigDesc.isVoid
+		and not (sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]))
+	for i, st in body do
+		if st.kind ~= "insn" then continue end
+		local ops = st.operands
+		local b = x86.baseMnemonic(string.lower(st.mnemonic))
+		if b ~= "mov" or not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr") then continue end
+		local mem = ops[2]
+		if not (mem and mem.kind == "mem" and not mem.index and not mem.dispSym) then continue end
+		if not (mem.base and (mem.base.rc == "sp" or (usesRbp and mem.base.name == "rbp"))) then continue end
+		if gprStackWidth(string.lower(st.mnemonic), mem) ~= 8 then continue end
+		local sv = st.x86_saves
+		if not (sv and sv ~= "dyn" and #sv > 0) then continue end
+		local off = (mem.dispVal or 0)
+		if mem.base.rc ~= "sp" then off = frameSize + off end
+		local hit = nil
+		for _, s in sv do
+			if not (usesRbp and s.name == "rbp") then
+				if off == D0 - s.depth and s.redefined then hit = s break end
+			end
+		end
+		if not hit then continue end
+		if retIsGpr and ops[1].num == 0 then
+			error("sarcasm: epilogue restore load into the integer return register"
+				.. " cannot be modeled (the register was redefined after its save,"
+				.. " so the restore's value and the web's value disagree): "
+				.. (st.raw or st.mnemonic))
+		end
+		checkLostReload(i, { name = ops[1].name, num = ops[1].num },
+			"epilogue restore load of a save whose register was redefined after the"
+				.. " push (the load cannot be modeled — the slot holds the pre-push"
+				.. " value while the register's web holds the redefined one — and"
+				.. " this read would observe the web's value)")
+		st.x86_dropRestore = true
+	end
+
 	-- FP/SIMD stack-slot taint scan. FP/vector instructions cannot ride the GPR slot
 	-- virtualization (their operands are real vector registers, not temps — the slot
 	-- pseudo-register would render as garbage), so every stack range an FP
@@ -1013,8 +1182,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
 			-- Mirror exactly the rewrite's stack-mem gate: stack base, no symbolic
 			-- displacement, no index register (the rewrite rejects those cleanly).
-			-- Heap/global accesses are irrelevant here.
-			if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym and not mem.index then
+			-- Heap/global accesses are irrelevant here. An entry-time read of an
+			-- incoming yolo stack argument (a depth-0 %rsp read) is irrelevant too:
+			-- it is redirected to the arguments' own materialized area, not to an
+			-- FP cluster.
+			if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym and not mem.index
+				and not (mem.base.rc == "sp" and st.x86_depth ~= nil and st.x86_depth ~= "dyn"
+					and yoloArgSlotOf(st, "rsp", st.x86_depth)) then
 				local m = string.lower(st.mnemonic)
 				local fpe = fp.lookup(m)
 				if not (fpe and fpe.noCheck) then  -- prefetch: memory-neutral, needs no slot
@@ -1100,6 +1274,53 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	end
 	local fpBytes = cursor - base0
 
+	-- Incoming yolo stack-argument FP/vector reads: scan for FP-class instructions
+	-- whose entry-time read maps to a yolo slot (EXACTLY the rewrite's detection:
+	-- a depth-0 %rsp read, or a read through an entry-rsp alias the smap proves
+	-- unredefined). When any exist, reserve the materialized area AFTER the clusters,
+	-- 16-aligned (the shift past the GC root area is always a multiple of 16 — see
+	-- transform.luau / computeLayout — so a mod-16 base here keeps the input's
+	-- movaps-class alignment of the entry_rsp+8 word pairs: entry_rsp ≡ 8 (mod 16),
+	-- hence slot pair starts ≡ 0). GPR reads of the same slots ride the virtual slot
+	-- webs instead; the area is initialized by the transform's entry unpack, so both
+	-- views always agree (it is read-only afterwards — stores stay rejected).
+	local fpYolo = {}
+	local hasFpYolo = false
+	if yoloCount > 0 then
+		for _, st in body do
+			if st.kind == "insn" and not (isAlloca(st) or st.allocaPlace or st.allocaOwned) then
+				local mem
+				for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
+				local i = nil
+				if mem and mem.base then
+					if mem.base.rc == "sp" and st.x86_depth ~= nil and st.x86_depth ~= "dyn" then
+						i = yoloArgSlotOf(st, "rsp", st.x86_depth)
+					elseif st.x86_smap then
+						local e = st.x86_smap[mem.base.name]
+						if e and not e.redefined then i = yoloArgSlotOf(st, mem.base.name, e.depth) end
+					end
+				end
+				if i then
+					local fpe = fp.lookup(string.lower(st.mnemonic))
+					if isFpInsn(fpe, st) then
+						-- mark every slot the access can touch: a wider-than-8-byte
+						-- read (movaps/movups/vmovdqu...) spans consecutive slots —
+						-- the entry unpack must fill them all.
+						local w = fp.accessWidth(string.lower(st.mnemonic), st.operands, st.raw) or 8
+						local last = math.min(yoloCount - 1, i + math.ceil(w / 8) - 1)
+						for j = i, last do fpYolo[j] = true end
+						hasFpYolo = true
+					end
+				end
+			end
+		end
+	end
+	local yoloBytes = 0
+	if hasFpYolo then
+		yoloBase = math.ceil(cursor / 16) * 16
+		yoloBytes = 8 * yoloCount
+	end
+
 	local fpInfo = {
 		clusters = tainted,
 		bytes = fpBytes,
@@ -1115,7 +1336,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			return nil
 		end,
 	}
-	return frameSize, 0, usesRbp, fpInfo
+	-- 5th return: the incoming yolo stack-argument info for the transform (slot
+	-- count, which slots FP instructions read, the materialized area's base offset
+	-- and byte size — base is nil when no FP instruction reads one).
+	return frameSize, 0, usesRbp, fpInfo,
+		{ count = yoloCount, fpRead = fpYolo, base = yoloBase, bytes = yoloBytes }
 end
 
 function x86_64_frame.rewrite(st, ctx)
@@ -1367,6 +1592,94 @@ function x86_64_frame.rewrite(st, ctx)
 		error("sarcasm: stack-relative memory access with a symbolic displacement cannot be"
 			.. " proven safe: " .. (st.raw or m))
 	end
+
+	-- Emit the rewrite of an entry-time read of incoming yolo stack-argument slot i
+	-- (yoloArgSlotOf already proved the shape: a load-like instruction, plain
+	-- base+disp memory operand). GPR-class reads ride a virtual slot web — the
+	-- transform seeds it from the incoming fast-CC argument word (with its
+	-- capability lower for a pointer argument, so pointer flow propagates exactly
+	-- like a register argument). FP/vector-class reads cannot name a GPR
+	-- pseudo-register, so they materialize into the reserved area the transform
+	-- fills with the same incoming words (see analyzeFrame).
+	local function emitYoloRead(i)
+		-- The `;! ... ptr` annotation family operates on REAL memory (invisicap
+		-- loads/stores/RMWs); the argument slot is virtualized/materialized, not
+		-- real memory, so the annotation can never be honored here — reject it
+		-- exactly like an annotated ordinary frame-slot access.
+		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
+			error("sarcasm: `" .. st.annotation .. "` on an incoming stack-argument read is not"
+				.. " supported (the argument is redirected to a frame slot, not real memory): "
+				.. (st.raw or m))
+		end
+		if st.lockPrefix then
+			error("sarcasm: lock prefix on an incoming stack-argument read is not supported"
+				.. " (the argument is redirected to a thread-confined frame slot): " .. (st.raw or m))
+		end
+		for _, o in ops do
+			if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
+				error("sarcasm: AVX512 mask-register ({k}) incoming stack-argument reads are not"
+					.. " supported (masked-off lanes may not touch memory; cannot prove memory"
+					.. " safety): " .. (st.raw or m))
+			end
+		end
+		local mem
+		for _, o in ops do if o.kind == "mem" then mem = o end end
+		local fpEntry = fp.lookup(m)
+		if isFpInsn(fpEntry, st) then
+			-- FP/vector read: materialize into the reserved area (analyzeFrame
+			-- assigned yoloBase precisely because this read exists). The width is
+			-- the knowledge module's authoritative one (it rejects a contradicting
+			-- PTR annotation); aligned >16-byte forms are rejected like anywhere.
+			local wb, fa = fp.accessWidth(m, ops, st.raw)
+			if not wb then
+				error("sarcasm: cannot determine the memory access width of '" .. m
+					.. "' (cannot prove memory safety): " .. (st.raw or m))
+			end
+			if fa and fa > 16 then
+				error("sarcasm: aligned 32/64-byte incoming stack-argument reads are not supported"
+					.. " (the stack is only guaranteed 16-byte aligned); use the unaligned form: "
+					.. (st.raw or m))
+			end
+			local mat = { kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				scale = 1, dispVal = yoloBase + 8 * i, size = wb, frameSlot = true,
+				deco = mem.deco, bcastN = mem.bcastN }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
+				raw = st.raw, line = st.line, annotation = st.annotation })
+			return
+		end
+		-- GPR read: a virtual slot web, keyed by slot index (shared across widths,
+		-- exactly like the ordinary frame-slot virtualization).
+		local wb = gprStackWidth(m, mem)
+		local slot = frameShared.yoloSlotReg(i, wb * 8)
+		local newops = {}
+		for _, o in ops do table.insert(newops, (o == mem) and slot or o) end
+		emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
+			raw = st.raw, line = st.line, annotation = st.annotation })
+	end
+
+	-- Entry-time read of an incoming yolo stack argument THROUGH an entry-rsp alias
+	-- register (`movq %rsp, %rax` / `leaq 0(%rsp), %rax`, then `8(%rax)` — the
+	-- aesni_ocb / bn_mul_mont_gather5 prologue shape): the smap proves the register
+	-- still holds the parked stack pointer on every path. Redirect the read to the
+	-- argument's slot; any other access through the alias is the same escape class
+	-- as reading the saved stack pointer itself (the transfer's use-check rejects
+	-- those first — this is the defensive mirror).
+	if mem and mem.base and not isStackReg(mem.base, usesRbp) and not mem.index and not mem.dispSym then
+		local e = st.x86_smap and st.x86_smap[mem.base.name]
+		if e and not e.redefined then
+			local i = yoloArgSlotOf(st, mem.base.name, e.depth)
+			if not i then
+				error("sarcasm: memory access through the saved stack pointer that is not"
+					.. " an incoming stack-argument read cannot be proven safe: " .. (st.raw or m))
+			end
+			emitYoloRead(i)
+			return
+		end
+	end
+
 	if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym then
 		-- A `lock` prefix on a stack-frame access can never be honored: this rewrite
 		-- runs BEFORE classify (which owns the lockAllows validation), and the slot
@@ -1429,6 +1742,21 @@ function x86_64_frame.rewrite(st, ctx)
 		local off = (mem.dispVal or 0)
 		if mem.base.rc ~= "sp" then off = ctx.frameSize + off end
 		if ctx.regionOf(off) then emit(st); return end
+		-- An entry-rsp materialization for reading the incoming yolo stack arguments
+		-- (`leaq 0(%rsp), %reg` at a provable depth — the aesni_ocb shape): dropped;
+		-- reads through the register are redirected by the alias handling above.
+		if b == "lea" and isYoloLeaSave(st, d) then return end
+		-- A DIRECT entry-time read of an incoming yolo stack argument: %rsp-based
+		-- at a PROVABLE depth d (before the body's own frame setup, in a frameless
+		-- body, or — the compiler style — above the established frame), e.g.
+		-- `movq 8(%rsp), %rbx` / `movd 8(%rsp), %xmm5`: at depth d the argument
+		-- sits at d+8+8*i(%rsp). The address is above the caller's frame, so the
+		-- ordinary bounds check below would reject it; redirect it to the
+		-- argument's slot instead.
+		if mem.base.rc == "sp" and d ~= nil and d ~= "dyn" and not mem.index then
+			local i = yoloArgSlotOf(st, "rsp", d)
+			if i then emitYoloRead(i); return end
+		end
 		-- lea of a stack address computes/escapes a pointer into the frame: reject.
 		if b == "lea" then ctx.rejectEscape(st.raw or m) end
 		-- only plain base+disp slots are virtualizable (no index register)
@@ -1548,7 +1876,11 @@ function x86_64_frame.rewrite(st, ctx)
 				-- exception is a full-width plain STORE: it overwrites the slot and
 				-- the model defines the register's web with exactly that value, so
 				-- the slot and the web agree again (the analysis clears the save's
-				-- redefined state from there on).
+				-- redefined state from there on). The OTHER exception is an epilogue
+				-- movq-restore load that analyzeFrame proved unobservable (its
+				-- x86_dropRestore walk found no later read of the destination): it
+				-- is dropped like the epilogue pops.
+				if st.x86_dropRestore then return end
 				error("sarcasm: stack access overlapping a pushed register's save slot inside"
 					.. " the transient prologue pad whose register was redefined after the"
 					.. " push (the slot still holds the pre-redefinition value, so the"
@@ -1698,6 +2030,15 @@ function x86_64_frame.rewrite(st, ctx)
 			return
 		end
 		if not ctx.regionOf(0) then
+			-- With incoming yolo stack arguments the save is an entry-rsp ALIAS:
+			-- dropped like a callee-saved save — every read of the register while
+			-- the alias is live is redirected to the argument's slot (or rejected
+			-- by the transfer's use-check), and a %rsp recovery from a
+			-- caller-saved register stays rejected above. (The corner of a
+			-- caller-saved save AND a fixed-alloca region at rsp+0 falls through
+			-- to the region passthrough below — the alias is recorded regardless,
+			-- so reads of the register then hit the use-check rejection.)
+			if yoloCount > 0 then return end
 			error("sarcasm: saving %rsp into %" .. ops[1].name .. " cannot be proven safe (a"
 				.. " call clobbers caller-saved registers; park it in a callee-saved register"
 				.. " such as %rbx or %r12-%r15): " .. (st.raw or m))

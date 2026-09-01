@@ -52,10 +52,18 @@ Each defined function label carries its Fil-C signature in C style:
     hash: ;! unsigned(ptr)
 
 The signature controls the internal calling convention: non-FP arguments
-pack densely into GPRs, `float`/`double` arguments pass in `%xmm0`-`%xmm7`
-(arm64 `v0`-`v7`) in declaration order among the FP arguments, and a
-`float`/`double` result returns in `%xmm0`/`v0`. `ptr` is the pointer
-type; `long double` and vector types are rejected.
+pack densely into GPRs (x86_64 `%rdx,%rcx,%r8,%r9` — further argument
+words travel on the stack and are marshalled both ways, so signatures
+are not arity-limited there; arm64 packs into six registers and keeps
+its 3-argument/6-word limit), `float`/`double` arguments pass in
+`%xmm0`-`%xmm7` (arm64 `v0`-`v7`) in declaration order among the FP
+arguments, and a `float`/`double` result returns in `%xmm0`/`v0`. `ptr`
+is the pointer type; `long double` and vector types are rejected. On
+x86_64, SysV stack arguments (the 7th and later integer-class
+arguments, read at `8+8i(%rsp)` at entry — directly, or through a
+register that parked the entry `%rsp` with `movq %rsp,%reg` /
+`leaq 0(%rsp),%reg`) are redirected to argument slots fed from the
+incoming words.
 
 ### Pointer annotations
 

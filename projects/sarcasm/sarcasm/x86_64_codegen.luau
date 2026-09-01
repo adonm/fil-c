@@ -42,6 +42,14 @@ M.strictBodyValidation = true
 -- x86_64_frame.VEC_SAVE_BYTES).
 M.fpSignatures = true
 
+-- This backend implements SysV/yolo STACK ARGUMENTS: at ENTRY the 7th and later
+-- integer-class arguments (which arrive at 8+8i(%rsp), above the return address)
+-- are redirected to virtual slot webs / a materialized frame area fed from the
+-- incoming fast-CC words (x86_64_frame + transform's entry unpack), and at
+-- CALLSITES the outgoing stack arguments are ordinary frame slots the transform
+-- marshals into the outgoing stack-arg window.
+M.yoloStackArgs = true
+
 -- Calling convention (numbers are register encodings; see x86_64_isa).
 -- Fast entrypoint: rdi=myth, (rdx,rcx)=arg0, (r8,r9)=arg1; ret al=flags, rdx=iv, rcx=lo.
 -- Runtime (SysV) calls: rdi,rsi,rdx,... ; result in rax.  yolo params arrive in SysV regs.
@@ -51,9 +59,13 @@ M.cc = {
 	myth = isa.CC.myth, retFlag = isa.CC.retFlag, retIv = isa.CC.retIv, retLo = isa.CC.retLo,
 	fo = isa.CC.fo,                               -- rsi (callee function-object lower at a call)
 	argIv = isa.CC.argIv, argLo = isa.CC.argLo,
+	argRegCount = isa.CC.argRegCount,             -- 4 (rdx,rcx,r8,r9); beyond: stack words
+	denseSlot = isa.CC.denseSlot,                 -- 0-based dense word index of arg k's iv
 	-- yolo input-asm register for GPR argument k: its 1-based ordinal among the
-	-- NON-FP args (FP args pass in the xmm registers and return nil here).
+	-- NON-FP args (FP args pass in the xmm registers and return nil here; the 7th
+	-- and later integer-class args, which live on the stack at entry, return nil too).
 	yoloArg = isa.CC.yoloArg,
+	yoloRegCount = isa.CC.yoloRegCount,           -- 6 (rdi..r9); beyond: yolo stack args
 	fpArgOrdinal = isa.CC.fpArgOrdinal,           -- xmm index (0-based) of FP arg k
 	rtArg = function(k) return isa.SYSV[k] end,   -- runtime-call arg registers
 	rtRet = 0,                                    -- rax
@@ -62,27 +74,19 @@ M.cc = {
 
 -- Callsite signature validation (called by the shared transform for each `;! sig` call
 -- annotation). The x86_64 fast CC packs GPR argument words densely into the FOUR
--- registers rdx,rcx,r8,r9 (a pointer arg = 2 words); wider arguments are passed on the
--- stack, which sarcasm does not yet marshal. So a call needs at most 4 register GPR
--- argument words. (Resolved-EXTERNAL calls are also bounded by the callsite thunk's
--- 4-register hold pool -- the same limit; see x86_64_glue.callsiteThunk.) Float/double
--- args are supported (they pass in xmm0..xmm7, in declaration order among the FP args,
--- and the return rides in xmm0), so at most 8 of them are allowed; long double and the
+-- registers rdx,rcx,r8,r9 (a pointer arg = 2 words); GPR words beyond the fourth
+-- travel on the stack as densely packed 8-byte slots (verified against pizlonated
+-- clang), and sarcasm marshals them (transform.luau's outgoing stack-arg window) —
+-- so a call is no longer bounded in its GPR argument words. Float/double args are
+-- supported (they pass in xmm0..xmm7, in declaration order among the FP args, and
+-- the return rides in xmm0), so at most 8 of them are allowed; long double and the
 -- vector classes are rejected by the arch-aware signature class check (same rejection
 -- shape as arm64).
 function M.checkCallsiteSig(cs, callee)
 	sig.checkSupportedClasses(cs, "call to '" .. callee .. "'", { arch = "x86_64" })
-	local words, fpArgs = 0, 0
+	local fpArgs = 0
 	for k = 1, cs.argWords do
-		if sig.isFpClass(cs.argTypes[k]) then
-			fpArgs += 1
-		else
-			words += (cs.argTypes[k] == 7) and 2 or 1
-		end
-	end
-	if words > 4 then
-		error("sarcasm: call to '" .. callee .. "': >4 register argument words not yet supported"
-			.. " (this call's signature needs " .. tostring(words) .. ")")
+		if sig.isFpClass(cs.argTypes[k]) then fpArgs += 1 end
 	end
 	if fpArgs > 8 then
 		error("sarcasm: call to '" .. callee .. "': >8 floating-point arguments not yet supported"
@@ -636,6 +640,67 @@ function M.make(ctx)
 	end
 	function cg.popStackPtr()
 		emit(build.insn("add", { build.rp(4), build.imm(16) }, {}))
+	end
+
+	-- INCOMING stack-argument load (entry side of the >4-word fast CC): dense GPR
+	-- argument word (argRegCount + wordIdx) arrives at [entry_rsp + 8 + 8*wordIdx]
+	-- (above the return address, in the caller's outgoing-args area — read-only).
+	-- The load renders AFTER the prologue, when rsp sits at the body frame base,
+	-- so its displacement depends on the final frame layout (callee-saved pushes +
+	-- layout.total): the node carries inArgWord and x86_64_render.renderInsn
+	-- computes the real displacement at render time (emit.luau passes it rc).
+	function cg.loadInArg(dst, wordIdx)
+		local n = build.insn("mov", { rt(dst), build.memx(build.rp(4), { dispVal = 0 }) },
+			{ defs = { dst } })
+		n.inArgWord = wordIdx
+		emit(n)
+	end
+
+	-- A plain disp(%rsp) frame-slot load with no modeled base temp (the GC root
+	-- slots live at FIXED frame offsets — 16 + 8*index, an ABI constant — so the
+	-- displacement needs no layout fixup). Used by the callsite marshalling to
+	-- re-read a pointer argument's capability lower from its root slot instead of
+	-- keeping the lower web live up to the call.
+	function cg.loadFrameSlot(dst, off)
+		emit(build.insn("mov", { rt(dst), build.memx(build.rp(4), { dispVal = off }) },
+			{ defs = { dst } }))
+	end
+
+	-- OUTGOING stack-argument window (callsite side of the >4-word fast CC): dense
+	-- argument words beyond argRegCount must sit at 8*j(%rsp) AT the call, densely
+	-- packed in declaration word order (pizlonated clang's exact placement). rsp
+	-- is dropped over the outgoing area BEFORE the marshalling stores and restored
+	-- right after the call (before the exception-flag test, whose flag rides the
+	-- %al result register, which add/sub do not touch). The marshalling stores (and
+	-- any spill reloads regalloc inserts for their sources) then execute INSIDE the
+	-- adjusted window: rewriteSpills stamps every spill node it creates there with
+	-- the window's shift (node.spillShift), which renderInsn adds back so the
+	-- reload/store still addresses the same frame slot. Only the call itself (whose
+	-- def/use temps are all precolored, never spill-rewritten) and the two
+	-- adjustments carry no shifted temps. N is a multiple of 16 so rsp stays
+	-- 16-byte aligned at the call (a clang-compiled callee reads incoming word
+	-- pairs with movaps).
+	function cg.beginStackArgs(N)
+		local n = build.insn("sub", { build.rp(4), build.imm(N) }, {})
+		n.shiftBegin = N
+		emit(n)
+	end
+	function cg.endStackArgs(N)
+		local n = build.insn("add", { build.rp(4), build.imm(N) }, {})
+		n.shiftEnd = true
+		emit(n)
+	end
+	-- Store one outgoing argument word at 8*j(%rsp) inside the window.
+	function cg.storeStackArg(src, off)
+		emit(build.insn("mov", { build.memx(build.rp(4), { dispVal = off }), rt(src) },
+			{ uses = { src } }))
+	end
+	-- Store a zero outgoing argument word (a pointer argument whose web carries no
+	-- capability marshals a null lower, exactly like emitCapMove's moveZero).
+	function cg.storeStackArgZero(off)
+		local slot = build.memx(build.rp(4), { dispVal = off })
+		slot.size = 8  -- lets the renderer synthesize the movq suffix for the reg-less form
+		emit(build.insn("mov", { slot, build.imm(0) }, {}))
 	end
 
 	-- Save/restore EFLAGS around an instrumented sequence when the program's flags

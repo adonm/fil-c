@@ -64,6 +64,25 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   path, and whitespace-dodged forms); the only legitimate parens in an Intel
   operand are the x87 stack-register name st(N).
 
+  Constant expressions (x86_64): gas folds integer constant expressions at
+  assembly time and real-world inputs rely on it (OpenSSL perlasm emits `subq
+  $64+32,%rsp`, `movl 512-128(%rcx), %eax`, `movq $1<<4, %rax`,
+  `K256+512(%rip)`), so the parser folds them itself (parseDispExpr — a
+  tokenizer plus recursive-descent evaluator; no loadstring). Supported:
+  decimal/0x-hex literals, + - * / % << >> (integer semantics; / truncates
+  toward zero, >> is arithmetic), unary -/+, and parentheses. An immediate
+  (`$`-prefixed in AT&T, bare digit-led in Intel) folds to (text, value) with
+  the text canonicalized to the folded decimal, so every downstream consumer
+  sees the constant; a memory displacement folds into the bare dispSym plus a
+  constant dispVal (the renderer re-joins them, so `K256+512(%rip)` round-trips
+  and `.Lx+100-52(%rip)` renders as `.Lx+48(%rip)`). A symbol may only stand
+  alone or be added to/subtracted from constants — sym*2, sym-sym, -sym are not
+  representable as one displacement — and anything malformed (`$64+`, `$foo(2)`)
+  is a clean compile error, never the silent 0 that tonumber's nil used to
+  produce (which the frame analysis read as a 0-byte stack adjustment).
+  Numeric local label references (`1f`/`2b`) pass through as symbols for
+  numlabel.luau, and @PLT/@GOTPCREL decorations are split before evaluation.
+
   Annotation markers and comments (both parsers — see README.md's "Annotation
   markers" for the user-facing contract): a line is split into code + annotation
   body at the EARLIEST annotation marker outside a string literal — `;!` on both
@@ -255,9 +274,12 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
 
 NOTE (x86_64 vs arm64 CC packing): BOTH fast-CC packings are DENSE — a scalar arg
 consumes one register slot, a pointer arg two consecutive slots. x86_64 packs from rdx
-across rdx,rcx,r8,r9 (4 words max); arm64 packs from x2 across x2..x7 (6 words max) —
-e.g. `long(long,long,ptr)` puts arg1 in x3 and arg2's intval/lower in x4/x5 —
-and clang passes anything wider on the stack (sarcasm rejects such signatures).
+across rdx,rcx,r8,r9 and passes further words on the stack as densely packed 8-byte
+slots in declaration word order (word w >= 4 at `8*(w-4)(%rsp)` in the caller's
+outgoing-args area), which sarcasm marshals in BOTH directions (see the entry-unpack
+and callsite-marshalling notes); arm64 packs from x2 across x2..x7 (6 words max) and
+keeps rejecting wider signatures —
+e.g. `long(long,long,ptr)` puts arg1 in x3 and arg2's intval/lower in x4/x5.
 
 NOTE (arm64 alloca region redirect): The `regionRedirect` mov branch (`mov xD, sp`
 re-deriving a region pointer) redirects to `buffer + (0 - region.base)` via
@@ -313,6 +335,82 @@ address of the stack frame at all
 proven).
 sarcasm SYNTHESIZES its own frame regardless (for the SOV check + filc_frame push +
 callee-saved for the new allocation), discarding the input's frame ops.
+
+#### x86_64: fast-CC stack argument words and SysV stack arguments
+
+The x86_64 fast CC packs the first FOUR GPR argument words into rdx,rcx,r8,r9 (a
+pointer arg is two words: intval + lower, and one can straddle the r9/stack
+boundary); argument words beyond the fourth travel on the stack as densely packed
+8-byte slots in declaration word order — word w (0-based, w >= 4) at `8*(w-4)(%rsp)`
+in the caller's outgoing-args area (verified against pizlonated clang callers,
+callees and 2ET thunks for 5..14-word signatures; the outgoing area is 16-byte
+aligned at the call, and clang reads incoming word pairs with movaps). sarcasm
+marshals those words in BOTH directions, so signatures have no GPR arity limit
+(FP args stay bounded at 8: xmm0..xmm7):
+
+- **Entry unpack (transform).** Arg k's dense word index s (FP args consume no
+  dense words) selects the source: s < 4 — the dense CC register, copied into the
+  arg's yolo SysV register web exactly as before; s >= 4 — an INCOMING stack word
+  at `[entry_rsp + 8 + 8*(s-4)]` (above the return address, read-only), loaded by
+  `cg.loadInArg`. Because the load renders after the prologue, its displacement is
+  computed at RENDER time from the final layout (`layout.total + 8*#calleeSaved +
+  8 + 8*(s-4)`; the node carries `inArgWord`, emit.luau hands renderInsn the rc).
+  This is the double mapping the yolo ABI needs: e.g. `void(ptr,ptr,size_t)`
+  delivers p1.iv=rdx, p1.lo=rcx, p2.iv=r8, p2.lo=r9, size=`[rsp+8]`, while the
+  body's SysV placement wants p1=%rdi, p2=%rsi, size=%rdx — so %rdx is loaded
+  from `[rsp+8]`.
+
+- **SysV stack arguments at entry (x86_64_frame).** The 7th and later
+  integer-class yolo arguments arrive at `8+8i(%rsp)` at entry — ABOVE the
+  caller's frame, which the bounds check rejects. Their entry-time READS are
+  redirected: a direct `%rsp`-based read at a provable rsp depth d (address
+  `entry_rsp - d + disp == entry_rsp + 8 + 8i` — the prologue shapes
+  `movq 8(%rsp),%reg` / `movd 8(%rsp),%xmm5`, and compiler-style reads above an
+  established frame), or a read THROUGH a register that parked the entry rsp
+  (`movq %rsp,%reg` / `leaq 0(%rsp),%reg` — the aesni_ocb/bn_mul_mont_gather5
+  shape), which the prologue rsp-save map (smap) now records for ANY register
+  when the signature has stack arguments (a caller-saved save still cannot
+  recover %rsp, and any non-argument use of the aliased register stays
+  rejected). GPR-class reads are rewritten to a VIRTUAL argument-slot web (a
+  dedicated pseudo-register band), which the entry unpack seeds from the same
+  incoming fast-CC word — including the capability lower for a pointer argument,
+  so pointer flow propagates exactly like a register argument. FP/vector reads
+  (they cannot name a GPR pseudo-register) instead MATERIALIZE the incoming
+  words into a reserved frame area (yoloBytes in computeLayout, filled by the
+  entry unpack, 16-aligned so movaps-class pair reads keep their alignment);
+  analyzeFrame reserves it exactly when an FP read exists. Stores to the
+  incoming argument area stay rejected, as are reads of the return-address word
+  or beyond the declared arguments.
+
+- **Callsite marshalling (transform).** Mirror image: dense words 0..3 move
+  into the CC registers; words 4+ are stored into the outgoing-args area at
+  `8*j(%rsp)` before the call — exactly clang's placement. The stores execute
+  inside an outgoing stack-arg window (`cg.beginStackArgs(N)`/`endStackArgs(N)`,
+  N a multiple of 16): rsp is dropped over the area BEFORE the stores and
+  restored right after the call, BEFORE the exception-flag test (the flag rides
+  %al, which add/sub do not touch), so both the normal and the exception path
+  see a balanced stack, and the GC sees the same filc_frame throughout (the
+  frame pointer at myth+16 never moves). Any spill reloads regalloc inserts for
+  the stores' sources land INSIDE the window, so rewriteSpills stamps them with
+  the shift (node.spillShift, kept unshifted in spillOff for slot packing and
+  reload elimination) and renderInsn re-bases them. A 7th+ integer argument's
+  VALUE comes from the body's own outgoing-args area — an ordinary frame slot
+  (the compiler-style placement: outgoing argument o at `8*o(%rsp)`), connected
+  to the call by reaching-definitions. A stack-resident pointer LOWER word is
+  re-read from the argument's GC root slot (a fixed frame offset, 16 + 8*index,
+  always current — every lower is rooted where its web is defined) instead of
+  from the lower web: lower webs are no-spill, so keeping one live per pointer
+  argument up to the call would run the allocator out of registers at roughly
+  ten pointer arguments.
+
+- **Glue (x86_64_glue).** The 2ET generic-entry thunk loads words 4+ from the
+  buffer into the outgoing area through the same sub/add window (hand-written,
+  so no spill concerns). The callsite resolver thunk stashes only the
+  register-resident words in its hold pool (at most 4 — the pool's size):
+  on the fast path the incoming stack words flow through to the callee IN PLACE
+  (same signature, same placement, and the getter call touches no stack above
+  its return address); on the generic buffer-CC path they are read back from
+  the incoming stack area above the thunk's pushed saves.
 
 #### x86_64: no mid-function stack-pointer movement
 Frame geometry is sound ONLY if every stack access executes with rsp at one known
@@ -445,7 +543,23 @@ rejected — a call clobbers it, the injected runtime calls included; the except
 a fixed-alloca-region base, redirected to the allocation pointer), and while the
 save is outstanding its register must not be REDEFINED or READ (the rejection names
 the register); a merge that disagrees on the save's redefined-ness poisons it, and a
-POST-prologue `movq %rsp, %reg` stays a stack-address escape.
+POST-prologue `movq %rsp, %reg` stays a stack-address escape. EXCEPTION, when the
+entry signature has SysV stack arguments (see "fast-CC stack argument words"
+above): the save — and its `leaq 0(%rsp), %reg` form — may go into ANY register as
+an entry-rsp ALIAS for reading the incoming stack arguments; every read of the
+register while the alias is live is either redirected to the argument's slot or
+rejected, a caller-saved save still cannot recover %rsp, and the self-xor/self-sub
+zeroing idiom counts as a redefinition, not a read.
+
+A related epilogue shape is the perlasm movq-RESTORE: `movq (%rsp), %r15; movq
+8(%rsp), %r14; ...; addq $K, %rsp; ret` restores the saved registers with loads
+instead of pops. When a saved register was redefined inside the body (perlasm uses
+it as scratch), the save-slot model cannot express the reload (the slot holds the
+pre-push value, the web the redefined one) — but the loaded value is dead weight
+whenever the register is never read afterwards, so the analysis proves
+unobservability with the same forward walk the dropped pops use (checkLostReload,
+rejecting a restore into the integer return register outright) and the rewrite
+DROPS the load like the pops it already drops.
 
 While rbp is the frame pointer it is a stack register (rbp = rsp + frameSize), so
 reading it as a VALUE — `movq %rbp, %rax`, arithmetic on it, or using it as a memory
@@ -1118,17 +1232,25 @@ Assembly that cannot be proven safe is rejected with a clean `sarcasm: <file>: <
 error (exit code 1). Current limitations, enforced on both architectures unless noted:
 - Every function declared `.type NAME, %function` and defined in the file MUST carry a
   signature annotation on its label; an unparseable signature is likewise rejected.
-- At most 3 register arguments per function; on x86_64, additionally at most 4 register
-  argument WORDS (a pointer arg occupies two words: intval + lower). The x86_64 fast CC
-  packs argument words densely into rdx,rcx,r8,r9 only — arguments beyond the fourth
-  word are passed on the stack, which sarcasm does not yet marshal — while on arm64 the
-  fixed x2..x7 arg pairs already cap any 3-argument signature at 6 words.
-- `;! sig` call annotations (callsite signatures) are bounded only by the argument-WORD
-  rule, NOT by the 3-argument entry cap: on x86_64 a callsite may use at most 4 register
-  argument words, so a 4-scalar-argument call works end-to-end (the callsite resolver
-  thunk also needs one callee-saved hold register per argument word, and its hold pool
-  is 4 registers — the same limit). On arm64 the fixed x2..x7 pairs cap a callsite at 3
-  arguments, same as entry signatures. An over-limit call is rejected.
+- On arm64: at most 3 register arguments per function; the fixed x2..x7 arg pairs
+  already cap any 3-argument signature at 6 words, and callsite signatures are bounded
+  the same way (the arm64 callsite thunk's hold pool is also 6). On x86_64 there is NO
+  GPR arity limit: the fast CC packs the first four argument words into rdx,rcx,r8,r9
+  and passes the rest on the stack as densely packed 8-byte slots (a pointer arg
+  occupies two words — one can straddle the r9/stack boundary), and sarcasm marshals
+  the stack words in both directions. At ENTRY, the unpack loads words 4+ read-only
+  from the caller's outgoing-args area (`[rsp + frame + 8 + 8*w]`, remapping them onto
+  the SysV yolo register sequence — e.g. `void(ptr,ptr,size_t)` loads the size_t from
+  `[rsp+8]` into %rdx); the SysV 7th+ integer arguments (read at `8+8i(%rsp)` at
+  entry, directly or through a register that parked the entry `%rsp`) are redirected
+  to argument-slot webs (GPR reads) or a materialized frame area (FP/vector reads)
+  fed from the same incoming words. At a CALLSITE, dense words 0..3 marshal into the
+  CC registers and words 4+ are stored into the outgoing-args area at `8*j(%rsp)`
+  before the call (rsp dropped over them and restored right after), exactly like
+  pizlonated clang; the callsite resolver thunk flows its incoming stack words
+  through to the callee in place on the fast path and reads them back into the CC
+  buffer on the generic path. FP arguments are still bounded on both architectures:
+  at most 8 (xmm0..xmm7 / v0..v7).
 - Indirect calls: on BOTH architectures a register-indirect call is supported
   when it carries a `;!` callsite signature and its target register's web is a
   known pointer value (`blr xN ;! sig(...)` on arm64 — validateBody delegates

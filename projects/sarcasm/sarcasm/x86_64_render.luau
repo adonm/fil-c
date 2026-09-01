@@ -244,10 +244,45 @@ local function isCounterBranch(low)
 	return string.match(low, "^loop[bwlq]?$") ~= nil or low == "jrcxz" or low == "jecxz"
 end
 
-function x86_64_render.renderInsn(node, colorNum, syntax)
+function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 	local mnem = node.stmt and node.stmt.mnemonic or node.mnemonic
 	local ops = node.stmt and node.stmt.operands or node.operands or {}
 	local low = string.lower(mnem)
+
+	-- Displacement fixups for two synthesized node kinds whose %rsp-relative
+	-- offsets are only known once the frame layout is (they cannot be baked into
+	-- the operand at transform time):
+	--   * inArgWord — an INCOMING fast-CC stack-argument load (cg.loadInArg): the
+	--     word sits at [entry_rsp + 8 + 8*w] (above the return address), i.e. at
+	--     [rsp + 8*#calleeSaved + layout.total + 8 + 8*w] at the body frame base.
+	--   * spillShift — a spill reload/store regalloc inserted inside an outgoing
+	--     stack-arg window (cg.beginStackArgs/endStackArgs), where rsp was dropped
+	--     by N: re-base the slot by the window's shift so it addresses the same
+	--     frame slot (see sarcasm.luau's rewriteSpills).
+	local dispDelta = 0
+	if node.inArgWord and rc and rc.layout then
+		dispDelta = rc.layout.total + 8 * #rc.calleeSaved + 8 + 8 * node.inArgWord
+	end
+	if node.spillShift then dispDelta += node.spillShift end
+	if dispDelta ~= 0 then
+		local adjusted = {}
+		for _, o in ops do
+			if o.kind == "mem" and o.base and o.base.fixedNum == 4 then
+				local c = {}
+				for k, v in o do c[k] = v end
+				c.dispVal = (c.dispVal or 0) + dispDelta
+				table.insert(adjusted, c)
+			else
+				table.insert(adjusted, o)
+			end
+		end
+		ops = adjusted
+		-- renderOperandRaw looks up temps through node.opTemp keyed by operand
+		-- identity; the cloned operand carries the same tempRef field, so only a
+		-- node.opTemp-mapped operand would lose its temp — clone carefully: the
+		-- memory operands these node kinds carry never use opTemp (their base is
+		-- the fixed rsp), so this is safe.
+	end
 
 	-- Bare multi-byte padding NOPs do not assemble (gas rejects the bare mnemonic
 	-- with "invalid instruction suffix for `nop'"), and the operand-ful padding
@@ -416,20 +451,23 @@ end
 -- immediately after the parent+origin header (filc_runtime.h's filc_frame). Then the
 -- reserved vector-save area and the materialized FP/SIMD frame-slot clusters (whose
 -- analyzeFrame-assigned offsets are relative to base 16 and get shifted past the root
--- area by transform once numRoots is known), then regalloc spill slots. The FP/SIMD
--- region starts on a 16-byte boundary (8 bytes of padding after the root slots when
--- numRoots is odd) so the clusters' mod-16 alignment residues (movaps-class
--- accesses) survive the shift. The alignment modulus stays 16 (body rsp ≡ 0 mod 16);
--- aligned >16-byte stack accesses are rejected by the frame rewrite.
-local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes)
+-- area by transform once numRoots is known), then the materialized incoming yolo
+-- stack-argument area (x86_64 only — yoloBytes; fed by the entry unpack, read by
+-- FP/vector argument reads), then regalloc spill slots. The FP/SIMD+yolo region
+-- starts on a 16-byte boundary (8 bytes of padding after the root slots when
+-- numRoots is odd) so the clusters' and the yolo area's mod-16 alignment residues
+-- (movaps-class accesses) survive the shift. The alignment modulus stays 16 (body
+-- rsp ≡ 0 mod 16); aligned >16-byte stack accesses are rejected by the frame rewrite.
+local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes, yoloBytes)
 	spillBytes = spillBytes or 0
 	fpSaveBytes = fpSaveBytes or 0
 	fpBytes = fpBytes or 0
+	yoloBytes = yoloBytes or 0
 	local p = #calleeSaved
 	local rootBase = 16
-	local fpPad = ((fpSaveBytes + fpBytes) > 0 and numRoots % 2 == 1) and 8 or 0
-	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes
-	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+spills)
+	local fpPad = ((fpSaveBytes + fpBytes + yoloBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes
+	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+yolo+spills)
 	-- Maintain 16-byte alignment at call sites: (8 retaddr + 8*p pushes + N) % 16 == 0.
 	local target = ((p % 2) == 0) and 8 or 0
 	local N = base

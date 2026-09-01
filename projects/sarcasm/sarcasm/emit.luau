@@ -20,7 +20,7 @@ function emit.emitFip(out, tr, colorResult, render, syntax)
 	-- FP frame-slot region sizes are x86_64-only (nil elsewhere; arm64's
 	-- computeLayout ignores the extra args).
 	local layout = render.computeLayout(calleeSaved, tr.numRoots, (tr.numSpillSlots or 0) * 8,
-		tr.fpSaveBytes, tr.fpBytes)
+		tr.fpSaveBytes, tr.fpBytes, tr.yoloBytes)
 	local sigName = "pizlonatedFIP" .. tostring(tr.sigDesc.signature) .. "_" .. tr.name
 	local rc = {
 		out = out, tr = tr, layout = layout, colorNum = colorNum,
@@ -58,15 +58,15 @@ function emit.emitFip(out, tr, colorResult, render, syntax)
 				else
 					invalidateReg(r)               -- r is overwritten by the load
 					avail[node.spillOff] = r
-					table.insert(out, render.renderInsn(node, colorNum, syntax))
+					table.insert(out, render.renderInsn(node, colorNum, syntax, rc))
 				end
 			elseif node.spillStore then
 				avail[node.spillOff] = colorNum(node.spillTemp)
-				table.insert(out, render.renderInsn(node, colorNum, syntax))
+				table.insert(out, render.renderInsn(node, colorNum, syntax, rc))
 			else
 				-- drop no-op self-moves left behind by register coalescing
 				if not render.isSelfMove(node, colorNum) then
-					table.insert(out, render.renderInsn(node, colorNum, syntax))
+					table.insert(out, render.renderInsn(node, colorNum, syntax, rc))
 				end
 				for _, t in (node.defTemps or {}) do invalidateReg(colorNum(t)) end
 				local ctl = node.control or (node.c and node.c.control) or "none"

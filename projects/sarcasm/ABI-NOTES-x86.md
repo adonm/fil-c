@@ -12,10 +12,17 @@ recommended `#!` spelling is equivalent — see "Annotation markers" in README.m
 - `%rdi` = myth, `%rsi` = function object (FO payload ptr).
 - args: packed DENSELY into `%rdx`,`%rcx`,`%r8`,`%r9` — a pointer-class arg occupies two
   consecutive registers (intval, lower), a scalar-class arg one (intval only). E.g.
-  `(ptr, size_t, size_t)` = arg0 in rdx/rcx, arg1 in r8, arg2 in r9. Arguments beyond
-  the fourth word are passed on the stack (verified against clang output: a 3rd pointer
-  arg arrives at 8+16N(%rsp) after the callee's frame). sarcasm does not marshal stack
-  arguments and rejects signatures needing more than 4 register argument words.
+  `(ptr, size_t, size_t)` = arg0 in rdx/rcx, arg1 in r8, arg2 in r9. Argument WORDS
+  beyond the fourth travel on the stack as densely packed 8-byte slots in declaration
+  word order, word w (0-based, w >= 4) at `8*(w-4)(%rsp)` in the caller's outgoing-args
+  area (the callee reads it at `8+8*(w-4)(%rsp)`, above its return address; verified
+  against clang callers and callees for 5..14-word signatures — e.g. `void(ptr,ptr,
+  size_t)` delivers the size_t at `[rsp+8]` at entry — including a pointer straddling
+  the r9/stack boundary: `void(int,int,int,ptr)` puts p.iv in r9 and p.lo on the
+  stack). sarcasm marshals those stack words in BOTH directions: the entry unpack
+  loads them read-only from the incoming area (remapping onto the SysV yolo register
+  sequence — e.g. the size_t above is loaded into %rdx), and a callsite stores its
+  outgoing words at `8*j(%rsp)` before the call exactly like clang.
 - return: `%al` bit0 = exception flag; `%rdx` = ret intval; `%rcx` = ret lower.
 
 ## Floating-point ABI (decoded from `build/bin/clang -S` output)

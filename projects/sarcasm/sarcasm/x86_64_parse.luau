@@ -147,6 +147,181 @@ local function parseSym(text)
 	return { kind = "sym", text = text, reloc = reloc }
 end
 
+-- Decimal text for a folded constant. tostring renders large integral doubles in
+-- exponent notation ("4.6116860184274e+18"), which `as` cannot read back as an
+-- integer literal; %.0f always prints the full decimal expansion.
+local function intText(v)
+	return string.format("%.0f", v)
+end
+
+-- Constant-expression evaluation for immediates and displacements ------------------
+--
+-- gas folds integer constant expressions at assembly time, and real-world inputs
+-- rely on it (OpenSSL perlasm emits `subq $64+32,%rsp`, `movl 512-128(%rcx), %eax`,
+-- `movq $1<<4, %rax`, `K256+512(%rip)`). The operand model keeps an immediate as
+-- (text, value) and a displacement as (dispSym, dispVal), so the parser must fold
+-- such expressions itself: parseDispExpr(text) evaluates an integer constant
+-- expression and returns { sym = <name?>, const = <number> } — a pure constant has
+-- no sym, and a symbolic displacement is the bare symbol plus a folded constant
+-- offset. Supported syntax: decimal and 0x-hex literals, the binary operators
+-- + - * / % << >> (integer semantics: / truncates toward zero like C/gas, >> is an
+-- arithmetic shift), unary - and +, and parentheses. A symbol may only stand alone
+-- or be added to/subtracted from constants: sym*2, sym-sym, -sym and friends are
+-- not representable as one displacement and are rejected, as is anything
+-- malformed — a misparse must NEVER silently become a 0 immediate/displacement
+-- (which is what tonumber's nil used to turn it into). `what` ("immediate" /
+-- "displacement") is for error messages.
+local function parseDispExpr(text, what)
+	-- A GNU-as numeric local label reference (`1f`/`2b`) is a SYMBOL as far as the
+	-- operand model is concerned (numlabel.luau rewrites it after parsing).
+	if string.match(text, "^%d+[fb]$") then return { sym = text, const = 0 } end
+	-- Fast path: a plain literal keeps the exact tonumber semantics it always had,
+	-- so every non-expression input behaves byte-identically to before.
+	local plain = tonumber(text)
+	if plain then return { const = plain } end
+
+	-- Tokenize into operator strings plus { num = n } / { sym = name } tables.
+	local tokens = {}
+	local i, n = 1, #text
+	while i <= n do
+		local c = string.sub(text, i, i)
+		if string.match(c, "%s") then
+			i += 1
+		elseif string.match(c, "[%a_.$]") then
+			local name = string.match(text, "^[%a_.$][%w_.$]*", i)
+			table.insert(tokens, { sym = name })
+			i += #name
+		elseif string.match(c, "%d") then
+			local hex = string.match(text, "^0[xX][0-9a-fA-F]+", i)
+			if hex then
+				table.insert(tokens, { num = tonumber(hex) })
+				i += #hex
+			else
+				local digits = string.match(text, "^%d+", i)
+				-- digits directly followed by f/b are a numeric local label
+				-- reference (`1f`/`2b`), which gas accepts anywhere a symbol goes.
+				local fb = string.sub(text, i + #digits, i + #digits)
+				if fb == "f" or fb == "b" then
+					table.insert(tokens, { sym = digits .. fb })
+					i += #digits + 1
+				else
+					table.insert(tokens, { num = tonumber(digits) })
+					i += #digits
+				end
+			end
+		elseif c == "<" or c == ">" then
+			if string.sub(text, i + 1, i + 1) ~= c then
+				error("sarcasm: unsupported operator '" .. c .. "' in " .. what
+					.. " expression: " .. text)
+			end
+			table.insert(tokens, c .. c)
+			i += 2
+		elseif c == "+" or c == "-" or c == "*" or c == "/" or c == "%"
+			or c == "(" or c == ")" then
+			table.insert(tokens, c)
+			i += 1
+		else
+			error("sarcasm: unexpected character '" .. c .. "' in " .. what
+				.. " expression: " .. text)
+		end
+	end
+	if #tokens == 0 then
+		error("sarcasm: empty " .. what .. " expression")
+	end
+
+	-- Recursive descent. Every value is { const = n } or { sym = name, const = n }:
+	-- a displacement is affine, so at most ONE symbol may appear, and only under
+	-- +/- with constants.
+	local pos = 0
+	local function peek() return tokens[pos + 1] end
+	local function take() pos += 1; return tokens[pos] end
+
+	local parseExpr
+
+	local function constOf(v, opname)
+		if v.sym then
+			error("sarcasm: symbol '" .. v.sym .. "' cannot appear in a '" .. opname
+				.. "' " .. what .. " expression: " .. text)
+		end
+		return v.const
+	end
+
+	local function parseFactor()
+		local t = take()
+		if t == nil then
+			error("sarcasm: missing operand in " .. what .. " expression: " .. text)
+		end
+		if t == "(" then
+			local v = parseExpr()
+			if take() ~= ")" then
+				error("sarcasm: missing ')' in " .. what .. " expression: " .. text)
+			end
+			return v
+		end
+		if t == "-" then return { const = -constOf(parseFactor(), "-") } end
+		if t == "+" then return { const = constOf(parseFactor(), "+") } end
+		if type(t) == "table" then return { sym = t.sym, const = t.num or 0 } end
+		error("sarcasm: unexpected '" .. tostring(t) .. "' in " .. what .. " expression: " .. text)
+	end
+
+	local function parseTerm()
+		local v = parseFactor()
+		while true do
+			local op = peek()
+			if op ~= "*" and op ~= "/" and op ~= "%" and op ~= "<<" and op ~= ">>" then return v end
+			take()
+			local lhs = constOf(v, op)
+			local rhs = constOf(parseFactor(), op)
+			if op == "*" then v = { const = lhs * rhs }
+			elseif op == "<<" or op == ">>" then
+				if rhs < 0 then
+					error("sarcasm: negative shift count in " .. what .. " expression: " .. text)
+				end
+				if op == "<<" then v = { const = lhs * 2^rhs }
+				else v = { const = math.floor(lhs / 2^rhs) } end
+			elseif rhs == 0 then
+				error("sarcasm: division by zero in " .. what .. " expression: " .. text)
+			else
+				local q = lhs / rhs
+				local qt = q >= 0 and math.floor(q) or math.ceil(q)
+				if op == "/" then v = { const = qt } else v = { const = lhs - qt * rhs } end
+			end
+		end
+	end
+
+	parseExpr = function()
+		local v = parseTerm()
+		while true do
+			local op = peek()
+			if op ~= "+" and op ~= "-" then return v end
+			take()
+			local rhs = parseTerm()
+			if op == "+" then
+				if v.sym and rhs.sym then
+					error("sarcasm: more than one symbol in " .. what .. " expression ('"
+						.. v.sym .. "', '" .. rhs.sym .. "'): " .. text)
+				end
+				v = { sym = v.sym or rhs.sym, const = v.const + rhs.const }
+			else
+				if rhs.sym then
+					error("sarcasm: subtracting symbol '" .. rhs.sym .. "' in a " .. what
+						.. " expression is not a displacement: " .. text)
+				end
+				v = { sym = v.sym, const = v.const - rhs.const }
+			end
+		end
+	end
+
+	local result = parseExpr()
+	if pos ~= #tokens then
+		error("sarcasm: unexpected trailing text in " .. what .. " expression: " .. text)
+	end
+	-- folded: real evaluation happened (the fast paths above leave it nil), so a
+	-- caller that re-renders the text (the $-immediate path) canonicalizes it.
+	result.folded = true
+	return result
+end
+
 -- AVX512 decorator handling -------------------------------------------------
 -- Strip trailing {...} groups off an operand field (`%zmm0{%k1}{z}`, `(%rdi){1to16}`,
 -- `[rdi]{k3}`). Returns the stripped field plus the decorator strings in left-to-right
@@ -188,6 +363,19 @@ local function parseAttOperandRaw(field)
 	if string.sub(field, 1, 1) == "*" then indirect = true; field = string.sub(field, 2) end
 	if string.sub(field, 1, 1) == "$" then
 		local t = string.sub(field, 2)
+		-- Fold a constant expression (`$64+32`, `$1<<4`): the value feeds frame-size
+		-- and bounds analysis, and when real evaluation happened the folded TEXT
+		-- replaces the operand text so every downstream consumer (and the
+		-- re-rendered output) sees the constant. A symbolic immediate (`$sym`,
+		-- `$sym+8`) keeps its verbatim text — `as` resolves the relocation — as
+		-- does an @RELOC decoration, which is never an expression. A malformed
+		-- expression is a clean compile error here, never a silent 0.
+		if not string.find(t, "@", 1, true) then
+			local e = parseDispExpr(t, "immediate")
+			if not e.sym then
+				return { kind = "imm", text = e.folded and intText(e.const) or t, value = e.const }
+			end
+		end
 		return { kind = "imm", text = t, value = tonumber(t) }
 	end
 	-- A `%reg` operand is register-shaped unless the parens make it memory — EXCEPT the
@@ -214,8 +402,24 @@ local function parseAttOperandRaw(field)
 		local mem = { kind = "mem", scale = 1, indirect = indirect }
 		pre = trim(pre)
 		if pre ~= "" then
-			local n = tonumber(pre)
-			if n then mem.dispVal = n else mem.dispSym = (parseSym(pre)).text; mem.dispReloc = (parseSym(pre)).reloc end
+			-- The displacement may be a constant expression (`512-128(%rcx)`, or
+			-- `(64+32)(%rsp)` after the concatenation rewrite above) or a symbol
+			-- plus/minus a folded constant (`K256+512(%rip)`): split any @reloc
+			-- decoration first, then fold. A numeric local label reference (`1f`)
+			-- stays a symbol for numlabel.luau. dispVal stays nil for a bare
+			-- symbol (the exact shape downstream expects) and is set whenever a
+			-- nonzero constant rides alongside one (the renderer re-joins them).
+			local ps = parseSym(pre)
+			if ps.reloc then
+				-- @-decorated: a relocation attaches to a symbol, never to a
+				-- folded constant — keep the verbatim symbol pass-through.
+				mem.dispSym = ps.text
+				mem.dispReloc = ps.reloc
+			else
+				local e = parseDispExpr(ps.text, "displacement")
+				mem.dispSym = e.sym
+				if not e.sym or e.const ~= 0 then mem.dispVal = e.const end
+			end
 		end
 		local parts = {}
 		for p in (inside .. ","):gmatch("(.-),") do table.insert(parts, trim(p)) end
@@ -223,9 +427,20 @@ local function parseAttOperandRaw(field)
 			-- A NUMBER in the base position is a displacement (gas: `(4096)` ==
 			-- `4096` — an absolute address), never a register: keeping it as the
 			-- displacement lets classify reject the absolute access precisely
-			-- instead of silently dropping the displacement.
+			-- instead of silently dropping the displacement. The same goes for a
+			-- constant EXPRESSION there (`(64+32)` == `96`) — anything starting
+			-- with a digit/sign/paren is expression-shaped; other junk keeps the
+			-- old silent-drop behavior.
 			mem.base = classifyReg(string.sub(parts[1], 2))
-			if not mem.base and tonumber(parts[1]) then mem.dispVal = tonumber(parts[1]) end
+			if not mem.base then
+				if tonumber(parts[1]) then
+					mem.dispVal = tonumber(parts[1])
+				elseif string.match(parts[1], "^[%d%+%-%(]") then
+					local e = parseDispExpr(parts[1], "displacement")
+					mem.dispSym = e.sym
+					if not e.sym or e.const ~= 0 then mem.dispVal = e.const end
+				end
+			end
 		end
 		if parts[2] and parts[2] ~= "" then mem.index = classifyReg(string.sub(parts[2], 2)) end
 		if parts[3] and parts[3] ~= "" then mem.scale = tonumber(parts[3]) or 1 end
@@ -287,8 +502,16 @@ local function parseIntelOperandRaw(field)
 		local mem = { kind = "mem", scale = 1, size = size }
 		pre = trim(pre)
 		if pre ~= "" then
-			local n = tonumber(pre)
-			if n then mem.dispVal = n else mem.dispSym = pre end
+			-- A leading displacement may be a constant expression (`64+32[rbx]`),
+			-- folded like the AT&T displacement above. An @-decorated symbol is
+			-- not an expression: keep it verbatim.
+			if not string.find(pre, "@", 1, true) then
+				local e = parseDispExpr(pre, "displacement")
+				mem.dispSym = e.sym
+				if not e.sym or e.const ~= 0 then mem.dispVal = e.const end
+			else
+				mem.dispSym = pre
+			end
 		end
 		-- inside: base [+ index*scale] [+/- disp]  (also `rip + sym`)
 		inside = (string.gsub(inside, "%s+", ""))
@@ -313,16 +536,48 @@ local function parseIntelOperandRaw(field)
 			local t = term.tok
 			if string.find(t, "*", 1, true) then
 				local rn, sc = string.match(t, "^(.-)%*(%d+)$")
-				mem.index = classifyReg(rn); mem.scale = tonumber(sc) or 1
+				local ir = rn and classifyReg(rn)
+				if ir then
+					mem.index = ir; mem.scale = tonumber(sc) or 1
+				else
+					-- Not reg*scale: a constant-product term (`[rbx+8*4]` = +32),
+					-- folded into the displacement. Anything else (sym*K, junk)
+					-- is a clean parse error instead of a silently dropped term.
+					local e = parseDispExpr(t, "displacement")
+					mem.dispVal = (mem.dispVal or 0) + term.sign * e.const
+				end
 			else
 				local r = classifyReg(t)
 				if r then
 					if r.rc == "rip" then mem.base = r
 					elseif not mem.base then mem.base = r else mem.index = r end
+				elseif string.find(t, "@", 1, true) then
+					-- @-decorated symbol (`[rip+sym@GOTPCREL]`): not an expression,
+					-- keep it verbatim (the AT&T renderer re-attaches the reloc).
+					mem.dispSym = t
 				else
-					local num = tonumber(t)
-					if num then mem.dispVal = (mem.dispVal or 0) + term.sign * num
-					else mem.dispSym = t end
+					-- A constant-expression term (`[rbx+1<<4]`, `[rip+K256]`):
+					-- fold the constant into the displacement, keep any symbol
+					-- bare. A NEGATED symbol (`[rip-sym]`) is not a representable
+					-- displacement (gas rejects it too), so error rather than
+					-- silently dropping the sign.
+					local e = parseDispExpr(t, "displacement")
+					if e.sym then
+						if term.sign < 0 then
+							error("sarcasm: subtracting symbol '" .. e.sym
+								.. "' in a displacement expression is not a displacement: " .. field)
+						end
+						if mem.dispSym then
+							error("sarcasm: more than one displacement symbol in memory operand ('"
+								.. mem.dispSym .. "', '" .. e.sym .. "'): " .. field)
+						end
+						mem.dispSym = e.sym
+						-- a symbol term carries no constant of its own (the +/- term
+						-- split guarantees that), so dispVal keeps its exact old shape
+						if e.const ~= 0 then mem.dispVal = (mem.dispVal or 0) + term.sign * e.const end
+					else
+						mem.dispVal = (mem.dispVal or 0) + term.sign * e.const
+					end
 				end
 			end
 		end
@@ -336,6 +591,19 @@ local function parseIntelOperandRaw(field)
 		return { kind = "numref", text = field, num = nref, dir = ndir, indirect = indirect }
 	end
 	if string.match(field, "^-?%d") or string.match(field, "^0[xX]") then
+		-- A digit-led field is an immediate (unlike AT&T, where a bare number is
+		-- an absolute memory operand): fold a constant expression (`sub rsp,
+		-- 64+32`, `mov eax, 1<<4`) exactly like the AT&T $-immediate path — a
+		-- malformed expression errors cleanly instead of silently becoming a
+		-- nil-valued (zero for frame purposes) immediate. A symbol caught by the
+		-- leading-digit heuristic (`8+sym`) or an @ decoration keeps the
+		-- verbatim pass-through.
+		if not string.find(field, "@", 1, true) then
+			local e = parseDispExpr(field, "immediate")
+			if not e.sym then
+				return { kind = "imm", text = e.folded and intText(e.const) or field, value = e.const }
+			end
+		end
 		return { kind = "imm", text = field, value = tonumber(field) }
 	end
 	return parseSym(field)
@@ -432,6 +700,58 @@ local function splitAnnotation(s)
 	return s, nil
 end
 
+-- Parse one instruction line (mnemonic plus operand text; labels and annotations
+-- already peeled) into an insn statement. parseString uses this for spelled
+-- instructions; the .byte decoder (decodeByteInsns below) uses it for the
+-- canonical AT&T spellings its byte sequences stand for, so a decoded
+-- instruction is indistinguishable from a spelled one in every downstream pass
+-- (validation, frame analysis, lift, codegen, rendering).
+local function parseInsnText(t, syntax)
+	local mnem, rest = string.match(t, "^([%.%w_][%w_.]*)%s*(.*)$")
+	if not mnem then
+		-- The line starts with something that can neither begin a mnemonic nor a
+		-- directive (e.g. `//!` annotation text, which is NOT a marker on x86_64
+		-- and so stays in the code part). Raise a normal parse error rather than
+		-- choking on string.sub(nil, ...) below (a latent crash for such lines
+		-- before markers existed).
+		error("sarcasm: cannot parse line: " .. t)
+	end
+	rest = trim(rest or "")
+	-- `lock` is an instruction PREFIX, not a mnemonic: gas emits it as a leading
+	-- token on the same line (`lock xaddq %rsi, (%rdi)`, also
+	-- `lock;`-separated). Re-split the remainder into the real mnemonic +
+	-- operands and tag the instruction; WHICH instructions may carry the prefix
+	-- is validated in x86_64_isa.classify. rep*/xacquire/xrelease stay
+	-- reject-listed "mnemonics" (fp.unsafeReject) — only `lock` gets prefix
+	-- parsing.
+	local lockPrefix = false
+	if string.lower(mnem) == "lock" then
+		local r2 = (string.gsub(rest, "^%s*;%s*", ""))
+		local m2, rest2 = string.match(r2, "^([%.%w_][%w_.]*)%s*(.*)$")
+		if not m2 then
+			error("sarcasm: `lock` prefix with no following instruction: " .. t)
+		end
+		mnem, rest = m2, trim(rest2 or "")
+		lockPrefix = true
+	end
+	local opsize
+	if syntax == "att" then local _; _, opsize = attMnemonic(mnem) end
+	local ops = {}
+	for _, f in splitOperands(rest) do
+		if f ~= "" then
+			table.insert(ops, syntax == "att" and parseAttOperand(f) or parseIntelOperand(f))
+		end
+	end
+	-- AT&T lists operands source-first; normalize to dest-first (like Intel/ARM)
+	if syntax == "att" and #ops >= 2 then
+		local rev = {}
+		for i = #ops, 1, -1 do table.insert(rev, ops[i]) end
+		ops = rev
+	end
+	return { kind = "insn", mnemonic = string.lower(mnem), operands = ops,
+		opsize = opsize, raw = t, syntax = syntax, lockPrefix = lockPrefix or nil }
+end
+
 function x86parse.parseString(text, syntax)
 	local out = {}
 	text = (string.gsub(text, "\r\n", "\n"))
@@ -475,39 +795,7 @@ function x86parse.parseString(text, syntax)
 				if string.sub(mnem, 1, 1) == "." then
 					table.insert(out, { kind = "directive", name = mnem, args = rest, raw = t })
 				else
-					-- `lock` is an instruction PREFIX, not a mnemonic: gas emits it
-					-- as a leading token on the same line (`lock xaddq %rsi, (%rdi)`,
-					-- also `lock;`-separated). Re-split the remainder into the real
-					-- mnemonic + operands and tag the instruction; WHICH instructions
-					-- may carry the prefix is validated in x86_64_isa.classify.
-					-- rep*/xacquire/xrelease stay reject-listed "mnemonics"
-					-- (fp.unsafeReject) — only `lock` gets prefix parsing.
-					local lockPrefix = false
-					if string.lower(mnem) == "lock" then
-						local r2 = (string.gsub(rest, "^%s*;%s*", ""))
-						local m2, rest2 = string.match(r2, "^([%.%w_][%w_.]*)%s*(.*)$")
-						if not m2 then
-							error("sarcasm: `lock` prefix with no following instruction: " .. t)
-						end
-						mnem, rest = m2, trim(rest2 or "")
-						lockPrefix = true
-					end
-					local opsize
-					if syntax == "att" then local _; _, opsize = attMnemonic(mnem) end
-					local ops = {}
-					for _, f in splitOperands(rest) do
-						if f ~= "" then
-							table.insert(ops, syntax == "att" and parseAttOperand(f) or parseIntelOperand(f))
-						end
-					end
-					-- AT&T lists operands source-first; normalize to dest-first (like Intel/ARM)
-					if syntax == "att" and #ops >= 2 then
-						local rev = {}
-						for i = #ops, 1, -1 do table.insert(rev, ops[i]) end
-						ops = rev
-					end
-					table.insert(out, { kind = "insn", mnemonic = string.lower(mnem), operands = ops,
-						opsize = opsize, raw = t, syntax = syntax, lockPrefix = lockPrefix or nil })
+					table.insert(out, parseInsnText(t, syntax))
 				end
 			end
 		end
@@ -515,6 +803,212 @@ function x86parse.parseString(text, syntax)
 		for k = before + 1, #out do out[k].line = out[k].line or lineNo end
 	end
 	numlabel.resolve(out)
+	return out
+end
+
+-- .byte instruction decoding (OpenSSL perlasm legacy-gas workarounds) -----------
+--
+-- OpenSSL's perlasm emits many instructions as raw `.byte` sequences inside
+-- function bodies (legacy-gas workarounds): every function ends with
+-- `.byte 0xf3,0xc3` (rep ret), CET entry points are `.byte 243,15,30,250`
+-- (endbr64), locked RMWs are a `.byte 0xf0` line followed by the spelled
+-- instruction, prologue stack adjustments are `.byte 0x48,0x83,0xEC,0x08`, and
+-- so on. Data in a function body is rejected (transform's validateBody), so
+-- such inputs would not compile at all. decodeByteInsns rewrites a function
+-- body's RUNS of adjacent `.byte` statements into the instructions those byte
+-- sequences encode — at parse time, by re-parsing the canonical AT&T spelling
+-- through parseInsnText, so the result is indistinguishable from a spelled
+-- instruction for every downstream pass (a decoded `ret` IS a `ret` to the
+-- frame pass and the fall-off reachability check; a decoded `lock cmpxchgl`
+-- carries the same lockPrefix tag a spelled one does, with identical
+-- validation). Sequences that do not match the table stay `.byte` directives,
+-- so genuine data keeps hitting the exact same "data in a function body"
+-- compile error as before (a clean sarcasm error, never a crash).
+--
+-- The table is data-driven: an ordered list of { bytes = {..}, text = ".."},
+-- plus the special `lock` marker (0xf0), which JOINS the following instruction
+-- — the next bytes of the same run, or the spelled instruction on the next
+-- line — exactly like the spelled `lock` prefix (x86_64_isa.lockAllows decides
+-- whether the joined instruction may carry it, so a byte-encoded `lock ret`
+-- rejects precisely like the spelled form). Matching is greedy longest-first
+-- at each buffer position; no table entry is a prefix of another today, but
+-- the longest-match rule keeps future entries order-independent.
+local BYTE_DECODE = {
+	-- rep ret: the 0xf3 is an AMD branch-prediction hint; treat exactly like ret.
+	{ bytes = { 0xf3, 0xc3 }, text = "ret" },
+	-- CET indirect-branch landing pad (modeled as a nop by x86_64_isa).
+	{ bytes = { 0xf3, 0x0f, 0x1e, 0xfa }, text = "endbr64" },
+	{ bytes = { 0x0f, 0x0b }, text = "ud2" },
+	-- the 3-byte padding nop; its (%rax) operand is an encoding hint, not an access.
+	{ bytes = { 0x0f, 0x1f, 0x00 }, text = "nopl (%rax)" },
+	-- 0xf0 lock prefix: joins the next instruction (see the long comment above).
+	{ bytes = { 0xf0 }, lock = true },
+	{ bytes = { 0x48, 0x98 }, text = "cdqe" },          -- aka cltq
+	{ bytes = { 0x0f, 0x01, 0xd0 }, text = "xgetbv" },
+	{ bytes = { 0x49, 0x0f, 0xc7, 0xf2 }, text = "rdrand %r10" },  -- REX.WB 0f c7 /6, r10
+	{ bytes = { 0x49, 0x0f, 0xc7, 0xfa }, text = "rdseed %r10" },  -- REX.WB 0f c7 /7, r10
+	-- frame-relevant prologue forms (must be real sub/lea to the frame pass):
+	{ bytes = { 0x48, 0x83, 0xec, 0x08 }, text = "subq $8,%rsp" },
+	{ bytes = { 0x48, 0x83, 0xec, 0x28 }, text = "subq $40,%rsp" },
+	{ bytes = { 0x48, 0x81, 0xec, 0x08, 0x01, 0x00, 0x00 }, text = "subq $0x108,%rsp" },
+	{ bytes = { 0x4c, 0x8d, 0x14, 0x24 }, text = "leaq (%rsp),%r10" },
+	-- single-byte filler prefixes gas emits as standalone `.byte` lines for
+	-- alignment padding: each lone byte is its own nop.
+	{ bytes = { 0x66 }, text = "nop" },
+	{ bytes = { 0x67 }, text = "nop" },
+	{ bytes = { 0x3e }, text = "nop" },
+}
+
+-- Parse the byte values of a `.byte` directive's argument list: a
+-- comma-separated list of decimal or 0x-hex literals, each in [0, 255]. Returns
+-- the array of values, or nil when any field is not a plain byte literal (such
+-- a directive is data — a symbol, an expression, an out-of-range value — not an
+-- instruction encoding, and stays for the downstream data rejection).
+local function byteValues(args)
+	local vals = {}
+	for _, f in splitOperands(args or "") do
+		local v = tonumber(f)
+		if not v or v ~= math.floor(v) or v < 0 or v > 255 then return nil end
+		table.insert(vals, v)
+	end
+	if #vals == 0 then return nil end
+	return vals
+end
+
+-- Find the longest table entry matching `bytes` at `pos` (first-listed wins a
+-- length tie). Returns the entry and its length, or nil.
+local function matchBytes(bytes, pos)
+	local best, bestLen = nil, 0
+	for _, e in BYTE_DECODE do
+		local eb = e.bytes
+		if #eb > bestLen and pos + #eb - 1 <= #bytes then
+			local match = true
+			for k = 1, #eb do
+				if bytes[pos + k - 1] ~= eb[k] then match = false break end
+			end
+			if match then best, bestLen = e, #eb end
+		end
+	end
+	return best, bestLen
+end
+
+-- Rewrite the decodable `.byte` runs of a function body (a statement array as
+-- produced by parseString and splitFunctions) into insn statements. Returns the
+-- new body; bodies with no `.byte` directives are returned unchanged. Runs that
+-- do not fully decode keep their undecodable bytes as `.byte` directives (a
+-- whole undecodable run is kept byte-for-byte as written), so the downstream
+-- "data in a function body" rejection fires exactly as it does without this
+-- pass. x86_64-only: the encodings (and the perlasm idiom) do not exist on
+-- arm64, whose top-level/body data rules are unchanged.
+function x86parse.decodeByteInsns(body)
+	local hasBytes = false
+	for _, st in body do
+		if st.kind == "directive" and st.name == ".byte" then hasBytes = true break end
+	end
+	if not hasBytes then return body end
+
+	local out = {}
+	local i, n = 1, #body
+	while i <= n do
+		local st = body[i]
+		if st.kind ~= "directive" or st.name ~= ".byte" then
+			table.insert(out, st)
+			i += 1
+		else
+			-- maximal run of ADJACENT `.byte` statements [i..j]. A label (or any
+			-- other statement) breaks the run: bytes on either side of a label
+			-- are not one instruction — a branch to the label would land in the
+			-- middle of the encoding.
+			local j = i
+			while j + 1 <= n and body[j + 1].kind == "directive"
+				and body[j + 1].name == ".byte" do
+				j += 1
+			end
+			-- An annotation anywhere in the run must never be silently dropped
+			-- or moved onto a decoded instruction: keep the run verbatim and let
+			-- validateBody reject it (annotation on a directive / data in a
+			-- function body) with its own precise message.
+			local annotated = false
+			for k = i, j do
+				if body[k].annotation then annotated = true break end
+			end
+			if annotated then
+				for k = i, j do table.insert(out, body[k]) end
+				i = j + 1
+			else
+				-- Accumulate the run's byte values (tracking the source line of
+				-- each byte for origins on the decoded instructions). A
+				-- statement whose args are not all plain byte literals ends the
+				-- accumulation; it (and the rest of the run) stays verbatim.
+				local bytes, lines = {}, {}
+				local overflow = nil
+				for k = i, j do
+					local vals = byteValues(body[k].args)
+					if not vals then overflow = k break end
+					for _, v in vals do
+						table.insert(bytes, v)
+						table.insert(lines, body[k].line)
+					end
+				end
+				-- Greedy longest-match decode of the buffer.
+				local decoded = {}
+				local pos = 1
+				local lockPos = nil   -- buffer position of a pending (unjoined) lock byte
+				while pos <= #bytes do
+					local e, elen = matchBytes(bytes, pos)
+					if not e then break end
+					if e.lock then
+						lockPos = pos
+						pos += elen
+					else
+						local insn = parseInsnText(e.text, "att")
+						insn.line = lines[pos]
+						if lockPos then insn.lockPrefix = true; lockPos = nil end
+						table.insert(decoded, insn)
+						pos += elen
+					end
+				end
+				-- A lock byte pending at the end of the buffer joins the SPELLED
+				-- instruction following the run (OpenSSL's `.byte 0xf0` +
+				-- `cmpxchgl ...` idiom): tag it exactly like the parser's
+				-- spelled-`lock` path does. Any non-instruction follower leaves
+				-- the lock byte undecoded (it rejoins the data below).
+				local joined = false
+				if lockPos and pos > #bytes and not overflow then
+					local nxt = body[j + 1]
+					if nxt and nxt.kind == "insn" then
+						nxt.lockPrefix = true
+						joined = true
+						lockPos = nil
+					end
+				end
+				-- Where the undecodable tail starts (the pending lock byte takes
+				-- precedence: it never decoded into anything).
+				local leftoverStart = lockPos or (pos <= #bytes and pos or nil)
+				if #decoded == 0 and not joined then
+					-- Nothing decoded at all: keep the run byte-for-byte as
+					-- written — the downstream data rejection sees the original
+					-- directive text.
+					for k = i, j do table.insert(out, body[k]) end
+				else
+					for _, insn in decoded do table.insert(out, insn) end
+					if leftoverStart then
+						local parts = {}
+						for p = leftoverStart, #bytes do
+							table.insert(parts, string.format("0x%02x", bytes[p]))
+						end
+						local args = table.concat(parts, ",")
+						table.insert(out, { kind = "directive", name = ".byte",
+							args = args, raw = ".byte " .. args, line = lines[leftoverStart] })
+					end
+					if overflow then
+						for k = overflow, j do table.insert(out, body[k]) end
+					end
+				end
+				i = j + 1
+			end
+		end
+	end
 	return out
 end
 

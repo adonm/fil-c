@@ -24,6 +24,22 @@ local frame = {}
 -- GPRs (0..30) and are always virtual (never precolored).
 local SLOT_BASE = 1000
 
+-- Yolo incoming stack-argument slots (x86_64): the SysV 7th+ integer-class arguments
+-- arrive ABOVE the caller's frame at entry (8+8i(%rsp), above the return address) —
+-- outside the analyzed frame, so they cannot share the ordinary frame-slot band
+-- (SLOT_BASE + offset, offset bounded by the frame size, red-zone slots reaching down
+-- to SLOT_BASE - 128). Their virtual slot webs live in a dedicated band below it.
+-- (Only the entry side uses these; the outgoing stack arguments at a CALLSITE are
+-- ordinary frame slots at offsets [0, 8*o) — the compiler-style outgoing area.)
+local YOLO_SLOT_BASE = 500
+
+local function yoloSlotNum(index) return YOLO_SLOT_BASE + 8 * index end
+
+local function yoloSlotReg(index, width)
+	return { kind = "reg", rc = "gpr", num = yoloSlotNum(index), width = width or 64,
+		name = "__yoloarg" .. tostring(index), isSlot = true }
+end
+
 local function slotReg(off, width)
 	return { kind = "reg", rc = "gpr", num = SLOT_BASE + off, width = width or 64,
 		name = "__slot" .. tostring(off), isSlot = true }
@@ -116,4 +132,7 @@ end
 
 frame.SLOT_BASE = SLOT_BASE
 frame.slotReg = slotReg
+frame.YOLO_SLOT_BASE = YOLO_SLOT_BASE
+frame.yoloSlotNum = yoloSlotNum
+frame.yoloSlotReg = yoloSlotReg
 return frame

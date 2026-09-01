@@ -121,6 +121,222 @@ elsif (`$ENV{CC} -V 2>/dev/null`
     $gnuas=1;
 }
 
+########################################################################
+# Sarcasm (Fil-C memory-safe assembler) support.
+#
+# %SARCASM_SIGS maps every exported asm function name to its sarcasm
+# entry signature. When generating gas output, the signature is
+# emitted as a gas comment of the form `#! <sig>` on the function's
+# entry label (see label::out) and on direct call sites that target a
+# name in this table (see the main loop). Local subroutines are
+# deliberately absent from the table: sarcasm auto-discovers them, so
+# their call sites must stay unannotated. The padlock entries at the
+# end are harmless when the padlock engine is not built.
+my %SARCASM_SIGS = (
+    "AES_cbc_encrypt"                   => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "AES_decrypt"                       => "void(ptr,ptr,ptr)",
+    "AES_encrypt"                       => "void(ptr,ptr,ptr)",
+    "AES_set_decrypt_key"               => "int(ptr,int,ptr)",
+    "AES_set_encrypt_key"               => "int(ptr,int,ptr)",
+    "asm_AES_cbc_encrypt"               => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "asm_AES_decrypt"                   => "void(ptr,ptr,ptr)",
+    "asm_AES_encrypt"                   => "void(ptr,ptr,ptr)",
+    "CRYPTO_memcmp"                     => "int(ptr,ptr,size_t)",
+    "Camellia_DecryptBlock"             => "void(int,ptr,ptr,ptr)",
+    "Camellia_DecryptBlock_Rounds"      => "void(int,ptr,ptr,ptr)",
+    "Camellia_EncryptBlock"             => "void(int,ptr,ptr,ptr)",
+    "Camellia_EncryptBlock_Rounds"      => "void(int,ptr,ptr,ptr)",
+    "Camellia_Ekeygen"                  => "int(int,ptr,ptr)",
+    "Camellia_cbc_encrypt"              => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "ChaCha20_ctr32"                    => "void(ptr,ptr,size_t,ptr,ptr)",
+    "OPENSSL_atomic_add"                => "int(ptr,int)",
+    "OPENSSL_cleanse"                   => "void(ptr,size_t)",
+    "OPENSSL_cpuid_setup"               => "void()",
+    "OPENSSL_ia32_cpuid"                => "unsigned(ptr)",
+    "OPENSSL_ia32_rdrand_bytes"         => "size_t(ptr,size_t)",
+    "OPENSSL_ia32_rdseed_bytes"         => "size_t(ptr,size_t)",
+    "OPENSSL_instrument_bus"            => "size_t(ptr,size_t)",
+    "OPENSSL_instrument_bus2"           => "size_t(ptr,size_t,size_t)",
+    "OPENSSL_rdtsc"                     => "unsigned()",
+    "RC4"                               => "void(ptr,size_t,ptr,ptr)",
+    "RC4_options"                       => "ptr()",
+    "RC4_set_key"                       => "void(ptr,int,ptr)",
+    "SHA3_absorb"                       => "size_t(ptr,ptr,size_t,size_t)",
+    "SHA3_squeeze"                      => "void(ptr,ptr,size_t,size_t,int)",
+    "aesni_cbc_encrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "aesni_cbc_sha1_enc"                => "void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha256_enc"              => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_ccm64_decrypt_blocks"        => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_ccm64_encrypt_blocks"        => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_ctr32_encrypt_blocks"        => "void(ptr,ptr,size_t,ptr,ptr)",
+    "aesni_decrypt"                     => "void(ptr,ptr,ptr)",
+    "aesni_ecb_encrypt"                 => "void(ptr,ptr,size_t,ptr,int)",
+    "aesni_encrypt"                     => "void(ptr,ptr,ptr)",
+    "aesni_gcm_decrypt"                 => "size_t(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_gcm_encrypt"                 => "size_t(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_multi_cbc_decrypt"           => "void(ptr,ptr,int)",
+    "aesni_multi_cbc_encrypt"           => "void(ptr,ptr,int)",
+    "aesni_ocb_decrypt"                 => "void(ptr,ptr,size_t,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_ocb_encrypt"                 => "void(ptr,ptr,size_t,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_set_decrypt_key"             => "int(ptr,int,ptr)",
+    "aesni_set_encrypt_key"             => "int(ptr,int,ptr)",
+    "aesni_xts_128_decrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_xts_128_encrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_xts_256_decrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_xts_256_encrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_xts_avx512_eligible"         => "int()",
+    "aesni_xts_decrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "aesni_xts_encrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "bn_GF2m_mul_2x2"                   => "void(ptr,long,long,long,long)",
+    "bn_gather5"                        => "void(ptr,size_t,ptr,size_t)",
+    "bn_get_bits5"                      => "int(ptr,int)",
+    "bn_mul_mont"                       => "int(ptr,ptr,ptr,ptr,ptr,int)",
+    "bn_mul_mont_gather5"               => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
+    "bn_power5"                         => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
+    "bn_scatter5"                       => "void(ptr,size_t,ptr,size_t)",
+    "bn_sqr8x_internal"                 => "void(ptr,ptr,ptr,ptr,ptr,int)",
+    "bn_sqrx8x_internal"                => "void(ptr,ptr,ptr,ptr,ptr,int)",
+    "ecp_nistz256_add"                  => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_avx2_gather_w7"       => "void(ptr,ptr,int)",
+    "ecp_nistz256_div_by_2"             => "void(ptr,ptr)",
+    "ecp_nistz256_from_mont"            => "void(ptr,ptr)",
+    "ecp_nistz256_gather_w5"            => "void(ptr,ptr,int)",
+    "ecp_nistz256_gather_w7"            => "void(ptr,ptr,int)",
+    "ecp_nistz256_mul_by_2"             => "void(ptr,ptr)",
+    "ecp_nistz256_mul_by_3"             => "void(ptr,ptr)",
+    "ecp_nistz256_mul_mont"             => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_neg"                  => "void(ptr,ptr)",
+    "ecp_nistz256_ord_mul_mont"         => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_ord_sqr_mont"         => "void(ptr,ptr,long)",
+    "ecp_nistz256_point_add"            => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_point_add_affine"     => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_point_double"         => "void(ptr,ptr)",
+    "ecp_nistz256_scatter_w5"           => "void(ptr,ptr,int)",
+    "ecp_nistz256_scatter_w7"           => "void(ptr,ptr,int)",
+    "ecp_nistz256_sqr_mont"             => "void(ptr,ptr)",
+    "ecp_nistz256_sub"                  => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_to_mont"              => "void(ptr,ptr)",
+    "gcm_ghash_4bit"                    => "void(ptr,ptr,ptr,size_t)",
+    "gcm_ghash_avx"                     => "void(ptr,ptr,ptr,size_t)",
+    "gcm_ghash_clmul"                   => "void(ptr,ptr,ptr,size_t)",
+    "gcm_gmult_4bit"                    => "void(ptr,ptr)",
+    "gcm_gmult_avx"                     => "void(ptr,ptr)",
+    "gcm_gmult_clmul"                   => "void(ptr,ptr)",
+    "gcm_init_avx"                      => "void(ptr,ptr)",
+    "gcm_init_clmul"                    => "void(ptr,ptr)",
+    "hw_x86_64_sm4_decrypt"             => "void(ptr,ptr,ptr)",
+    "hw_x86_64_sm4_encrypt"             => "void(ptr,ptr,ptr)",
+    "hw_x86_64_sm4_set_key"             => "int(ptr,ptr)",
+    "ossl_aes_cfb128_vaes_dec"          => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "ossl_aes_cfb128_vaes_eligible"     => "int()",
+    "ossl_aes_cfb128_vaes_enc"          => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "ossl_aes_gcm_decrypt_avx512"       => "void(ptr,ptr,ptr,ptr,size_t,ptr)",
+    "ossl_aes_gcm_encrypt_avx512"       => "void(ptr,ptr,ptr,ptr,size_t,ptr)",
+    "ossl_aes_gcm_finalize_avx512"      => "void(ptr,unsigned)",
+    "ossl_aes_gcm_init_avx512"          => "void(ptr,ptr)",
+    "ossl_aes_gcm_setiv_avx512"         => "void(ptr,ptr,ptr,size_t)",
+    "ossl_aes_gcm_update_aad_avx512"    => "void(ptr,ptr,size_t)",
+    "ossl_bsaes_cbc_encrypt"            => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "ossl_bsaes_ctr32_encrypt_blocks"   => "void(ptr,ptr,size_t,ptr,ptr)",
+    "ossl_bsaes_xts_decrypt"            => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "ossl_bsaes_xts_encrypt"            => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
+    "ossl_extract_multiplier_2x20_win5" => "void(ptr,ptr,int,int)",
+    "ossl_extract_multiplier_2x20_win5_avx"=> "void(ptr,ptr,int,int)",
+    "ossl_extract_multiplier_2x30_win5" => "void(ptr,ptr,int,int)",
+    "ossl_extract_multiplier_2x30_win5_avx"=> "void(ptr,ptr,int,int)",
+    "ossl_extract_multiplier_2x40_win5" => "void(ptr,ptr,int,int)",
+    "ossl_extract_multiplier_2x40_win5_avx"=> "void(ptr,ptr,int,int)",
+    "ossl_gcm_gmult_avx512"             => "void(ptr,ptr)",
+    "ossl_hwsm3_block_data_order"       => "void(ptr,ptr,size_t)",
+    "ossl_md5_block_asm_data_order"     => "void(ptr,ptr,size_t)",
+    "ossl_rsaz_avx512ifma_eligible"     => "int()",
+    "ossl_rsaz_avxifma_eligible"        => "int()",
+    "ossl_rsaz_amm52x20_x1_avxifma256"  => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x20_x1_ifma256"     => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x20_x2_avxifma256"  => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_rsaz_amm52x20_x2_ifma256"     => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_rsaz_amm52x30_x1_avxifma256"  => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x30_x1_ifma256"     => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x30_x2_avxifma256"  => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_rsaz_amm52x30_x2_ifma256"     => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_rsaz_amm52x40_x1_avxifma256"  => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x40_x1_ifma256"     => "void(ptr,ptr,ptr,ptr,long)",
+    "ossl_rsaz_amm52x40_x2_avxifma256"  => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_rsaz_amm52x40_x2_ifma256"     => "void(ptr,ptr,ptr,ptr,ptr)",
+    "ossl_vaes_vpclmulqdq_capable"      => "int()",
+    "poly1305_blocks"                   => "void(ptr,ptr,size_t,unsigned)",
+    "poly1305_emit"                     => "void(ptr,ptr,ptr)",
+    "poly1305_init"                     => "int(ptr,ptr,ptr)",
+    "rc4_md5_enc"                       => "void(ptr,ptr,ptr,ptr,ptr,size_t)",
+    "rsaz_1024_gather5_avx2"            => "void(ptr,ptr,int)",
+    "rsaz_1024_mul_avx2"                => "void(ptr,ptr,ptr,ptr,long)",
+    "rsaz_1024_norm2red_avx2"           => "void(ptr,ptr)",
+    "rsaz_1024_red2norm_avx2"           => "void(ptr,ptr)",
+    "rsaz_1024_scatter5_avx2"           => "void(ptr,ptr,int)",
+    "rsaz_1024_sqr_avx2"                => "void(ptr,ptr,ptr,long,int)",
+    "rsaz_512_gather4"                  => "void(ptr,ptr,int)",
+    "rsaz_512_mul"                      => "void(ptr,ptr,ptr,ptr,long)",
+    "rsaz_512_mul_by_one"               => "void(ptr,ptr,ptr,long)",
+    "rsaz_512_mul_gather4"              => "void(ptr,ptr,ptr,ptr,long,unsigned)",
+    "rsaz_512_mul_scatter4"             => "void(ptr,ptr,ptr,long,ptr,unsigned)",
+    "rsaz_512_scatter4"                 => "void(ptr,ptr,int)",
+    "rsaz_512_sqr"                      => "void(ptr,ptr,ptr,long,int)",
+    "rsaz_avx2_eligible"                => "int()",
+    "sha1_block_data_order"             => "void(ptr,ptr,size_t)",
+    "sha1_multi_block"                  => "void(ptr,ptr,int)",
+    "sha256_block_data_order"           => "void(ptr,ptr,size_t)",
+    "sha256_multi_block"                => "void(ptr,ptr,int)",
+    "sha512_block_data_order"           => "void(ptr,ptr,size_t)",
+    "vpaes_cbc_encrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,int)",
+    "vpaes_decrypt"                     => "void(ptr,ptr,ptr)",
+    "vpaes_encrypt"                     => "void(ptr,ptr,ptr)",
+    "vpaes_set_decrypt_key"             => "int(ptr,int,ptr)",
+    "vpaes_set_encrypt_key"             => "int(ptr,int,ptr)",
+    "whirlpool_block"                   => "void(ptr,ptr,size_t)",
+    "x25519_fe51_mul"                   => "void(ptr,ptr,ptr)",
+    "x25519_fe51_mul121666"             => "void(ptr,ptr)",
+    "x25519_fe51_sqr"                   => "void(ptr,ptr)",
+    "x25519_fe64_add"                   => "void(ptr,ptr,ptr)",
+    "x25519_fe64_eligible"              => "int()",
+    "x25519_fe64_mul"                   => "void(ptr,ptr,ptr)",
+    "x25519_fe64_mul121666"             => "void(ptr,ptr)",
+    "x25519_fe64_sqr"                   => "void(ptr,ptr)",
+    "x25519_fe64_sub"                   => "void(ptr,ptr,ptr)",
+    "x25519_fe64_tobytes"               => "void(ptr,ptr)",
+    "xor128_decrypt_n_pad"              => "ptr(ptr,ptr,ptr,size_t)",
+    "xor128_encrypt_n_pad"              => "ptr(ptr,ptr,ptr,size_t)",
+    "padlock_capability"                => "unsigned()",
+    "padlock_key_bswap"                 => "void(ptr)",
+    "padlock_verify_context"            => "void(ptr)",
+    "padlock_reload_key"                => "void()",
+    "padlock_aes_block"                 => "void(ptr,ptr,ptr)",
+    "padlock_ecb_encrypt"               => "int(ptr,ptr,ptr,size_t)",
+    "padlock_cbc_encrypt"               => "int(ptr,ptr,ptr,size_t)",
+    "padlock_cfb_encrypt"               => "int(ptr,ptr,ptr,size_t)",
+    "padlock_ofb_encrypt"               => "int(ptr,ptr,ptr,size_t)",
+    "padlock_ctr32_encrypt"             => "int(ptr,ptr,ptr,size_t)",
+    "padlock_xstore"                    => "int(ptr,int)",
+    "padlock_sha1_oneshot"              => "void(ptr,ptr,size_t)",
+    "padlock_sha1_blocks"               => "void(ptr,ptr,size_t)",
+    "padlock_sha256_oneshot"            => "void(ptr,ptr,size_t)",
+    "padlock_sha256_blocks"             => "void(ptr,ptr,size_t)",
+    "padlock_sha512_blocks"             => "void(ptr,ptr,size_t)",
+);
+
+# Number of arguments in a sarcasm signature string.
+sub sarcasm_sig_narg {
+    my $sig = shift;
+    my ($args) = $sig =~ /\((.*)\)/;
+    return 0 if (!defined($args) || $args eq "");
+    return scalar(() = $args =~ /,/g) + 1;
+}
+
+# Set in the main loop when the current input line carried an explicit
+# `#!` annotation; suppresses signature injection on that line's label
+# (explicit annotation beats the injected one).
+my $line_has_sarcasm_ann = 0;
+
+
 my $cet_property;
 if ($flavour =~ /elf/) {
 	# Always generate .note.gnu.property section for ELF outputs to
@@ -525,6 +741,26 @@ my %globals;
 
 	if ($gas) {
 	    my $func = ($globals{$self->{value}} or $self->{value}) . ":";
+	    # sarcasm: inject the entry signature for .type'd functions
+	    # that have a %SARCASM_SIGS entry, unless the input line
+	    # already carried an explicit `#!` annotation.
+	    if (!$line_has_sarcasm_ann
+		&& defined($current_function)
+		&& defined($current_function->{name})
+		&& $self->{value} eq $current_function->{name}
+		&& exists($SARCASM_SIGS{$self->{value}})) {
+		my $sig = $SARCASM_SIGS{$self->{value}};
+		if (defined($current_function->{narg})
+		    && $current_function->{narg} != main::sarcasm_sig_narg($sig)) {
+		    # Some generators cap the .type narg at 6 (the
+		    # win64 unified-prologue limit) even when the
+		    # function takes more arguments, so this can only
+		    # be a warning.
+		    warn "x86_64-xlate.pl: WARNING: sarcasm signature for $self->{value} takes " .
+			 main::sarcasm_sig_narg($sig) . " argument(s), but .type declares $current_function->{narg}\n";
+		}
+		$func .= " #! $sig";
+	    }
 	    if ($win64	&& $current_function->{name} eq $self->{value}
 			&& $current_function->{abi} eq "svr4") {
 		$func .= "\n";
@@ -1217,6 +1453,7 @@ sub rex {
 
 my $movq = sub {	# elderly gas can't handle inter-register movq
   my $arg = shift;
+    return () if ($gas);	# any modern gas handles inter-register movq
   my @opcode=(0x66);
     if ($arg =~ /%xmm([0-9]+),\s*%r(\w+)/) {
 	my ($src,$dst)=($1,$2);
@@ -1238,6 +1475,7 @@ my $movq = sub {	# elderly gas can't handle inter-register movq
 };
 
 my $pextrd = sub {
+    return () if ($gas);	# any modern gas handles pextrd
     if (shift =~ /\$([0-9]+),\s*%xmm([0-9]+),\s*(%\w+)/) {
       my @opcode=(0x66);
 	my $imm=$1;
@@ -1256,6 +1494,7 @@ my $pextrd = sub {
 };
 
 my $pinsrd = sub {
+    return () if ($gas);	# any modern gas handles pinsrd
     if (shift =~ /\$([0-9]+),\s*(%\w+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x66);
 	my $imm=$1;
@@ -1274,6 +1513,7 @@ my $pinsrd = sub {
 };
 
 my $pshufb = sub {
+    return () if ($gas);	# any modern gas handles pshufb
     if (shift =~ /%xmm([0-9]+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x66);
 	rex(\@opcode,$2,$1);
@@ -1286,6 +1526,7 @@ my $pshufb = sub {
 };
 
 my $palignr = sub {
+    return () if ($gas);	# any modern gas handles palignr
     if (shift =~ /\$([0-9]+),\s*%xmm([0-9]+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x66);
 	rex(\@opcode,$3,$2);
@@ -1299,6 +1540,7 @@ my $palignr = sub {
 };
 
 my $pclmulqdq = sub {
+    return () if ($gas);	# any modern gas handles pclmulqdq
     if (shift =~ /\$([x0-9a-f]+),\s*%xmm([0-9]+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x66);
 	rex(\@opcode,$3,$2);
@@ -1313,7 +1555,12 @@ my $pclmulqdq = sub {
 };
 
 my $rdrand = sub {
-    if (shift =~ /%[er](\w+)/) {
+  my $arg = shift;
+    # any modern gas handles rdrand, but rejects a size suffix on it,
+    # so pass the instruction through verbatim (string return) rather
+    # than letting the generic path append a suffix
+    return ("rdrand\t$arg") if ($gas);
+    if ($arg =~ /%[er](\w+)/) {
       my @opcode=();
       my $dst=$1;
 	if ($dst !~ /[0-9]+/) { $dst = $regrm{"%e$dst"}; }
@@ -1326,7 +1573,10 @@ my $rdrand = sub {
 };
 
 my $rdseed = sub {
-    if (shift =~ /%[er](\w+)/) {
+  my $arg = shift;
+    # see $rdrand
+    return ("rdseed\t$arg") if ($gas);
+    if ($arg =~ /%[er](\w+)/) {
       my @opcode=();
       my $dst=$1;
 	if ($dst !~ /[0-9]+/) { $dst = $regrm{"%e$dst"}; }
@@ -1354,6 +1604,7 @@ sub rxb {
 }
 
 my $vprotd = sub {
+    return () if ($gas);	# any modern gas handles vprotd
     if (shift =~ /\$([x0-9a-f]+),\s*%xmm([0-9]+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x8f);
 	rxb(\@opcode,$3,$2,-1,0x08);
@@ -1368,6 +1619,7 @@ my $vprotd = sub {
 };
 
 my $vprotq = sub {
+    return () if ($gas);	# any modern gas handles vprotq
     if (shift =~ /\$([x0-9a-f]+),\s*%xmm([0-9]+),\s*%xmm([0-9]+)/) {
       my @opcode=(0x8f);
 	rxb(\@opcode,$3,$2,-1,0x08);
@@ -1385,6 +1637,7 @@ my $vprotq = sub {
 # indirect branch targets will have to start with this instruction...
 
 my $endbranch = sub {
+    return ("endbr64") if ($gas);	# emit the real mnemonic
     (0xf3,0x0f,0x1e,0xfa);
 };
 
@@ -1406,6 +1659,16 @@ while(defined(my $line=<>)) {
 
     $line =~ s|\R$||;           # Better chomp
 
+    # sarcasm: capture a `#!` annotation before the comment strip and
+    # re-append it verbatim at the final print (gas output only; for
+    # nasm/masm the strip below removes it as before).
+    my $ann;
+    $line_has_sarcasm_ann = 0;
+    if ($gas && $line =~ s/[ \t]*#!(.*)$//) {
+	$ann = $1;
+	$line_has_sarcasm_ann = 1;
+    }
+
     $line =~ s|[#!].*$||;	# get rid of asm-style comments...
     $line =~ s|/\*.*\*/||;	# ... and C-style comments...
     $line =~ s|^\s+||;		# ... and skip whitespaces in beginning
@@ -1420,10 +1683,31 @@ while(defined(my $line=<>)) {
 	printf "%s",$vex_prefix->out();
 	}
 	if (my $opcode=opcode->re(\$line)) {
+	# sarcasm: annotate direct calls to functions present in
+	# %SARCASM_SIGS (local subroutines are deliberately absent from
+	# the table; sarcasm auto-discovers them), and rip-relative
+	# references to the OPENSSL_ia32cap_P extern global (the only
+	# extern data symbol in the corpus).
+	if ($gas && !defined($ann)) {
+	    if ($opcode->mnemonic() eq "call"
+		&& $line =~ /^[A-Za-z_][\w.]*$/
+		&& exists($SARCASM_SIGS{$line})) {
+		$ann = " $SARCASM_SIGS{$line}";
+	    } elsif ($line =~ /OPENSSL_ia32cap_P([+]\d+)?\(%rip\)/) {
+		$ann = " global ptr";
+	    }
+	}
+
 	my $asm = eval("\$".$opcode->mnemonic());
 
 	if ((ref($asm) eq 'CODE') && scalar(my @bytes=&$asm($line))) {
-	    print $gas?".byte\t":"DB\t",join(',',@bytes),"\n";
+	    if ($bytes[0] =~ /^[a-z]/) {
+		# the sub returned a literal instruction to emit
+		# verbatim (e.g. endbr64, rdrand)
+		print "\t",join("\t",@bytes),(defined($ann) ? " #!$ann" : ""),"\n";
+	    } else {
+		print $gas?".byte\t":"DB\t",join(',',@bytes),"\n";
+	    }
 	    next;
 	}
 
@@ -1472,7 +1756,7 @@ while(defined(my $line=<>)) {
 	}
     }
 
-    print $line,"\n";
+    print $line,(defined($ann) ? " #!$ann" : ""),"\n";
 }
 
 print "$cet_property"			if ($cet_property);

@@ -73,6 +73,16 @@ M.cc = {
 	fo = 1,                                       -- x1: callee function-object lower at an indirect call
 	argIv = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k)] end,
 	argLo = function(argTypes, k) return DENSE_ARG_REGS[denseArgSlot(argTypes, k) + 1] end,  -- ptr args only
+	-- number of dense argument words that fit in registers; arm64 keeps its 6-word
+	-- limit (words beyond the sixth are still rejected), so no signature that
+	-- reaches the transform ever has a stack-resident dense word here.
+	argRegCount = 6,
+	-- 0-based dense word index of argument k's intval word (a pointer's lower word
+	-- is at denseSlot+1). FP args consume no dense words.
+	denseSlot = function(argTypes, k) return denseArgSlot(argTypes, k) - 1 end,
+	-- yolo (AAPCS) integer-argument registers: arm64's callsite/entry checks cap
+	-- every signature at 3 integer args / 6 words, so SysV stack args never arise.
+	yoloRegCount = 6,
 	-- yolo input-asm register for argument k. FP args pass in v registers (their
 	-- v-reg index is fpArgOrdinal) and consume no yolo GPR: arg k's yolo GPR
 	-- register is its 0-based ordinal among the NON-FP args (nil for an FP arg).

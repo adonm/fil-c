@@ -73,7 +73,7 @@ cp -v \
     kmod-33.tar.xz \
     less-704.tar.gz \
     libcap-2.70.tar.xz \
-    libffi-3.4.6.tar.gz \
+    libffi-3.8.0.tar.gz \
     libpipeline-1.5.7.tar.gz \
     libtool-2.4.7.tar.xz \
     libxcrypt-4.5.2.tar.xz \

@@ -416,11 +416,11 @@ cd ..
 rm -rf pizlonated-libedit
 hash -r
 
-tar -xf $FILCSRC/projects/pkgconf-2.3.0/pizlonated-pkgconf.tar.gz
+tar -xf $FILCSRC/projects/pkgconf-3.0.6/pizlonated-pkgconf.tar.gz
 cd pizlonated-pkgconf
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --disable-static \
-    --docdir=/opt/fil/share/doc/pkgconf-2.3.0
+    --docdir=/opt/fil/share/doc/pkgconf-3.0.6
 make -j `nproc`
 make -j `nproc` install
 ln -sv pkgconf /opt/fil/bin/pkg-config

@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/pkgconf-2.3.0
+cd projects/pkgconf-3.0.6
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

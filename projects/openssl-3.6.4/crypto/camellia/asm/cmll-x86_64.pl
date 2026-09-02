@@ -705,6 +705,20 @@ Camellia_cbc_encrypt:
 .cfi_push	%r15
 .Lcbc_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the anti-aliasing dynamic frame is a fixed-size GC
+	# allocation covering the 64-byte slot area (the %rsp carrier uses
+	# %r10 — sarcasm reserves %rbp for frame pointers).
+	$code.=<<___;
+	mov	%rsp,%r10
+	sub	\$128,%rsp		#! alloca size (cmll)
+	mov	%rsp,%r11		#! alloca result (cmll)
+
+	mov	%rdi,$inp		# inp argument
+___
+} else {
+	$code.=<<___;
 	mov	%rsp,%rbp
 .cfi_def_cfa_register	%rbp
 	sub	\$64,%rsp
@@ -720,14 +734,24 @@ Camellia_cbc_encrypt:
 	#add	\$8,%rsp		# 8 is reserved for callee's ra
 
 	mov	%rdi,$inp		# inp argument
+___
+}
+$code.=<<___;
 	mov	%rsi,$out		# out argument
 	mov	%r8,%rbx		# ivp argument
 	mov	%rcx,$key		# key argument
 	mov	272(%rcx),${keyend}d	# grandRounds
 
 	mov	%r8,$_ivp
+___
+$code.=<<___	if (!$ENV{SARCASM});
 	mov	%rbp,$_rsp
 .cfi_cfa_expression	$_rsp,deref,+56
+___
+$code.=<<___	if ($ENV{SARCASM});
+	mov	%r10,$_rsp
+___
+$code.=<<___;
 
 .Lcbc_body:
 	lea	.LCamellia_SBOX(%rip),$Tbl
@@ -815,7 +839,13 @@ Camellia_cbc_encrypt:
 	cld
 	mov	$inp,%rsi
 	lea	8+$ivec,%rdi
-	.long	0x9066A4F3		# rep movsb
+.Lcbc_enc_tail_copy:			# explicit loop (was rep movsb;
+	mov	(%rsi),%al		# string ops are not memory-safe)
+	mov	%al,(%rdi)
+	lea	1(%rsi),%rsi
+	lea	1(%rdi),%rdi
+	sub	\$1,%ecx
+	jnz	.Lcbc_enc_tail_copy
 	popfq
 .Lcbc_enc_popf:
 
@@ -905,7 +935,13 @@ Camellia_cbc_encrypt:
 	cld
 	lea	8+$ivec,%rsi
 	lea	($out),%rdi
-	.long	0x9066A4F3		# rep movsb
+.Lcbc_dec_tail_copy:			# explicit loop (was rep movsb);
+	mov	(%rsi),%r10b		# %rax holds the IV residue here
+	mov	%r10b,(%rdi)
+	lea	1(%rsi),%rsi
+	lea	1(%rdi),%rdi
+	sub	\$1,%ecx
+	jnz	.Lcbc_dec_tail_copy
 	popfq
 .Lcbc_dec_popf:
 

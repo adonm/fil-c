@@ -1,18 +1,18 @@
-# XCHG with a high-byte register: the web model has no subregister view, so
-# `ah` maps onto the SAME web as `al` and the renderer always names the LOW
-# byte of the colored register — `xchgb %ah, %bl` would silently swap %al.
-# Hardware ground truth (rax=0x1100000000000200, rbx=0x55550000000000AA in):
-# rax=0x110000000000aa00 out; sarcasm's old silent model gave
-# 0x11000000000002aa. High-byte operands are rejected in every position.
+# XCHG with a high-byte register IS now modeled exactly (sarcasm-highbyte-att:
+# the enclosing register's web is pinned to the spelled physical register, so
+# `xchgb %ah, %bl` really swaps bits 8-15). But a high-byte operand can never
+# combine with a REX prefix, so a byte-register partner other than
+# %al/%cl/%dl/%bl is unencodable (%r8b needs REX) and is rejected at compile
+# time.
 	.text
 	.globl	foo
 	.type	foo, @function
 foo:                            ;! long(long)
 	endbr64
 	movabsq	$0x1100000000000200, %rax
-	movabsq	$0x55550000000000AA, %rbx
-	xchgb	%ah, %bl
-	movq	%rbx, %rax
+	movabsq	$0x55550000000000AA, %r8
+	xchgb	%ah, %r8b
+	movq	%r8, %rax
 	movl	$0, %edx
 	ret
 	.size	foo, .-foo

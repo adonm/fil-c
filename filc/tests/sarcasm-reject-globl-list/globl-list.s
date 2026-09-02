@@ -2,9 +2,10 @@
 # top-level content scan: the single-name regex silently dropped the later
 # names, so mydata escaped the "label outside any function" rejection and
 # vanished from the object (cross-TU references then failed at link time with
-# the opaque "undefined reference to pizlonated_mydata"). The same file with one
-# name per .globl directive was always cleanly rejected; the comma-list form now
-# rejects identically.
+# the opaque "undefined reference to pizlonated_mydata"). Data under
+# .rodata/.data/.bss is collected into Fil-C data objects now, so pin the
+# rejection with data in a NON-collectable section: the comma-list .globl
+# still makes mydata live, and a live label outside any function rejects.
 	.text
 	.globl	myfunc, mydata
 	.type	myfunc, @function
@@ -13,6 +14,6 @@ myfunc:                         ;! long()
 	movl	$42, %eax
 	ret
 	.size	myfunc, .-myfunc
-	.data
+	.section	.mydata,"aw",@progbits
 mydata:	.quad	12345
 	.section	.note.GNU-stack,"",@progbits

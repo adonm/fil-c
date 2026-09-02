@@ -266,6 +266,38 @@ back-edges, numeric labels) keep working. Covered by
 `sarcasm-reject-call-nosig-arm`, `-indbranch-reg-arm`, `-tailcall-arm`,
 `sarcasm-call-data-arm` and `sarcasm-call-sigmismatch-arm`).
 
+## `.section .init` / `.section .fini` fragments (constructor calls)
+
+A top-level `.section .init` (or `.fini`) run of annotated direct void()
+calls (`call foo #! void()`) is emitted back into the same section, each
+marshalled as a Fil-C constructor call — exactly what filcc emits for a C
+constructor's `.Lfilc_ctor_forwarder` (q.v. `filc_defer_or_run_global_ctor`
+in the runtime: it takes the callee function-object flight pointer
+(rdi=intval, rsi=lower), defers to before-main when the runtime is not
+initialized yet, and otherwise runs the ctor through the generic (buffer)
+CC with argc/argv/environ — a void() signature's 2ET thunk accepts and
+ignores those words):
+
+```
+# same-file function foo (its FO is emitted by this module):
+leaq pizlonatedFO_foo+16(%rip), %rdi   # intval == lower == FO payload
+movq %rdi, %rsi
+callq filc_defer_or_run_global_ctor@PLT
+# extern function foo (resolved through its cross-module getter):
+xorl %esi, %esi
+callq pizlonated_foo@PLT               # rax=intval, rdx=lower
+movq %rax, %rdi
+movq %rdx, %rsi
+callq filc_defer_or_run_global_ctor@PLT
+```
+
+The fragments make their calls with rsp exactly as found: `_init`'s crti
+prologue (`sub $8, %rsp` after the call in) leaves rsp 16-byte aligned at
+fragment entry, so every call site is correctly aligned. Only void() calls
+are accepted (the .init context has no Fil-C argument state); a data or
+signature-mismatch target fails the runtime's function-call check, like any
+indirect call.
+
 ## Exceptions / unwinding
 Sarcasm x86_64 frames CANNOT propagate exceptions (intentional, for now). The
 x86_64 glue (`x86_64_glue.luau` foAndOrigins) emits every function origin with

@@ -149,6 +149,13 @@ my %SARCASM_SIGS = (
     "Camellia_Ekeygen"                  => "int(int,ptr,ptr)",
     "Camellia_cbc_encrypt"              => "void(ptr,ptr,size_t,ptr,ptr,int)",
     "ChaCha20_ctr32"                    => "void(ptr,ptr,size_t,ptr,ptr)",
+    # File-local ISA-variant bodies (chacha-x86_64.pl): B1 tail jumps
+    # from ChaCha20_ctr32 / each other.
+    "ChaCha20_ssse3"                    => "void(ptr,ptr,size_t,ptr,ptr)",
+    "ChaCha20_128"                      => "void(ptr,ptr,size_t,ptr,ptr)",
+    "ChaCha20_4x"                       => "void(ptr,ptr,size_t,ptr,ptr)",
+    "ChaCha20_4xop"                     => "void(ptr,ptr,size_t,ptr,ptr)",
+    "ChaCha20_8x"                       => "void(ptr,ptr,size_t,ptr,ptr)",
     "OPENSSL_atomic_add"                => "int(ptr,int)",
     "OPENSSL_cleanse"                   => "void(ptr,size_t)",
     "OPENSSL_cpuid_setup"               => "void()",
@@ -180,6 +187,20 @@ my %SARCASM_SIGS = (
     "aesni_ocb_encrypt"                 => "void(ptr,ptr,size_t,ptr,size_t,ptr,ptr,ptr)",
     "aesni_set_decrypt_key"             => "int(ptr,int,ptr)",
     "aesni_set_encrypt_key"             => "int(ptr,int,ptr)",
+    # File-local ISA-variant bodies of aesni_cbc_sha1_enc /
+    # aesni_cbc_sha256_enc (aesni-sha1-x86_64.pl / aesni-sha256-x86_64.pl):
+    # entered via B1 tail jumps from the dispatchers.
+    "aesni_cbc_sha1_enc_shaext"         => "void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha1_enc_avx"            => "void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha1_enc_ssse3"          => "void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha256_enc_shaext"       => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha256_enc_xop"          => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha256_enc_avx"          => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    "aesni_cbc_sha256_enc_avx2"         => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
+    # File-local AVX bodies of aesni_multi_cbc_{encrypt,decrypt}
+    # (aesni-mb-x86_64.pl): B1 tail jumps from the dispatchers.
+    "aesni_multi_cbc_encrypt_avx"       => "void(ptr,ptr,int)",
+    "aesni_multi_cbc_decrypt_avx"       => "void(ptr,ptr,int)",
     "aesni_xts_128_decrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
     "aesni_xts_128_encrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
     "aesni_xts_256_decrypt_avx512"      => "void(ptr,ptr,size_t,ptr,ptr,ptr)",
@@ -190,8 +211,19 @@ my %SARCASM_SIGS = (
     "bn_GF2m_mul_2x2"                   => "void(ptr,long,long,long,long)",
     "bn_gather5"                        => "void(ptr,size_t,ptr,size_t)",
     "bn_get_bits5"                      => "int(ptr,int)",
+    # File-local ISA-variant bodies (x86_64-mont.pl): .type'd but not
+    # .globl; entered via B1 tail jumps from bn_mul_mont (and from each
+    # other). Same signature as bn_mul_mont.
+    "bn_mul4x_mont"                     => "int(ptr,ptr,ptr,ptr,ptr,int)",
+    "bn_sqr8x_mont"                     => "int(ptr,ptr,ptr,ptr,ptr,int)",
+    "bn_mulx4x_mont"                    => "int(ptr,ptr,ptr,ptr,ptr,int)",
     "bn_mul_mont"                       => "int(ptr,ptr,ptr,ptr,ptr,int)",
     "bn_mul_mont_gather5"               => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
+    # File-local ISA-variant bodies (x86_64-mont5.pl): B1 tail jumps
+    # from bn_mul_mont_gather5/bn_power5. Same signature as those.
+    "bn_mul4x_mont_gather5"             => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
+    "bn_mulx4x_mont_gather5"            => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
+    "bn_powerx5"                        => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
     "bn_power5"                         => "void(ptr,ptr,ptr,ptr,ptr,int,int)",
     "bn_scatter5"                       => "void(ptr,size_t,ptr,size_t)",
     "bn_sqr8x_internal"                 => "void(ptr,ptr,ptr,ptr,ptr,int)",
@@ -208,6 +240,15 @@ my %SARCASM_SIGS = (
     "ecp_nistz256_neg"                  => "void(ptr,ptr)",
     "ecp_nistz256_ord_mul_mont"         => "void(ptr,ptr,ptr)",
     "ecp_nistz256_ord_sqr_mont"         => "void(ptr,ptr,long)",
+    # File-local "x" (ADX/BMI2) variant bodies
+    # (ecp_nistz256-x86_64.pl): entered via B1 tail jumps from the base
+    # functions; same signatures as their bases.
+    "ecp_nistz256_ord_mul_montx"        => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_ord_sqr_montx"        => "void(ptr,ptr,long)",
+    "ecp_nistz256_avx2_gather_w5"       => "void(ptr,ptr,int)",
+    "ecp_nistz256_point_doublex"        => "void(ptr,ptr)",
+    "ecp_nistz256_point_addx"           => "void(ptr,ptr,ptr)",
+    "ecp_nistz256_point_add_affinex"    => "void(ptr,ptr,ptr)",
     "ecp_nistz256_point_add"            => "void(ptr,ptr,ptr)",
     "ecp_nistz256_point_add_affine"     => "void(ptr,ptr,ptr)",
     "ecp_nistz256_point_double"         => "void(ptr,ptr)",
@@ -267,6 +308,11 @@ my %SARCASM_SIGS = (
     "poly1305_blocks"                   => "void(ptr,ptr,size_t,unsigned)",
     "poly1305_emit"                     => "void(ptr,ptr,ptr)",
     "poly1305_init"                     => "int(ptr,ptr,ptr)",
+    # File-local ISA-variant bodies (poly1305-x86_64.pl): B1 tail jumps
+    # from poly1305_blocks/poly1305_emit.
+    "poly1305_blocks_avx"               => "void(ptr,ptr,size_t,unsigned)",
+    "poly1305_blocks_avx2"              => "void(ptr,ptr,size_t,unsigned)",
+    "poly1305_emit_avx"                 => "void(ptr,ptr,ptr)",
     "rc4_md5_enc"                       => "void(ptr,ptr,ptr,ptr,ptr,size_t)",
     "rsaz_1024_gather5_avx2"            => "void(ptr,ptr,int)",
     "rsaz_1024_mul_avx2"                => "void(ptr,ptr,ptr,ptr,long)",
@@ -287,6 +333,27 @@ my %SARCASM_SIGS = (
     "sha256_block_data_order"           => "void(ptr,ptr,size_t)",
     "sha256_multi_block"                => "void(ptr,ptr,int)",
     "sha512_block_data_order"           => "void(ptr,ptr,size_t)",
+    # File-local ISA-variant bodies (sha1-x86_64.pl, sha512-x86_64.pl,
+    # sha1-mb-x86_64.pl, sha256-mb-x86_64.pl): entered via B1 tail jumps
+    # from the dispatchers; same signatures as their dispatchers.
+    "sha1_block_data_order_shaext"      => "void(ptr,ptr,size_t)",
+    "sha1_block_data_order_ssse3"       => "void(ptr,ptr,size_t)",
+    "sha1_block_data_order_avx"         => "void(ptr,ptr,size_t)",
+    "sha1_block_data_order_avx2"        => "void(ptr,ptr,size_t)",
+    "sha256_block_data_order_shaext"    => "void(ptr,ptr,size_t)",
+    "sha256_block_data_order_ssse3"     => "void(ptr,ptr,size_t)",
+    "sha256_block_data_order_avx"       => "void(ptr,ptr,size_t)",
+    "sha256_block_data_order_avx2"      => "void(ptr,ptr,size_t)",
+    "sha512_block_data_order_sha512ext" => "void(ptr,ptr,size_t)",
+    "sha512_block_data_order_xop"       => "void(ptr,ptr,size_t)",
+    "sha512_block_data_order_avx"       => "void(ptr,ptr,size_t)",
+    "sha512_block_data_order_avx2"      => "void(ptr,ptr,size_t)",
+    "sha1_multi_block_shaext"           => "void(ptr,ptr,int)",
+    "sha1_multi_block_avx"              => "void(ptr,ptr,int)",
+    "sha1_multi_block_avx2"             => "void(ptr,ptr,int)",
+    "sha256_multi_block_shaext"         => "void(ptr,ptr,int)",
+    "sha256_multi_block_avx"            => "void(ptr,ptr,int)",
+    "sha256_multi_block_avx2"           => "void(ptr,ptr,int)",
     "vpaes_cbc_encrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,int)",
     "vpaes_decrypt"                     => "void(ptr,ptr,ptr)",
     "vpaes_encrypt"                     => "void(ptr,ptr,ptr)",

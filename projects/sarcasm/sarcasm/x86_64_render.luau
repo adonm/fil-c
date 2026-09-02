@@ -109,6 +109,12 @@ local function renderOperandRaw(node, op, colorNum, syntax)
 	end
 	if op.kind == "reg" then
 		if op.rc == "rip" then return syntax == "att" and "%rip" or "rip" end
+		-- A high-byte operand (%ah/%ch/%dh/%bh) on a pinned instruction: it names
+		-- bits 8-15 of the pinned physical register (emitPinned tags it), so the
+		-- name renders verbatim — the colored low byte would be wrong.
+		if op.highByte then
+			return (syntax == "att" and "%" or "") .. op.highByte
+		end
 		local num = numOf(op)
 		local name = (num ~= nil) and regName(num, op.width or 64) or op.name
 		return syntax == "att" and ("%" .. name) or name
@@ -226,6 +232,189 @@ local trampFn = nil      -- current function's plain name (set by header)
 local trampCounter = 0   -- per-function statement-order trampoline counter
 local trampUsed = nil    -- label names already defined in the current function
 
+-- ---------------------------------------------------------------------------
+-- .byte emission for instructions the SYSTEM ASSEMBLER may not know.
+--
+-- sarcasm emits the temp .yolo.s to whatever `as` is installed; baselines as old
+-- as binutils 2.38 (Ubuntu 22.04) do not know SHA512-NI (vsha512*) or SM3/SM4
+-- (vsm3*/vsm4*), both of which OpenSSL perlasm uses (the sha512 SHA512-NI body
+-- reaches sarcasm as .byte encodings; sm3/sm4 arrive spelled). These mnemonics
+-- are therefore emitted as their VEX 3-byte encodings in a `.byte` directive —
+-- byte-identical semantics on every assembler, and deterministic output (the
+-- registers are all fixed at render time: vector registers are never
+-- reallocated, and a memory source's base/index resolve through opTemp like
+-- any rendered operand). The spelled instruction rides along as a comment for
+-- readability.
+--
+-- Encodings (SDM / binutils i386-opc.tbl):
+--   vsha512rnds2 ymm1, ymm2, xmm3/m128:  VEX.256.F2.0F38.W0 CB /r   (AT&T: src2, src1, dst)
+--   vsha512msg1  ymm1, ymm2, xmm3/m128:  VEX.256.F2.0F38.W0 CC /r
+--   vsha512msg2  ymm1, ymm2, xmm3/m128:  VEX.256.F2.0F38.W0 CD /r
+--   vsm3msg1     xmm1, xmm2, xmm3/m128:  VEX.128.66.0F38.W0 DA /r
+--   vsm3msg2     xmm1, xmm2, xmm3/m128:  VEX.128.66.0F38.W0 DB /r
+--   vsm3rnds2    xmm1, xmm2, xmm3/m128, imm8: VEX.128.66.0F3A.W0 DE /r ib (AT&T: imm, src2, src1, dst)
+--   vsm4key4     xmm1, xmm2, xmm3/m128:  VEX.128.F3.0F38.W0 DA /r
+--   vsm4rnds4    xmm1, xmm2, xmm3/m128:  VEX.128.F3.0F38.W0 DB /r
+-- Per-mnemonic encoding shape (verified against binutils 2.42's i386-opc.tbl
+-- and disassembler). `twoOp`: the vvvv field is unused (encoded as ~0) and the
+-- operand list is { dst, src2 }; otherwise it is { dst, src1, src2 } with
+-- vvvv = src1. `src2Class`: the register class of the rm source (vsha512msg2's
+-- source is a full ymm/m256; every other rm source here is xmm/m128 — sm4 ymm
+-- forms take ymm/m256). `classes`: the allowed destination classes (SM4 has
+-- both VEX.128 and VEX.256 forms; L follows the destination class).
+local BYTE_EMIT = {
+	vsha512rnds2 = { map = 2, pp = 3, L = 1, op = 0xCB, src2Class = "xmm",
+		classes = { ymm = true } },
+	vsha512msg1 = { map = 2, pp = 3, L = 1, op = 0xCC, twoOp = true, src2Class = "xmm",
+		classes = { ymm = true } },
+	vsha512msg2 = { map = 2, pp = 3, L = 1, op = 0xCD, twoOp = true, src2Class = "ymm",
+		classes = { ymm = true } },
+	vsm3msg1 = { map = 2, pp = 0, L = 0, op = 0xDA, src2Class = "xmm",
+		classes = { xmm = true } },
+	vsm3msg2 = { map = 2, pp = 1, L = 0, op = 0xDA, src2Class = "xmm",
+		classes = { xmm = true } },
+	vsm3rnds2 = { map = 3, pp = 1, L = 0, op = 0xDE, imm = true, src2Class = "xmm",
+		classes = { xmm = true } },
+	vsm4key4 = { map = 2, pp = 2, L = 0, op = 0xDA, src2Class = "xmm",
+		classes = { xmm = true, ymm = true } },
+	vsm4rnds4 = { map = 2, pp = 3, L = 0, op = 0xDA, src2Class = "xmm",
+		classes = { xmm = true, ymm = true } },
+}
+
+-- Resolve a (possibly temp-carrying) register operand to its physical number.
+local function byteEmitNumOf(node, op, colorNum)
+	if op.fixedNum ~= nil then return op.fixedNum end
+	if op.tempRef ~= nil then return colorNum and colorNum(op.tempRef) end
+	if node.opTemp then local t = node.opTemp[op]; if t ~= nil then return colorNum and colorNum(t) end end
+	return nil
+end
+
+-- Encode a memory operand as ModRM [+SIB] [+disp] bytes appended to `out`
+-- (regField is the ModRM.reg value 0-7). Returns false when the shape is not
+-- encodable here (a missing base register number).
+local function byteEmitMem(out, node, mem, regField, colorNum, raw)
+	local base = mem.base and byteEmitNumOf(node, mem.base, colorNum) or nil
+	local index = (mem.index and mem.index.kind == "reg")
+		and byteEmitNumOf(node, mem.index, colorNum) or nil
+	if not base then
+		error("sarcasm: internal error: cannot resolve the memory base register of '"
+			.. (raw or "?") .. "' for .byte emission")
+	end
+	local scale = mem.scale or 1
+	local disp = mem.dispVal or 0
+	local baseLow = base % 8
+	local needSib = index ~= nil or baseLow == 4
+	-- mod: 0 (disp0, baseLow ~= 5), 1 (disp8), 2 (disp32)
+	local mod
+	if disp == 0 and baseLow ~= 5 then mod = 0
+	elseif disp >= -128 and disp <= 127 then mod = 1
+	else mod = 2 end
+	local rm = needSib and 4 or baseLow
+	table.insert(out, mod * 64 + (regField % 8) * 8 + rm)
+	if needSib then
+		local scaleBits = (scale == 1 and 0) or (scale == 2 and 1) or (scale == 4 and 2) or 3
+		local indexField = index and (index % 8) or 4
+		table.insert(out, scaleBits * 64 + indexField * 8 + baseLow)
+	end
+	if mod == 1 then
+		table.insert(out, disp % 256)
+	elseif mod == 2 then
+		local d = disp % 4294967296
+		table.insert(out, d % 256)
+		table.insert(out, math.floor(d / 256) % 256)
+		table.insert(out, math.floor(d / 65536) % 256)
+		table.insert(out, math.floor(d / 16777216) % 256)
+	end
+	return true
+end
+
+-- Emit a BYTE_EMIT instruction node as `.byte ...` (with the spelled form as a
+-- comment), or nil when it does not apply.
+local function byteEmitInsn(node, colorNum, syntax, low)
+	local spec = BYTE_EMIT[low]
+	if not spec then return nil end
+	local ops = node.stmt and node.stmt.operands or node.operands or {}
+	local raw = node.stmt and node.stmt.raw or low
+	-- dest-first operand shape: three-operand { dst, src1, src2[, imm] } or
+	-- two-operand { dst, src2 } (vsha512msg1/msg2); src2 may be memory.
+	local dst, src1, src2
+	if spec.twoOp then
+		dst, src2 = ops[1], ops[2]
+	else
+		dst, src1, src2 = ops[1], ops[2], ops[3]
+	end
+	if not (dst and dst.kind == "reg" and src2) or (not spec.twoOp and not src1) then
+		error("sarcasm: '" .. low .. "' requires register destination/source operands: "
+			.. raw)
+	end
+	local dstClass = string.sub(dst.name or "", 1, 3)
+	if not spec.classes[dstClass] or dst.num > 15 then
+		local allowed = {}
+		for c in spec.classes do table.insert(allowed, c) end
+		table.sort(allowed)
+		error("sarcasm: '" .. low .. "' requires a " .. table.concat(allowed, "/")
+			.. "0-15 destination register (a wider vector class is not encodable): " .. raw)
+	end
+	-- VEX.L follows the destination class (SM4 has both forms; every other
+	-- family here is single-class, so this matches spec.L for them).
+	local vexL = (dstClass == "ymm") and 1 or 0
+	if not spec.twoOp
+		and (string.sub(src1.name or "", 1, 3) ~= dstClass or src1.num > 15) then
+		error("sarcasm: '" .. low .. "' requires a " .. dstClass .. "0-15 source"
+			.. " register (its VEX encoding cannot name another class): " .. raw)
+	end
+	-- the rm source class: ymm/m256 for the sm4 ymm forms and vsha512msg2,
+	-- xmm/m128 otherwise.
+	local src2Class = (dstClass == "ymm" and (low == "vsm4key4" or low == "vsm4rnds4"))
+		and "ymm" or spec.src2Class
+	local bytes = { 0xC4 }
+	local regExt = (dst.num >= 8) and 0 or 128        -- R̅: clear when extended
+	local bExt = 32                                    -- B̅: set when rm < 8
+	local xExt = 64                                    -- X̅: set when index < 8/none
+	if src2.kind == "reg" then
+		if string.sub(src2.name or "", 1, 3) ~= src2Class or src2.num > 15 then
+			error("sarcasm: '" .. low .. "' requires a " .. src2Class .. "0-15"
+				.. " source register (its VEX encoding cannot name another class): " .. raw)
+		end
+		if src2.num >= 8 then bExt = 0 end
+	else
+		local bn = src2.base and byteEmitNumOf(node, src2.base, colorNum) or 0
+		local xn = (src2.index and src2.index.kind == "reg")
+			and byteEmitNumOf(node, src2.index, colorNum) or nil
+		if bn and bn >= 8 then bExt = 0 end
+		if xn and xn >= 8 then xExt = 0 end
+	end
+	table.insert(bytes, regExt + xExt + bExt + spec.map)
+	-- vvvv: the second source for the three-operand forms, ~0 (unused) for the
+	-- two-operand forms.
+	local vvvvField = spec.twoOp and 15 or (15 - src1.num)
+	table.insert(bytes, vvvvField * 8 + vexL * 4 + spec.pp)
+	table.insert(bytes, spec.op)
+	if src2.kind == "reg" then
+		table.insert(bytes, 0xC0 + (dst.num % 8) * 8 + (src2.num % 8))
+	else
+		byteEmitMem(bytes, node, src2, dst.num % 8, colorNum, raw)
+	end
+	if spec.imm then
+		local immOp = ops[4]
+		local v = immOp and immOp.kind == "imm" and (immOp.value or tonumber(immOp.text)) or nil
+		if not v then
+			error("sarcasm: '" .. low .. "' requires an immediate operand: " .. raw)
+		end
+		table.insert(bytes, v % 256)
+	end
+	local text = "\t.byte " .. table.concat(bytes, ",")
+	-- readability: the spelled instruction as a comment (gas-style: # comment)
+	local spelled = {}
+	for _, o in ops do table.insert(spelled, renderOperand(node, o, colorNum, syntax)) end
+	if syntax == "att" and #spelled >= 2 then
+		local rev = {}
+		for k = #spelled, 1, -1 do table.insert(rev, spelled[k]) end
+		spelled = rev
+	end
+	return text .. "\t# " .. low .. " " .. table.concat(spelled, ",")
+end
+
 local function trampNames()
 	while true do
 		local t = ".Lsarctramp_" .. (trampFn or "?") .. "_" .. trampCounter .. "t"
@@ -248,6 +437,13 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 	local mnem = node.stmt and node.stmt.mnemonic or node.mnemonic
 	local ops = node.stmt and node.stmt.operands or node.operands or {}
 	local low = string.lower(mnem)
+
+	-- Instructions the system assembler may not know (SHA512-NI, SM3/SM4):
+	-- emitted as their VEX encodings in a .byte directive (see BYTE_EMIT).
+	do
+		local be = byteEmitInsn(node, colorNum, syntax, low)
+		if be then return be end
+	end
 
 	-- Displacement fixups for two synthesized node kinds whose %rsp-relative
 	-- offsets are only known once the frame layout is (they cannot be baked into

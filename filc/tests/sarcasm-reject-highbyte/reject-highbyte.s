@@ -1,16 +1,10 @@
-# High-byte register operands are rejected for EVERY instruction and operand
-# position (generalizing the setcc-%ah rejection). %ch/%dh/%bh never even
-# parsed before: they masqueraded as bare symbols and died with the misleading
-# "memory access with a symbolic address" error. This file pins %dh, %ch and
-# %bh; the Intel-spelling file in this directory pins the Intel path.
+# High-byte register operands are now MODELED EXACTLY for the encodable forms
+# (movb, movzbl/movzbw/movsbl/movsbw reads, byte ALU/cmp/test/inc/dec/neg/not,
+# setcc, xchgb — see sarcasm-highbyte-att/-int and sarcasm-setcc-ah-att/-int).
+# The unencodable combinations stay rejected: a high-byte register can never
+# share an instruction with a REX prefix, so no 64-bit partner operand
+# (foo_ch), and no byte partner outside %al/%cl/%dl/%bl (foo_bh).
 	.text
-	.globl	foo_dh
-	.type	foo_dh, @function
-foo_dh:                         ;! long(long)
-	endbr64
-	movb	%dh, %al
-	ret
-	.size	foo_dh, .-foo_dh
 	.globl	foo_ch
 	.type	foo_ch, @function
 foo_ch:                         ;! long(long)
@@ -22,7 +16,8 @@ foo_ch:                         ;! long(long)
 	.type	foo_bh, @function
 foo_bh:                         ;! long(long)
 	endbr64
-	sete	%bh
+	movb	%bh, %r8b
+	movl	%ebx, %eax
 	ret
 	.size	foo_bh, .-foo_bh
 	.section	.note.GNU-stack,"",@progbits

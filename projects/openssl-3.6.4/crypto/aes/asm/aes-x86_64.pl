@@ -622,6 +622,22 @@ AES_encrypt:
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the cache-line anti-aliasing frame shift is
+	# pointless (the frame is a GC allocation); a fixed 64-byte
+	# region covers the four slots at 0-24(%rsp).
+	$code.=<<___;
+	# allocate frame "above" key schedule
+	sub	\$64,%rsp		#! alloca size (aes)
+	mov	%rsp,%rcx		#! alloca result (aes)
+
+	mov	%rsi,16(%rsp)	# save out
+	mov	%rax,24(%rsp)	# save original stack pointer
+.Lenc_prologue:
+___
+} else {
+	$code.=<<___;
 	# allocate frame "above" key schedule
 	lea	-63(%rdx),%rcx	# %rdx is key argument
 	and	\$-64,%rsp
@@ -635,6 +651,9 @@ AES_encrypt:
 	mov	%rax,24(%rsp)	# save original stack pointer
 .cfi_cfa_expression	%rsp+24,deref,+8
 .Lenc_prologue:
+___
+}
+$code.=<<___;
 
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
@@ -1243,6 +1262,20 @@ AES_decrypt:
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# Same GC-allocation restructure as AES_encrypt above.
+	$code.=<<___;
+	# allocate frame "above" key schedule
+	sub	\$64,%rsp		#! alloca size (aes)
+	mov	%rsp,%rcx		#! alloca result (aes)
+
+	mov	%rsi,16(%rsp)	# save out
+	mov	%rax,24(%rsp)	# save original stack pointer
+.Ldec_prologue:
+___
+} else {
+	$code.=<<___;
 	# allocate frame "above" key schedule
 	lea	-63(%rdx),%rcx	# %rdx is key argument
 	and	\$-64,%rsp
@@ -1256,6 +1289,9 @@ AES_decrypt:
 	mov	%rax,24(%rsp)	# save original stack pointer
 .cfi_cfa_expression	%rsp+24,deref,+8
 .Ldec_prologue:
+___
+}
+$code.=<<___;
 
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
@@ -1779,6 +1815,22 @@ AES_cbc_encrypt:
 	bt	\$28,%r10d
 	jc	.Lcbc_slow_prologue
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic anti-aliasing frame is a fixed-size GC
+	# allocation: the xchg swap becomes a plain %rsp save + annotated
+	# alloca. 400 bytes cover the 336-byte slot area (incl. the
+	# aes_key copy at 80(%rsp) and $mark at 80+240(%rsp)) plus slack.
+	$code.=<<___;
+	# allocate stack frame
+	mov	%rsp,$key		# save original %rsp
+	sub	\$400,%rsp		#! alloca size (cbc)
+	mov	%rsp,%r11		#! alloca result (cbc)
+	mov	$key,$_rsp		# save %rsp
+.Lcbc_fast_body:
+___
+} else {
+	$code.=<<___;
 	# allocate aligned stack frame...
 	lea	-88-248(%rsp),$key
 	and	\$-64,$key
@@ -1810,6 +1862,9 @@ AES_cbc_encrypt:
 	mov	$key,$_rsp	# save %rsp
 .cfi_cfa_expression	$_rsp,deref,+64
 .Lcbc_fast_body:
+___
+}
+$code.=<<___;
 	mov	%rdi,$_inp	# save copy of inp
 	mov	%rsi,$_out	# save copy of out
 	mov	%rdx,$_len	# save copy of len
@@ -1837,7 +1892,13 @@ AES_cbc_encrypt:
 		lea	$aes_key,%rdi
 		lea	$aes_key,$key
 		mov	\$240/8,%ecx
-		.long	0x90A548F3	# rep movsq
+.Lcbc_ecopy_loop:			# explicit copy loop (was rep movsq;
+		mov	(%rsi),%r10	# string ops are not memory-safe)
+		mov	%r10,(%rdi)
+		lea	8(%rsi),%rsi
+		lea	8(%rdi),%rdi
+		sub	\$1,%ecx
+		jnz	.Lcbc_ecopy_loop
 		mov	%eax,(%rdi)	# copy aes_key->rounds
 .Lcbc_skip_ecopy:
 	mov	$key,$keyp	# save key pointer
@@ -1999,7 +2060,11 @@ AES_cbc_encrypt:
 	je	.Lcbc_exit
 		mov	\$240/8,%ecx
 		xor	%rax,%rax
-		.long	0x90AB48F3	# rep stosq
+.Lcbc_te_cleanse:			# explicit zero loop (was rep stosq)
+		mov	%rax,(%rdi)
+		lea	8(%rdi),%rdi
+		sub	\$1,%ecx
+		jnz	.Lcbc_te_cleanse
 
 	jmp	.Lcbc_exit
 
@@ -2007,6 +2072,20 @@ AES_cbc_encrypt:
 .align	16
 .Lcbc_slow_prologue:
 .cfi_restore_state
+___
+if ($ENV{SARCASM}) {
+	# Same GC-allocation restructure as the fast path above (the
+	# carrier register is not %rbp — sarcasm reserves it for frames).
+	$code.=<<___;
+	# allocate stack frame
+	mov	%rsp,%r10		# save original %rsp
+	sub	\$400,%rsp		#! alloca size (cbc)
+	mov	%rsp,%r11		#! alloca result (cbc)
+	mov	%r10,$_rsp		# save %rsp
+.Lcbc_slow_body:
+___
+} else {
+	$code.=<<___;
 	# allocate aligned stack frame...
 	lea	-88(%rsp),%rbp
 	and	\$-64,%rbp
@@ -2023,6 +2102,9 @@ AES_cbc_encrypt:
 	mov	%rbp,$_rsp	# save %rsp
 .cfi_cfa_expression	$_rsp,deref,+64
 .Lcbc_slow_body:
+___
+}
+$code.=<<___;
 	#mov	%rdi,$_inp	# save copy of inp
 	#mov	%rsi,$_out	# save copy of out
 	#mov	%rdx,$_len	# save copy of len
@@ -2102,11 +2184,21 @@ AES_cbc_encrypt:
 	mov	%r10,%rcx
 	mov	$inp,%rsi
 	mov	$out,%rdi
-	.long	0x9066A4F3		# rep movsb
+.Lcbc_slow_enc_tail_copy:		# explicit loops (were rep movsb/stosb)
+	mov	(%rsi),%al
+	mov	%al,(%rdi)
+	lea	1(%rsi),%rsi
+	lea	1(%rdi),%rdi
+	sub	\$1,%ecx
+	jnz	.Lcbc_slow_enc_tail_copy
 	mov	\$16,%rcx		# zero tail
 	sub	%r10,%rcx
 	xor	%rax,%rax
-	.long	0x9066AAF3		# rep stosb
+.Lcbc_slow_enc_tail_zero:
+	mov	%al,(%rdi)
+	lea	1(%rdi),%rdi
+	sub	\$1,%ecx
+	jnz	.Lcbc_slow_enc_tail_zero
 	mov	$out,$inp		# this is not a mistake!
 	mov	\$16,%r10		# len=16
 	mov	%r11,%rax
@@ -2187,7 +2279,13 @@ AES_cbc_encrypt:
 	mov	$out,%rdi
 	lea	$ivec,%rsi
 	lea	16(%r10),%rcx
-	.long	0x9066A4F3	# rep movsb
+.Lcbc_slow_dec_tail_copy:		# explicit loop (was rep movsb)
+	mov	(%rsi),%al
+	mov	%al,(%rdi)
+	lea	1(%rsi),%rsi
+	lea	1(%rdi),%rdi
+	sub	\$1,%ecx
+	jnz	.Lcbc_slow_dec_tail_copy
 	jmp	.Lcbc_exit
 
 .align	16

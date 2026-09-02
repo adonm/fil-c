@@ -44,7 +44,16 @@ function emit.emitFip(out, tr, colorResult, render, syntax)
 			render.prologue(rc)
 		elseif node.kind == "epilogue" then
 			avail = {}
+			-- The epilogue's myth use rides the node's own temp (not tr.vMyth) so a
+			-- spilled myth — reloaded by rewriteSpills immediately above the node —
+			-- renders from the reload temp's register. When the myth was never spilled
+			-- the node still carries vMyth itself and this is the same color as before.
+			local savedMyth = rc.mythNum
+			if node.useTemps and node.useTemps[1] then
+				rc.mythNum = colorNum(node.useTemps[1])
+			end
 			render.epilogue(rc)
+			rc.mythNum = savedMyth
 		elseif node.kind == "rootstore" then
 			render.rootStore(rc, node)
 		elseif node.kind == "label" then

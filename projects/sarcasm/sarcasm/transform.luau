@@ -29,11 +29,22 @@ local function parseAlloca(ann)
 	if n then return { kind = "size", name = n } end
 	local rn = string.match(ann, "^alloca%s+result%s*%(%s*(.-)%s*%)$")
 	if rn then return { kind = "result", name = rn } end
-	local sz = string.match(ann, "^alloca%s+result%s+size=(%w+)$")
+	local sz, aln = string.match(ann, "^alloca%s+result%s+size=(%w+)%s+align=(%w+)$")
+	if not sz then
+		sz = string.match(ann, "^alloca%s+result%s+size=(%w+)$")
+	end
 	if sz then
 		local v = tonumber(sz)
 		if not v then error("sarcasm: bad alloca size literal: " .. sz) end
-		return { kind = "resultSize", size = v }
+		local a = nil
+		if aln then
+			a = tonumber(aln)
+			if not a or a < 16 or a > 4096 or a ~= 2 ^ math.log(a, 2) then
+				error("sarcasm: bad alloca align literal: " .. aln
+					.. " (must be a power of two between 16 and 4096)")
+			end
+		end
+		return { kind = "resultSize", size = v, align = a }
 	end
 	if string.find(ann, "alloca", 1, true) then
 		error("sarcasm: unrecognized alloca annotation: " .. ann)
@@ -61,6 +72,7 @@ for _, d in {
 	".word", ".xword", ".quad", ".long", ".int", ".short", ".hword",
 	".2byte", ".4byte", ".8byte", ".byte", ".ascii", ".asciz", ".string",
 	".zero", ".space", ".fill", ".float", ".single", ".double", ".inst",
+	".value",
 	".dc", ".dc.b", ".dc.l", ".dc.s", ".dc.w", ".dc.x", ".dcb", ".dcb.b",
 	".dcb.l", ".dcb.s", ".dcb.w", ".dcb.x", ".ds", ".skip",
 	".equ", ".set", ".macro", ".comm", ".common", ".lcomm",
@@ -164,14 +176,17 @@ local function validateBody(body, cgm, funcName)
 			elseif c.control == "indirect" then
 				error("sarcasm: indirect branch through a raw register cannot be made memory-safe"
 					.. " (computed goto / switch jump tables are not supported): " .. raw)
-			elseif (c.control == "branch" or c.control == "condbranch") and c.targets then
+			elseif (c.control == "branch" or c.control == "condbranch") and c.targets
+				and not (ann and string.find(ann, "%(")) then
 				-- A label-target branch must stay inside the function (a branch to a
 				-- non-local label is a tail call). A branch with NO label operand has
 				-- no provable target at all: x86 `jcc *%reg` is not even encodable
 				-- (rendering would silently emit the star-less direct form), `jmp
 				-- $imm` is a raw absolute branch, and on arm64 every non-label branch
 				-- target already classifies as "indirect" above — so this arm fires
-				-- only for a degenerate operand-less branch there.
+				-- only for a degenerate operand-less branch there. A branch carrying a
+				-- SIGNATURE annotation (a tail call) is deferred to the annotation
+				-- walk below: it validates the shape and reports unresolved targets.
 				if #c.targets == 0 then
 					error("sarcasm: branch with a non-label target cannot be made memory-safe"
 						.. " (computed goto / raw absolute branches are not supported): " .. raw)
@@ -207,6 +222,70 @@ local function validateBody(body, cgm, funcName)
 					-- atomic/pointer-RMW family: the per-arch shape validator runs;
 					-- the transform's annotation walk re-validates later.
 					if cgm.ptrAtomicShape then cgm.ptrAtomicShape(ann, st) end
+				elseif ann == "local" then
+					-- `#! local`: the explicit marker on a local-subroutine call.
+					-- Discovery (localcall.luau) already validated that the target
+					-- resolves to a local subroutine (a mismatch errored there);
+					-- the mark must be present here.
+					if not st.localCall then
+						error("sarcasm: `local` annotation on an instruction that is not"
+							.. " a call to a local subroutine: " .. raw)
+					end
+				elseif ann == "global ptr" and cgm.globalSupport then
+					-- `#! global ptr` (x86_64): on a rip-relative lea or any rip-relative
+					-- memory access to an EXTERN global, materialize the flight pointer
+					-- by calling the global's getter. Shape: a lea or memory operand of
+					-- the form sym(%rip) (no @reloc decoration, no index — x86 has
+					-- no rip+index addressing mode).
+					local mem = cgm.memOperand(st)
+					if not (mem and mem.base and mem.base.rc == "rip" and mem.dispSym
+						and not mem.dispReloc and not mem.index) then
+						error("sarcasm: `global ptr` requires a rip-relative global reference"
+							.. " (a lea or memory operand of the form sym(%rip)): " .. raw)
+					end
+				elseif ann == "funcref" then
+					-- `#! funcref` (x86_64): on a rip-relative lea to a FUNCTION
+					-- symbol, materialize the function's flight pointer (its
+					-- function-object capability) into the destination register,
+					-- so a later `#! store ptr` stores a code pointer C can call
+					-- indirectly. Shape: a lea of the form sym(%rip) to a bare
+					-- symbol (no @reloc decoration, no index, no displacement).
+					-- Target RESOLUTION (same-file function vs extern vs data)
+					-- happens in the transform's annotation classification, which
+					-- has the driver's function/data maps.
+					if not cgm.globalSupport then
+						error("sarcasm: `funcref` is not yet supported on this target: " .. raw)
+					end
+					local bm = cgm.baseMnemonic(string.lower(st.mnemonic))
+					local mem = cgm.memOperand(st)
+					if bm ~= "lea" or not (mem and mem.base and mem.base.rc == "rip"
+						and mem.dispSym and not mem.dispReloc and not mem.index
+						and (mem.dispVal or 0) == 0) then
+						error("sarcasm: `funcref` requires a rip-relative lea to a bare"
+							.. " function symbol (leaq sym(%rip), %reg): " .. raw)
+					end
+				elseif (c.control == "branch" or c.control == "condbranch")
+					and string.find(ann, "%(") then
+					-- Tail-call signature annotation on a direct jump (a B1
+					-- cross-function tail branch — tailcall.luau). Shape: a direct
+					-- jmp/jcc to a bare symbol. Sites resolved by the driver's
+					-- cross-function-jump rewrite were already turned into
+					-- annotated calls before this pass ran; anything still here is
+					-- malformed, unsupported on this target, or unresolved.
+					local op = st.operands and st.operands[1]
+					if not (op and op.kind == "sym") then
+						error("sarcasm: signature annotation '" .. ann .. "' on a jump requires"
+							.. " a direct jump to a bare symbol (a tail call): " .. raw)
+					end
+					sig.parseSignature(ann)
+					if not cgm.crossFunctionJumps then
+						error("sarcasm: cross-function jumps are not yet supported on this"
+							.. " target (annotated jump to '" .. op.text .. "'): " .. raw)
+					end
+					error("sarcasm: jump to '" .. op.text .. "' with signature annotation '"
+						.. ann .. "' does not resolve to a function with a matching signature"
+						.. " (the target must be a signature-annotated function or alias entry"
+						.. " in this file, or an extern symbol): " .. raw)
 				elseif c.control == "call" or c.control == "indcall" then
 					-- callsite signature (direct or register-indirect call): parse now
 					-- to reject malformed sigs early (the transform re-parses via
@@ -271,7 +350,21 @@ local function validateBody(body, cgm, funcName)
 						fallsThrough = false
 					end
 				end
-				if fallsThrough then table.insert(work, i + 1) end
+				if fallsThrough then
+					-- A clone entry (localcall.luau) or a cross-function-jump block
+					-- entry (tailcall.luau: B1 via blocks, B2 shared-tail clones,
+					-- the synthetic epilogue block) is only ever reached through its
+					-- jump edge: falling INTO one means the preceding body (the
+					-- caller's, or another clone's) fell off its end — the same
+					-- rejection as falling off the whole body.
+					local nxt = body[i + 1]
+					if nxt and (nxt.localCloneEntry or nxt.crossJumpEntry) then
+						error("sarcasm: function '" .. funcName .. "' can fall off the end"
+							.. " of its body; every control-flow path must end with a ret"
+							.. " instruction: " .. (st.raw or st.mnemonic or "?"))
+					end
+					table.insert(work, i + 1)
+				end
 			end
 		end
 	end
@@ -285,10 +378,30 @@ local function validateBody(body, cgm, funcName)
 	end
 end
 
-function transform.transformFunction(name, sigDesc, body, backend)
+function transform.transformFunction(name, sigDesc, body, backend, extra)
 	local cgm = backend.cg          -- codegen module (static config + make)
 	local framePolicy = backend.frame  -- per-arch frame policy (analyzeFrame + rewrite)
 	local cc = cgm.cc
+
+	-- Same-file data objects collected by the driver (x86_64 global variables):
+	-- label -> { doSym, baseSym, readonly, exported, hidden, gpSym, gsSym,
+	-- payloadOff }. nil when the target has no globals support (arm64).
+	local dataGlobals = extra and extra.globals or nil
+
+	-- Same-file FUNCTION name resolution (x86_64, `#! funcref`): function and
+	-- alias-entry name -> owning function name (an alias shares the owner's
+	-- function object). subNames: local-subroutine names (no function object —
+	-- named for clean rejections). nil when the driver has no such resolution
+	-- (arm64, where `#! funcref` is rejected anyway).
+	local fnNames = extra and extra.fnNames or nil
+	local subNames = extra and extra.subNames or nil
+
+	-- Local subroutines (localcall.luau): this caller's per-caller clones
+	-- descriptor (clone id -> { sub, entry, conts }), or nil when the function
+	-- calls no local subroutine. The body already carries the marked callsites
+	-- (st.localCall) and clone rets (st.localRet); classify models both as
+	-- branches, so the CFG consumers below needed no changes.
+	local clonesInfo = extra and extra.clones or nil
 
 	-- Reject unannotated/indirect calls, non-local/non-label branches (including a
 	-- branch to this function's own entry name), bodies that can fall off their end,
@@ -345,7 +458,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		-- stack-argument info (slot count, which slots FP instructions read, and the
 		-- materialized area's base offset when any do).
 		local fs, fpo, ufp, fpinfo, yolo = framePolicy.analyzeFrame(body, sigDesc)
-		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo, yolo = yolo }
+		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo, yolo = yolo,
+			-- the frame base depth (x86_64: the +8 rule's clone displacement bias
+			-- origin for local subroutines — localcall.luau)
+			callerDepth = framePolicy.frameBaseDepth and framePolicy.frameBaseDepth() or nil }
 	end
 
 	-- FP values ride in the arch's vector registers (xmm on x86_64, v on arm64)
@@ -435,7 +551,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	--     frame-pointer recovery `movq %rbp, %rsp`, or a recovery from a prologue
 	--     rsp save (`movq %rbx, %rsp`);
 	--   * `lea` with a full-width %rsp destination and a displacement-only memory
-	--     operand based on %rbp (`leaq -40(%rbp), %rsp`);
+	--     operand based on a register (`leaq -40(%rbp), %rsp` — the frame-pointer
+	--     recovery — or `leaq (%rsi), %rsp` — a saved-rsp carrier recovery);
 	--   * `add` with a full-width %rsp destination and an immediate source (the
 	--     epilogue teardown `addq $imm, %rsp`).
 	-- The frame pass owns each form's validity, so recognition here is deliberately
@@ -451,7 +568,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
 			and (ops[1].width == 64 or ops[1].width == nil)
 			and ops[2] and ops[2].kind == "mem" and ops[2].base
-			and ops[2].base.name == "rbp"
+			and ops[2].base.kind == "reg"
 			and not ops[2].index and not ops[2].dispSym then
 			return true
 		end
@@ -724,15 +841,89 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	-- Fixed-size stack allocations establish sp-relative "regions" [base, base+size): the
 	-- code re-derives the buffer address per use, so we redirect such sp math into the
-	-- allocation.
+	-- allocation. Two anchoring families exist:
+	--   * STATIC regions (`leaq disp(%rsp),%rd` / `movq %rsp,%rd` / rbp-relative lea):
+	--     the base is a frame offset, and accesses reach the region in ordinary frame
+	--     coordinates (rsp provably at the post-prologue base, or rbp static).
+	--   * ANCHORED regions (`andq $-A,%rsp`, or the `subq $K,%rsp` feeding one — the
+	--     perlasm dynamic-alignment idiom): the region base is the post-alignment rsp
+	--     (region coordinate 0), reached while the abstract rsp depth is "dyn". Region
+	--     membership is still a static fact there: the andq only lowers rsp, and no
+	--     accepted rsp movement may intervene before the recovery.
+	-- The two families live in different coordinate spaces; regionOf's `dyn` argument
+	-- selects the matching one so a numerically-coinciding offset never crosses over.
 	local allocaRegions = {}
-	for _, st in body do
+	for i, st in body do
 		if st.kind == "insn" then
 			local al = parseAlloca(st.annotation)
 			if al and al.kind == "resultSize" then
-				local base = cgm.allocaRegionBase(st, fctx)
+				if al.align and backend.arch ~= "x86_64" then
+					error("sarcasm: `alloca result size=N align=A` is not supported on this"
+						.. " target: " .. (st.raw or st.mnemonic))
+				end
+				local base, insnAlign, anchored = cgm.allocaRegionBase(st, fctx)
+				local anchorAndq = nil
 				if base then
-					table.insert(allocaRegions, { base = base, size = al.size, stmt = st })
+					-- A `subq $K,%rsp`-annotated region may be followed by the
+					-- alignment `andq $-A,%rsp` it feeds: the andq is alloca machinery
+					-- (dropped), the region base is the POST-alignment rsp, and the
+					-- region takes the andq's alignment. Scan the straight-line region
+					-- for it: only transparent (non-frame, non-control) instructions
+					-- may intervene — anything touching the stack between the sub and
+					-- the andq would address the PRE-alignment rsp while region
+					-- coordinates are post-alignment.
+					if anchored and not insnAlign then
+						local j = i + 1
+						while j <= #body do
+							local nx = body[j]
+							if nx.kind ~= "insn" then break end
+							local nb = cgm.baseMnemonic(string.lower(nx.mnemonic))
+							local nops = nx.operands or {}
+							local writesSp = nops[1] and nops[1].kind == "reg" and nops[1].rc == "sp"
+							if nb == "and" and writesSp and nops[2] and nops[2].kind == "imm"
+								and not nx.annotation then
+								local a2, aAlign = cgm.allocaRegionBase(nx, fctx)
+								if a2 == 0 and aAlign then
+									nx.allocaPlace = true
+									anchorAndq = nx  -- the region's own andq
+									insnAlign = aAlign
+								end
+								break
+							end
+							-- Only instructions that cannot touch the stack or the control
+							-- flow may intervene between the annotated sub and the andq it
+							-- feeds: anything else ends the scan (the andq, if any, is then
+							-- left to the ordinary rsp-write checks).
+							local touches = writesSp or nb == "push" or nb == "pop" or nb == "call"
+								or nb == "jmp" or nb == "jcc" or nb == "ret" or nb == "leave"
+								or string.match(string.lower(nx.mnemonic), "^loop") ~= nil
+							if not touches then
+								for _, o in nops do
+									if o.kind == "reg" and (o.rc == "sp" or o.name == "rbp") then touches = true break end
+									if o.kind == "mem" and ((o.base and (o.base.rc == "sp" or o.base.name == "rbp"))
+										or (o.index and (o.index.rc == "sp" or o.index.name == "rbp"))) then
+										touches = true break
+									end
+								end
+							end
+							if touches then break end
+							j += 1
+						end
+					end
+					local ralign = 16
+					if insnAlign and insnAlign > 16 then ralign = insnAlign end
+					if al.align then
+						if insnAlign and al.align ~= insnAlign then
+							error("sarcasm: `alloca result size=N align=" .. al.align
+								.. "` contradicts the instruction's own alignment (" .. insnAlign
+								.. "): " .. (st.raw or st.mnemonic))
+						end
+						ralign = al.align
+					end
+					local region = { base = base, size = al.size, stmt = st,
+						align = ralign, anchored = anchored and true or false }
+					if anchorAndq then anchorAndq.allocaAnchor = region end
+					table.insert(allocaRegions, region)
 				else
 					-- Without a recognized base the annotation would silently create NO
 					-- region: the buffer address escapes as a bare allocation pointer while
@@ -745,9 +936,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			end
 		end
 	end
-	local function regionOf(spOff)
+	local function regionOf(spOff, dyn)
 		for _, r in allocaRegions do
-			if spOff >= r.base and spOff < r.base + r.size then return r end
+			if r.anchored == (dyn and true or false)
+				and spOff >= r.base and spOff < r.base + r.size then return r end
 		end
 		return nil
 	end
@@ -784,11 +976,17 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- outgoing stack argument o (0-based) at 8*o(%rsp) relative to its frame base,
 	-- so the callee finds it above the return address). Reaching-definitions then
 	-- connects the body's store of that slot to the call's use of its value.
-	local function callArgSource(cs, k)
+	-- EXCEPTION: a TAIL CALL (st.tailCall — the cross-function-jump rewrite,
+	-- tailcall.luau) sources its stack arguments from the jumper's own INCOMING
+	-- yolo stack-argument slots instead: a hardware tail `jmp` passes the incoming
+	-- arguments through in place, so the call conversion marshals exactly those
+	-- values (the outgoing area has no definition of them — the body jumped).
+	local function callArgSource(cs, k, stmt)
 		local yreg = cc.yoloArg(k, cs.argTypes)
 		if yreg then return yreg end
 		local n = 0
 		for i = 1, k - 1 do if not isFp(cs.argTypes[i]) then n += 1 end end
+		if stmt and stmt.tailCall then return framePass.yoloSlotNum(n - cc.yoloRegCount) end
 		return framePass.SLOT_BASE + 8 * (n - cc.yoloRegCount)
 	end
 
@@ -801,7 +999,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		local argRegs = {}
 		for k = 1, cs.argWords do
 			if not isFp(cs.argTypes[k]) then
-				table.insert(argRegs, callArgSource(cs, k))
+				table.insert(argRegs, callArgSource(cs, k, stmt))
 			end
 		end
 		local resultReg = (cs.isVoid or (cs.retTypes[1] and isFp(cs.retTypes[1]))) and nil or 0
@@ -912,6 +1110,27 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- on the wrong instruction shape was a silent miscompile (the annotated
 	-- instruction was replaced by an invisicap load/store, dropping the original
 	-- operation). Both are now clean compile-time errors.
+	-- Body-local label set (x86_64): a rip-relative lea to a body-local label is
+	-- address arithmetic on a CODE label and keeps its historical passthrough; a
+	-- rip-relative reference to anything else must resolve as a global (same-file
+	-- data object or an extern global with `#! global ptr`).
+	local bodyLocalLabels = {}
+	if dataGlobals then
+		for _, st in body do
+			if st.kind == "label" then bodyLocalLabels[st.name] = true end
+		end
+	end
+	-- Global-variable nodes (x86_64): a mem operand of the form sym(%rip) whose
+	-- symbol resolves to a same-file data object (globalLeaNodes for a lea,
+	-- globalMemNodes for a real access), or an EXTERN symbol annotated
+	-- `#! global ptr` (globalGetterNodes — getter materialization).
+	local globalLeaNodes, globalMemNodes, globalGetterNodes = {}, {}, {}
+	-- `#! funcref` nodes (x86_64): a rip-relative lea to a FUNCTION symbol.
+	-- Value: { fo = <owner name> } for a same-file function (materialize the
+	-- function object directly) or { getter = <sym> } for an extern function
+	-- (materialize through the cross-module getter, like `#! global ptr`).
+	local funcrefNodes = {}
+
 	local loadPtrDefs, storePtrNodes, callNodes, allocaNodes, allocaResultDefs = {}, {}, {}, {}, {}
 	local callPtrDefs = {}
 	-- Annotated register-indirect calls (`call *%reg ;! sig(...)` on x86_64,
@@ -926,6 +1145,63 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if node.kind == "insn" then
 			local ann = node.stmt.annotation
 			local raw = node.stmt.raw or node.stmt.mnemonic or "?"
+			-- Global-variable classification (x86_64): an instruction with a
+			-- rip-relative symbolic operand (sym(%rip)). Same-file symbols resolve
+			-- to their data object (lea seeds / checked direct accesses); an EXTERN
+			-- symbol requires `#! global ptr` (getter materialization); an
+			-- unannotated rip-relative lea to anything but a body-local code label
+			-- is a clean rejection (it would silently materialize a raw address).
+			if dataGlobals then
+				local mem = cgm.memOperand(node.stmt)
+				if mem and mem.base and mem.base.rc == "rip" and mem.dispSym
+					and not mem.dispReloc and not mem.index then
+					local sym = mem.dispSym
+					local desc = dataGlobals[sym]
+					local bm = cgm.baseMnemonic(string.lower(node.stmt.mnemonic))
+					if ann == "funcref" then
+						-- `#! funcref` resolution (shape already validated by
+						-- validateBody): the target must be a FUNCTION. A same-file
+						-- function (or alias entry — it shares the owner's function
+						-- object) materializes pizlonatedFO_<owner> directly; an
+						-- extern function goes through its cross-module getter
+						-- (pizlonated_<sym>, the `#! global ptr` contract). A DATA
+						-- object, a body-local code label or a local subroutine is
+						-- a clean error.
+						if fnNames and fnNames[sym] then
+							funcrefNodes[node] = { fo = fnNames[sym] }
+						elseif desc then
+							error("sarcasm: `funcref` target '" .. sym .. "' is a data"
+								.. " object, not a function: " .. raw)
+						elseif bodyLocalLabels[sym] then
+							error("sarcasm: `funcref` target '" .. sym .. "' is a local"
+								.. " code label, not a function: " .. raw)
+						elseif subNames and subNames[sym] then
+							error("sarcasm: `funcref` target '" .. sym .. "' is a local"
+								.. " subroutine (it has no function object to point at): "
+								.. raw)
+						else
+							funcrefNodes[node] = { getter = sym }
+						end
+					elseif desc then
+						if bm == "lea" then
+							globalLeaNodes[node] = desc
+						else
+							globalMemNodes[node] = desc
+						end
+					elseif ann == "global ptr" then
+						if bodyLocalLabels[sym] then
+							error("sarcasm: `global ptr` target '" .. sym
+								.. "' is a local code label, not a global: " .. raw)
+						end
+						globalGetterNodes[node] = sym
+					elseif bm == "lea" and not bodyLocalLabels[sym] then
+						error("sarcasm: rip-relative address of '" .. sym .. "' cannot be"
+							.. " materialized safely (if '" .. sym .. "' is a Fil-C global"
+							.. " defined in another module, annotate the instruction with"
+							.. " `#! global ptr`): " .. raw)
+					end
+				end
+			end
 			local al = parseAlloca(ann)
 			if al then
 				allocaNodes[node] = al
@@ -971,6 +1247,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					elseif shape == "atomicrmw" then atomicRmwPtrNodes[node] = true
 					else error("sarcasm: internal error: bad ptr-atomic shape " .. tostring(shape)) end
 				end
+			elseif ann == "global ptr" and cgm.globalSupport then
+				-- shape-validated by validateBody; recorded above (globalGetterNodes)
+				-- or same-file (globalLeaNodes/globalMemNodes) — nothing further.
+			elseif ann == "funcref" and cgm.globalSupport then
+				-- shape-validated by validateBody; resolved above (funcrefNodes).
 			elseif node.c.control == "call" and ann then
 				callNodes[node] = ann
 				local cs = callSigOf(node.stmt)
@@ -1254,6 +1535,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	for n in pairs(loadPtrDefs) do ptrSeedDefs[n] = true end
 	for n in pairs(atomicLoadPtrDefs) do ptrSeedDefs[n] = true end
 	for n in pairs(atomicCasPtrDefs) do ptrSeedDefs[n] = true end
+	-- Global leas (same-file data-object leas, and extern `#! global ptr` lea
+	-- materializations) define pointer values: seed them so ptrflow allocates
+	-- their lower temps. (Same-file DIRECT accesses and extern direct accesses
+	-- are scalar — they materialize a fresh (iv, lo) pair at the access site,
+	-- never a web pointer.)
+	for n in pairs(globalLeaNodes) do ptrSeedDefs[n] = true end
+	for n in pairs(globalGetterNodes) do
+		if cgm.baseMnemonic(string.lower(n.stmt.mnemonic)) == "lea" then
+			ptrSeedDefs[n] = true
+		end
+	end
+	-- `#! funcref` leas (x86_64) define pointer values (the function's flight
+	-- pointer — a full capability): seed them so ptrflow allocates their lower
+	-- temps. The lower is a link-time constant into static ELF memory (the FO
+	-- object), so like the global getters it needs no GC root store.
+	for n in pairs(funcrefNodes) do ptrSeedDefs[n] = true end
 	if cgm.atomicRmwPlan then
 		-- arm64: the LSE pointer-RMW's old-value destination register (ldadd's
 		-- Wt / swp's Wt) receives the slot's old value — a genuine pointer
@@ -1263,10 +1560,75 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		for n in pairs(atomicRmwPtrNodes) do ptrSeedDefs[n] = true end
 	end
 
+	-- Region-redirect leas and rsp copies (x86_64): a `leaq disp(%rsp), %rd` /
+	-- `movq %rsp, %rd` landing in a fixed alloca region becomes a region-pointer
+	-- web at emission (cg.regionRedirect). Seed them so ptrflow allocates their
+	-- lower temps and propagates them to COPIES of the region pointer (the wp
+	-- `leaq 128(%rsp), %r10; movq %r10, %rbx` — checked traffic flows through the
+	-- copy exactly as through the lea). The emission defines the seeded lower from
+	-- the region's own lower, so every copy shares one capability.
+	if #allocaRegions > 0 and cgm.memOperand then
+		for _, node in lf.nodes do
+			if node.kind == "insn" then
+				local st = node.stmt
+				local bm = cgm.baseMnemonic(string.lower(st.mnemonic))
+				local ops = st.operands or {}
+				local mem = cgm.memOperand(st)
+				local isRcpMov = bm == "mov" and ops[1] and ops[1].kind == "reg"
+					and ops[1].rc ~= "sp" and ops[2] and ops[2].rc == "sp"
+				if (bm == "lea" and mem and mem.base and not mem.index and not mem.dispSym)
+					or isRcpMov then
+					local off = 0
+					local spBase = isRcpMov
+					if isRcpMov and st.localClone then
+						-- the +8 rule for a clone's movq %rsp (see the lea case below)
+						local d0 = st.x86_depth
+						if d0 ~= nil and type(d0) ~= "table" and d0 ~= "dyn"
+							and fctx and fctx.callerDepth then
+							off = fctx.callerDepth - d0 - 8
+						end
+					end
+					if bm == "lea" then
+						off = mem.dispVal or 0
+						spBase = mem.base.rc == "sp"
+						if not spBase then
+							if fctx and fctx.usesFp and mem.base.name == "rbp" then
+								off = fctx.frameSize + off
+							else
+								off = nil
+							end
+						elseif st.localClone then
+							-- the +8 rule for clone statements at a static depth
+							-- (the return-address compensation — localcall.luau;
+							-- keyed exactly like the frame rewrite)
+							local d0 = st.x86_depth
+							if d0 ~= nil and type(d0) ~= "table" and d0 ~= "dyn"
+								and fctx and fctx.callerDepth then
+								off = off + fctx.callerDepth - d0 - 8
+							end
+						end
+					end
+					if off then
+						local d = st.x86_depth
+						local hit = nil
+						if spBase and not st.x86_prologue and type(d) == "table" then
+							if off >= d.anchored.base and off < d.anchored.base + d.anchored.size then
+								hit = true
+							end
+						elseif regionOf(off, false) then
+							hit = true
+						end
+						if hit then ptrSeedDefs[node] = true end
+					end
+				end
+			end
+		end
+	end
+
 	local pf = ptrflow.analyze(lf,
 		{ argPtrTemps = argPtrTemps, loadPtrDefs = ptrSeedDefs, allocaResultDefs = allocaResultDefs,
 			callPtrDefs = callPtrDefs },
-		allocTemp, { baseMnemonic = cgm.baseMnemonic })
+		allocTemp, { baseMnemonic = cgm.baseMnemonic, widenSwaps = backend.arch == "x86_64" })
 
 	-- Link each fixed-size alloca-result node to its region; give the region a stable pointer
 	-- temp for redirecting sp-relative math and a shared lower (the result's seeded lower).
@@ -1285,6 +1647,13 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				r.ptrTemp = allocTemp({ role = "regionptr" })
 				local resultIv = node.defTemps and node.defTemps[1]
 				r.loTemp = resultIv and pf.lowerTemp[resultIv]
+				if not r.loTemp then
+					-- An alignment-anchored region (the `andq $-A,%rsp` / feeding
+					-- `subq $K,%rsp` forms) has no destination register to borrow a
+					-- lower from: give the region its own lower temp (the
+					-- allocation's payload base — bounds stay sound).
+					r.loTemp = allocTemp({ isLower = true, role = "regionlo" })
+				end
 				pf.isPtr[r.ptrTemp] = true
 				if r.loTemp then pf.lowerTemp[r.ptrTemp] = r.loTemp end
 			end
@@ -1320,10 +1689,25 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	temps[vMyth].spillCost = 1e9
 	local originSym = ".Lfilc_origin_" .. name
 
+	-- Local subroutines: one shared "retaddr" temp per (caller, clone), defined
+	-- at each callsite by the continuation-address lea and read by the clone's
+	-- ret dispatch. An ordinary regalloc web (allocated in clone-id order —
+	-- determinism), never a pointer: it lives in a register or a sarcasm-owned
+	-- spill slot, so the return-address storage is off-limits to the program by
+	-- construction. Live from the callsite through the whole clone to its ret —
+	-- including across any annotated calls inside the clone, which IRC's
+	-- precolored caller-saved clobbers push to a callee-saved color or a spill.
+	local retaddrTemps = {}
+	if clonesInfo then
+		for id = 1, #clonesInfo do
+			retaddrTemps[id] = allocTemp({ role = "localret" })
+		end
+	end
+
 	emit({ kind = "prologue", name = name })
 
 	local cg = cgm.make({ emit = emit, allocTemp = allocTemp, pColored = pColored, pf = pf, temps = temps,
-		frameCtx = fctx })
+		frameCtx = fctx, globals = dataGlobals })
 
 	-- Condition-flag (NZCV) liveness at instrumentation points. The instrumented
 	-- sequences (access checks, invisicap loads/stores, pollchecks, allocations) write
@@ -1365,7 +1749,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				local transparent = st.allocaPlace or st.allocaOwned
 					or (parseAlloca(st.annotation) or {}).kind == "result"
 				if not transparent then
-					if cgm.flagUse(nd.stmt) then res = true; break
+					-- A local call/ret CLOBBERS the flags (the ret dispatch's
+					-- compare chain writes them): flags are documented
+					-- call-clobbered across a local call, so — exactly like a
+					-- call — no valid code reads them across one.
+					if st.localCall or st.localRet then res = false; break
+					elseif cgm.flagUse(nd.stmt) then res = true; break
 					elseif cgm.flagDef(nd.stmt) then res = false; break
 					elseif ctrl == "call" or ctrl == "indcall" then res = false; break
 					elseif ctrl ~= "none" then res = true; break
@@ -1706,11 +2095,14 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- invisicap pointer load: load (dstIv, dstLo) from the address of `mem`.
+	-- preEff/preLo optionally supply a precomputed (effective address, capability
+	-- lower) pair (global-variable materialization); otherwise computeAddr.
 	local ptrldCounter = 0
-	local function emitPtrLoad(node, mem, dstIv, dstLo)
+	local function emitPtrLoad(node, mem, dstIv, dstLo, preEff, preLo)
 		ptrldCounter += 1
 		local tag = name .. "_" .. ptrldCounter
-		local effTemp, baseLo = cg.computeAddr(node, mem)
+		local effTemp, baseLo = preEff, preLo
+		if not effTemp then effTemp, baseLo = cg.computeAddr(node, mem) end
 		emitAccessCheck(effTemp, baseLo, 8, 8)
 		if baseLo == nil then cg.moveZero(dstLo); cg.moveZero(dstIv); return end
 		local offInObj = allocTemp({ role = "offobj" })
@@ -1732,10 +2124,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 
 	-- invisicap pointer store (aux allocation + readonly reject + FUGC store barrier).
 	local ptrstCounter = 0
-	local function emitPtrStore(node, mem, valIv, valLo)
+	local function emitPtrStore(node, mem, valIv, valLo, preEff, preLo)
 		ptrstCounter += 1
 		local tag = name .. "_st_" .. ptrstCounter
-		local effTemp, baseLo = cg.computeAddr(node, mem)
+		local effTemp, baseLo = preEff, preLo
+		if not effTemp then effTemp, baseLo = cg.computeAddr(node, mem) end
 		if baseLo == nil then emitAccessCheck(effTemp, nil, 8, 8, true); return end
 		if valLo == nil then valLo = allocTemp({ role = "nulllo" }); cg.moveZero(valLo) end
 		local lbl = failLabelFor(effTemp, baseLo, 8, 8, true)
@@ -1990,14 +2383,15 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- `;! atomic load ptr`: movq (mem), %reg — the runtime atomic pointer load.
-	local function emitAtomicPtrLoad(node, mem)
+	local function emitAtomicPtrLoad(node, mem, preEff, preLo)
 		local dstIv = node.defTemps[1]
 		if not dstIv then
 			error("sarcasm: `atomic load ptr` requires a modeled (GPR) destination"
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local dstLo = pf.lowerTemp[dstIv]
-		local effTemp, capLo = cg.computeAddr(node, mem)
+		local effTemp, capLo = preEff, preLo
+		if not effTemp then effTemp, capLo = cg.computeAddr(node, mem) end
 		emitAccessCheck(effTemp, capLo, 8, 8, false)
 		if capLo == nil then cg.moveZero(dstLo); cg.moveZero(dstIv); emitRootStore(dstLo); return end
 		emitAtomicLoadCall(effTemp, capLo)
@@ -2005,7 +2399,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	end
 
 	-- `;! atomic store ptr`: movq %reg, (mem) — the runtime atomic pointer store.
-	local function emitAtomicPtrStore(node, mem)
+	local function emitAtomicPtrStore(node, mem, preEff, preLo)
 		local valOp = storeValueOperand(node.stmt, mem)
 		local valIv = valOp and node.opTemp[valOp] or nil
 		if not valIv then
@@ -2013,7 +2407,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local valLo = pf.lowerTemp[valIv]
-		local effTemp, capLo = cg.computeAddr(node, mem)
+		local effTemp, capLo = preEff, preLo
+		if not effTemp then effTemp, capLo = cg.computeAddr(node, mem) end
 		emitAccessCheck(effTemp, capLo, 8, 8, true)
 		if capLo == nil then return end
 		if valLo == nil then valLo = allocTemp({ role = "nulllo" }); cg.moveZero(valLo) end
@@ -2025,7 +2420,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- implicit accumulator's use web) travels in argument registers instead of
 	-- physical rax; the old value arrives in rax/rdx and defines the accumulator's
 	-- def web (seeded as a pointer by ptrflow).
-	local function emitAtomicPtrCas(node, mem)
+	local function emitAtomicPtrCas(node, mem, preEff, preLo)
 		local c = node.c
 		local pin = c.pin
 		local accUseT = (pin and pin.uses and pin.uses[1]) and node.opTemp[pin.uses[1]] or nil
@@ -2043,7 +2438,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				.. (node.stmt.raw or "?"))
 		end
 		local newLo = pf.lowerTemp[newIv]
-		local effTemp, capLo = cg.computeAddr(node, mem)
+		local effTemp, capLo = preEff, preLo
+		if not effTemp then effTemp, capLo = cg.computeAddr(node, mem) end
 		emitAccessCheck(effTemp, capLo, 8, 8, true)
 		-- The expected intval must survive the call for the flag recompute below:
 		-- the expected and result webs can COINCIDE (a cmpxchg retry loop unions
@@ -2116,16 +2512,16 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- pointer store (checks incl. CanWrite, ensure-aux, barrier, lower+iv stores).
 	-- The capability rides through unchanged — Fil-C pointer arithmetic through
 	-- memory.
-	local function emitLoadStorePtr(node, mem)
+	local function emitLoadStorePtr(node, mem, preEff, preLo)
 		local srcT, srcImmOp, unary = rmwSource(node)
 		local oldIv = allocTemp({ role = "lspold" })
 		local oldLo = allocTemp({ role = "lsplo" })
-		emitPtrLoad(node, mem, oldIv, oldLo)
+		emitPtrLoad(node, mem, oldIv, oldLo, preEff, preLo)
 		emitRootStore(oldLo)
 		local newIv = allocTemp({ role = "lspnew" })
 		cg.move(newIv, oldIv)
 		emitRmwAluOp(node, newIv, srcT, srcImmOp, unary)
-		emitPtrStore(node, mem, newIv, oldLo)
+		emitPtrStore(node, mem, newIv, oldLo, preEff, preLo)
 		emitRmwFlags(node, oldIv, srcT, srcImmOp, unary)
 	end
 
@@ -2227,7 +2623,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- compare-exchange loop through the runtime — a real atomic RMW. (x86_64; the
 	-- arm64 LSE form lowers to emitAtomicLoadStorePtrLse above.)
 	local alrmwCounter = 0
-	local function emitAtomicLoadStorePtr(node, mem)
+	local function emitAtomicLoadStorePtr(node, mem, preEff, preLo)
 		if cgm.atomicRmwPlan then
 			-- arm64: the LSE RMW is already atomic, so only the compare-exchange
 			-- loop lowering exists; NZCV is preserved across it (the native
@@ -2238,7 +2634,8 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			return
 		end
 		local srcT, srcImmOp, unary = rmwSource(node)
-		local effTemp, capLo = cg.computeAddr(node, mem)
+		local effTemp, capLo = preEff, preLo
+		if not effTemp then effTemp, capLo = cg.computeAddr(node, mem) end
 		emitAccessCheck(effTemp, capLo, 8, 8, true)
 		-- a null capability trapped above; keep the (unreachable) fall-through
 		-- well-formed with a null-lower marshal temp
@@ -2301,7 +2698,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 	-- balanced). Any spill reloads regalloc inserts for the stores' sources are
 	-- stamped with the window's shift and re-based at render time (node.spillShift;
 	-- see sarcasm.luau's rewriteSpills and x86_64_render.renderInsn).
-	local function marshalFastArgs(cs, argTemps, uses)
+	local function marshalFastArgs(cs, argTemps, uses, stmt)
 		local fpVecUses = nil
 		local stackWords = nil
 		for k = 1, cs.argWords do
@@ -2313,7 +2710,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				fpVecUses = fpVecUses or {}
 				fpVecUses[m] = sig.fpWidthBytes(cs.argTypes[k])
 			else
-				local aTemp = argTemps[callArgSource(cs, k)]
+				local aTemp = argTemps[callArgSource(cs, k, stmt)]
 				local s = cc.denseSlot(cs.argTypes, k)
 				if s < cc.argRegCount then
 					cg.move(pColored(cc.argIv(cs.argTypes, k)), aTemp)
@@ -2403,7 +2800,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		if not wireCounterFromLower then rcxSave = counterGuardArm() end
 		cg.move(pColored(cc.myth), vMyth)
 		local callUses = { pColored(cc.myth) }
-		local fpVecUses, winN = marshalFastArgs(cs, argTemps, callUses)
+		local fpVecUses, winN = marshalFastArgs(cs, argTemps, callUses, node.stmt)
 		local callNode = cg.call("pizlonatedFI" .. cs.signature .. "_" .. callee, callUses, cg.callerSavedClobbers())
 		if fpVecUses then callNode.fpVecUses = fpVecUses end
 		-- restore rsp over the outgoing stack-arg area BEFORE the exception-flag
@@ -2665,6 +3062,102 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		end
 	end
 
+	-- Global-variable materializations (x86_64; reached only when the driver
+	-- collected data objects or a `#! global ptr` annotation was validated).
+	--
+	-- emitGlobalGetter: EXTERN global — call pizlonated_<sym>@PLT (rdi=myth,
+	-- rsi=0; result rax=intval, rdx=lower), the exact cross-module contract
+	-- FilPizlonator emits for an address-of-global. An injected nounwind runtime
+	-- call: caller-saved clobbers, fpSave/fpRestore, counterGuard; NO exception
+	-- branch (getters are nounwind) and NO root store (a global's lower is a
+	-- link-time constant into static ELF memory — FUGC never moves it).
+	local function emitGlobalGetter(sym, dstIv, dstLo)
+		local rcxSave = counterGuardArm()
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), vMyth)
+		cg.moveZero(pColored(cc.rtArg(2)))
+		local n = cg.call("pizlonated_" .. sym,
+			{ pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) }, cg.callerSavedClobbers())
+		n.globalGetter = true   -- fpSave/fpRestore pair preserves vector state (see expandFpSaves)
+		cg.fpRestore()
+		counterGuardRestore(rcxSave)
+		cg.move(dstIv, pColored(cc.rtRet))
+		cg.move(dstLo, pColored(cc.rtRetLo))
+	end
+
+	-- emitGlobalInlineGP: same-file WRITABLE global — the inline-GP fast path
+	-- (mirrors filcc's same-module materialization, verified against clang):
+	-- load the `.LpizlonatedGP_` cell (intval at +0, lower at +8); if either
+	-- word is zero, call `.LpizlonatedGS_` (the slow-init function, which
+	-- REGISTERS the object into the GC's global root set — required before any
+	-- pointer store into the object) and materialize `leaq <doSym>+payloadOff`
+	-- into both words; rejoin.
+	local gpMatCounter = 0
+	local function emitGlobalInlineGP(desc, dstIv, dstLo)
+		gpMatCounter += 1
+		local tag = name .. "_" .. gpMatCounter
+		local slowL = ".Lgslow_" .. tag
+		local doneL = ".Lgdone_" .. tag
+		cg.loadRipSym(dstLo, desc.gpSym, 8)
+		cg.loadRipSym(dstIv, desc.gpSym)
+		cg.branchZero(dstLo, slowL)
+		cg.branchZero(dstIv, slowL)
+		cg.jump(doneL)
+		cg.label(slowL)
+		local rcxSave = counterGuardArm()
+		cg.fpSave()
+		cg.move(pColored(cc.rtArg(1)), vMyth)
+		cg.moveZero(pColored(cc.rtArg(2)))
+		local n = build.insn("call", { build.sym(desc.gsSym) },
+			{ control = "call", uses = { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) },
+				defs = cg.callerSavedClobbers() })
+		n.globalGetter = true
+		emit(n)
+		cg.fpRestore()
+		counterGuardRestore(rcxSave)
+		cg.leaRipSym(dstIv, desc.doSym, desc.payloadOff)
+		cg.leaRipSym(dstLo, desc.doSym, desc.payloadOff)
+		cg.label(doneL)
+	end
+
+	-- Materialize the (effective-address, capability-lower) pair for a pointer
+	-- access to a global memory operand. Extern symbols always go through the
+	-- getter (the cross-module contract). Same-file WRITABLE globals go through
+	-- inline-GP for STORE-class accesses only (forcing registration — a pointer
+	-- store into an unregistered global would be invisible to the GC); same-file
+	-- loads and READONLY globals return nil (the caller's computeAddr produces
+	-- the plain lea materialization: loads see aux==0 correctly, stores trap in
+	-- the sequence's CanWrite check, exactly like compiled code). `disp` folds
+	-- into the effective address.
+	local function materializeGlobalPtrAccess(node, mem, forStore)
+		if not (mem and mem.base and mem.base.rc == "rip" and mem.dispSym
+			and not mem.dispReloc and not mem.index and dataGlobals) then
+			return nil, nil
+		end
+		local sym = mem.dispSym
+		local desc = dataGlobals[sym]
+		if desc and (desc.readonly or not forStore) then return nil, nil end
+		if not desc and bodyLocalLabels[sym] then
+			error("sarcasm: `" .. (node.stmt.annotation or "") .. "` pointer access to the"
+				.. " local code label '" .. sym .. "' is not a global access: "
+				.. (node.stmt.raw or "?"))
+		end
+		local gpIv = allocTemp({ role = "gmativ" })
+		local gpLo = allocTemp({ role = "gmatlo" })
+		if desc then
+			emitGlobalInlineGP(desc, gpIv, gpLo)
+		else
+			emitGlobalGetter(sym, gpIv, gpLo)
+		end
+		local disp = mem.dispVal or 0
+		local effTemp = gpIv
+		if disp ~= 0 then
+			effTemp = allocTemp({ role = "eff" })
+			cg.addImm(effTemp, gpIv, disp)
+		end
+		return effTemp, gpLo
+	end
+
 	-- Stack allocations. `;! alloca size (x)` captures the byte size; `;! alloca result (x)` /
 	-- `;! alloca result size=N` becomes filc_allocate(myth, size); payload = allocation+16.
 	local allocaSizes = {}
@@ -2688,6 +3181,12 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			allocaSizes[al.name] = sizeTemp
 			return
 		end
+		local r = al.region
+		-- An align=A region (A > 16) is OVER-ALLOCATED so the payload can be aligned
+		-- up to A: a 16-aligned payload needs at most A-16 bytes of slack. The
+		-- capability lower stays the allocation's payload base, so bounds checks
+		-- cover the whole (larger) allocation — sound for every aligned address.
+		local overAlloc = (r and r.align and r.align > 16) and (r.align - 16) or 0
 		local rcxSave = counterGuardArm()
 		cg.move(pColored(cc.rtArg(1)), vMyth)
 		if al.kind == "result" then
@@ -2697,7 +3196,7 @@ function transform.transformFunction(name, sigDesc, body, backend)
 			end
 			cg.move(pColored(cc.rtArg(2)), sizeTemp)
 		else
-			cg.moveImm(pColored(cc.rtArg(2)), al.size)
+			cg.moveImm(pColored(cc.rtArg(2)), al.size + overAlloc)
 		end
 		-- Injected returning runtime call: preserve live FP/SIMD state around it
 		-- (no-op for GPR-only functions).
@@ -2706,15 +3205,22 @@ function transform.transformFunction(name, sigDesc, body, backend)
 		cg.fpRestore()
 		counterGuardRestore(rcxSave)
 		local resultIv = node.defTemps and node.defTemps[1]
-		if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
 		local ret = pColored(cc.rtRet)  -- allocation base; payload = base + 16
-		if al.region then
-			local r = al.region
-			cg.effAddr(resultIv, ret, 16)
+		if r then
+			-- The region pointer is the (possibly aligned-up) payload; the lower is
+			-- always the payload base. An alignment-anchored region (the andq/sub
+			-- forms) has no destination register — only the region temps are defined.
 			if r.loTemp then cg.effAddr(r.loTemp, ret, 16) end
-			cg.effAddr(r.ptrTemp, ret, 16)
+			if overAlloc > 0 then
+				cg.effAddr(r.ptrTemp, ret, 16 + r.align - 1)
+				cg.andImmInPlace(r.ptrTemp, -r.align)
+			else
+				cg.effAddr(r.ptrTemp, ret, 16)
+			end
+			if resultIv then cg.move(resultIv, r.ptrTemp, true) end
 			if r.loTemp then emitRootStore(r.loTemp) end
 		else
+			if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
 			local resultLo = pf.lowerTemp[resultIv]
 			cg.effAddr(resultIv, ret, 16)
 			cg.effAddr(resultLo, ret, 16)
@@ -2776,6 +3282,34 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 					emitAlloca(node, allocaNodes[node])
 				end)
+			elseif node.stmt.localCall then
+				-- A local call is an unconditional jump to the per-caller clone's
+				-- entry, with the continuation address materialized into the
+				-- clone's shared retaddr temp (the no-push clone model: rsp never
+				-- moves, and the temp lives in a web the program cannot address).
+				-- A clone with exactly ONE continuation dispatches with a plain
+				-- jmp and never reads the temp: skip the lea.
+				local lc = node.stmt.localCall
+				if #clonesInfo[lc.clone].conts > 1 then
+					cg.leaRipSym(retaddrTemps[lc.clone], lc.cont)
+				end
+				cg.jump(lc.entry)
+			elseif node.stmt.localRet then
+				-- A local ret is a multi-way branch to the clone's continuations:
+				-- compare the retaddr temp against each continuation's address
+				-- (the final one falls to an unconditional jmp — totality is
+				-- guaranteed, the clone is only reachable through our callsites).
+				-- The compare clobbers the flags; flags are documented
+				-- call-clobbered across local calls (see flagsLiveFrom).
+				local lr = node.stmt.localRet
+				local t = retaddrTemps[lr.clone]
+				local conts = clonesInfo[lr.clone].conts
+				for k = 1, #conts - 1 do
+					local scratch = allocTemp({ role = "localret" })
+					cg.leaRipSym(scratch, conts[k])
+					cg.cmpBranch(scratch, t, "eq", conts[k])
+				end
+				cg.jump(conts[#conts])
 			elseif c.control == "return" then
 				-- An FP-returning function (float/double) leaves the value in its
 				-- vector return register (xmm0 / v0) — skip the retIv move (and the
@@ -2802,7 +3336,118 @@ function transform.transformFunction(name, sigDesc, body, backend)
 				-- sp-relative address computation redirected into an alloca region
 			else
 				local mem = cgm.memOperand(node.stmt)
-				if cg.lowerSpecial(node, mem) then
+				local fref = funcrefNodes[node]
+				local glea = globalLeaNodes[node]
+				local gget = globalGetterNodes[node]
+				if fref then
+					-- `#! funcref` lea (x86_64): define (iv, lower) as the
+					-- function's flight pointer. This is a pointer seed (ptrflow
+					-- allocated the destination's lower temp); the lower is a
+					-- link-time constant into static ELF memory — no GC root
+					-- store (exactly like the global getters).
+					local dstIv = node.defTemps and node.defTemps[1]
+					if not dstIv then
+						error("sarcasm: `funcref` lea has no modeled (GPR) destination"
+							.. " register: " .. (node.stmt.raw or "?"))
+					end
+					local dstLo = pf.lowerTemp[dstIv]
+					if fref.fo then
+						-- Same-file function: the function object is emitted by
+						-- this module, so materialize it directly — retarget the
+						-- lea to pizlonatedFO_<owner>+16(%rip), exactly the
+						-- getter's output (intval == lower == the FO payload, the
+						-- canonical entrypoint of the in-object header). The lea
+						-- itself renders the (rewritten) verbatim form; the
+						-- synthesized payload lea defines the capability lower.
+						local foSym = "pizlonatedFO_" .. fref.fo
+						mem.dispSym = foSym
+						mem.dispVal = 16
+						emit(node)
+						cg.leaRipSym(dstLo, foSym, 16)
+					else
+						-- Extern function: the cross-module getter
+						-- (pizlonated_<sym>; rdi=myth, rsi=0 -> rax=iv,
+						-- rdx=lower), the `#! global ptr` contract — an injected
+						-- nounwind runtime call.
+						withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+							emitGlobalGetter(fref.getter, dstIv, dstLo)
+						end)
+					end
+				elseif glea then
+					-- Same-file global lea (rip-relative): a pointer seed. iv = the
+					-- lea's value (payload + disp); lo = the data object's payload
+					-- base. READONLY objects materialize directly (a static
+					-- object's header is linker-initialized — no registration);
+					-- WRITABLE ones go through inline-GP (the lea's uses may
+					-- include pointer stores, which need registration).
+					local dstIv = node.defTemps and node.defTemps[1]
+					if not dstIv then
+						error("sarcasm: global lea has no modeled (GPR) destination"
+							.. " register: " .. (node.stmt.raw or "?"))
+					end
+					local dstLo = pf.lowerTemp[dstIv]
+					local disp = (mem and mem.dispVal) or 0
+					if glea.readonly then
+						-- the lea itself renders verbatim (its dispSym is the user
+						-- label at its payload offset); the synthesized payload-base
+						-- lea defines the capability lower
+						emit(node)
+						cg.leaRipSym(dstLo, glea.baseSym)
+					else
+						withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+							emitGlobalInlineGP(glea, dstIv, dstLo)
+						end)
+						if disp ~= 0 then cg.addImm(dstIv, dstIv, disp) end
+					end
+				elseif gget and cgm.baseMnemonic(string.lower(node.stmt.mnemonic)) == "lea" then
+					-- Extern `#! global ptr` lea: the getter call defines (iv, lo).
+					local dstIv = node.defTemps and node.defTemps[1]
+					if not dstIv then
+						error("sarcasm: `global ptr` lea has no modeled (GPR) destination"
+							.. " register: " .. (node.stmt.raw or "?"))
+					end
+					local dstLo = pf.lowerTemp[dstIv]
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitGlobalGetter(gget, dstIv, dstLo)
+					end)
+					local disp = (mem and mem.dispVal) or 0
+					if disp ~= 0 then cg.addImm(dstIv, dstIv, disp) end
+				elseif gget then
+					-- Extern `#! global ptr` direct access: getter materialization,
+					-- then the checked access through (iv+disp, lo). The memory
+					-- operand is REWRITTEN to the materialized effective address
+					-- (register-indirect): the verbatim rip-relative form would
+					-- need the defining module's unsafe-export alias at link time,
+					-- while the getter always returns the true payload address.
+					local size, align = cgm.accessSizeAlign(node.stmt)
+					local isWrite = cgm.isStoreInsn(node.stmt)
+					local minfo = cgm.maskedAccessInfo and cgm.maskedAccessInfo(node.stmt)
+					local effTemp = nil
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						local gpIv = allocTemp({ role = "ggetiv" })
+						local gpLo = allocTemp({ role = "ggetlo" })
+						emitGlobalGetter(gget, gpIv, gpLo)
+						local disp = (mem and mem.dispVal) or 0
+						effTemp = gpIv
+						if disp ~= 0 then
+							effTemp = allocTemp({ role = "eff" })
+							cg.addImm(effTemp, gpIv, disp)
+						end
+						if minfo then
+							emitMaskedAccessCheck(effTemp, gpLo, minfo, align, isWrite)
+						else
+							emitAccessCheck(effTemp, gpLo, size, align, isWrite)
+						end
+					end)
+					local newBase = build.rt(effTemp)
+					mem.base = newBase
+					mem.dispSym = nil
+					mem.dispVal = nil
+					node.opTemp[newBase] = effTemp
+					table.insert(node.useTemps, effTemp)
+					if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
+					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
+				elseif cg.lowerSpecial(node, mem) then
 					-- arch-specific passthrough lowering (e.g. x86 cltq -> movslq, lea passthrough)
 				elseif loadPtrDefs[node] then
 					local dstIv = node.defTemps[1]
@@ -2814,7 +3459,10 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					end
 					local dstLo = pf.lowerTemp[dstIv]
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
-						emitPtrLoad(node, mem, dstIv, dstLo)
+						-- an EXTERN rip-relative operand materializes through the
+						-- getter first (same-file globals ride computeAddr)
+						local gEff, gLo = materializeGlobalPtrAccess(node, mem, false)
+						emitPtrLoad(node, mem, dstIv, dstLo, gEff, gLo)
 						emitWriteback(node, mem)
 					end)
 					emitRootStore(dstLo)
@@ -2827,7 +3475,11 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					end
 					local valLo = pf.lowerTemp[valIv]
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
-						emitPtrStore(node, mem, valIv, valLo)
+						-- extern via the getter, same-file WRITABLE via inline-GP
+						-- (forces registration); same-file READONLY traps in the
+						-- sequence's CanWrite check
+						local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
+						emitPtrStore(node, mem, valIv, valLo, gEff, gLo)
 						emitWriteback(node, mem)
 					end)
 				elseif atomicLoadPtrDefs[node] then
@@ -2837,20 +3489,25 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					-- clobbers EFLAGS the same way, so the bracket applies there
 					-- too now that the flag scan is live on both architectures.
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
-						emitAtomicPtrLoad(node, mem)
+						local gEff, gLo = materializeGlobalPtrAccess(node, mem, false)
+						emitAtomicPtrLoad(node, mem, gEff, gLo)
 					end)
 				elseif atomicStorePtrNodes[node] then
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
-						emitAtomicPtrStore(node, mem)
+						local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
+						emitAtomicPtrStore(node, mem, gEff, gLo)
 					end)
 				elseif atomicCasPtrDefs[node] then
 					-- bypasses emitPinned entirely: the runtime call needs no
 					-- physical rax pinning (see emitAtomicPtrCas)
-					emitAtomicPtrCas(node, mem)
+					local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
+					emitAtomicPtrCas(node, mem, gEff, gLo)
 				elseif loadStorePtrNodes[node] then
-					emitLoadStorePtr(node, mem)
+					local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
+					emitLoadStorePtr(node, mem, gEff, gLo)
 				elseif atomicRmwPtrNodes[node] then
-					emitAtomicLoadStorePtr(node, mem)
+					local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
+					emitAtomicLoadStorePtr(node, mem, gEff, gLo)
 				elseif mem then
 					cg.checkMemInsn(node, mem)
 					local effTemp, capLo = cg.computeAddr(node, mem)
@@ -2878,6 +3535,50 @@ function transform.transformFunction(name, sigDesc, body, backend)
 					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
 				else
 					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
+				end
+			end
+			-- Lockstep lower maintenance for ptrflow's dynamic-lower webs: each
+			-- pointer def of a dynamic web is mirrored by a lower def from the same
+			-- source, so a web whose runtime value alternates between pointer
+			-- origins (a loop-carried pointer swap, a conflicting join, a cmov
+			-- select) keeps its (iv, lower) pairing exact. dynCopy only carries
+			-- mov/lea/cmov/xchg defs, all of which were emitted immediately above.
+			local dyn = pf.dynCopy and pf.dynCopy[node]
+			if dyn then
+				if dyn.xchg then
+					-- The crossed pair: exchange the two sides' lowers. A source
+					-- may alias the other copy's destination (the loop-carried
+					-- swap), so read a clobbered source into a scratch first.
+					local copies = dyn.copies
+					if #copies == 2 then
+						local c1, c2 = copies[1], copies[2]
+						local s1, s2 = c1.src, c2.src
+						if s1 == c2.dst then
+							local t = allocTemp({ role = "loswap" }); cg.move(t, s1, true); s1 = t
+						end
+						if s2 == c1.dst then
+							local t = allocTemp({ role = "loswap" }); cg.move(t, s2, true); s2 = t
+						end
+						cg.move(c1.dst, s1, true)
+						cg.move(c2.dst, s2, true)
+					elseif #copies == 1 then
+						cg.move(copies[1].dst, copies[1].src, true)
+					end
+				elseif dyn.cmov then
+					-- A cmov's lockstep copy must be CONDITIONAL like the iv merge
+					-- it mirrors: emit a cmov on the lower temps with the node's
+					-- own condition, immediately after the iv cmov — nothing
+					-- between the two writes the flags, so the lower cmov reads
+					-- exactly the condition the iv cmov consumed. (The rmw shape
+					-- — the destination lower is both used and defined — matches
+					-- the hardware cmov's.)
+					for _, cp in dyn.copies do
+						local mnem = node.stmt and node.stmt.mnemonic or "cmov"
+						emit(build.insn(mnem, { build.rt(cp.dst), build.rt(cp.src) },
+							{ defs = { cp.dst }, uses = { cp.dst, cp.src } }))
+					end
+				else
+					for _, cp in dyn.copies do cg.move(cp.dst, cp.src, true) end
 				end
 			end
 			-- The deferred-idiom size definition lowered above: feed the fresh

@@ -84,6 +84,81 @@ incoming words.
 - adc/sbb with `;! load store ptr` run without trapping, but the carry-in
   is clobbered: carry semantics are not preserved.
 
+### Global variables (x86_64)
+
+Same-file data becomes real Fil-C globals automatically, and extern globals
+are one annotation away:
+
+- Contiguous top-level data under `.section .rodata*`/`.data`/`.bss` (plus
+  `.comm`/`.lcomm`) is collected into Fil-C data objects mirroring the
+  compiler's per-global emission: bounds, alignment and write permission are
+  checked exactly like compiled code, and a store to read-only data traps.
+  Scalar initializers only (`.byte/.short/.long/.quad` numeric, `.float/
+  .double`, `.ascii/.asciz`, `.zero/.space/.fill`, alignment padding);
+  `.quad label` pointer initializers are a compile-time rejection. A
+  `.comm name,size,align` becomes a strong writable definition (documented
+  semantic change: commons lose cross-module merging).
+- References to same-file data need no annotation: `leaq tab(%rip),%r` seeds
+  a checked pointer (indexed table traffic just works), direct accesses like
+  `movl g+4(%rip),%r` or `movdqa K256+512(%rip),%xmm7` run the ordinary
+  capability check, and `#! load ptr` / `#! store ptr` maintain pointers
+  through globals (pointer stores into writable globals register them with
+  the GC).
+- `#! global ptr` — on a rip-relative lea or any rip-relative memory access
+  to an EXTERN global (defined in another module): materializes the flight
+  pointer by calling the global's `pizlonated_<sym>` getter, then seeds
+  (lea form) or checks-and-accesses (direct form). Extern globals without
+  the annotation are compile-time rejections, as is any unresolvable
+  rip-relative reference. arm64 keeps the historical rejections.
+
+### Function references (x86_64)
+
+`#! funcref` on a rip-relative lea to a FUNCTION symbol materializes the
+function's flight pointer (its function-object capability), so the register
+can be stored with `#! store ptr` into a function-pointer table that C later
+calls indirectly — the OpenSSL poly1305_init shape:
+
+    leaq poly1305_blocks(%rip),%r10 #! funcref
+    ...
+    movq %r10,0(%rdx) #! store ptr
+
+- A same-file function (or alias entry) materializes its function object
+  directly (`leaq pizlonatedFO_<fn>+16(%rip)` into both the intval and the
+  capability lower — exactly the getter's output, a link-time constant into
+  static ELF memory that needs no GC rooting).
+- An extern function materializes through its cross-module getter
+  (`pizlonated_<sym>`, the `#! global ptr` contract — an injected nounwind
+  runtime call).
+- The pointer flows through copies, address arithmetic and cmov selection
+  chains (ptrflow's lockstep lowers: a cmov merging two function pointers
+  gets a dynamic lower maintained by a conditional lower cmov with the same
+  condition, emitted immediately after the instruction's own cmov).
+- A data-object, body-local-label, or local-subroutine target is a clean
+  compile-time rejection (a function needs a function object to point at).
+  The stored capability passes the runtime FUNCTION-type check when C calls
+  it indirectly. arm64 rejects `funcref` with a clean "not yet supported".
+
+### `.section .init` / `.section .fini` content (x86_64)
+
+At top level, inside `.section .init` (and `.section .fini` for symmetry), a
+straight-line sequence of annotated DIRECT calls is accepted — the OpenSSL
+x86_64cpuid shape:
+
+    .section .init
+    call OPENSSL_cpuid_setup #! void()
+
+Each call must carry a `void()` signature annotation (the .init context runs
+from `_init` as plain SysV code — there is no Fil-C argument state, so only
+void() calls marshal soundly); labels, data directives, non-call instructions
+and unannotated calls are clean rejections, as is a data-object or
+local-subroutine target. The calls are emitted back into the same section as
+Fil-C constructor calls through `filc_defer_or_run_global_ctor` (exactly what
+filcc emits for a C constructor), preserving order — a same-file function's
+function object is materialized directly, an extern function resolves through
+its `pizlonated_<sym>` getter. Fil-C runs .init constructors, so the calls
+run at process startup. arm64 rejects .init content with a clean "not yet
+supported". `.section .init_array` pointer initializers stay rejected.
+
 ### Call annotations
 
 - Every direct call carries the callee's signature — `bl foo //! int(ptr,
@@ -100,6 +175,63 @@ incoming words.
   (`call *mem` — load the pointer into a register first; arm64 `blr` is
   register-only), and indirect branches (`jmp *%rdi`, `br xN`) — an
   uncontrolled branch cannot be made memory-safe.
+
+### Local subroutines (x86_64)
+
+An unannotated `call` to a file-local subroutine works with NO signature —
+the OpenSSL perlasm shape: a non-`.globl`, non-signature label (with or
+without `.type name,@function`) whose region contains a `ret`, called from a
+function body (or from another subroutine) with a custom caller/callee
+register convention. sarcasm compiles each call as an unconditional jump to a
+per-caller CLONE of the subroutine and each clone `ret` as a multi-way branch
+back to the continuations, so lift/regalloc color caller+clones as one
+function — argument/result registers, clobbered caller-saved registers, and
+the caller's frame slots all follow the ordinary web rules. Details:
+
+- A call target may also be a label in the MIDDLE of a subroutine's body (the
+  clone is then [mid-label .. the region's ret(s)]).
+- Nested non-recursive local calls work (each clone gets its own
+  continuations); recursion — direct or mutual — is a compile-time error.
+- The stack pointer is never moved (no hardware push), so a subroutine
+  written against the return-address-compensated `N+8(%rsp)` convention (the
+  rsaz/mont5/aesni-gcm subs) sees its rsp-relative displacements biased by -8:
+  its `8(%rsp)` keys to the caller's slot 0, and `leaq 8(%rsp),%rdi` becomes
+  `leaq 0(%rsp),%rdi`, which resolves into the caller's alloca region.
+- `#! local` is accepted as an optional explicit marker on such calls
+  (validated to resolve the same way; a mismatch is a compile error).
+- The flags are clobbered across a local call (the ret dispatch compares),
+  exactly like an ordinary call. A subroutine that falls off its end, a
+  branch out of a subroutine that is not a mid-body tail join (below), and a
+  `.globl` no-signature label are compile-time errors; on arm64 a discovered
+  local subroutine is a clean "not yet supported" error.
+
+### Cross-function jumps (x86_64)
+
+Two OpenSSL perlasm shapes are supported (arm64 rejects them with a clean
+"not yet supported" error):
+
+- **Tail branches to function entries** (`jmp/jcc` to a sig-annotated
+  same-file function or alias entry, or to an extern symbol carrying an
+  inline signature, `jne asm_AES_cbc_encrypt #! void(...)`): rewritten into
+  an ordinary annotated CALL (the full Fil-C marshalling of the current SysV
+  arg-register webs — 7th+ arguments ride the jumper's own incoming
+  stack-argument webs) plus a jump to the function's synthetic epilogue, at
+  any frame depth. The callee's return value becomes the jumper's return
+  value. An annotated jump whose target has no matching signature is a clear
+  compile-time error; an unannotated jump to a non-local label keeps the
+  plain tail-call rejection.
+- **Mid-body shared-tail joins** (`jmp/jcc` into a label inside another
+  same-file function's or subroutine's body): the region [label .. ret(s)]
+  is cloned into the jumper (renamed labels, the region's rets returning
+  from the jumper — no call, no return address, no clone bias), with local
+  calls cloned transitively. A tail join from inside a local subroutine
+  (mont5's `jmp .Lsqr4x_sub_entry`) clones the target tail into each caller
+  with the jumping subroutine's clone context and continuations.
+
+Alias entry labels (a label immediately adjacent to a sig-annotated function
+label — asm_AES_encrypt:/AES_encrypt: or sha1's _shaext_shortcut:) share the
+function's signature and body: jumps to them resolve to the function, and a
+`.globl` alias gets its own getter/direct-call symbols so C callers link.
 
 ### Alloca annotations
 

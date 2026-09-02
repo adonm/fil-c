@@ -303,7 +303,224 @@ function glue_x86.alias(out, name, signature)
 		.. ", pizlonatedFIP" .. tostring(signature) .. "_" .. name)
 end
 
+-- Alias entry labels (tailcall.luau): a `.globl` alias of a function
+-- (asm_AES_encrypt for AES_encrypt) shares the function's body and signature,
+-- so its getter and direct-call symbol are plain .set aliases — the alias's
+-- function object IS the function's.
+function glue_x86.getterAlias(out, aliasName, fnName, hidden)
+	table.insert(out, "\t.globl\tpizlonated_" .. aliasName)
+	if hidden then table.insert(out, "\t.hidden\tpizlonated_" .. aliasName) end
+	table.insert(out, ".set pizlonated_" .. aliasName .. ", pizlonated_" .. fnName)
+	table.insert(out, "")
+end
+
+function glue_x86.callAlias(out, aliasName, fnName, signature, hidden)
+	local fiA = "pizlonatedFI" .. tostring(signature) .. "_" .. aliasName
+	local fiF = "pizlonatedFI" .. tostring(signature) .. "_" .. fnName
+	table.insert(out, "\t.globl\t" .. fiA)
+	if hidden then table.insert(out, "\t.hidden\t" .. fiA) end
+	table.insert(out, ".set " .. fiA .. ", " .. fiF)
+	table.insert(out, "")
+end
+
 function glue_x86.originName(funcName) return ".Lfilc_origin_" .. funcName end
+
+-- Data objects (global variables), emitted after all functions. `dos` is the
+-- driver's collection result in input order (deterministic). Each DO mirrors
+-- FilPizlonator's per-global emission (verified against clang -O2 -S output):
+-- the 16-byte header (.quad payloadEnd, .quad flags<<48 — ObjectFlagGlobal at
+-- bit 48, ObjectFlagReadonly at bit 49 for const), payload at DO+16 (payload
+-- base == capability lower), a leading `.zero A-16` pad when an alignment wider
+-- than 16 is required (FilPizlonator's AlignmentOffset trick: payload keeps its
+-- alignment), `.LpizlonatedGP_` flight-pointer cache + `.LpizlonatedGS_`
+-- slow-init function for writable data (and for exported data, whose getter
+-- needs them), and per exported label the `.globl pizlonated_<sym>` getter and
+-- the unsafe-export alias `.globl <sym>` + `.set <sym>, <doSym>+<payloadOff>`
+-- (`.hidden` propagates to getter and alias).
+local DO_FLAGS_W = "281474976710656"   -- 1 << 48 (ObjectFlagGlobal)
+local DO_FLAGS_R = "844424930131968"   -- 3 << 48 (Global | Readonly)
+
+-- Exact integer log2 (the alignments are powers of two by construction; the
+-- floating-point math.log route can render 2.9999999999999996, which `as`
+-- cannot read).
+local function log2int(a)
+	local p = 0
+	while a > 1 do a = math.floor(a / 2); p += 1 end
+	return p
+end
+
+local function emitDataObject(out, doRec)
+	local doSym = doRec.doSym
+	table.insert(out, "\t.type\t" .. doSym .. ",@object")
+	if doRec.readonly then
+		table.insert(out, "\t.section\t.data.rel.ro,\"aw\",@progbits")
+	else
+		table.insert(out, "\t.data")
+	end
+	table.insert(out, "\t.p2align\t" .. tostring(log2int(doRec.align)) .. ", 0x0")
+	table.insert(out, doSym .. ":")
+	if doRec.pad > 0 then table.insert(out, "\t.zero\t" .. tostring(doRec.pad)) end
+	table.insert(out, "\t.quad\t" .. doSym .. "+" .. tostring(doRec.totalSize))
+	table.insert(out, "\t.quad\t0+" .. (doRec.readonly and DO_FLAGS_R or DO_FLAGS_W))
+	table.insert(out, doRec.baseSym .. ":")
+	-- payload: user labels and data directives at their collected offsets; gaps
+	-- (alignment padding) materialize as .zero
+	local cursor = 0
+	for _, it in doRec.items do
+		if it.off > cursor then
+			table.insert(out, "\t.zero\t" .. tostring(it.off - cursor))
+			cursor = it.off
+		end
+		if it.kind == "label" then
+			-- An exported label is NOT emitted: the unsafe-export alias
+			-- (.set <sym>, <doSym>+<payloadOff>) defines it — defining it twice
+			-- (label + alias) is an assembler error.
+			if it.name ~= doRec.exportedSym then
+				table.insert(out, it.name .. ":")
+			end
+		elseif it.decoded then
+			-- string content, re-emitted as .byte lists (the collector decoded
+			-- it, so the byte count is exact by construction); an empty string
+			-- emits nothing (its size is 0)
+			for p = 1, #it.decoded, 16 do
+				local chunk = {}
+				for k = p, math.min(p + 15, #it.decoded) do
+					table.insert(chunk, tostring(it.decoded[k]))
+				end
+				table.insert(out, "\t.byte\t" .. table.concat(chunk, ","))
+			end
+		else
+			table.insert(out, "\t" .. it.name .. "\t" .. (it.args or ""))
+		end
+		cursor += it.size or 0
+	end
+	if cursor < doRec.payloadSize then
+		table.insert(out, "\t.zero\t" .. tostring(doRec.payloadSize - cursor))
+	end
+	table.insert(out, "\t.size\t" .. doSym .. ", " .. tostring(doRec.totalSize))
+	table.insert(out, "")
+end
+
+local function emitDataGP(out, doRec)
+	table.insert(out, "\t.type\t" .. doRec.gpSym .. ",@object")
+	table.insert(out, "\t.local\t" .. doRec.gpSym)
+	table.insert(out, "\t.comm\t" .. doRec.gpSym .. ",16,16")
+end
+
+local function emitDataSlowInit(out, doRec)
+	local gsSym, gpSym, doSym = doRec.gsSym, doRec.gpSym, doRec.doSym
+	local doneL = gsSym .. "_done"
+	local objAddr = doSym .. (doRec.pad > 0 and ("+" .. tostring(doRec.pad)) or "")
+	table.insert(out, "\t.text")
+	table.insert(out, "\t.p2align\t4")
+	table.insert(out, "\t.type\t" .. gsSym .. ",@function")
+	table.insert(out, gsSym .. ":")
+	table.insert(out, "\tpushq\t%rbx")
+	table.insert(out, "\tmovq\t%rdi, %rbx")
+	table.insert(out, "\tleaq\t" .. gpSym .. "(%rip), %rdx")
+	table.insert(out, "\tleaq\t" .. objAddr .. "(%rip), %rcx")
+	table.insert(out, "\tcallq\tfilc_global_initialization_start@PLT")
+	table.insert(out, "\ttestb\t$1, %al")
+	table.insert(out, "\tje\t" .. doneL)
+	table.insert(out, "\tmovq\t%rbx, %rdi")
+	table.insert(out, "\tpopq\t%rbx")
+	table.insert(out, "\tjmp\tfilc_global_initialization_end@PLT")
+	table.insert(out, doneL .. ":")
+	table.insert(out, "\tpopq\t%rbx")
+	table.insert(out, "\tretq")
+	table.insert(out, "\t.size\t" .. gsSym .. ", .-" .. gsSym)
+	table.insert(out, "")
+end
+
+local function emitDataGetter(out, doRec, sym)
+	local gpSym, gsSym, doSym = doRec.gpSym, doRec.gsSym, doRec.doSym
+	local doneL = ".Lglobalgetter_done_" .. sym
+	local payloadAddr = doSym .. "+" .. tostring(doRec.pad + 16)
+	table.insert(out, "\t.text")
+	if doRec.hidden then table.insert(out, "\t.hidden\tpizlonated_" .. sym) end
+	table.insert(out, "\t.globl\tpizlonated_" .. sym)
+	table.insert(out, "\t.p2align\t4")
+	table.insert(out, "\t.type\tpizlonated_" .. sym .. ",@function")
+	table.insert(out, "pizlonated_" .. sym .. ":")
+	table.insert(out, "\tmovq\t" .. gpSym .. "+8(%rip), %rdx")
+	table.insert(out, "\tmovq\t" .. gpSym .. "(%rip), %rax")
+	table.insert(out, "\ttestq\t%rax, %rax")
+	table.insert(out, "\tsete\t%cl")
+	table.insert(out, "\ttestq\t%rdx, %rdx")
+	table.insert(out, "\tsete\t%r8b")
+	table.insert(out, "\torb\t%cl, %r8b")
+	table.insert(out, "\tje\t" .. doneL)
+	table.insert(out, "\tpushq\t%rax")
+	table.insert(out, "\tcallq\t" .. gsSym)
+	table.insert(out, "\tleaq\t" .. payloadAddr .. "(%rip), %rax")
+	table.insert(out, "\tmovq\t%rax, %rdx")
+	table.insert(out, "\taddq\t$8, %rsp")
+	table.insert(out, doneL .. ":")
+	table.insert(out, "\tretq")
+	table.insert(out, "\t.size\tpizlonated_" .. sym .. ", .-pizlonated_" .. sym)
+	table.insert(out, "")
+	-- unsafe-export alias: the plain name addresses the payload (so yolo code
+	-- and other modules' references resolve), exactly FilPizlonator's
+	-- `.filc_unsafe_export` shape.
+	if doRec.hidden then table.insert(out, "\t.hidden\t" .. sym) end
+	table.insert(out, "\t.globl\t" .. sym)
+	table.insert(out, ".set " .. sym .. ", " .. payloadAddr)
+	table.insert(out, "")
+end
+
+function glue_x86.dataGlobals(out, dos)
+	for _, doRec in dos do
+		emitDataObject(out, doRec)
+		-- Writable DOs need registration (the GC must scan them for pointers),
+		-- exported DOs need it for their getter; readonly local data never holds
+		-- a capability-tracked pointer, so it emits only the DO.
+		if not doRec.readonly or doRec.exportedSym then
+			emitDataGP(out, doRec)
+			emitDataSlowInit(out, doRec)
+		end
+		if doRec.exportedSym then
+			emitDataGetter(out, doRec, doRec.exportedSym)
+		end
+	end
+end
+
+-- `.section .init` / `.section .fini` fragments: each collected annotated
+-- void() call is marshalled as a Fil-C constructor call, emitted back into its
+-- section in input order. The .init context runs from _init as plain SysV code
+-- — no myth register, possibly before the runtime is initialized — so the call
+-- goes through filc_defer_or_run_global_ctor (exactly what filcc emits for a C
+-- constructor's .Lfilc_ctor_forwarder): it takes the callee's function-object
+-- flight pointer (rdi=intval, rsi=lower), defers to before-main when the
+-- runtime is not up yet, and otherwise runs it through the generic (buffer) CC
+-- with argc/argv/environ — a void() signature's 2ET thunk accepts and ignores
+-- those. A same-file function's flight pointer materializes as a rip-relative
+-- lea of its FO payload (intval == lower == pizlonatedFO_<owner>+16, exactly
+-- the getter's output); an extern function resolves through its cross-module
+-- getter pizlonated_<target> (rax=intval, rdx=lower). The fragments make their
+-- calls with rsp exactly as found (no pushes): _init's crti prologue
+-- (sub $8 after the call in) leaves rsp 16-byte aligned at fragment entry, so
+-- every call site is correctly aligned. A data/signature-mismatch target fails
+-- the runtime's function-call check, like any indirect call.
+function glue_x86.initSections(out, frags)
+	local curSect = nil
+	for _, f in frags do
+		if f.sect ~= curSect then
+			table.insert(out, "\t.section\t" .. f.sect)
+			curSect = f.sect
+		end
+		if f.owner then
+			table.insert(out, "\tleaq\tpizlonatedFO_" .. f.owner .. "+16(%rip), %rdi")
+			table.insert(out, "\tmovq\t%rdi, %rsi")
+		else
+			table.insert(out, "\txorl\t%esi, %esi")
+			table.insert(out, "\tcallq\tpizlonated_" .. f.target .. "@PLT")
+			table.insert(out, "\tmovq\t%rax, %rdi")
+			table.insert(out, "\tmovq\t%rdx, %rsi")
+		end
+		table.insert(out, "\tcallq\tfilc_defer_or_run_global_ctor@PLT")
+	end
+	if curSect then table.insert(out, "") end
+end
 
 -- Callsite resolver thunk pizlonatedFI<sig>_NAME (weak/hidden), validated against the
 -- reference Fil-C clang x86_64 output (test3.c -> pizlonatedFI2529_foo). Resolves the

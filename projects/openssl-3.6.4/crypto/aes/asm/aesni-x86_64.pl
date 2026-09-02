@@ -4300,7 +4300,7 @@ ${PREFIX}_set_decrypt_key:
 .cfi_startproc
 	.byte	0x48,0x83,0xEC,0x08	# sub rsp,8
 .cfi_adjust_cfa_offset	8
-	call	__aesni_set_encrypt_key
+	call	aesni_set_encrypt_key	# (was the __aesni_set_encrypt_key alias)
 	shl	\$4,$bits		# rounds-1 after _aesni_set_encrypt_key
 	test	%eax,%eax
 	jnz	.Ldec_key_ret
@@ -5159,7 +5159,8 @@ sub aesni {
 }
 
 sub movbe {
-	".byte	0x0f,0x38,0xf1,0x44,0x24,".shift;
+	# any modern gas (>=2.22) assembles movbe, and sarcasm models it
+	"movbe	%eax,".shift."(%rsp)";
 }
 
 $code =~ s/\`([^\`]*)\`/eval($1)/gem;

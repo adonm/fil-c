@@ -57,13 +57,21 @@ end
 -- an FP return ride in the v registers even when the body never names a NEON register).
 function frame.preprocess(body, regions, policy, sigDesc)
 	-- fpInfo (x86_64 only): FP/SIMD stack-slot materialization clusters (or nil).
-	local frameSize, fpOffset, usesFp, fpInfo = policy.analyzeFrame(body, sigDesc)
+	-- The regions are forwarded to the analysis (x86_64 keys its prologue rsp-save
+	-- handling off them — a fixed region based at rsp+0 keeps a caller-saved save
+	-- alive as a REAL redirected value instead of a phantom carrier).
+	local frameSize, fpOffset, usesFp, fpInfo = policy.analyzeFrame(body, sigDesc, regions)
 	local out = {}
 	local function emit(n) out[#out + 1] = n end
 
-	local function regionOf(off)
+	-- Fixed-alloca region lookup in one of the two coordinate spaces: `dyn` selects
+	-- the alignment-anchored regions (the andq/sub forms — "dyn"-depth rsp-relative
+	-- coordinates), static selects the lea/mov-anchored ones (ordinary frame
+	-- coordinates).
+	local function regionOf(off, dyn)
 		for _, r in (regions or {}) do
-			if off >= r.base and off < r.base + r.size then return r end
+			if (r.anchored and true or false) == (dyn and true or false)
+				and off >= r.base and off < r.base + r.size then return r end
 		end
 		return nil
 	end

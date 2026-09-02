@@ -33,6 +33,16 @@ Shared (architecture-independent):
 - `regalloc.luau`   — IRC: CFG, liveness, interference, coalesce, spill.
   `regalloc.color()` runs a soundness verifier that rejects any mis-colored
   assignment with a clean compile error (a detection backstop, not a repair).
+  Spilling is driven by the driver's `allocateWithSpilling` (re-run IRC after
+  rewriting each spilled temp's defs/uses through a fresh reload temp): the
+  rewrite covers EVERY node kind that feeds temps to the allocator — insns AND
+  the non-insn nodes (the epilogue's myth-temp use, a rootstore's lower-temp
+  use — each gets a spill reload inserted in front of it, and the epilogue
+  renders its myth register from the node's own use temp). Covering only insns
+  would leave a spilled non-insn use in place forever: the next round re-spills
+  the same temp and the loop never converges (seen on ecp_nistz256's sqr_mont,
+  whose register-saturated localcall clone squeezes the function-wide myth web
+  out of the color pool).
 - `emit.luau`       — shared emission: reload elimination, spill bookkeeping, self-move
   dropping; per-arch render module supplies instruction text + prologue/epilogue.
 - `build.luau`      — constructors for synthesized IR nodes.
@@ -82,6 +92,37 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   produce (which the frame analysis read as a 0-byte stack adjustment).
   Numeric local label references (`1f`/`2b`) pass through as symbols for
   numlabel.luau, and @PLT/@GOTPCREL decorations are split before evaluation.
+  Unary bitwise NOT is supported too (`andl $~15, %r10d` — gas's `~x = -x - 1`,
+  exact in integer range; aes-gcm-avx512 uses it).
+
+  Encoding-hint pseudo-prefixes (x86_64): a leading `{vex}`/`{vex2}`/`{vex3}`/
+  `{evex}`/`{np}` group (OpenSSL perlasm's `{vex} vpmadd52luq ...`, which
+  forces a VEX rather than EVEX encoding of an instruction that has both) is
+  STRIPPED at parse time — the hint changes only the encoding, never the
+  semantics, so the renderer emits the plain spelling and gas picks an
+  equivalent encoding. An unrecognized `{...}` prefix stays a parse error.
+
+  .byte instruction decoding (decodeByteInsns): OpenSSL's perlasm emits many
+  instructions as raw `.byte` sequences (legacy-gas workarounds) — every
+  function ends with `.byte 0xf3,0xc3` (rep ret), CET entry points are `.byte
+  243,15,30,250` (endbr64), locked RMWs are a `.byte 0xf0` line joined to the
+  spelled instruction, the SHA-NI/AES-NI/movbe/mulx/vmovdqu/sha512-ni bodies
+  are raw encodings, and the aesni-xts EVEX forms likewise. decodeByteInsns
+  rewrites RUNS of adjacent `.byte` statements into the instructions those
+  bytes encode — at parse time, by re-parsing the canonical AT&T spelling
+  through parseInsnText, so a decoded instruction is indistinguishable from a
+  spelled one downstream. Two matchers compete greedily (longest match wins;
+  ties go to the table): a fixed table of whole instructions (plus the 0xf0
+  lock join and the no-op filler prefixes 0x66/0x67/0x3e/0x2e/0x90 — 0x64/0x65
+  fs/gs are never dropped, they change addressing), and a pattern decoder
+  (matchPattern) that walks ModRM/SIB/displacement for the operand-varying
+  families: SHA-NI (NP 0F 38 C8-CD, 0F 3A CC ib), AES-NI (66 0F 38 DB-DF, 66
+  0F 3A DF ib), movbe ([REX] 0F 38 F0/F1), REX mov ([4x] 8B/89), VEX 3-byte
+  (vsha512rnds2/msg1/msg2, mulx, vmovdqu), a narrow EVEX form (vpshrd*-imm),
+  and the generic multi-byte NOP (0F 1F /0). RIP-relative and baseless
+  absolute forms cannot be expressed as one operand (a .byte run has no
+  symbol) and stay data, as does anything else unmatched — the downstream
+  "data in a function body" rejection fires exactly as before.
 
   Annotation markers and comments (both parsers — see README.md's "Annotation
   markers" for the user-facing contract): a line is split into code + annotation
@@ -151,16 +192,37 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   no-op; gas: "invalid instruction suffix for `bswap'"), so `bswapw %ax` and
   `bswapb %al` are rejected at classify ("bswap requires a 32-bit or 64-bit
   register operand (bswapw/bswapb are not encodable)") instead of dying in the
-  temp .yolo.s; movbe is rejected outright (it
-  only exists as a byte-swapping move to/from memory; the register-to-register
-  spelling is not a baseline x86-64 encoding and the memory forms are not
-  modeled). Multi-byte padding NOPs (nop/endbr64/nopw/nopl) are a zero-effect
+  temp .yolo.s; movbe is MODELED like an ordinary mov load/store — the
+  byte-swapping load (`movbeq (%rsi), %rax`: def of the destination, the
+  memory operand on the normal bounds-checked path) and store (`movbeq %rax,
+  (%rsi)`: use of the source) pass through verbatim; the swap is a
+  register-value transformation the web model need not see (like bswap). The
+  register-to-register spelling (not a baseline x86-64 encoding) and movbeb
+  (an 8-bit byte swap is a plain move; not encodable) are rejected cleanly.
+  shld/shrd (double-precision shifts) are modeled exactly: the destination is
+  a true RMW (the unknown-mnemonic fallback used to model it as a pure def,
+  silently dropping the destination's contribution to the result), the source
+  is a plain use, and the count is an immediate or %cl. A register-count
+  shift/rotate (`shlq %cl, %rdx` & co, incl. shld/shrd with a %cl count and
+  rcl/rcr, now in ALU2) pins the count web to physical rcx via emitPinned —
+  %cl is the only register-count encoding in the ISA, and left renameable the
+  allocator colored it anywhere (the emitted `shlq %sil, %rdx` failed to
+  assemble — the aes-cfb-avx512 miscompile). A spelled non-%cl count register
+  is rejected at classify. Multi-byte padding NOPs (nop/endbr64/nopw/nopl)
+  are a zero-effect
   class: baseMnemonic maps them all to "nop" (no def/use effects), the frame
   rewrite passes them through verbatim (their operand — `nopw 0x0(%rax,%rax,1)`
   — is a dummy encoding hint, NOT a memory access, so it must not be
   bounds-checked or virtualized), codegen's lowerSpecial skips the access check
   for them, and the renderer normalizes the bare forms (which gas rejects with
-  "invalid instruction suffix") to plain `nop`. On arm64 this
+  "invalid instruction suffix") to plain `nop`. The cache-line management
+  family clflush/clflushopt/clwb is memory-neutral like prefetch (the fp
+  table's noCheck): they move no data to or from the processor — they
+  invalidate/write-back the addressed line in the cache hierarchy, which
+  changes nothing the checker models — so a wild address can only fault, an
+  uncatchable-signal safe halt the safety model accepts (the same reasoning as
+  monitor; unlike clzero, which WRITES zeros to memory at rax and stays
+  rejected). On arm64 this
   is where the NEON/FP semantics live: per-mnemonic def/use classification
   (the VEC_PURE_WRITE / VEC_DST_READ / lane-insert families, fmov's
   GPR<->vector roles, the safe unknown-mnemonic default — read all NEON
@@ -227,10 +289,16 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
     fallback, cvtsi2ss/sd integer source, narrowing converts) take their
     width from the annotation.
   * Masked-access metadata (fp.maskedAccessInfo): the supported {k}-masked
-    vector moves, truncating stores, expand/compress forms and the AVX2
+    vector moves, truncating stores, expand/compress forms, {k}-masked ALU
+    memory SOURCES (AVX-512 fault suppression reads the memory operand only
+    for lanes whose writemask bit is set, at the operation's natural element
+    granularity — an EVEX integer p-family or packed-FP mnemonic with a
+    trailing element letter b/w/d/q/ps/pd, e.g. rsaz-avx512's
+    `vpsubq .Lmask52x4(%rip),%ymm3,%ymm3{%k1}`) and the AVX2
     vmaskmov/vpmaskmov forms get (element, lanes, vecsize, contiguous)
     metadata for the transform's mask-aware check; masked forms of anything
-    else, {%k0}, and {k}-masked stack accesses stay rejected.
+    else (incl. masked ALU shapes whose element is undeterminable), {%k0},
+    and {k}-masked stack accesses stay rejected.
   * The unsafe-instruction reject list (each entry's reasoning lives under
     Limitations): privileged/system instructions, string ops and non-lock
     prefixes, gather/scatter, maskmovdqu, xsave/x87-state saves, implicit-GPR
@@ -265,6 +333,19 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   vector save/restore expansion around injected runtime calls.)
 - `*_render.luau`  — render IR back to assembly with colors; synthesize the Fil-C
   prologue/epilogue/frame layout. (x86_64 always emits AT&T output.)
+  x86_64_render additionally emits instructions the SYSTEM ASSEMBLER may not
+  know as `.byte` directives (BYTE_EMIT): baselines as old as binutils 2.38
+  (Ubuntu 22.04) do not know SHA512-NI (vsha512rnds2/vsha512msg1/vsha512msg2)
+  or SM3/SM4 (vsm3rnds2/vsm3msg1/vsm3msg2/vsm4key4/vsm4rnds4), both of which
+  OpenSSL perlasm uses. Their VEX 3-byte encodings are emitted byte-for-byte
+  (deterministic — vector registers are never reallocated, and a memory
+  source's base/index resolve through opTemp like any rendered operand;
+  verified against the binutils 2.42 opcode table and disassembler), with the
+  spelled instruction riding along as a comment. vsha512msg1/msg2 are the
+  two-operand forms (vvvv encoded as ~0; msg2's source is ymm/m256, msg1's
+  xmm/m128); vsm3msg1 is the NP form, vsm3msg2 66, vsm4key4 F3, vsm4rnds4 F2,
+  all at 0F38 DA. The operand-shape validation rejects the vector classes the
+  encoding cannot name (zmm / 16-31 registers) with a clean sarcasm error.
 - `*_glue.luau`    — getter/FO/2ET/origins/access-origin/alias link & run, plus the weak
   callsite resolver thunk for called externals. (x86_64: the 2ET generic-entrypoint
   thunk skips the actual-vs-expected argument-size check for zero-argument signatures —
@@ -436,17 +517,28 @@ executes, and the frame rewrite rejects, with a clean `sarcasm: <file>: <msg>` e
   `addq $imm,%rsp` (and the `ret` terminating its span) is accepted even at an UNKNOWN
   depth: the constant cannot be PROVEN to undo a dynamic alloca, but every statement in
   the span is dropped and the synthesized epilogue owns the real %rsp, so the output is
-  correct either way. A `leave` is
+  correct either way. Also accepted (dropped): a constant mid-function rsp DECREASE
+  (`addq $imm,%rsp`) at a statically known, non-negative resulting depth whose clobbered
+  flags are provably dead (nothing reads them before a full flag write on any path) —
+  the ecp_nistz256_point_add `addq $416,%rsp` frame reshape ahead of a shared-tail
+  join. A `leave` is
   legal ONLY as epilogue teardown (the teardown proof must reach the `ret`): a
   mid-function `leave` is always a compile error ("mid-function `leave` cannot be
   proven safe (a leave that does not lead directly to a ret may observe the caller's
   frame)" — hardware `leave` also restores the CALLER's frame pointer into %rbp), and
   a `leave` with no frame pointer established is rejected with its own error. Dynamic
   allocation must use the `;! alloca` annotation, not raw `subq %rax, %rsp`;
-- stack accesses executed while rsp is perturbed or of unknown depth (between a
-  mid-function push/sub and its matching pop/add the same slot key would name two
-  different addresses), and returns (or indirect tail jumps) with an unbalanced or
-  unknown stack pointer;
+- stack accesses executed while rsp is of UNKNOWN depth, and returns (or indirect
+  tail jumps) with an unbalanced or unknown stack pointer. An access at a
+  STATICALLY KNOWN perturbed depth keys exactly in normalized coordinates
+  (disp + D0 - d) and virtualizes like any other slot — the same-address key is
+  depth-invariant, the bounds check gates the frame extent, save-slot aliases
+  ride the save-slot model (the early-ret-then-frame shape — an early return
+  before the pushes leaves the framed path's pushes POST-prologue, as in rc4's
+  epilogue mov-reloads — the slot sits at displacement (depth - save.depth)
+  exactly like the transient prologue pad), and an access landing in an
+  alignment-anchored alloca region keeps the region's own coordinates (see the
+  alloca description);
 - mid-function pushes/pops of non-callee-saved operands, and pops of the frame pointer
   that are neither inside verified teardown nor provably paired with the outstanding
   save of rbp (a paired `popq %rbp` — e.g. the leaf `popq %rbp; ret` needing no frame
@@ -534,21 +626,37 @@ rejected because the lost-reload walk crosses the back edge; restructure by not
 saving/restoring the same register inside the loop — let sarcasm's own callee-saved
 handling preserve it across the loop.
 
-A prologue `movq %rsp, %reg` SAVE is prologue-transparent frame setup: the save is
+A `movq %rsp, %reg` SAVE (prologue or post-prologue, wherever the rsp depth is
+provable) is transparent frame setup: the save is
 DROPPED — sarcasm synthesizes its own frame, so the parked value has no meaning in
-the output — and a `movq %reg, %rsp` RECOVERY from it is dropped with it, reviving
+the output (it is PHANTOM) — and a RECOVERY from it is dropped with it, reviving
 the saved depth (the save rides the depth analysis unchanged through a dynamic
-alloca). The save must go into a CALLEE-SAVED register (a caller-saved one is
-rejected — a call clobbers it, the injected runtime calls included; the exception is
-a fixed-alloca-region base, redirected to the allocation pointer), and while the
-save is outstanding its register must not be REDEFINED or READ (the rejection names
-the register); a merge that disagrees on the save's redefined-ness poisons it, and a
-POST-prologue `movq %rsp, %reg` stays a stack-address escape. EXCEPTION, when the
-entry signature has SysV stack arguments (see "fast-CC stack argument words"
-above): the save — and its `leaq 0(%rsp), %reg` form — may go into ANY register as
-an entry-rsp ALIAS for reading the incoming stack arguments; every read of the
-register while the alias is live is either redirected to the argument's slot or
-rejected, a caller-saved save still cannot recover %rsp, and the self-xor/self-sub
+alloca). The saved value flows through CARRIERS: a register (`movq %rsp, %reg`,
+or the recovery-address lea `leaq d(%rsp), %reg` at depth d — the ghash/aesni-gcm
+shape) copied reg→reg (`movq %carrier, %reg2`), or parked in a frame slot
+(`movq %carrier, off(%rsp)` / `off(%rbp)` — a save-store, keyed by slot offset in
+the access's own coordinates), and re-materialized by a full-width slot load.
+A recovery — `movq %reg, %rsp` OR `leaq K(%reg), %rsp` (the perlasm
+`leaq (%rsi), %rsp`) — may read any carrier that provably holds the save value
+and revives the parked depth (minus K). Register class is unrestricted: the
+carrier discipline makes every use either dropped or rejected, so a caller-saved
+register (or a caller-saved save riding through a region slot — the
+sha256/sha512/wp idiom) is exactly as sound as a callee-saved one — no call
+clobber can ever be observed. Any OTHER read of a register carrier, or a
+redefinition of one, poisons it (the rejection names the register); a store
+overlapping a slot carrier poisons the slot; a non-carrier-form LOAD from a live
+slot carrier is rejected outright (it would observe the phantom value); and a
+`ret` with a live carrier in the integer return register is rejected (the stack
+address would escape as the return value). Epilogue restore loads THROUGH a
+carrier (`movq -48(%rsi), %r15` — the perlasm movq-restore riding the recovered
+pointer) are recognized like the epilogue movq-restore loads and dropped.
+Exceptions: (a) a caller-saved save with a static fixed-alloca region based at
+rsp+0 is NOT a carrier — the region redirect keeps it alive as a REAL value;
+(b) when the entry signature has SysV stack arguments (see "fast-CC stack
+argument words" above), the save — and its `leaq 0(%rsp), %reg` form — may go
+into ANY register as an entry-rsp ALIAS for reading the incoming stack
+arguments; every read of the register while the alias is live is either
+redirected to the argument's slot or rejected, and the self-xor/self-sub
 zeroing idiom counts as a redefinition, not a read.
 
 A related epilogue shape is the perlasm movq-RESTORE: `movq (%rsp), %r15; movq
@@ -559,7 +667,11 @@ pre-push value, the web the redefined one) — but the loaded value is dead weig
 whenever the register is never read afterwards, so the analysis proves
 unobservability with the same forward walk the dropped pops use (checkLostReload,
 rejecting a restore into the integer return register outright) and the rewrite
-DROPS the load like the pops it already drops.
+DROPS the load like the pops it already drops. The detection's save-slot alias
+computation only fires at a PROVABLE rsp depth: at an unknown ("dyn") rsp depth
+(the aftermath of an alloca) the raw displacement is not the slot's frame
+coordinate, so a buffer load like point_double's `movq 0(%rsp), %rax` is never
+mistaken for a restore load of an outstanding save slot.
 
 While rbp is the frame pointer it is a stack register (rbp = rsp + frameSize), so
 reading it as a VALUE — `movq %rbp, %rax`, arithmetic on it, or using it as a memory
@@ -757,11 +869,30 @@ call results whose return type is ptr. Forward-propagates through `mov`/`add imm
 `lower` temp. `ptrtoint` (ptr used as int) reads only intval; `inttoptr` w/o known
 origin -> null lower. A memory operand's base/index registers are consumed as
 addresses, never as value sources (on x86, `addq (%rsi), %rax` adds the loaded SCALAR;
-`lea` is the exception — its memory-shaped operand is the computed value). The fixpoint
-is guarded against non-convergence: one web can have several def nodes (x86 2-operand
-RMW instructions, branch joins), and a web whose defs draw on genuinely different
-pointer origins would flip-flop its lower forever, so a repeated global (isPtr,
-lowerTemp) state is rejected as a conflicting-pointer-sources error.
+`lea` is the exception — its memory-shaped operand is the computed value). A
+register-register `xchg` is modeled as the crossed pair: the first operand's def
+web receives the second operand's pointer-ness and lower, and vice versa.
+The fixpoint is guarded against non-convergence: one web can have several def
+nodes (x86 2-operand RMW instructions, branch joins), and a web whose defs draw
+on genuinely different pointer origins would flip-flop its lower forever, so a
+repeated global (isPtr, lowerTemp) state proves the deterministic sharing
+iteration would loop. On arm64 (and historically on x86_64) that is rejected as
+a conflicting-pointer-sources error. On x86_64 the repeated state instead WIDENS
+the oscillating webs to DYNAMIC lowers: a swap (keccak1600's loop-carried
+`xchgq %rsi,%rdi` bounce buffer, or the equivalent three-move rotation) or a
+conflicting join (`if (c) p = a; else p = b;`) has no single STATIC lower that is
+correct, but a dynamic one is exact — the web gets its own fresh lower temp and
+every pointer def of the iv web is mirrored by a lower def from the same source
+(a lockstep copy the transform emits from ptrflow's dynCopy map; an xchg's
+crossed pair is emitted atomically through a scratch). The lower temp then has
+one def per iv def (a phi, exactly like the iv web), the lowerTemp assignment is
+fixed at creation (the fixpoint cannot oscillate on it), and widening is monotone
+(a web widens at most once), so the analysis always converges. Copies OUT of a
+dynamic web widen the destination too (a snapshot: sharing would observe the
+source's later swaps). Widening is sound: every capability a dynamic lower can
+hold entered through a seed and every seed roots its lower at definition, so the
+GC still sees every live capability; and a stale lower on a scalar-holding def
+can only trap or pass for an in-bounds address, never access out of bounds.
 
 ### transform.luau — the GIMSO transform (templates in ABI-NOTES.md / ABI-NOTES-x86.md)
 The walk and every invisicap sequence live here ONCE; the actual instructions come from
@@ -919,7 +1050,13 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
     round-trip EFLAGS through pushfq and a regalloc-owned virtual temp); only
     the annotated cas has a flag contract (the recompute above).
 - non-ptr load/store through a ptr temp -> access-check(size, align) then the raw ld/st.
-  Every heap WRITE (plain stores, memory-destination RMWs incl. locked forms,
+  Whether an access is a write is decided by `x86_64_codegen.isStoreInsn` — a
+  memory FIRST operand is a store, EXCEPT the read-only forms: cmp/test (they
+  write only flags) and the one-operand multiply/divide family (`mulq`/`imulq`/
+  `divq`/`idivq` — the memory operand is the multiplicand/divisor, the result
+  goes to the implicit accumulator registers; ecp_nistz256's `mulq 0(%rsi)`
+  reads a read-only table operand). Every heap WRITE (plain stores,
+  memory-destination RMWs incl. locked forms,
   xadd/cmpxchg/cmpxchg8b/16b, FP/SIMD stores, movnti) additionally gets the
   not-readonly CanWrite test (aux word [lower-8] &
   ObjectFlagReadonly|ObjectFlagFree at bits 49-50), exactly like compiled
@@ -1162,13 +1299,33 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   size=N` (fixed region) instead annotates a `leaq disp(%rsp), %rd` / `movq %rsp, %rd`
   (or `leaq disp(%rbp), %rd` when rbp is the frame pointer): it defines [base,
   base+N) in frame coordinates; rsp math landing inside is redirected to the
-  allocation pointer, and direct stack-relative accesses into a region are rejected.
+  allocation pointer, and DIRECT stack-relative accesses into a region are
+  redirected the same way — rewritten to a region-pointer-relative access
+  (disp-base off the region temp) riding the ordinary checked path (width from
+  accessSizeAlign, CanWrite for stores — GC buffers are writable). The same two
+  forms also anchor an ALIGNMENT-anchored region: the annotation may sit on the
+  `andq $-A, %rsp` of the perlasm dynamic-alignment idiom (or on the
+  `subq $K, %rsp` / `addq $-K, %rsp` feeding it — the andq is then dropped as
+  alloca machinery), defining [0, N) in post-alignment rsp coordinates; the
+  abstract depth there is the region's own {anchored} scope (any later rsp write
+  leaves it — region coordinates shift with rsp — so a second dynamic alloca
+  inside the scope soundly degrades to the plain unprovable depth rather than
+  redirecting at stale coordinates). An `align=A` option (A a power of two in
+  [16, 4096]; on the andq form it must equal the andq's own alignment) instead
+  over-allocates the region by A-16 bytes and aligns the region pointer up to
+  A — the capability lower stays the allocation's payload base, so bounds
+  checks remain sound — for the vmovdqa/vmovdqa64-class stack traffic; an
+  aligned access needing more than the region's provable alignment is a clean
+  compile-time rejection (ordinary regions are 16-aligned).
   While %rsp is perturbed by an alloca, %rsp-relative frame accesses are rejected and
   %rbp-relative slots keep working: the frame pointer is tracked per program point
   (established by `movq %rsp,%rbp`, invalidated by a paired `popq %rbp`/`leave`), and
-  a %rsp recovery (`movq %rbp,%rsp`, `leaq N(%rbp),%rsp`, or `movq %reg,%rsp` from an
-  unredefined prologue save) revives the known depth. The dropped machinery is chosen
+  a %rsp recovery (`movq %rbp,%rsp`, `leaq N(%rbp),%rsp`, or `movq %reg,%rsp` /
+  `leaq K(%reg),%rsp` from an unredefined saved-rsp carrier) revives the known
+  depth. The dropped machinery is chosen
   by form, not position: the recovery forms above and the teardown `addq $imm,%rsp`
+  (or its `leaq $imm(%rsp), %rsp` spelling; the prologue allocation may likewise be
+  spelled `leaq -N(%rsp), %rsp`)
   are never marked as alloca machinery, so they are honored — not swallowed — even in
   the same straight-line region as the `;! alloca result` annotation, and a
   branch-free alloca function recovers %rsp and pops its epilogue immediately after
@@ -1285,20 +1442,30 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   Label-target branches inside the function (loop back-edges, `jmp
   .Llabel`/`1b`) keep working — all of this closes the same unvalidatable
   control-flow hole.
-- (x86_64) explicit high-byte operands — the `%ah` subregister gap: sarcasm's
-  web model has no subregister view, and `ah` and `al` both parse to the SAME
-  web (register 0, width 8; see x86_64_isa.luau), while the renderer names the
-  LOW byte of whatever register that web is colored into — an explicit `%ah`
-  operand names the low byte of the colored register, the architectural AH only
-  when the web sits in physical rax. `setcc %ah` is REJECTED ("setcc with the
-  high-byte destination %ah is not supported (only the low byte of a register
-  is modeled; use the low-byte form, e.g. `sete %al`)"), but every other
-  explicit `%ah` operand is silently accepted at the low byte (`movb %al, %ah`
-  renders `movb %al, %al`; `movzbl %ah, %edx` reads `%al`), so a program that
-  really wants AH must pin its value to rax itself. lahf/sahf are NOT affected
-  — they are modeled as
-  implicit full-web RMW/use of the 64-bit rax web pinned to physical rax, so
-  the flag byte lands in bits 8-15 of the colored register wherever it lives.
+- (x86_64) explicit high-byte operands (%ah/%ch/%dh/%bh) are MODELED EXACTLY
+  with the pin machinery (classifyHighByte in x86_64_isa.luau): the parser maps
+  a high-byte name to its register's web (nums 0-3, width 8 — the SAME web as
+  the low-byte al/cl/dl/bl; the web model has no subregister view), so every
+  GPR operand of an instruction carrying a high-byte operand is pinned to its
+  SPELLED physical register (emitPinned copies the reaching webs in, emits the
+  spelled instruction, copies the results back out). A high-byte source reads
+  bits 8-15 of the enclosing register's pinned physical register; a high-byte
+  destination merges into bits 8-15 and preserves the rest (an RMW of the
+  enclosing web); a low-byte partner destination (movb %ah, %cl) is likewise an
+  RMW (its bits 8-63 flow through the pin), while a movzx/movsx destination is
+  a PURE def (the instruction zero-extends). The renderer keeps the high-byte
+  name for pinned operands (emitPinned tags them; build.rp alone would render
+  the LOW byte). Supported forms: movb (reg-reg and imm), movzbl/movzbw/
+  movsbl/movsbw reads, the byte ALU/cmp/test/inc/dec/neg/not forms, setcc, and
+  xchgb. Rejected cleanly (gas also rejects them): a high-byte operand with a
+  MEMORY operand (the bounds-check rewrite addresses memory through an
+  allocated register that could leave the REX-free registers), any partner
+  that requires a REX prefix (byte partners other than %al/%cl/%dl/%bl,
+  partners numbered 8+, any 64-bit operand — so movzbq/movsbq with a high-byte
+  source are out), a high-byte shift count (only %cl encodes one), and a
+  high-byte movzx/movsx destination (not an encoding). lahf/sahf are unaffected
+  — they stay modeled as implicit full-web RMW/use of the 64-bit rax web
+  pinned to physical rax.
 - A branch to the function's OWN ENTRY NAME (`jmp f` from inside `f`) is
   rejected on BOTH architectures (shared validateBody branch-target check): the
   entry label is in the body's local-label set, but the entry symbol itself is
@@ -1322,13 +1489,20 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   through — so a body whose ONLY exit is such a call is rejected; restructure
   it with a `ret` after the call (unreachable but present) or an explicit
   infinite loop.
-- Top-level (inter-function) content is scanned on BOTH architectures with
-  identical semantics. Data under a global or referenced label, symbol/macro
-  definitions (`.equ`/`.set`/`.macro`/`.comm`/...), instructions outside any
-  function, and labels outside any function are rejected; provably dead
-  content (an unreferenced, non-global local label and its data bytes) is
-  dropped, and structural directives (`.text`, `.section .note.GNU-stack,"",@progbits`,
-  `.p2align`, `.cfi_*`, `.type`, `.size`, ...) stay accepted+ignored.
+- Top-level (inter-function) content is scanned on BOTH architectures.
+  On X86_64, contiguous top-level data under `.section .rodata*`/`.data`/`.bss`
+  (plus `.comm`/`.lcomm`) is COLLECTED into Fil-C data objects (DOs) — the
+  global-variables feature, see the "Global variables (x86_64)" section below.
+  On arm64 (and on x86_64 for content outside those sections), the historical
+  uniform semantics apply: data under a global or referenced label,
+  symbol/macro definitions (`.equ`/`.set`/`.macro`; on arm64 also
+  `.comm`/...), instructions outside any function, and labels outside any
+  function are rejected; provably dead content (an unreferenced, non-global
+  local label and its data bytes) is dropped, and structural directives
+  (`.text`, `.section .note.GNU-stack,"",@progbits`, `.p2align`, `.cfi_*`,
+  `.type`, `.size`, ...) stay accepted+ignored. On x86_64 `.equ`/`.set`/`.macro`
+  stay rejected everywhere and `.quad label`-style pointer initializers are a
+  clean compile-time rejection.
 - On X86_64, instructions that manipulate processor state sarcasm cannot model, or
   that touch memory the checker cannot see, are rejected with clean `sarcasm:`
   errors — the full class list with per-instruction reasoning is in the
@@ -1356,6 +1530,10 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   8(%rsp), %rax`), by copying it (`movq %rsp, %rax`), or by storing it into a
   frame slot (`movq %rsp, (%rsp)` — the slot virtualization rewrites only the
   memory operand, so the live sp/fp value would leak into a virtual temp). The
+  exceptions: address arithmetic landing INSIDE a fixed alloca region (redirected
+  to a real pointer into the GC region) and the phantom saved-rsp carrier flow
+  (every use of the parked value is dropped or rejected, so nothing observable
+  escapes — see the frame section). The
   full mid-function stack-pointer-movement policy is in the frame section.
 - Stack accesses outside the input frame — below it (on X86_64, below the
   128-byte SysV red zone under rsp, via rsp- or normalized rbp-relative
@@ -1364,11 +1542,13 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   operand with a SYMBOLIC displacement (`movq foo(%rsp), %rax`) — its target
   is unknown at compile time, so it cannot be bounds-checked or virtualized.
 - alloca requires the annotation pair: an `;! alloca result (x)` with no
-  preceding `;! alloca size (x)`, a duplicate size for the same name, or a
-  direct stack-relative access into an alloca region are all rejected. For
+  preceding `;! alloca size (x)` or a duplicate size for the same name is
+  rejected. For
   `;! alloca result size=N` the annotated instruction must compute the buffer
   base stack-frame-relative (`leaq disp(%rsp), %rd` / `movq %rsp, %rd`, or
-  `leaq disp(%rbp), %rd` when rbp is the frame pointer); any other base is
+  `leaq disp(%rbp), %rd` when rbp is the frame pointer) or be the
+  alignment-idiom `andq $-A, %rsp` (or the `subq $K, %rsp` / `addq $-K, %rsp`
+  feeding one); any other base is
   rejected rather than silently creating no region (the region redirect is
   described in the transform section).
 - Dropping the alloca's %rsp-mutating instruction also discards its flag effects: a
@@ -1448,10 +1628,12 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     so accepting the prefix would silently elide it, a locked RMW degenerating
     into an unlocked register operation. Also xchg with a MEMORY operand (an
     implicitly LOCKED RMW that is not one of the exactly-modeled memory RMWs;
-    register-to-register xchg IS modeled), movbe (its only baseline encodings
-    are byte-swapping MEMORY moves), and `int N` for N≠3 (int3/`int $3` stay
-    legal — like ud2 they only raise SIGTRAP/SIGILL, which Fil-C forbids
-    installing handlers for, so a merely-trapping instruction is fine).
+    register-to-register xchg IS modeled), the register-to-register movbe
+    spelling (its only baseline encodings are byte-swapping MEMORY moves —
+    the load/store forms ARE modeled, see below), and `int N` for N≠3
+    (int3/`int $3` stay legal — like ud2 they only raise SIGTRAP/SIGILL,
+    which Fil-C forbids installing handlers for, so a merely-trapping
+    instruction is fine).
   * MEMORY FORMS WHOSE WIDTH OR ADDRESS CANNOT BE MODELED: unknown mnemonics
     with memory operands (the width is undeterminable and a guess could
     under-cover the access — enqcmd's m512 source, an unknown vector load — so
@@ -1467,8 +1649,14 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     (proven against gas/objdump: `mov rsi, myglobal` emits an R_X86_64_32S
     absolute relocation — only a bare NUMBER is an immediate there) — so both
     reject as un-checkable memory accesses ("memory access with a symbolic
-    address cannot be bounds-checked (global data access is not yet
-    supported)" / "...with an absolute address..."). The rejection fires for
+    address cannot be bounds-checked (if '<sym>' is a Fil-C global defined in
+    another module, annotate the instruction with `#! global ptr`)" /
+    "...with an absolute address..."). RIP-RELATIVE operands are the global-
+    variable path, exempt when the symbol resolves to a same-file data object
+    (see "Global variables (x86_64)"): a same-file rip-relative lea seeds a
+    pointer, and a same-file rip-relative access materializes its capability
+    from the data object and rides the ordinary checked path. The rejection
+    fires for
     every operand position (load, store, ALU source, push/pop), FP/vector
     forms included, and covers indirect-branch memory operands uniformly:
     `jmp *myglobal` / `call *myglobal` / `jmp *0x600000` branch THROUGH an
@@ -1509,6 +1697,353 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   symbolic displacement and rejects — uppercase `PTR` is required (a known
   parser gap; gcc emits uppercase, so real compiler output is unaffected).
 - X86_64 output is always AT&T syntax, even when the input is Intel syntax.
+## Global variables (x86_64)
+
+x86_64 sarcasm turns same-file data and annotated extern references into real
+Fil-C globals, mirroring what FilPizlonator emits for a C global (the emission
+was verified byte-for-byte against `clang -O2 -S` output). arm64 keeps the
+historical rejections (the top-level data scan and the forged-address checks).
+
+- **Data objects (DOs).** The driver collects contiguous top-level data under
+  `.section .rodata*`/`.data`/`.bss` (plus `.comm`/`.lcomm`) into DOs: one DO
+  per maximal contiguous block of LOCAL data (labels map to payload offsets, so
+  "lea a base label and read past a sub-label" keeps working — including any
+  UNLABELED data ahead of the block's first label, e.g. keccak1600's `.align
+  256` + eight zero quads before `iotas`, whose leading bytes position the label
+  at the exact input offset), one DO per EXPORTED (`.globl`/`.comm`) label with
+  extent to the next label (C-side bounds are exact; an exported segment starts
+  at its label, so leading unlabeled data drops there like before). Only scalar
+  initializers: `.byte/.short/.word/.value/
+  .long/.quad` (numeric), `.float/.double`, `.ascii/.asciz` (decoded and
+  re-emitted as `.byte` lists so the computed payload size is exact by
+  construction), `.zero/.space/.fill`, and `.p2align`/`.align` padding.
+  `.quad label`-style pointer initializers (constant relocations) are a clean
+  compile-time rejection; `.equ`/`.set`/`.macro` stay rejected everywhere;
+  in-body data stays rejected. Truly unreferenced, non-global blocks drop (the
+  dead-content rule).
+- **Emission** per DO (in `.data.rel.ro` when readonly, `.data` when writable):
+  `.quad <DO>+total` (upper), `.quad 0+flags` (ObjectFlagGlobal at bit 48,
+  plus ObjectFlagReadonly at bit 49 for const), payload at DO+16 — the payload
+  base IS the capability lower, and the statically laid-out header makes the
+  access checks work with no runtime registration. An alignment wider than 16
+  is handled with FilPizlonator's leading-pad trick (`.zero A-16` before the
+  header; the payload keeps its alignment). A synthesized `.Lglobalbase_<sym>:`
+  label marks the payload base. Writable DOs additionally get a
+  `.LpizlonatedGP_<sym>` flight-pointer cache cell (`.comm …,16,16`) and a
+  `.LpizlonatedGS_<sym>` slow-init function (verbatim clang shape:
+  `filc_global_initialization_start(myth, origin, &GP, &DO)` registers the
+  object into the GC's global root set, `filc_global_initialization_end` fills
+  the cell). Exported labels additionally get the `.globl pizlonated_<sym>`
+  getter (verbatim clang shape; `(rdi=myth, rsi=origin or NULL)` ->
+  `rax=intval, rdx=lower`) and the unsafe-export alias `.globl <sym>` +
+  `.set <sym>, pizlonatedDO_<sym>+16` (`.hidden` propagates to getter and
+  alias). Readonly LOCAL data emits only the DO (a readonly object can never
+  receive a pointer store, so it never needs registration). `.comm
+  name,size,align` becomes its own writable DO of `size` zero bytes, exported
+  (a documented semantic change: commons become strong definitions and lose
+  cross-module merging).
+- **Access lowering, same-file symbols** (fully automatic — inferred from the
+  collected data, no annotation):
+  * `leaq sym(%rip), %r` (also `sym+K`) is a pointer SEED: iv = the lea
+    (rendered verbatim) and lo = a synthesized `leaq .Lglobalbase_<sym>(%rip)`
+    for readonly data, or the inline-GP materialization for writable data
+    (mirroring filcc's same-module fast path: load the GP cell's two words,
+    test both for zero, on zero call the GS slow-init — which registers the
+    object — and `leaq pizlonatedDO_<sym>+16(%rip)` into both words). Indexed
+    accesses through the seeded register are ordinary checked accesses (x86 has
+    no rip+index addressing, so table traffic is always lea-then-index).
+  * A DIRECT rip-relative access (`movl g+4(%rip), %r`,
+    `movdqa K256+512(%rip), %xmm7`, an ALU-source/RMW form, ...) keeps the
+    instruction verbatim and gets a synthesized effective-address lea, a
+    synthesized payload-base lea, and the ordinary access check at the
+    instruction's width/alignment; a store to a readonly table traps in the
+    check's CanWrite test ("cannot write to read-only object."), exactly like
+    a store to a const C global.
+  * `#! load ptr` on a same-file global lowers as the scalar form (an
+    unregistered object's aux is 0 -> null lower, which is correct: nothing
+    was ever stored into it with a capability). `#! store ptr` and the atomic
+    pointer family on a WRITABLE global force REGISTRATION first (the inline-GP
+    materialization), then run the standard invisicap sequences; on a readonly
+    global they trap in the sequences' CanWrite check.
+- **Extern symbols: `#! global ptr`.** On a rip-relative lea or any
+  rip-relative memory access to a symbol NOT defined in the file, the
+  annotation materializes the flight pointer by calling
+  `pizlonated_<sym>@PLT` (`rdi=myth, rsi=0` -> `rax=iv, rdx=lo`) — an injected
+  nounwind runtime call (caller-saved clobbers, fpSave/fpRestore, counterGuard;
+  NO exception branch, NO root store: a global's lower is a link-time constant
+  into static ELF memory and FUGC never moves it). The lea form seeds (iv, lo)
+  as a pointer; the direct form then runs the checked access through
+  (iv+disp, lo), with the memory operand REWRITTEN to the materialized
+  effective address (register-indirect — the verbatim rip-relative form would
+  need the defining module's unsafe-export alias at link time, while the
+  getter always returns the true payload address). `#! load ptr` /
+  `#! store ptr` / the atomic pointer family keep their spellings on extern
+  globals; the rip-relative operand shape implies the getter materialization
+  (`#! store ptr` & co. run the invisicap sequences against the registered
+  object). An unannotated rip-relative reference that resolves to nothing
+  rejects with a message pointing at `#! global ptr`, and so does an
+  unannotated rip-relative lea to anything but a body-local code label.
+- **Validation.** `#! global ptr` is shape-checked (a lea or memory operand of
+  the form `sym(%rip)`, no `@reloc` decoration) and arch-gated to x86_64; on
+  arm64 it is an unrecognized annotation like before. The driver's collector
+  and the transform's globals table are threaded through
+  `transformFunction(..., { globals = ... })` into `computeAddr`, which
+  resolves same-file dispSyms to their data object's payload base; ptrflow
+  needs no change (the lea seeds ride `loadPtrDefs`).
+
+## Function references and constructor sections (x86_64)
+
+- **`#! funcref`.** On a rip-relative lea to a FUNCTION symbol, materialize
+  the function's flight pointer (the poly1305_init function-table shape). A
+  raw lea of a code address is not a Fil-C flight pointer — storing it would
+  fail the indirect call's FUNCTION-type check — so the lea becomes a
+  capability seed in ptrflow (a `loadPtrDefs`-style seed, no GC root store:
+  the lower is a link-time constant into static ELF memory). A same-file
+  function (or alias entry — the driver's `fnNames` map resolves alias
+  entries to their owners) retargets the lea to the function object:
+  `leaq pizlonatedFO_<owner>+16(%rip)` into both the intval and the lower,
+  exactly the getter's output (intval == lower == FO payload, the canonical
+  entrypoint of the in-object header). An extern function goes through its
+  cross-module getter (`pizlonated_<sym>`, an injected nounwind runtime call
+  like the `#! global ptr` path). Shape validation (validateBody: a lea of
+  the form `sym(%rip)`, no reloc/index/displacement) and target resolution
+  (a data object, body-local code label or local subroutine is a clean
+  rejection) happen in the transform; arm64 rejects the annotation with a
+  clean "not yet supported". cmov selection chains over the seeded pointers
+  are handled by ptrflow's cmov support: a cmov merging two pointer webs
+  with different lowers widens the destination web to a dynamic (lockstep)
+  lower and the transform emits a CONDITIONAL lower copy — a cmov on the
+  lower temps with the node's own condition — immediately after the iv cmov
+  (nothing between the two writes the flags).
+- **`.section .init` / `.section .fini`.** Driver-level (outside functions):
+  the top-level scan tracks the current section; inside `.init`/`.fini` a
+  straight-line sequence of annotated DIRECT calls is collected (labels,
+  data directives, non-call instructions, unannotated calls and data-object
+  or local-subroutine targets are clean rejections; on arm64 the whole thing
+  is "not yet supported"). Each call must annotate `void()`: the .init
+  context runs from `_init` as plain SysV code with no Fil-C argument state,
+  so only void() calls marshal soundly. Emission (x86_64 glue) writes the
+  calls back into the same section in input order, marshalled as
+  `filc_defer_or_run_global_ctor(<callee flight pointer>)` — exactly what
+  filcc emits for a C constructor's `.Lfilc_ctor_forwarder`, which handles a
+  .init chunk that runs before the runtime is initialized by deferring to
+  before-main. A same-file function's flight pointer is
+  `leaq pizlonatedFO_<owner>+16(%rip), %rdi; movq %rdi, %rsi`; an extern
+  function resolves through `pizlonated_<sym>@PLT` (rax/rdx) first. The
+  fragments make their calls with rsp exactly as found (`_init`'s crti
+  prologue leaves rsp 16-aligned at fragment entry).
+
+## Local subroutines (x86_64)
+
+OpenSSL's perlasm calls file-local subroutines with custom caller/callee
+register conventions (`call _aesni_encrypt2` on a non-`.globl`, non-signature
+`.type` label that ends in `ret` — ~70 subroutines corpus-wide). A local call
+is an unconditional jump to a per-caller CLONE of the subroutine; a local
+`ret` is a multi-way branch to the continuations (the instructions after each
+call). `localcall.luau` holds the shared discovery + clone augmentation; the
+per-arch hooks are in x86_64_isa (classify), x86_64_frame (successors, the
+ret exemptions), and the transform (retaddr temps, emission, flag treatment).
+
+- **Discovery.** Regions are maximal spans of unconsumed top-level statements
+  headed by a non-`.globl`, non-signature label, bounded like splitFunctions'
+  body termination (`.size`, section switch, `.type OTHER,@function`,
+  consumed content); `.byte` sequences in a region are decoded first (the
+  rep-ret at the end of every OpenSSL sub is then a real `ret`). A label in a
+  region that is referenced by an unannotated or `#! local` call from a
+  function body — transitively, from an already-claimed subroutine — is a
+  local subroutine. A call target may be a MID-LABEL inside a region
+  (`.Lenc_loop6` inside `_aesni_encrypt6`): the clone range is then
+  [mid-label .. the region's ret(s)]. Claimed regions are marked consumed (an
+  uncalled prefix ahead of a claimed mid-label is dead content, never
+  cloned); everything else keeps today's behavior — the no-signature error
+  for an uncalled `.type` function (`.globl` no-signature always errors), the
+  unannotated-call rejection for anything else, and the top-level scan for
+  uncalled regions. `#! local` on a call that does not resolve to a local
+  subroutine is a compile error. On arm64 a discovered local subroutine is a
+  clean "not yet supported" error.
+- **Validation at discovery.** Recursion (direct or mutual) is rejected — the
+  local-call graph must be acyclic (each clone's continuations are fixed at
+  compile time, so a re-entrant activation could never find its inner
+  continuation). Every branch in a clone range must stay inside it (a branch
+  out is a cross-function jump — a separate feature), and no control-flow
+  path may fall off the range's end (the clone would fall into the next
+  appended clone with a garbage retaddr; the driver-level fall-off check
+  treats a fall-through INTO a clone entry as a fall-off too).
+- **Augmentation (per caller, in sorted-sub-name order — determinism).** Each
+  clone's labels are renamed (`.Llocalsub_<fn>_<sub>_<orig>`, bumped past
+  user label names); each callsite is marked `st.localCall` (with its
+  continuation label inserted after it) and each clone `ret` `st.localRet`
+  (with the clone's full continuation list, in augmented-body order). Clones
+  are appended to the caller's body, so lift/ptrflow/DCE/regalloc color
+  caller+clones as ONE function: reaching-definitions unions the sub's
+  register effects with the caller's webs across the call boundary — the
+  "one function for regalloc" property (the caller's callee-saved webs flow
+  through; a caller-saved register the sub clobbers reads back with the sub's
+  value, exactly the hardware clobber semantics).
+- **The +8 rule.** The stack pointer is never moved (no hardware push).
+  Hardware `call` pushes an 8-byte return address, so a subroutine written
+  against the real ABI sees the caller's `0(%rsp)` as its own `8(%rsp)` — the
+  return-address-compensated convention eight OpenSSL subs use (rsaz
+  `__rsaz_512_mul/mulx/reduce/reducex`, mont5
+  `mul4x_internal/mulx4x_internal`, aesni-gcm `_aesni_ctr32_ghash_6x`). Clone
+  statements are marked (`st.localClone`), and the frame pass keys their
+  rsp-relative accesses at model depth `d` to frame offset
+  `disp + D0 - d - 8` (hardware: the return-address word sits between the
+  clone's rsp and the caller's frame — at the callsite depth, every
+  regs-only sub, this is exactly `disp - 8`). The same bias applies in the
+  frame rewrite's static-region lookup and slot keying, in the transform's
+  region-lea seed scan, and in the codegen's region redirect (all riding
+  `fctx.callerDepth` = D0), so the sub's `8(%rsp)` keys to the caller's slot
+  0 and `leaq 8(%rsp),%rdi` (rsaz's frame-address idiom) keys to region
+  offset 0, which the redirect resolves to the region pointer when the
+  caller's buffer is a fixed `#! alloca result size=N` region. rbp-relative
+  operands are never biased (the call does not move rbp); anchored-region
+  (dyn-depth) accesses keep their raw coordinates (the sub's own frame is
+  its own); the entry-rsp-parking lea forms shift by the same 8 (a clone's
+  `leaq d+8(%rsp)` parks the entry rsp).
+- **Emission.** At each callsite: `leaq retaddrTemp, cont(%rip)` + `jmp
+  entry` (the lea is elided for a single-continuation clone, whose dispatch
+  is a plain `jmp`). One shared "retaddr" temp per (caller, clone) — an
+  ordinary regalloc web, never a pointer, so the return-address storage lives
+  in a register or a sarcasm-owned spill slot the program cannot address
+  (off-limits by construction). Each clone `ret` emits a compare-chain
+  dispatch over the clone's continuations (`leaq scratch, contK(%rip); cmpq
+  scratch, T; je contK` … final `jmp contLast`). Being live from the callsite
+  through the whole clone, the temp survives annotated calls inside the clone
+  through ordinary IRC interference.
+- **classify (x86_64_isa).** A marked localCall classifies as `branch` to the
+  clone entry (no fall-through); a marked localRet as `branch` to the clone's
+  continuations — so validateBody's reachability (a fall-through into a clone
+  entry is a fall-off), the lift's CFG/reaching-definitions, DCE, and
+  regalloc's buildCFG all see the true control flow with zero changes.
+- **Frame pass (x86_64_frame).** `successors` reaches through the marks
+  (clone code executes at the caller's depth, so its stack traffic keys to
+  the same slot webs — with the -8 bias applied by the offset math); a marked
+  localRet is exempt from the depth-0-at-ret check and from the %rax-carrier
+  escape check (it is not a return — the continuation resumes at the caller's
+  depth, and a phantom carrier flowing to it is the caller's recovery working
+  as intended); a clone's own teardown span may terminate at a localRet (the
+  clone's own epilogue leads to it exactly like a top-level ret); a localCall
+  inside a teardown span makes it unverifiable. **Local-ret state override:**
+  a local ret resumes its continuation with the CLONE ENTRY's
+  depth/saves/frame-pointer state — the clone's own frame machinery (its
+  pushes, its frame sub/add) is dropped exactly like a top-level frame, so
+  the real rsp never moved inside the clone, and the continuation executes at
+  the callsite's depth (the smap keeps the clone's flow, so carrier
+  redefinitions inside the clone still poison the caller's carriers). The
+  depth fixpoint re-enqueues a clone's local rets whenever the clone entry's
+  state changes, so the override always evaluates against the converged entry
+  state.
+- **Flags.** The dispatch's `cmp` clobbers EFLAGS, so flags are documented
+  call-clobbered across a local call (matching every compiler's model of
+  `call`): `flagsLiveFrom` treats marked local calls/rets as clobbers.
+  (Hardware `call`/`ret` preserves flags; faithful preservation with
+  save-at-dispatch + restore-at-continuation is future work.)
+- **Pollchecks.** A clone's ret edge to an earlier continuation is a back
+  edge, so the continuation gets a pollcheck — sound (that IS the loop back
+  edge for a call inside a loop) at a minor cost on non-loop callsites.
+
+## Cross-function jumps (x86_64)
+
+OpenSSL's perlasm tail-branches between functions: dispatcher functions
+capability-check and then `jnz variant` / `jmp variant` to same-file
+ISA-variant bodies or exported functions (56 entry-adjacent dispatch jumps
+corpus-wide), and a handful of functions jump into the MIDDLE of a sibling's
+tail, sharing register state (x25519 `.Lreduce51`/`.Lreduce64`, ecp
+`.Lpoint_double_shortcut[qx]`, chacha `.Ldo_sse3_after_all`, mont5
+`.Lsqr4x_sub_entry`). `tailcall.luau` implements both mechanisms plus alias
+entry labels; the localcall hooks carry the subroutine-internal case. All of
+it is x86_64-only: on arm64 an annotated jump reaches validateBody's
+annotation walk, which rejects it with a clean "not yet supported" error, and
+an unannotated one keeps the plain tail-call rejection.
+
+- **B1 — tail branch to a signatured function entry → call + epilogue jump.**
+  A direct `jmp target` / `jcc target` whose target resolves to a function
+  WITH a signature — a same-file sig-annotated function label (directly or
+  through an alias, below) or an EXTERN symbol carrying an inline callsite
+  annotation (`jne asm_AES_cbc_encrypt #! void(ptr,ptr,size_t,ptr,ptr,int)`)
+  — is rewritten before validateBody into an ordinary annotated CALL to that
+  function (the full Fil-C CC marshalling of the current SysV arg-register
+  webs, exactly like any annotated call — the webs trace to the jumper's own
+  entry unpacking, correct by construction for the corpus dispatch shapes,
+  which jump before the argument registers are repurposed), immediately
+  followed by a jump to the function's shared synthetic epilogue block
+  (`.Ltailret_<fn>: ret`). A conditional jump synthesizes a via block:
+  `jcc .Lvia_K; <fallthrough>; .Lvia_K: call …; jmp .Ltailret_K`. The
+  callee's return value becomes the jumper's return value: the call's result
+  web reaches the epilogue's `ret`, whose ordinary return path moves it into
+  the fast-CC return registers (pointer-returning jumpers may only tail-call
+  pointer-returning callees — a clean error otherwise; every other
+  return-shape combination is hardware-faithful). The jump site may sit at
+  any virtual frame depth: the body's stack is virtual, so the synthesized
+  epilogue (which owns the real rsp) tears down correctly regardless — the
+  synthetic `ret` carries the `st.tailRet` mark, exempting the frame pass's
+  depth-0-at-ret and %rax-carrier proof gates (sound, since the return value
+  is the callee's result, defined by the call). Dense argument words beyond
+  the four fast-CC registers travel on the stack at the call; for a tail
+  call those words must be the jumper's OWN incoming SysV stack arguments (a
+  hardware `jmp` passes them in place), so the synthetic call is marked
+  `st.tailCall` and the marshalling sources its 7th+-argument webs from the
+  yolo incoming-argument slots instead of the outgoing-argument frame slots
+  (transform's `callArgSource`). validateBody's annotation walk validates the
+  form (a sig-annotated jump must be a direct jump to a bare symbol) and
+  reports unresolved targets clearly ("does not resolve to a function with a
+  matching signature"); an unannotated jump to a non-local label keeps the
+  plain tail-call rejection.
+- **B2 — mid-body shared-tail join → region cloning.** A jump (conditional
+  or unconditional) to a label INSIDE another same-file function's body (or
+  inside a local subroutine's region) clones the region [target label .. the
+  region's ret(s)] into the JUMPER, reusing the localcall cloning style:
+  renamed labels appended to the jumper's body (`.Ltailjoin_<fn>_<owner>_<orig>`,
+  deterministic), the jump retargeted to the clone entry, and the clone's
+  rets left as PLAIN rets — a shared-tail join returns from the jumper
+  (hardware: the ret pops the jumper's own return address, a `jmp` having
+  pushed nothing). The region is the statements REACHABLE from the target
+  label, in source order — which may include labels BEFORE the entry
+  (mont5's `.Lsqr4x_sub` loop head). There is NO -8 clone bias for B2 (the
+  localcall +8 return-address compensation applies to CALL-clones only): the
+  clone's stack accesses key into the jumper's frame at the jumper's depth,
+  so the corpus's by-construction depth matches (x25519's identical
+  prologues, ecp's `addq $416,%rsp` reshape, chacha's pre-frame-setup join)
+  hold, and the frame pass's ordinary checks reject genuine mismatches.
+  Local calls inside the region are cloned transitively (recorded into the
+  localcall discovery's callsite list). Register state is shared by
+  construction — that is the point of a mid-body join. A branch out of the
+  region is a nested cross-function jump and is rejected; so is a fall-off
+  or a re-entry of the owner's entry label.
+- **B2 from inside a local subroutine (mont5).** localcall.discover records
+  a branch out of a subroutine's clone range to a label in ANOTHER
+  subroutine's region as a "tailjoin" edge (any other escaping branch keeps
+  the cross-function-jump rejection), computing and validating the tail
+  region; localcall.augment clones the tail into each caller of the jumping
+  subroutine with the jumping subroutine's clone id — the +8 context (the
+  tail executes inside the subroutine's activation, whose caller DID push a
+  return address) and the ret dispatch (the tail's rets resume the jumping
+  subroutine's continuations — hardware pops its return address) both ride
+  the jumping subroutine's. Tail regions whose statements are never CALLED
+  are claimed consumed the same way; the tails' local calls join the
+  cycle-detection graph and the per-caller closure.
+- **Alias entry labels.** A label immediately adjacent to a sig-annotated
+  function label — nothing between them but blanks, non-data directives, and
+  CET/nop markers (endbr64/nop) — names the same entry
+  (asm_AES_encrypt:/AES_encrypt:, .Lenc_rounds:/Camellia_EncryptBlock_Rounds:,
+  sha1_block_data_order_shaext:/_shaext_shortcut:,
+  gcm_init_clmul:/.L_init_clmul:). A PRECEDING alias is consumed at
+  splitFunctions (never body content); a FOLLOWING local alias stays an
+  ordinary body label (branches to it from within keep working) and is
+  additionally recorded for cross-function resolution; a following `.globl`
+  alias is consumed like a preceding one. Jumps to the alias resolve to the
+  owning function (B1). A `.globl` alias additionally gets its own getter
+  and direct-call (FI) symbol as plain `.set` aliases (`pizlonated_<alias>`,
+  `pizlonatedFI<sig>_<alias>`, with `.hidden` propagated) so C callers of
+  the alias link — its function object IS the function's.
+- **Clone-source freshness.** B2 regions are extracted from PRISTINE copies
+  of the owner bodies taken at context-build time: the transform rewrites
+  some memory operands in place (the alloca-region redirect substitutes the
+  region-pointer temp for the stack base register), so a body whose owner
+  was already compiled is no longer a valid clone source for a later
+  jumper.
+
 ## Floating-point signatures (arm64 and x86_64)
 - Capability marker: BOTH codegen modules set `cgm.fpSignatures = true`, and
   the signature class check is arch-aware only in its error spelling:

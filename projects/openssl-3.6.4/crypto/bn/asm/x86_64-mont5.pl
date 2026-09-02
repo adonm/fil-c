@@ -113,9 +113,15 @@ bn_mul_mont_gather5:
 ___
 $code.=<<___ if ($addx);
 	mov	OPENSSL_ia32cap_P+8(%rip),%r11d
+	and	\$0x80108,%r11d
+	cmp	\$0x80108,%r11d		# check for AD*X+BMI2+BMI1
+	je	.Lmulx4x_enter		# (hoisted from bn_mul4x_mont_gather5:
+	jmp	.Lmul4x_enter		# makes both dispatches first-level jumps)
+___
+$code.=<<___ if (!$addx);
+	jmp	.Lmul4x_enter
 ___
 $code.=<<___;
-	jmp	.Lmul4x_enter
 
 .align	16
 .Lmul_enter:
@@ -133,6 +139,24 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# Sarcasm turns the whole dynamic frame into a GC allocation, so
+	# the page-walking probe is pointless and the stack-size computation
+	# collapses to a plain byte size. The region covers the tp[num+2]
+	# buffer plus the 256-byte power mask and the fixed original-%rsp
+	# save slot at the region base.
+	$code.=<<___;
+	lea	384(,$num,8),%r10	# region size: 8*(num+2)+256+8 buffer + slack
+	sub	%r10,%rsp		#! alloca size (mont)
+	lea	-64(%rsp),%r10		#! alloca result (mont)
+	mov	%rax,-64(%rsp)		# save original %rsp (fixed slot)
+
+	lea	.Linc(%rip),%r10
+.Lmul_body:
+___
+} else {
+	$code.=<<___;
 	neg	$num
 	mov	%rsp,%r11
 	lea	-280(%rsp,$num,8),%r10	# future alloca(8*(num+2)+256+8)
@@ -166,6 +190,9 @@ $code.=<<___;
 	mov	%rax,8(%rsp,$num,8)	# tp[num+1]=%rsp
 .cfi_cfa_expression	%rsp+8,$num,8,mul,plus,deref,+8
 .Lmul_body:
+___
+}
+$code.=<<___;
 
 	lea	128($bp),%r12		# reassign $bp (+size optimization)
 ___
@@ -451,7 +478,14 @@ $code.=<<___;
 	sub	\$1,$j
 	jnz	.Lcopy
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	8(%rsp,$num,8),%rsi	# restore %rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+	mov	-64(%rsp),%rsi		# restore %rsp (fixed save slot)
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	\$1,%rax
 
@@ -487,11 +521,6 @@ bn_mul4x_mont_gather5:
 .cfi_def_cfa_register	%rax
 .Lmul4x_enter:
 ___
-$code.=<<___ if ($addx);
-	and	\$0x80108,%r11d
-	cmp	\$0x80108,%r11d		# check for AD*X+BMI2+BMI1
-	je	.Lmulx4x_enter
-___
 $code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
@@ -507,6 +536,23 @@ $code.=<<___;
 .cfi_push	%r15
 .Lmul4x_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation (see the
+	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	$code.=<<___;
+	.byte	0x67
+	shl	\$3,${num}d		# convert $num to bytes
+	lea	($num,$num,2),%r10	# 3*$num in bytes
+	lea	640($num,$num),%r11	# region size: 16*num + 640
+	sub	%r11,%rsp		#! alloca size (mont)
+	mov	%rsp,%r11		#! alloca result (mont)
+
+	mov	%rax,40(%rsp)
+.Lmul4x_body:
+___
+} else {
+	$code.=<<___;
 	.byte	0x67
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
@@ -562,6 +608,9 @@ $code.=<<___;
 	mov	%rax,40(%rsp)
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lmul4x_body:
+___
+}
+$code.=<<___;
 
 	call	mul4x_internal
 
@@ -1136,6 +1185,35 @@ $code.=<<___;
 .cfi_push	%r15
 .Lpower5_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation (see the
+	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	$code.=<<___;
+	shl	\$3,${num}d		# convert $num to bytes
+	mov	($n0),$n0		# *n0
+	lea	640($num,$num),%r11	# region size: 16*num + 640
+	sub	%r11,%rsp		#! alloca size (mont)
+	mov	%rsp,%r11		#! alloca result (mont)
+	neg	$num
+	mov	$num,%r10
+	neg	$num
+
+	##############################################################
+	# Stack layout
+	#
+	# +0	saved $num, used in reduction section
+	# +8	&t[2*$num], used in reduction section
+	# +32	saved *n0
+	# +40	saved %rsp
+	# +48	t[2*$num]
+	#
+	mov	$n0,  32(%rsp)
+	mov	%rax, 40(%rsp)		# save original %rsp
+.Lpower5_body:
+___
+} else {
+	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10d	# 3*$num
 	neg	$num
@@ -1200,6 +1278,9 @@ $code.=<<___;
 	mov	%rax, 40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lpower5_body:
+___
+}
+$code.=<<___;
 	movq	$rptr,%xmm1		# save $rptr, used in sqr8x
 	movq	$nptr,%xmm2		# save $nptr
 	movq	%r10, %xmm3		# -$num, used in sqr8x
@@ -2139,6 +2220,36 @@ bn_mulx4x_mont_gather5:
 .cfi_push	%r15
 .Lmulx4x_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation (see the
+	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	$code.=<<___;
+	shl	\$3,${num}d		# convert $num to bytes
+	mov	($n0),$n0		# *n0
+	lea	640($num,$num),%r11	# region size: 16*num + 640
+	sub	%r11,%rsp		#! alloca size (mont)
+	mov	%rsp,%r11		#! alloca result (mont)
+	neg	$num			# -$num
+
+	##############################################################
+	# Stack layout
+	# +0	-num
+	# +8	off-loaded &b[i]
+	# +16	end of b[num]
+	# +24	inner counter
+	# +32	saved n0
+	# +40	saved %rsp
+	# +48
+	# +56	saved rp
+	# +64	tmp[num+1]
+	#
+	mov	$n0, 32(%rsp)		# save *n0
+	mov	%rax,40(%rsp)		# save original %rsp
+.Lmulx4x_body:
+___
+} else {
+	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
 	neg	$num			# -$num
@@ -2204,6 +2315,9 @@ bn_mulx4x_mont_gather5:
 	mov	%rax,40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lmulx4x_body:
+___
+}
+$code.=<<___;
 	call	mulx4x_internal
 
 	mov	40(%rsp),%rsi		# restore %rsp
@@ -2624,6 +2738,42 @@ bn_powerx5:
 .cfi_push	%r15
 .Lpowerx5_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation (see the
+	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	$code.=<<___;
+	shl	\$3,${num}d		# convert $num to bytes
+	mov	($n0),$n0		# *n0
+	lea	640($num,$num),%r11	# region size: 16*num + 640
+	sub	%r11,%rsp		#! alloca size (mont)
+	mov	%rsp,%r11		#! alloca result (mont)
+	neg	$num
+	mov	$num,%r10
+	neg	$num
+
+	##############################################################
+	# Stack layout
+	#
+	# +0	saved $num, used in reduction section
+	# +8	&t[2*$num], used in reduction section
+	# +16	intermediate carry bit
+	# +24	top-most carry bit, used in reduction section
+	# +32	saved *n0
+	# +40	saved %rsp
+	# +48	t[2*$num]
+	#
+	pxor	%xmm0,%xmm0
+	movq	$rptr,%xmm1		# save $rptr
+	movq	$nptr,%xmm2		# save $nptr
+	movq	%r10, %xmm3		# -$num
+	movq	$bptr,%xmm4
+	mov	$n0,  32(%rsp)
+	mov	%rax, 40(%rsp)		# save original %rsp
+.Lpowerx5_body:
+___
+} else {
+	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
 	neg	$num
@@ -2695,6 +2845,9 @@ bn_powerx5:
 	mov	%rax, 40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lpowerx5_body:
+___
+}
+$code.=<<___;
 
 	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
@@ -3497,9 +3650,8 @@ bn_scatter5:
 bn_gather5:
 .LSEH_begin_bn_gather5:			# Win64 thing, but harmless in other cases
 .cfi_startproc
-	# I can't trust assembler to use specific encoding:-(
-	.byte	0x4c,0x8d,0x14,0x24			#lea    (%rsp),%r10
-	.byte	0x48,0x81,0xec,0x08,0x01,0x00,0x00	#sub	$0x108,%rsp
+	lea	(%rsp),%r10
+	sub	\$0x108,%rsp		#! alloca result size=264
 	lea	.Linc(%rip),%rax
 	and	\$-16,%rsp		# shouldn't be formally required
 

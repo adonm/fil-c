@@ -147,6 +147,23 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# Sarcasm turns the whole dynamic frame into a GC allocation, so
+	# the page-walking probe is pointless and the stack-size computation
+	# collapses to a plain byte size. The region covers the tp[num+2]
+	# buffer (with its negative tp[j-1] offsets) plus the fixed
+	# original-%rsp save slot at the region base.
+	$code.=<<___;
+	lea	128(,$num,8),%r10	# region size: 8*(num+2) buffer + slack
+	sub	%r10,%rsp		#! alloca size (mont)
+	lea	-64(%rsp),%r10		#! alloca result (mont)
+
+	mov	%rax,-64(%rsp)		# save original %rsp (fixed slot)
+.Lmul_body:
+___
+} else {
+	$code.=<<___;
 	neg	$num
 	mov	%rsp,%r11
 	lea	-16(%rsp,$num,8),%r10	# future alloca(8*(num+2))
@@ -180,6 +197,9 @@ $code.=<<___;
 	mov	%rax,8(%rsp,$num,8)	# tp[num+1]=%rsp
 .cfi_cfa_expression	%rsp+8,$num,8,mul,plus,deref,+8
 .Lmul_body:
+___
+}
+$code.=<<___;
 	mov	$bp,%r12		# reassign $bp
 ___
 		$bp="%r12";
@@ -348,7 +368,14 @@ $code.=<<___;
 	sub	\$1,$j
 	jnz	.Lcopy
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	8(%rsp,$num,8),%rsi	# restore %rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+	mov	-64(%rsp),%rsi		# restore %rsp (fixed save slot)
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	\$1,%rax
 	mov	-48(%rsi),%r15
@@ -386,7 +413,11 @@ ___
 $code.=<<___ if ($addx);
 	and	\$0x80100,%r11d
 	cmp	\$0x80100,%r11d
-	je	.Lmulx4x_enter
+	jne	.Lmul4x_not_mulx
+	call	bn_mulx4x_mont		# (was `je .Lmulx4x_enter`: nested
+	mov	\$1,%eax		# cross-function jump; call+ret instead.
+	ret				# bn_mulx4x_mont always returns 1.)
+.Lmul4x_not_mulx:
 ___
 $code.=<<___;
 	push	%rbx
@@ -402,6 +433,20 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# See the .Lmul_enter frame above for why the page walk and the
+	# TLB-aliasing stack math vanish under sarcasm.
+	$code.=<<___;
+	lea	128(,$num,8),%r10	# region size: 8*(num+4) buffer + slack
+	sub	%r10,%rsp		#! alloca size (mont)
+	lea	-64(%rsp),%r10		#! alloca result (mont)
+
+	mov	%rax,-64(%rsp)		# save original %rsp (fixed slot)
+.Lmul4x_body:
+___
+} else {
+	$code.=<<___;
 	neg	$num
 	mov	%rsp,%r11
 	lea	-32(%rsp,$num,8),%r10	# future alloca(8*(num+4))
@@ -426,6 +471,9 @@ $code.=<<___;
 	mov	%rax,8(%rsp,$num,8)	# tp[num+1]=%rsp
 .cfi_cfa_expression	%rsp+8,$num,8,mul,plus,deref,+8
 .Lmul4x_body:
+___
+}
+$code.=<<___;
 	mov	$rp,16(%rsp,$num,8)	# tp[num+2]=$rp
 	mov	%rdx,%r12		# reassign $bp
 ___
@@ -800,8 +848,13 @@ $code.=<<___;
 	jnz	.Lcopy4x
 ___
 }
-$code.=<<___;
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	8(%rsp,$num,8),%rsi	# restore %rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+	mov	-64(%rsp),%rsi		# restore %rsp (fixed save slot)
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi, 8
 	mov	\$1,%rax
 	mov	-48(%rsi),%r15
@@ -866,6 +919,32 @@ bn_sqr8x_mont:
 .cfi_push	%r15
 .Lsqr8x_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation: the TLB
+	# anti-aliasing arithmetic and the page walk vanish, and the size
+	# is a plain byte size (frame 64 bytes + 2*$num quadwords + slack).
+	$code.=<<___;
+	mov	${num}d,%r10d
+	shl	\$3,${num}d		# convert $num to bytes
+	shl	\$3+2,%r10		# 4*$num
+	neg	$num
+	mov	($n0),$n0		# *n0
+
+	lea	192(%r10),%r11		# 32*num+192
+	shr	\$1,%r11		# region size: 16*num + 96
+	sub	%r11,%rsp		#! alloca size (mont)
+	mov	%rsp,%r11		#! alloca result (mont)
+
+	mov	$num,%r10
+	neg	$num
+
+	mov	$n0,  32(%rsp)
+	mov	%rax, 40(%rsp)		# save original %rsp
+.Lsqr8x_body:
+___
+} else {
+	$code.=<<___;
 	mov	${num}d,%r10d
 	shl	\$3,${num}d		# convert $num to bytes
 	shl	\$3+2,%r10		# 4*$num
@@ -921,6 +1000,9 @@ bn_sqr8x_mont:
 	mov	%rax, 40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lsqr8x_body:
+___
+}
+$code.=<<___;
 
 	movq	$nptr, %xmm2		# save pointer to modulus
 	pxor	%xmm0,%xmm0
@@ -1064,6 +1146,21 @@ bn_mulx4x_mont:
 .cfi_push	%r15
 .Lmulx4x_prologue:
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the dynamic frame is a GC allocation (see the
+	# .Lmul_enter frame): size = frame 72 + $num + 8 bytes + slack.
+	$code.=<<___;
+	shl	\$3,${num}d		# convert $num to bytes
+	mov	($n0),$n0		# *n0
+	lea	192($num),%r10		# region size: $num + 192
+	sub	%r10,%rsp		#! alloca size (mont)
+	mov	%rsp,%r10		#! alloca result (mont)
+
+	lea	($bp,$num),%r10
+___
+} else {
+	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	xor	%r10,%r10
 	sub	$num,%r10		# -$num
@@ -1088,6 +1185,9 @@ bn_mulx4x_mont:
 .Lmulx4x_page_walk_done:
 
 	lea	($bp,$num),%r10
+___
+}
+$code.=<<___;
 	##############################################################
 	# Stack layout
 	# +0	num

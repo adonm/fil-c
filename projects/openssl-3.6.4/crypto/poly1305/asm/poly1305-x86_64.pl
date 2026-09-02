@@ -186,19 +186,19 @@ poly1305_init:
 	cmp	\$0,$inp
 	je	.Lno_key
 
-	lea	poly1305_blocks(%rip),%r10
-	lea	poly1305_emit(%rip),%r11
+	lea	poly1305_blocks(%rip),%r10	#! funcref
+	lea	poly1305_emit(%rip),%r11	#! funcref
 ___
 $code.=<<___	if ($avx);
 	mov	OPENSSL_ia32cap_P+4(%rip),%r9
-	lea	poly1305_blocks_avx(%rip),%rax
-	lea	poly1305_emit_avx(%rip),%rcx
+	lea	poly1305_blocks_avx(%rip),%rax	#! funcref
+	lea	poly1305_emit_avx(%rip),%rcx	#! funcref
 	bt	\$`60-32`,%r9		# AVX?
 	cmovc	%rax,%r10
 	cmovc	%rcx,%r11
 ___
 $code.=<<___	if ($avx>1);
-	lea	poly1305_blocks_avx2(%rip),%rax
+	lea	poly1305_blocks_avx2(%rip),%rax	#! funcref
 	bt	\$`5+32`,%r9		# AVX2?
 	cmovc	%rax,%r10
 ___
@@ -218,8 +218,8 @@ $code.=<<___;
 	mov	%rcx,32($ctx)
 ___
 $code.=<<___	if ($flavour !~ /elf32/);
-	mov	%r10,0(%rdx)
-	mov	%r11,8(%rdx)
+	mov	%r10,0(%rdx)		#! store ptr
+	mov	%r11,8(%rdx)		#! store ptr
 ___
 $code.=<<___	if ($flavour =~ /elf32/);
 	mov	%r10d,0(%rdx)
@@ -2773,8 +2773,8 @@ poly1305_init_base2_44:
 	mov	%rax,16($ctx)
 
 .Linit_base2_44:
-	lea	poly1305_blocks_vpmadd52(%rip),%r10
-	lea	poly1305_emit_base2_44(%rip),%r11
+	lea	poly1305_blocks_vpmadd52(%rip),%r10	#! funcref
+	lea	poly1305_emit_base2_44(%rip),%r11	#! funcref
 
 	mov	\$0x0ffffffc0fffffff,%rax
 	mov	\$0x0ffffffc0ffffffc,%rcx
@@ -2798,8 +2798,8 @@ poly1305_init_base2_44:
 	movq	\$-1,64($ctx)		# write impossible value
 ___
 $code.=<<___	if ($flavour !~ /elf32/);
-	mov	%r10,0(%rdx)
-	mov	%r11,8(%rdx)
+	mov	%r10,0(%rdx)		#! store ptr
+	mov	%r11,8(%rdx)		#! store ptr
 ___
 $code.=<<___	if ($flavour =~ /elf32/);
 	mov	%r10d,0(%rdx)

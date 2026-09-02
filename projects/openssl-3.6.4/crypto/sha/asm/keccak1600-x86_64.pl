@@ -552,7 +552,15 @@ SHA3_squeeze:
 	mov	%r9, %rsi
 	mov	$out,%rdi
 	mov	$len,%rcx
-	.byte	0xf3,0xa4		# rep	movsb
+	test	%rcx,%rcx		# explicit byte copy (was rep movsb;
+	jz	.Ldone_squeeze		# string ops are not memory-safe)
+.Lcopy_squeeze:
+	mov	(%rsi),%al
+	mov	%al,(%rdi)
+	inc	%rsi
+	inc	%rdi
+	dec	%rcx
+	jnz	.Lcopy_squeeze
 
 .Ldone_squeeze:
 	pop	%r14

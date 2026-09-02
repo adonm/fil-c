@@ -15,6 +15,11 @@ local regalloc = require("./regalloc")
 local M = {}
 
 -- ISA passthrough ---------------------------------------------------------
+-- High-byte register names (%ah/%ch/%dh/%bh): emitPinned keeps an operand with
+-- one of these names verbatim (it names bits 8-15 of the pinned physical
+-- register; see emitPinned).
+local HIGH_BYTE_NAME = { ah = true, ch = true, dh = true, bh = true }
+
 M.classify = isa.classify
 M.baseMnemonic = isa.baseMnemonic
 M.flagUse = isa.flagUse
@@ -49,6 +54,20 @@ M.fpSignatures = true
 -- CALLSITES the outgoing stack arguments are ordinary frame slots the transform
 -- marshals into the outgoing stack-arg window.
 M.yoloStackArgs = true
+
+-- This backend implements GLOBAL VARIABLES: the driver collects same-file data
+-- (.rodata/.data/.bss blocks and .comm/.lcomm) into Fil-C data objects (DOs) and
+-- threads them to the transform; rip-relative references to same-file data are
+-- lowered automatically (lea seeds / checked direct accesses), and `#! global
+-- ptr` materializes an EXTERN global's flight pointer through its getter.
+M.globalSupport = true
+
+-- This backend implements CROSS-FUNCTION JUMPS (tailcall.luau): tail branches to
+-- signature-annotated function entries (B1, rewritten to an annotated call plus
+-- an epilogue jump by the driver's cross-function-jump pass) and mid-body
+-- shared-tail joins (B2, region cloning). validateBody gates its annotated-jump
+-- acceptance on this flag (arm64 rejects those forms "not yet supported").
+M.crossFunctionJumps = true
 
 -- Calling convention (numbers are register encodings; see x86_64_isa).
 -- Fast entrypoint: rdi=myth, (rdx,rcx)=arg0, (r8,r9)=arg1; ret al=flags, rdx=iv, rcx=lo.
@@ -176,22 +195,53 @@ end
 -- frameSize) so region math stays in one coordinate space. Returns the rsp-relative base
 -- offset, or nil if the annotated instruction does not compute a stack-frame-relative
 -- address.
+--
+-- The perlasm dynamic-alignment idiom adds two ANCHORED forms, whose region base is the
+-- POST-alignment rsp (region coordinate 0 — the frame-depth analysis tracks the
+-- annotated/marked rsp adjustment as a "dyn" depth, and accesses execute in region
+-- coordinates from there):
+--   * `andq $-A, %rsp` — the alignment instruction itself (dropped as alloca machinery);
+--     returns base 0 and the alignment A (any power of two — a non-power-of-two mask
+--     cannot be an alignment and is not a recognized base).
+--   * `subq $K, %rsp` — the reservation feeding such an andq (or standing alone); the
+--     transform separately finds and marks the following andq (its alignment then wins).
+-- The second/third returns are the instruction's own alignment (nil when the form
+-- carries none) and whether the region is anchored (accesses live in "dyn"-depth
+-- coordinates rather than ordinary frame coordinates).
 function M.allocaRegionBase(stmt, fctx)
 	local m = isa.baseMnemonic(string.lower(stmt.mnemonic))
 	local ops = stmt.operands
 	if m == "lea" then
 		local mem = M.memOperand(stmt)
 		if mem and mem.base and not mem.index and not mem.dispSym then
-			if mem.base.rc == "sp" then return mem.dispVal or 0 end
+			if mem.base.rc == "sp" then return mem.dispVal or 0, nil, false end
 			if fctx and fctx.usesFp and mem.base.name == "rbp" then
-				return fctx.frameSize + (mem.dispVal or 0)
+				return fctx.frameSize + (mem.dispVal or 0), nil, false
 			end
 		end
 		return nil
 	end
 	if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
 		and ops[2] and ops[2].rc == "sp" then
-		return 0
+		return 0, nil, false
+	end
+	if m == "and" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+		and ops[2] and ops[2].kind == "imm" then
+		local v = ops[2].value or tonumber(ops[2].text)
+		if not v then return nil end
+		local a = -v
+		if a < 1 or a > 4096 or a ~= 2 ^ math.log(a, 2) then return nil end
+		return 0, a, true
+	end
+	if m == "sub" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+		and ops[2] and ops[2].kind == "imm" then
+		return 0, nil, true
+	end
+	-- `addq $-K, %rsp` is the sub in add clothing (aesni-gcm's reservation).
+	if m == "add" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+		and ops[2] and ops[2].kind == "imm"
+		and (ops[2].value or tonumber(ops[2].text) or 0) < 0 then
+		return 0, nil, true
 	end
 	return nil
 end
@@ -358,19 +408,36 @@ end
 -- vstmxcsr is the VEX alias of stmxcsr and reaches here by name).
 function M.isStoreInsn(stmt)
 	local ops = stmt.operands
-	if ops[1] and ops[1].kind == "mem" and #ops == 1 then
-		local mnem = string.lower(stmt.mnemonic)
-		if fp.lookup(mnem) then
-			return mnem == "fbstp" or mnem == "fxsave" or mnem == "fxsave64"
-				or mnem == "stmxcsr" or mnem == "vstmxcsr"
-				or mnem == "sgdt" or mnem == "sidt"
-				or mnem == "sldt" or mnem == "str" or mnem == "smsw"
-				or string.match(mnem, "^fst") ~= nil
-				or string.match(mnem, "^fist") ~= nil
-				or string.match(mnem, "^fnst") ~= nil
+	if ops[1] and ops[1].kind == "mem" then
+		-- cmp/test with a memory FIRST operand are READ-only (they write flags,
+		-- not memory): classifying them as stores would demand a CanWrite check
+		-- and spuriously trap reads of read-only objects (sha256's
+		-- `cmpb $0,3(%rbp)` against the K256 table).
+		local b = isa.baseMnemonic(string.lower(stmt.mnemonic))
+		if b == "cmp" or b == "test" then return false end
+		-- One-operand multiply/divide: the memory operand is the multiplicand /
+		-- divisor — a READ (the product/quotient goes to the implicit accumulator
+		-- registers, never to memory). Classifying it as a store would demand a
+		-- CanWrite check and spuriously trap reads of read-only operands
+		-- (ecp_nistz256's `mulq 0(%rsi)`).
+		if #ops == 1 and (b == "mul" or b == "imul" or b == "div" or b == "idiv") then
+			return false
 		end
+		if #ops == 1 then
+			local mnem = string.lower(stmt.mnemonic)
+			if fp.lookup(mnem) then
+				return mnem == "fbstp" or mnem == "fxsave" or mnem == "fxsave64"
+					or mnem == "stmxcsr" or mnem == "vstmxcsr"
+					or mnem == "sgdt" or mnem == "sidt"
+					or mnem == "sldt" or mnem == "str" or mnem == "smsw"
+					or string.match(mnem, "^fst") ~= nil
+					or string.match(mnem, "^fist") ~= nil
+					or string.match(mnem, "^fnst") ~= nil
+			end
+		end
+		return true
 	end
-	return ops[1] and ops[1].kind == "mem"
+	return false
 end
 
 -- x86 conditions for the neutral cmp/test conditions used by the shared transform.
@@ -620,6 +687,18 @@ function M.make(ctx)
 			{ defs = { pColored(destPhys) } }))
 	end
 
+	-- Synthesized rip-relative lea / load against a symbol (global-variable
+	-- materialization: payload bases, GP-cell loads). dst is a temp; off is an
+	-- optional constant displacement.
+	function cg.leaRipSym(dst, sym, off)
+		emit(build.insn("lea", { rt(dst), build.memx({ kind = "reg", rc = "rip" },
+			{ dispSym = sym, dispVal = (off and off ~= 0) and off or nil }) }, { defs = { dst } }))
+	end
+	function cg.loadRipSym(dst, sym, off)
+		emit(build.insn("mov", { rt(dst), build.memx({ kind = "reg", rc = "rip" },
+			{ dispSym = sym, dispVal = (off and off ~= 0) and off or nil }) }, { defs = { dst } }))
+	end
+
 	-- Stack marshalling for a runtime call with a trailing filc_ptr argument past
 	-- the six SysV argument registers (filc_strong_cas_ptr_with_manual_tracking's
 	-- new_value): the words must sit at [rsp]=intval, [rsp+8]=lower AT the call.
@@ -727,13 +806,30 @@ function M.make(ctx)
 	end
 
 	-- effective address + capability selection for a memory operand.
+	local dataGlobals = ctx.globals
 	function cg.computeAddr(node, mem)
-		-- A symbolic displacement (RIP-relative global access, `sym(%rip)`) cannot be
-		-- bounds-checked: there is no capability for the target. Reject cleanly
-		-- instead of crashing later in the renderer.
+		-- A symbolic displacement (RIP-relative global access, `sym(%rip)`) gets its
+		-- capability from the symbol's data object when the driver collected one
+		-- (same-file global): the effective address and the payload-base lower
+		-- materialize with rip-relative leas, and the original instruction
+		-- re-renders verbatim (its dispSym is the user label at its payload
+		-- offset). Anything else is rejected with a pointer to `#! global ptr`.
 		if mem.dispSym then
+			local desc = dataGlobals and not mem.dispReloc and not mem.index
+				and mem.base and mem.base.rc == "rip"
+				and dataGlobals[mem.dispSym] or nil
+			if desc then
+				local effTemp = allocTemp({ role = "eff" })
+				emit(build.insn("lea", { rt(effTemp), build.memx({ kind = "reg", rc = "rip" },
+					{ dispSym = mem.dispSym, dispVal = mem.dispVal }) }, { defs = { effTemp } }))
+				local loT = allocTemp({ role = "globallo" })
+				emit(build.insn("lea", { rt(loT), build.memx({ kind = "reg", rc = "rip" },
+					{ dispSym = desc.baseSym }) }, { defs = { loT } }))
+				return effTemp, loT
+			end
 			error("sarcasm: memory access with a symbolic address cannot be bounds-checked"
-				.. " (global data access is not yet supported): " .. (node.stmt.raw or "?"))
+				.. " (if '" .. mem.dispSym .. "' is a Fil-C global defined in another module,"
+				.. " annotate the instruction with `#! global ptr`): " .. (node.stmt.raw or "?"))
 		end
 		local baseTemp = mem.base and node.opTemp[mem.base] or nil
 		local indexTemp = (mem.index and mem.index.kind == "reg") and node.opTemp[mem.index] or nil
@@ -908,7 +1004,10 @@ function M.make(ctx)
 					-- precise.
 					local sym = node.operands and node.operands[1]
 					local txt = (sym and sym.kind == "sym") and sym.text or ""
-					if not node.stmt and string.sub(txt, 1, 5) == "filc_" then
+					if not node.stmt and (string.sub(txt, 1, 5) == "filc_" or node.globalGetter) then
+						-- Injected global-getter / slow-init calls (globalGetter) are
+						-- transparent like the filc_* runtime calls: the fpSave/
+						-- fpRestore pair around them preserves the state.
 						d.transparent = true
 					else
 						d.killAll = true
@@ -1061,6 +1160,19 @@ function M.make(ctx)
 		if fctx and fctx.usesFp and base.name == "rbp" then return fctx.frameSize + disp end
 		return nil  -- not a stack base (e.g. rbp as an ordinary GPR with frame-pointer omission)
 	end
+	-- The +8 rule for a clone statement's rsp-relative operand at a static depth
+	-- (the return-address compensation — localcall.luau; keyed exactly like the
+	-- frame rewrite's slot/region coordinates).
+	local function cloneStackOff(node, base, disp)
+		local off = stackOff(base, disp)
+		if off and base.rc == "sp" and node.stmt and node.stmt.localClone then
+			local d = node.stmt.x86_depth
+			if d ~= nil and type(d) ~= "table" and d ~= "dyn" and fctx and fctx.callerDepth then
+				off = off + fctx.callerDepth - d - 8
+			end
+		end
+		return off
+	end
 	function cg.regionRedirect(node, regionOf)
 		-- A materialized FP frame-slot operand (disp(%rsp) into sarcasm's synthesized
 		-- frame) is NOT an input-frame access; its positive offset can numerically
@@ -1069,35 +1181,74 @@ function M.make(ctx)
 		if fsmem and fsmem.frameSlot then return false end
 		local m = isa.baseMnemonic(string.lower(node.stmt.mnemonic))
 		local ops = node.stmt.operands
+		-- Region membership, reproducing the frame rewrite exactly: inside an
+		-- {anchored} region scope (the statement's depth is the region's table) raw
+		-- displacements are that region's coordinates; plain "dyn" has no valid
+		-- coordinates; everything else matches the static regions (normalized frame
+		-- coordinates — rbp-relative offsets are static at any depth).
+		local function nodeRegion(off, isSpBase)
+			local d = node.stmt.x86_depth
+			if isSpBase and not node.stmt.x86_prologue and type(d) == "table" then
+				if off >= d.anchored.base and off < d.anchored.base + d.anchored.size then
+					return d.anchored
+				end
+				return nil
+			end
+			return regionOf(off, false)
+		end
+		-- Define the redirected pointer's lower: the ptrflow-SEEDED lower temp (shared
+		-- by every copy of the region pointer) is defined from the region's own lower;
+		-- an unseeded def simply shares it.
+		local function seedRegionLower(rd, r)
+			pf.isPtr[rd] = true
+			local lo = pf.lowerTemp[rd]
+			if lo and lo ~= r.loTemp then
+				cg.move(lo, r.loTemp, true)
+			else
+				pf.lowerTemp[rd] = r.loTemp
+			end
+		end
 		if m == "lea" then
 			local mem = M.memOperand(node.stmt)
 			if mem and not mem.index and not mem.dispSym then
-				local off = stackOff(mem.base, mem.dispVal or 0)
-				local r = off and regionOf(off)
+				local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
+				local r = off and nodeRegion(off, mem.base and mem.base.rc == "sp")
 				if r then
 					local rd = node.defTemps[1]
 					cg.addImm(rd, r.ptrTemp, off - r.base)
-					pf.isPtr[rd] = true; pf.lowerTemp[rd] = r.loTemp
+					seedRegionLower(rd, r)
 					return true
 				end
 			end
 		end
 		if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
 			and ops[2] and ops[2].rc == "sp" then
-			local r = regionOf(0)
+			local r = nodeRegion(cloneStackOff(node, { kind = "reg", rc = "sp" }, 0), true)
 			if r then
 				local rd = node.defTemps[1]
 				-- rsp+0 redirected into the region: buffer + (0 - base), NOT buffer + 0.
 				cg.addImm(rd, r.ptrTemp, -r.base)
-				pf.isPtr[rd] = true; pf.lowerTemp[rd] = r.loTemp
+				seedRegionLower(rd, r)
 				return true
 			end
 		end
 		local mem = M.memOperand(node.stmt)
 		if mem and not mem.dispSym then
-			local off = stackOff(mem.base, mem.dispVal or 0)
-			if off and regionOf(off) then
-				error("sarcasm: direct stack-relative memory access into an alloca region is not supported: " .. node.stmt.raw)
+			local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
+			local r = off and nodeRegion(off, mem.base and mem.base.rc == "sp")
+			if r then
+				-- A DIRECT stack-relative access into a fixed region: rewrite the
+				-- memory operand to ride the region pointer (disp - base off the
+				-- region temp) and return false so the walk lowers it through the
+				-- ordinary checked path (bounds at the access's width/alignment,
+				-- CanWrite for stores — GC buffers are writable). The frame rewrite
+				-- proved region membership static; the redirect keeps real bounds.
+				local newBase = rt(r.ptrTemp)
+				mem.base = newBase
+				mem.dispVal = off - r.base
+				node.opTemp[newBase] = r.ptrTemp
+				table.insert(node.useTemps, r.ptrTemp)
+				if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
 			end
 		end
 		return false
@@ -1107,6 +1258,11 @@ function M.make(ctx)
 	-- access memory (its [mem] is an address computation), so pass it through unchecked.
 	-- Memory-neutral hints (prefetch*) also pass through with no access check.
 	function cg.lowerSpecial(node, mem)
+		-- A pinned instruction (div/mul/cmpxchg/xchg/shift-by-%cl/high-byte forms)
+		-- is emitted by emitPinned with its pin moves — never rewrite it here (the
+		-- setcc widening does not apply to a high-byte setcc, which the pin model
+		-- already makes exact; the other rewrites never see a pinned node).
+		if node.c and node.c.pin then return false end
 		-- A materialized FP frame-slot operand is a real disp(%rsp) into sarcasm's
 		-- own synthesized frame: the access is always in-bounds (the frame contains
 		-- its own slots), so it needs no access check — pass the instruction
@@ -1164,9 +1320,9 @@ function M.make(ctx)
 			-- extension writes no flags, so the setcc's condition codes stay live for
 			-- any consumer (jcc/setcc/cmov) that follows. A MEMORY destination is a
 			-- complete 8-bit store — nothing to widen; it takes the normal
-			-- (bounds-checked) path untouched. (The %ah high-byte destination is
-			-- rejected in classify: the web model has no high-byte view and the
-			-- widening would be unencodable.)
+			-- (bounds-checked) path untouched. (A %ah high-byte destination never
+			-- reaches here: classify models it as a pinned RMW of the enclosing
+			-- register's web, and the pin guard above routes it to emitPinned.)
 			local d = node.stmt.operands[1]
 			if d and d.kind == "reg" and d.rc == "gpr" then
 				local t = node.defTemps and node.defTemps[1]
@@ -1242,7 +1398,22 @@ function M.make(ctx)
 		local defTemps, useTemps, newops = {}, {}, {}
 		for _, o in (node.stmt.operands or {}) do
 			if o.kind == "reg" and o.rc == "gpr" and pinnedNums[o.num] then
-				table.insert(newops, build.rp(o.num, o.width))
+				-- A HIGH-BYTE operand (%ah/%ch/%dh/%bh) must render its own name: it
+				-- names bits 8-15 of the pinned physical register, which is exactly
+				-- where the pin landed the enclosing web. build.rp alone would
+				-- render the LOW byte of the physical register (regName(num, 8) has
+				-- no high-byte spelling — silently turning %ah into %al), and the
+				-- original operand table cannot be kept either (it may be a
+				-- classified table whose opTemp entry renders the colored low
+				-- byte). Tag the fixed register with the high-byte name; the
+				-- renderer honors it.
+				if o.width == 8 and HIGH_BYTE_NAME[o.name or ""] then
+					local rp = build.rp(o.num, o.width)
+					rp.highByte = o.name
+					table.insert(newops, rp)
+				else
+					table.insert(newops, build.rp(o.num, o.width))
+				end
 			else
 				table.insert(newops, o)
 			end

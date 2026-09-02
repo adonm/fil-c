@@ -456,7 +456,7 @@ local EXACT = {
 	vmovddup = { w = vmovddupW, claim = true },
 	-- broadcasts (non-decorator forms)
 	vbroadcastss = { w = 4, claim = true }, vbroadcastsd = { w = 8, claim = true },
-	vbroadcastf128 = { w = 16, claim = true },
+	vbroadcastf128 = { w = 16, claim = true }, vbroadcasti128 = { w = 16, claim = true },
 	vbroadcastf32x2 = { w = 8, claim = true }, vbroadcastf32x4 = { w = 16, claim = true },
 	vbroadcastf32x8 = { w = 32, claim = true },
 	vbroadcastf64x2 = { w = 16, claim = true }, vbroadcastf64x4 = { w = 32, claim = true },
@@ -538,6 +538,13 @@ local EXACT = {
 	sha1msg1 = { w = 16, claim = true }, sha1msg2 = { w = 16, claim = true },
 	sha256rnds2 = { w = 16, claim = true }, sha256msg1 = { w = 16, claim = true },
 	sha256msg2 = { w = 16, claim = true },
+	-- SHA512-NI (VEX.256.F2.0F38): vsha512rnds2 (ymm,ymm,xmm/m128 — reads xmm0
+	-- implicitly, see IMPLICIT_XMM0_USE) and vsha512msg1 (ymm,xmm/m128) read
+	-- m128 memory sources; vsha512msg2 (ymm,ymm/m256) reads a full m256. gas
+	-- before 2.42 does not know these, so the renderer emits them as .byte
+	-- (x86_64_render).
+	vsha512rnds2 = { w = 16, claim = true },
+	vsha512msg1 = { w = 16, claim = true }, vsha512msg2 = { w = 32, claim = true },
 	-- GFNI: width = vector width (xmm=16; the VEX/EVEX vgf2p8* forms ride the
 	-- v-alias of these entries, ymm=32/zmm=64). gf2p8affine* carry a trailing
 	-- immediate. NB: LLVM and GNU binutils spell Intel's GF2P8AFFINEB (opcode
@@ -611,6 +618,14 @@ local EXACT = {
 	prefetcht0 = { noCheck = true, claim = true }, prefetcht1 = { noCheck = true, claim = true },
 	prefetcht2 = { noCheck = true, claim = true }, prefetchnta = { noCheck = true, claim = true },
 	prefetchw = { noCheck = true, claim = true }, prefetchwt1 = { noCheck = true, claim = true },
+	-- cache-line management: clflush/clflushopt/clwb move no data to or from the
+	-- processor — they invalidate/write-back the addressed line in the cache
+	-- hierarchy, which changes nothing the checker models (the memory contents a
+	-- program can observe are unaffected). A wild address can only fault, an
+	-- uncatchable-signal safe halt the safety model accepts (the same reasoning as
+	-- monitor; unlike clzero, which WRITES zeros to memory at rax and is rejected).
+	clflush = { noCheck = true, claim = true },
+	clflushopt = { noCheck = true, claim = true }, clwb = { noCheck = true, claim = true },
 
 	-- hard rejects -----------------------------------------------------------------
 	fsave = { reject = REASON_X87STATE, claim = true }, fnsave = { reject = REASON_X87STATE, claim = true },
@@ -735,7 +750,7 @@ local EXPAND_ELEM = { b = 1, w = 2, d = 4, q = 8, ps = 4, pd = 8 }
 -- conservative). These ride the plain access check even with a {k} decorator.
 local BROADCAST_LOAD = {
 	vpbroadcastb = true, vpbroadcastw = true, vpbroadcastd = true, vpbroadcastq = true,
-	vbroadcastss = true, vbroadcastsd = true, vbroadcastf128 = true,
+	vbroadcastss = true, vbroadcastsd = true, vbroadcastf128 = true, vbroadcasti128 = true,
 	vbroadcastf32x2 = true, vbroadcastf32x4 = true, vbroadcastf32x8 = true,
 	vbroadcastf64x2 = true, vbroadcastf64x4 = true,
 	vbroadcasti32x2 = true, vbroadcasti32x4 = true, vbroadcasti32x8 = true,
@@ -777,6 +792,31 @@ function fp.maskedAccessInfo(mnem, ops)
 	if suf then
 		local e = EXPAND_ELEM[suf]
 		return { elem = e, lanes = V // e, vecsize = V, contiguous = true, extract = "k" }
+	end
+	-- {k}-masked ALU memory SOURCE (rsaz-avx512's `vpsubq .Lmask52x4(%rip),%ymm3,
+	-- %ymm3{%k1}`): AVX-512 fault suppression reads the memory operand only for
+	-- lanes whose writemask bit is set, at the instruction's natural element
+	-- granularity — the same lane structure as a masked vector load, so the
+	-- mask-aware check applies unchanged. Supported shapes: an EVEX integer
+	-- (p-family) or packed-FP mnemonic with a trailing element letter
+	-- (b/w/d/q/ps/pd — the granularity), the memory operand NOT in the
+	-- destination position (EVEX ALU memory operands are always the last
+	-- source), and no embedded broadcast (which reads one element
+	-- unconditionally and rides the plain check). Anything else keeps the
+	-- generic masked rejection.
+	local mem = memOperandOf(ops)
+	if mem and ops[1] ~= mem and not mem.bcastN then
+		local elem
+		if string.match(mnem, "^vp[%a]+$") or string.match(mnem, "^vperm[i]?[a-z0-9]*$") then
+			local l = string.sub(mnem, -1)
+			elem = ({ b = 1, w = 2, d = 4, q = 8 })[l]
+		else
+			local stem, psuf = string.match(mnem, "^v([%a][%w]-)(p[sd])$")
+			if psuf and string.sub(stem, 1, 1) ~= "p" then elem = (psuf == "ps") and 4 or 8 end
+		end
+		if elem then
+			return { elem = elem, lanes = V // elem, vecsize = V, contiguous = false, extract = "k" }
+		end
 	end
 	return nil
 end
@@ -1184,10 +1224,10 @@ local LEGACY_PARTIAL = {
 }
 
 -- Instructions with an implicit %xmm0 operand the operand list never names
--- (the blend mask; the SHA256 state input). Missing it would under-save xmm0
--- around an injected runtime call. (vblendv* name their mask explicitly;
--- vsha* do not exist.)
-local IMPLICIT_XMM0_USE = { blendvps = true, blendvpd = true, sha256rnds2 = true }
+-- (the blend mask; the SHA256/SHA512 state input). Missing it would under-save
+-- xmm0 around an injected runtime call. (vblendv* name their mask explicitly.)
+local IMPLICIT_XMM0_USE = { blendvps = true, blendvpd = true, sha256rnds2 = true,
+	vsha512rnds2 = true }
 
 -- Scalar->GPR converts read only the low 4/8 bytes of their vector source
 -- (without this the default full-class use would widen every upstream save).

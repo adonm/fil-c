@@ -31,6 +31,12 @@ local FIXED = {
 	cmpxchg = "cmpxchg", cmpxchgb = "cmpxchg", cmpxchgw = "cmpxchg",
 	cmpxchgl = "cmpxchg", cmpxchgq = "cmpxchg",
 	cmpxchg8b = "cmpxchg8b", cmpxchg16b = "cmpxchg16b",
+	-- bit-string tests (base read [+ base write for s/r/c], index use, CF out —
+	-- modeled by classify's bt branch below)
+	bt = "bt", btb = "bt", btw = "bt", btl = "bt", btq = "bt",
+	bts = "bts", btsb = "bts", btsw = "bts", btsl = "bts", btsq = "bts",
+	btr = "btr", btrb = "btr", btrw = "btr", btrl = "btr", btrq = "btr",
+	btc = "btc", btcb = "btc", btcw = "btc", btcl = "btc", btcq = "btc",
 	endbr64 = "nop", nop = "nop", ud2 = "ud2", ret = "ret", retq = "ret", leave = "leave",
 	-- multi-byte padding NOPs: same zero-effect class as endbr64/nop (their operand,
 	-- when present, is a dummy encoding hint like 0x0(%rax,%rax,1), NOT a memory
@@ -41,6 +47,15 @@ local FIXED = {
 	-- the flag-byte transfers (zero explicit operands; implicit %ah <-> EFLAGS —
 	-- modeled by classify's pinned branch below)
 	lahf = "lahf", sahf = "sahf",
+	-- movbe: the byte-swapping move to/from memory (modeled by classify's own
+	-- branch below; movbeb is listed so it gets the clean unencodable-form
+	-- rejection there instead of the unknown-mnemonic fallback)
+	movbe = "movbe", movbew = "movbe", movbel = "movbe", movbeq = "movbe",
+	movbeb = "movbe",
+	-- double-precision shifts (modeled by classify's own branch below: dst RMW,
+	-- src use, imm/%cl count use)
+	shld = "shld", shldw = "shld", shldl = "shld", shldq = "shld",
+	shrd = "shrd", shrdw = "shrd", shrdl = "shrd", shrdq = "shrd",
 }
 function x86.baseMnemonic(m)
 	m = string.lower(m)
@@ -54,9 +69,15 @@ function x86.baseMnemonic(m)
 end
 
 local ALU2 = { add=true, sub=true, ["and"]=true, ["or"]=true, xor=true, sal=true, shl=true,
-	sar=true, shr=true, imul=true, adc=true, sbb=true, ror=true, rol=true }
+	sar=true, shr=true, imul=true, adc=true, sbb=true, ror=true, rol=true,
+	rcl=true, rcr=true }
 local FLAGS_ONLY = { cmp=true, test=true }
 local DST_ONLY = { inc=true, dec=true, neg=true, ["not"]=true }
+-- Shift/rotate mnemonics whose two-operand register-count form takes the count in
+-- %cl (the ONLY register-count encoding in the ISA): classify pins the count web
+-- to physical rcx for these (see the ALU2 branch).
+local SHIFT_COUNT = { sal=true, shl=true, sar=true, shr=true, ror=true, rol=true,
+	rcl=true, rcr=true }
 
 -- The SDM locked-instruction set restricted to the ALU family (shifts/rotates and
 -- imul are NOT lockable in hardware): add/adc/and/or/sbb/sub/xor.
@@ -88,7 +109,8 @@ function x86.isMemRmw(stmt)
 	if not (ops[1] and ops[1].kind == "mem") then return false end
 	local m = x86.baseMnemonic(stmt.mnemonic)
 	if ALU2[m] or DST_ONLY[m] or m == "cmpxchg"
-		or m == "cmpxchg8b" or m == "cmpxchg16b" then
+		or m == "cmpxchg8b" or m == "cmpxchg16b"
+		or m == "shld" or m == "shrd" then
 		return true
 	end
 	local raw = string.lower(stmt.mnemonic)
@@ -219,6 +241,198 @@ local function memRegs(op, uses)
 	if op.index and isGpr(op.index) then table.insert(uses, op.index) end
 end
 
+-- High-byte registers (%ah/%ch/%dh/%bh) -----------------------------------------
+--
+-- The parser maps a high-byte name to its register's web (nums 0-3, width 8) —
+-- the SAME web as the low-byte al/cl/dl/bl, because the web model has no
+-- subregister view. Every modeled instruction names the LOW byte of the colored
+-- register (the renderer always emits regName(num, 8)), so an unhandled
+-- high-byte operand would silently touch the low byte (`xchgb %ah, %bl` would
+-- swap %al).
+--
+-- The modeled forms below handle the high byte EXACTLY with the implicit-GPR
+-- pin machinery (codegen's emitPinned — the same machinery as lahf/sahf and
+-- cmpxchg): every GPR operand of the instruction is pinned to its SPELLED
+-- physical register (pin-in moves copy the reaching webs in, pin-out copies the
+-- results back out), and the emitted instruction keeps the spelled registers,
+-- so the hardware operates on the architected byte wherever the webs were
+-- colored:
+--   * a high-byte SOURCE reads bits 8-15 of the enclosing register's physical
+--     register (the full 64-bit web is pinned in);
+--   * a high-byte DESTINATION merges into bits 8-15 and preserves the rest —
+--     modeled as a read-modify-write of the enclosing register's web;
+--   * a low-byte partner destination (movb %ah, %cl) is likewise an RMW (its
+--     bits 8-63 flow through the pin); a movzx/movsx destination is a PURE def
+--     (the instruction zero-extends, defining the full register).
+--
+-- Encodability (gas enforces the same rules): an instruction with a high-byte
+-- operand cannot have a REX prefix, so a byte register partner must be one of
+-- %al/%cl/%dl/%bl (nums 0-3 — %spl/%bpl/%sil/%dil and %r8b+ need REX), a
+-- 16/32-bit register partner must be num < 8, and NO 64-bit register operand
+-- (REX.W) may appear. A high-byte operand with a MEMORY operand is rejected:
+-- the bounds-checking rewrite addresses memory through an allocated temp that
+-- could leave the REX-free registers.
+local HIGH_BYTE_NUM = { ah = 0, ch = 1, dh = 2, bh = 3 }
+local HB_ENCLOSING_NAME = { [0] = "rax", [1] = "rcx", [2] = "rdx", [3] = "rbx" }
+
+local function isHighByteOp(o)
+	return o and o.kind == "reg" and o.rc == "gpr" and o.width == 8
+		and HIGH_BYTE_NUM[o.name or ""] ~= nil
+end
+
+-- Classify an instruction that has at least one high-byte operand (xchg is
+-- handled by its own branch, which already pins both operands). Returns the
+-- classify result or raises a clean rejection.
+local function classifyHighByte(insn, m, ops)
+	local rawMnem = string.lower(insn.mnemonic)
+	local raw = insn.raw or rawMnem
+	local function hbSpelling(o)
+		return (insn.syntax == "intel") and o.name or ("%" .. o.name)
+	end
+	local hbOp
+	for _, o in ops do
+		if isHighByteOp(o) then hbOp = hbOp or o end
+	end
+	local generic = function()
+		error("sarcasm: high-byte register " .. hbSpelling(hbOp) .. " is not supported in '"
+			.. rawMnem .. "' (supported: movb, movzbl/movzbw/movsbl/movsbw reads, byte"
+			.. " ALU/cmp/test/inc/dec/neg/not forms, setcc, xchgb; use a low-byte"
+			.. " sequence for anything else): " .. raw)
+	end
+	-- Encodability of the spelled form: every operand must be a GPR register or an
+	-- immediate, and register partners must not require a REX prefix.
+	for _, o in ops do
+		if o.kind == "mem" then
+			error("sarcasm: high-byte register " .. hbSpelling(hbOp) .. " with a memory operand"
+				.. " is not supported (the bounds-check rewrite addresses memory through an"
+				.. " allocated register that may require a REX prefix, which a high-byte"
+				.. " register cannot combine with; rewrite with a low-byte sequence): " .. raw)
+		end
+		if o.kind == "sym" or (o.kind == "imm" and o.absAddr) then
+			generic()
+		end
+		if isGpr(o) and not isHighByteOp(o) then
+			if o.width == 8 then
+				if o.num > 3 then
+					error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+						.. " cannot be combined with " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+						.. " (a byte register other than %al/%cl/%dl/%bl requires a REX"
+						.. " prefix, which a high-byte register cannot combine with): " .. raw)
+				end
+			elseif o.width == 16 or o.width == 32 then
+				if o.num > 7 then
+					error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+						.. " cannot be combined with " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+						.. " (a register numbered 8 or above requires a REX prefix, which a"
+						.. " high-byte register cannot combine with): " .. raw)
+				end
+			else
+				error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+					.. " cannot be combined with a 64-bit register operand (a REX.W prefix"
+					.. " is required, which a high-byte register cannot combine with): " .. raw)
+			end
+		end
+	end
+
+	local defs, uses, rmw = {}, {}, {}
+	local pinUses, pinDefs = {}, {}
+	-- the enclosing register's full web for a high-byte operand (a FRESH table per
+	-- occurrence — the lift keys node.opTemp by table identity)
+	local function hbUseOp(o)
+		local u = { kind = "reg", rc = "gpr", num = o.num, width = 64,
+			name = HB_ENCLOSING_NAME[o.num], implicit = true }
+		table.insert(uses, u); table.insert(pinUses, u)
+	end
+	local function hbDefOp(o)
+		local d = { kind = "reg", rc = "gpr", num = o.num, width = 64,
+			name = HB_ENCLOSING_NAME[o.num], implicit = true }
+		table.insert(defs, d); table.insert(pinDefs, d)
+	end
+	-- a high-byte operand in a WRITTEN position: an RMW of the enclosing web (the
+	-- pin preserves every bit the instruction does not write).
+	local function hbRmw(o)
+		hbUseOp(o); hbDefOp(o); table.insert(rmw, o.num)
+	end
+	local function pinUse(o) table.insert(uses, o); table.insert(pinUses, o) end
+	local function pinDef(o) table.insert(defs, o); table.insert(pinDefs, o) end
+	-- a written low-byte partner: def + use (RMW — the pin preserves bits 8-63)
+	local function pinRmw(o)
+		table.insert(defs, o); table.insert(pinDefs, o)
+		table.insert(uses, o); table.insert(pinUses, o)
+		table.insert(rmw, o.num)
+	end
+	-- any written operand (high-byte -> enclosing RMW; low-byte partner -> RMW)
+	local function writeOp(o)
+		if isHighByteOp(o) then hbRmw(o) else pinRmw(o) end
+	end
+	local function readOp(o)
+		if isHighByteOp(o) then hbUseOp(o)
+		elseif isGpr(o) then pinUse(o) end
+	end
+
+	if m == "mov" then
+		-- movb dst, src: dst a width-8 GPR, src a width-8 GPR or an immediate.
+		if #ops ~= 2 or not isGpr(ops[1]) or ops[1].width ~= 8
+			or (isGpr(ops[2]) and ops[2].width ~= 8) then
+			generic()
+		end
+		writeOp(ops[1])
+		readOp(ops[2])
+	elseif m == "movzx" or m == "movsx" then
+		-- movzbl/movzbw/movsbl/movsbw dst, src: the high-byte operand can only be
+		-- the SOURCE (a high-byte movzx destination is not an encoding), and only
+		-- the byte-source, sub-64-bit-destination forms are REX-free.
+		if isHighByteOp(ops[1]) then
+			error("sarcasm: a high-byte register cannot be the destination of movzx/movsx"
+				.. " (the destination is a 16/32-bit register; that encoding does not"
+				.. " exist): " .. raw)
+		end
+		if not isHighByteOp(ops[2]) then generic() end
+		local srcLetter = string.match(rawMnem, "^mov[zs]([bw])")
+		if insn.syntax ~= "intel" and srcLetter ~= "b" then
+			error("sarcasm: " .. rawMnem .. " with a high-byte source is not encodable"
+				.. " (only the byte-source, 16/32-bit-destination forms movzbl/movzbw/"
+				.. "movsbl/movsbw are; " .. rawMnem .. " requires a REX prefix): " .. raw)
+		end
+		if not isGpr(ops[1]) or (ops[1].width ~= 32 and ops[1].width ~= 16) then
+			error("sarcasm: " .. rawMnem .. " with a high-byte source requires a 16-bit"
+				.. " or 32-bit register destination (a 64-bit destination requires a"
+				.. " REX.W prefix): " .. raw)
+		end
+		-- the destination is a PURE def: movzx/movsx define the full register
+		-- (zero/sign extension to 32 bits zeroes bits 32-63 in hardware).
+		pinDef(ops[1])
+		readOp(ops[2])
+	elseif FLAGS_ONLY[m] or DST_ONLY[m] or ALU2[m] then
+		-- cmpb/testb: all register operands are uses. inc/dec/neg/not: the lone
+		-- register operand is an RMW. ALU forms: ops[1] RMW, ops[2] use.
+		if SHIFT_COUNT[m] and isGpr(ops[2]) then
+			error("sarcasm: a shift/rotate count can only come from %cl (the only"
+				.. " register-count encoding); a high-byte register cannot encode it: "
+				.. raw)
+		end
+		if FLAGS_ONLY[m] then
+			for _, o in ops do readOp(o) end
+		elseif DST_ONLY[m] then
+			if not isGpr(ops[1]) then generic() end
+			writeOp(ops[1])
+		else
+			if not isGpr(ops[1]) then generic() end
+			writeOp(ops[1])
+			for i = 2, #ops do readOp(ops[i]) end
+		end
+	elseif m == "setcc" then
+		-- setcc %ah writes ONLY bits 8-15 of the enclosing register: an RMW of its
+		-- web. The pin makes the widening rewrite unnecessary (and inapplicable).
+		if not isHighByteOp(ops[1]) then generic() end
+		writeOp(ops[1])
+	else
+		generic()
+	end
+	return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+		pin = { uses = pinUses, defs = pinDefs } }
+end
+
 -- Classify. Returns { defs, uses, rmw, control, targets, fallsThrough }.
 function x86.classify(insn)
 	-- Unsafe instructions (syscall/privileged/port-I/O/string-ops/prefixes/cr-dr
@@ -240,6 +454,22 @@ function x86.classify(insn)
 			.. " memory-destination read-modify-write instruction sarcasm models exactly:"
 			.. " add/adc/and/or/sbb/sub/xor, inc/dec/neg/not, xadd, cmpxchg,"
 			.. " cmpxchg8b/cmpxchg16b): " .. (insn.raw or rawMnem))
+	end
+
+	-- Local-subroutine marks (localcall.luau): a marked call is an unconditional
+	-- branch to the per-caller clone's entry (no fall-through — the continuation
+	-- is reached only through the clone's ret dispatch), and a marked ret is a
+	-- multi-way branch to the clone's continuations. Modeling both as branches
+	-- makes every CFG consumer (validateBody's reachability, the lift's
+	-- reaching-definitions, DCE, regalloc) see the true control flow with zero
+	-- special cases; the transform emits the actual lea+jmp / compare-chain.
+	if insn.localCall then
+		return { defs = {}, uses = {}, rmw = {}, control = "branch",
+			targets = { insn.localCall.entry }, fallsThrough = false }
+	end
+	if insn.localRet then
+		return { defs = {}, uses = {}, rmw = {}, control = "branch",
+			targets = insn.localRet.conts, fallsThrough = false }
 	end
 
 	local m = x86.baseMnemonic(insn.mnemonic)
@@ -271,31 +501,31 @@ function x86.classify(insn)
 	-- like the supported `leaq myglobal(%rip), %rax`).
 	local codeTarget = m == "call" or m == "jmp" or m == "jcc" or m == "lea"
 		or rawMnem == "int" or LABEL_TARGET_MNEM[rawMnem]
-	-- High-byte register operands (%ah/%ch/%dh/%bh, AT&T or Intel spelling): the
-	-- parser maps them to their register's web (nums 0-3, width 8) — the SAME web as
-	-- the low-byte al/cl/dl/bl, because the web model has no subregister view. Every
-	-- modeled instruction names the LOW byte of the colored register (the renderer
-	-- always emits regName(num, 8)), so an instruction that reads or writes the high
-	-- byte would silently touch the low byte (e.g. `xchgb %ah, %bl` would swap %al).
-	-- A high-byte form is also unencodable for several modeled rewrites (the setcc
-	-- widening, movzbl). Reject in EVERY operand position and for EVERY instruction,
-	-- before anything else can silently mis-model it.
-	local HIGH_BYTE = { ah = "al", ch = "cl", dh = "dl", bh = "bl" }
-	local function rejectHighByte(o)
-		if o and o.kind == "reg" and o.width == 8 and HIGH_BYTE[o.name] then
-			local spelling = (insn.syntax == "intel") and o.name or ("%" .. o.name)
-			local lowSpelling = (insn.syntax == "intel") and HIGH_BYTE[o.name]
-				or ("%" .. HIGH_BYTE[o.name])
-			error("sarcasm: high-byte register " .. spelling .. " is not supported"
-				.. " (only the low byte of a register is modeled; use the low-byte"
-				.. " form, e.g. " .. lowSpelling .. "): " .. (insn.raw or rawMnem))
+	-- High-byte register operands (%ah/%ch/%dh/%bh, AT&T or Intel spelling) are
+	-- modeled EXACTLY by classifyHighByte (the pin machinery — see its comment):
+	-- reads extract bits 8-15 of the enclosing register's web, writes merge into
+	-- bits 8-15. xchg pins both operands already, so its own branch handles the
+	-- validation (and the renderer keeps the spelled high-byte name). Anything
+	-- with an unsupported shape gets a clean rejection there, before it can be
+	-- silently mis-modeled at the low byte.
+	local hasHighByte = false
+	for _, o in ops do
+		if isHighByteOp(o) then hasHighByte = true break end
+	end
+	if hasHighByte and not string.match(m, "^xchg[bwlq]?$") then
+		return classifyHighByte(insn, m, ops)
+	end
+	local function rejectHighByteAddr(o)
+		if isHighByteOp(o) then
+			error("sarcasm: high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+				.. " cannot be a memory operand base/index (only 64-bit registers may"
+				.. " address memory): " .. (insn.raw or rawMnem))
 		end
 	end
 	for _, o in ops do
-		rejectHighByte(o)
 		if o.kind == "mem" then
-			rejectHighByte(o.base)
-			rejectHighByte(o.index)
+			rejectHighByteAddr(o.base)
+			rejectHighByteAddr(o.index)
 			-- A SEGMENT register as the memory base (%fs/%gs/...): segment-relative
 			-- addressing has no capability to bounds-check against (gas itself rejects
 			-- the spelling — `(%fs)' is not a valid base/index expression — and the
@@ -571,6 +801,31 @@ function x86.classify(insn)
 		table.insert(defs, axD); table.insert(defs, dxD)
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
 			pin = { uses = { axU, dxU, bxU, cxU }, defs = { axD, dxD } } }
+	elseif m == "bt" or m == "bts" or m == "btr" or m == "btc" then
+		-- bt/bts/btr/btc base, index (dest-first operands): the base is a bit
+		-- string READ (all four) and — for bts/btr/btc — WRITTEN (the indexed bit
+		-- is set/reset/complemented), the index is a use, CF takes the tested bit
+		-- (a partial flag write, FLAG_WRITE_NO_DEF). The conservative
+		-- unknown-mnemonic model was wrong twice over: it def'd the base (so the
+		-- instruction read a stale web — sha256_block_data_order's `btq $41,%r9`
+		-- dispatch test read the wrong register) and missed the index use. A
+		-- MEMORY base is a bit-string access of unbounded extent (the index
+		-- selects the addressed qword AROUND the operand), which cannot be
+		-- bounds-checked — reject it.
+		if ops[1] and ops[1].kind == "mem" then
+			error("sarcasm: " .. rawMnem .. " with a memory base is not supported"
+				.. " (a bit-string access of unbounded extent cannot be bounds-checked;"
+				.. " load the value into a register first): " .. (insn.raw or rawMnem))
+		end
+		if isGpr(ops[1]) then
+			table.insert(uses, ops[1])
+			if m ~= "bt" then
+				table.insert(defs, ops[1])
+				table.insert(rmw, ops[1].num)
+			end
+		end
+		for i = 2, #ops do useOperand(ops[i]) end
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true }
 	elseif m == "cpuid" or m == "rdtsc" or m == "rdtscp" or m == "xgetbv"
 		or m == "rdpkru" or m == "wrpkru" or m == "monitor" or m == "mwait" then
 		-- Zero-explicit-operand instructions whose ONLY register effects are
@@ -644,10 +899,10 @@ function x86.classify(insn)
 		--     into physical rax, emits the bare `lahf`, and copies rax back out —
 		--     wherever the web is colored, AH lands at bits 8-15 of the colored
 		--     register (and when it IS rax the copies coalesce away as self-moves).
-		--     (Reading the byte back: bits 8-15 of the web, e.g.
-		--     `shrq $8, %rax; andq $255, %rax` — a literal `%ah` operand names the
-		--     LOW byte of the colored register, which is only AH when the web stayed
-		--     in physical rax.)
+		--     (Reading the byte back: a literal `%ah` operand is now modeled
+		--     exactly by the high-byte gate — the pin lands the web in physical rax
+		--     and the read extracts bits 8-15, so `movzbl %ah, %edx` sees exactly
+		--     the flags lahf wrote.)
 		--   sahf: reads bits 8-15 of rax, writes SF/ZF/AF/PF/CF (OF UNCHANGED —
 		--     hence in NEITHER flag-liveness table, like every partial write) —
 		--     modeled as a uses-only pin (like mulx): the reaching web is copied
@@ -678,6 +933,21 @@ function x86.classify(insn)
 		if isGpr(ops[1]) then table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 		for i = 2, #ops do useOperand(ops[i]) end
+		-- Register-count shifts/rotates (`shlq %cl, %rdx` & co): the count register
+		-- is ALWAYS %cl — the only register-count encoding in the ISA. The count's
+		-- web must therefore LIVE in physical rcx: left renameable, regalloc colors
+		-- it anywhere and the emitted `shlq %sil, %rdx` either fails to assemble or
+		-- silently shifts by the wrong register. Pin it with the emitPinned
+		-- machinery (the count's web is copied into physical rcx before the
+		-- instruction; the rendered count operand is the fixed %cl).
+		if SHIFT_COUNT[m] and isGpr(ops[2]) then
+			if ops[2].width ~= 8 or ops[2].num ~= 1 then
+				error("sarcasm: a shift/rotate count register must be %cl (the only"
+					.. " register-count encoding in the ISA): " .. (insn.raw or rawMnem))
+			end
+			return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+				pin = { uses = { ops[2] }, defs = {} } }
+		end
 	elseif DST_ONLY[m] then
 		if isGpr(ops[1]) then table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
@@ -712,17 +982,72 @@ function x86.classify(insn)
 				.. " (bswapw/bswapb are not encodable): " .. (insn.raw or rawMnem))
 		end
 		table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
-	elseif string.match(m, "^movbe[bwlq]?$") then
-		-- MOVBE exists only as a byte-swapping move to/from MEMORY (m16/m32/m64 <->
-		-- r16/r32/r64). The register-to-register spelling is not a baseline x86-64
-		-- encoding (gas only accepts it as an APX instruction), and the memory forms'
-		-- swap-while-moving RMW shape is not modeled: reject every form instead of
-		-- letting the register form ride the conservative first-reg-def fallback
-		-- (which dropped the source's value) or the memory form ride the generic
-		-- unknown-mnemonic rejection.
-		error("sarcasm: movbe is not supported (a byte-swapping move: the register-to-register"
-			.. " form does not exist in baseline x86-64 and the memory forms are not modeled;"
-			.. " use a load, bswap, store sequence instead): " .. (insn.raw or rawMnem))
+	elseif m == "movbe" then
+		-- MOVBE: the byte-swapping move to/from MEMORY (m16/m32/m64 <-> r16/r32/r64):
+		-- a load form (`movbeq (%rsi), %rax` — load, then byte-swap into the
+		-- destination) and a store form (`movbeq %rax, (%rsi)` — byte-swap the
+		-- source, then store). Modeled exactly like the ordinary mov load/store:
+		-- the memory operand rides the normal bounds-checked path, the register
+		-- operand is an ordinary renameable def (load) or use (store), and the
+		-- spelled instruction passes through (the swap is a register-value
+		-- transformation the web model need not see — like bswap). The
+		-- register-to-register spelling is not a baseline x86-64 encoding (gas
+		-- only accepts it as an APX instruction), and the 8-bit form does not
+		-- exist (a byte swap of one byte is a plain move; gas rejects movbeb with
+		-- "invalid instruction suffix"): reject both cleanly.
+		if #ops ~= 2 then
+			error("sarcasm: movbe takes exactly two operands (a byte-swapping move"
+				.. " between a register and memory): " .. (insn.raw or rawMnem))
+		end
+		local dst, src = ops[1], ops[2]
+		if dst.kind == "mem" and isGpr(src) then
+			-- store: byte-swap src, store to mem
+			if src.width == 8 then
+				error("sarcasm: movbeb is not encodable (movbe exists only in 16/32/64-bit"
+					.. " forms; an 8-bit byte swap is a plain movb): " .. (insn.raw or rawMnem))
+			end
+			memRegs(dst, uses)
+			table.insert(uses, src)
+		elseif isGpr(dst) and src.kind == "mem" then
+			-- load: load from mem, byte-swap into dst
+			if dst.width == 8 then
+				error("sarcasm: movbeb is not encodable (movbe exists only in 16/32/64-bit"
+					.. " forms; an 8-bit byte swap is a plain movb): " .. (insn.raw or rawMnem))
+			end
+			table.insert(defs, dst)
+			memRegs(src, uses)
+		else
+			error("sarcasm: movbe requires a memory operand (the register-to-register"
+				.. " spelling is not a baseline x86-64 encoding; use a mov plus bswap"
+				.. " sequence instead): " .. (insn.raw or rawMnem))
+		end
+	elseif m == "shld" or m == "shrd" then
+		-- SHLD/SHRD dst, src, count (dest-first): double-precision shift —
+		-- dst = (dst:src) shifted left (shld) or right (shrd) by the count. The
+		-- destination is read AND written (an RMW — the unknown-mnemonic fallback
+		-- used to model it as a pure def, silently dropping the destination's
+		-- contribution to the result), the source is a plain use, and the count is
+		-- an immediate or %cl — the only register-count encoding, pinned to
+		-- physical rcx exactly like the plain shift/rotate count (ALU2 branch).
+		if #ops ~= 3 then
+			error("sarcasm: " .. rawMnem .. " takes exactly three operands (destination,"
+				.. " source, count): " .. (insn.raw or rawMnem))
+		end
+		if isGpr(ops[1]) then
+			table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
+		elseif ops[1] and ops[1].kind == "mem" then
+			memRegs(ops[1], uses)
+		end
+		useOperand(ops[2])
+		if isGpr(ops[3]) then
+			if ops[3].width ~= 8 or ops[3].num ~= 1 then
+				error("sarcasm: a shift/rotate count register must be %cl (the only"
+					.. " register-count encoding in the ISA): " .. (insn.raw or rawMnem))
+			end
+			table.insert(uses, ops[3])
+			return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+				pin = { uses = { ops[3] }, defs = {} } }
+		end
 	elseif string.match(m, "^xchg[bwlq]?$") then
 		-- XCHG: BOTH operands are read AND written (each receives the other's value).
 		-- A register-to-register xchg is modeled with the implicit-GPR pin machinery
@@ -747,6 +1072,28 @@ function x86.classify(insn)
 			error("sarcasm: xchg needs two general registers (stack-pointer and vector-register"
 				.. " exchanges are not supported): " .. (insn.raw or rawMnem))
 		end
+		-- A high-byte operand (%ah/%ch/%dh/%bh) is modeled exactly by the pin
+		-- (the enclosing web lands in the spelled physical register and the
+		-- renderer keeps the high-byte name) — but only when the OTHER operand
+		-- keeps the instruction REX-free: a byte partner must be one of
+		-- %al/%cl/%dl/%bl (nums 0-3), a 16/32-bit partner must be num < 8, and
+		-- no 64-bit partner (REX.W) may appear. (The high-byte gate above
+		-- exempts xchg because this branch already pins both operands.)
+		for _, o in ops do
+			if isHighByteOp(o) then
+				local partner = (o == ops[1]) and ops[2] or ops[1]
+				local bad = (partner.width == 8 and partner.num > 3)
+					or (partner.width == 16 and partner.num > 7)
+					or (partner.width == 32 and partner.num > 7)
+					or (partner.width ~= 8 and partner.width ~= 16 and partner.width ~= 32)
+				if bad then
+					error("sarcasm: high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+						.. " cannot be combined with " .. ((insn.syntax == "intel") and partner.name or ("%" .. partner.name))
+						.. " (the partner requires a REX prefix, which a high-byte register"
+						.. " cannot combine with): " .. (insn.raw or rawMnem))
+				end
+			end
+		end
 		-- fresh table per def occurrence (see the cqo comment above): the def sites are
 		-- new webs, distinct from the use occurrences of the same registers.
 		local function imp(o)
@@ -767,10 +1114,10 @@ function x86.classify(insn)
 		-- zero-extension (a 32-bit write zeroes bits 32-63, so the whole web reads
 		-- 0/1 after the pair; the extension writes no flags). A memory destination
 		-- is a complete 8-bit store and needs none of that.
-		-- (A high-byte destination (%ah) is rejected for every instruction by the
-		-- operand scan at the top of classify: the web model has no subregister view
-		-- and movzbl %ah is not even encodable, so the widening rewrite could never
-		-- be expressed for it.)
+		-- (A high-byte destination (%ah) never reaches here: the high-byte gate at
+		-- the top of classify models it exactly as a pinned RMW of the enclosing
+		-- register's web — no widening is needed, and lowerSpecial skips pinned
+		-- nodes.)
 		if isGpr(ops[1]) then table.insert(defs, ops[1])
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 		if (ops[1] and ops[1].kind == "mem") and isGpr(ops[2]) then table.insert(uses, ops[2]) end

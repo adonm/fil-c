@@ -288,6 +288,25 @@ function glue.alias(out, name: string, signature: number)
 		.. ", pizlonatedFIP" .. tostring(signature) .. "_" .. name)
 end
 
+-- Alias entry labels (tailcall.luau): a `.globl` alias of a function shares the
+-- function's body and signature, so its getter and direct-call symbol are plain
+-- .set aliases — the alias's function object IS the function's.
+function glue.getterAlias(out, aliasName: string, fnName: string, hidden: boolean?)
+	table.insert(out, "\t.globl\tpizlonated_" .. aliasName)
+	if hidden then table.insert(out, "\t.hidden\tpizlonated_" .. aliasName) end
+	table.insert(out, ".set pizlonated_" .. aliasName .. ", pizlonated_" .. fnName)
+	table.insert(out, "")
+end
+
+function glue.callAlias(out, aliasName: string, fnName: string, signature: number, hidden: boolean?)
+	local fiA = "pizlonatedFI" .. tostring(signature) .. "_" .. aliasName
+	local fiF = "pizlonatedFI" .. tostring(signature) .. "_" .. fnName
+	table.insert(out, "\t.globl\t" .. fiA)
+	if hidden then table.insert(out, "\t.hidden\t" .. fiA) end
+	table.insert(out, ".set " .. fiA .. ", " .. fiF)
+	table.insert(out, "")
+end
+
 function glue.originName(funcName: string): string
 	return ".Lfilc_origin_" .. funcName
 end

@@ -1,3 +1,6 @@
+# rbp-relative DIRECT access into a fixed alloca region (normalized to frame
+# offset 8 == region offset 128): redirects to the region pointer like the
+# rsp-relative form (was a compile-time rejection before the region redirect).
 	.file	"alloca-direct-rbp.c"
 	.text
 	.globl	foo
@@ -8,7 +11,7 @@ foo:                            ;! long()
 	subq	$408, %rsp
 	leaq	-120(%rsp), %rcx   ;! alloca result size=400
 	movq	$9, -400(%rbp)
-	movq	(%rcx), %rax
+	movq	128(%rcx), %rax
 	leave
 	ret
 	.size	foo, .-foo

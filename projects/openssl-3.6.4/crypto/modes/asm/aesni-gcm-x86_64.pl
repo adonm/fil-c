@@ -459,6 +459,29 @@ ___
 $code.=<<___;
 	vzeroupper
 
+___
+if ($ENV{SARCASM}) {
+	# Under sarcasm the conditional anti-aliasing frame shift is a
+	# fixed-size GC allocation (the conditionally-applied 0..767
+	# byte shift is a cache-aliasing countermeasure with no semantic
+	# content). The whole dynamic frame becomes the alloca region.
+	$code.=<<___;
+	vmovdqu		($ivp),$T1		# input counter value
+	mov		12($ivp),$counter
+	lea		.Lbswap_mask(%rip),$const
+	vmovdqu		($Xip),$Xi		# load Xi
+	vmovdqu		($const),$Ii		# borrow $Ii for .Lbswap_mask
+	lea		0x80($key),$key		# size optimization
+	lea		0x20+0x20($Xip),$Xip	# size optimization
+	mov		0xf0-0x80($key),$rounds
+	vpshufb		$Ii,$Xi,$Xi
+
+	sub		\$128,%rsp		#! alloca size (gcm)
+	mov		%rsp,$end0		#! alloca result (gcm)
+.Ldec_no_key_aliasing:
+___
+} else {
+	$code.=<<___;
 	vmovdqu		($ivp),$T1		# input counter value
 	add		\$-128,%rsp
 	mov		12($ivp),$counter
@@ -481,6 +504,9 @@ $code.=<<___;
 	jnc		.Ldec_no_key_aliasing
 	sub		$end0,%rsp		# avoid aliasing with key
 .Ldec_no_key_aliasing:
+___
+}
+$code.=<<___;
 
 	vmovdqu		0x50($inp),$Z3		# I[5]
 	lea		($inp),$in0
@@ -687,6 +713,23 @@ ___
 $code.=<<___;
 	vzeroupper
 
+___
+if ($ENV{SARCASM}) {
+	# Same GC-allocation restructure as aesni_gcm_decrypt above.
+	$code.=<<___;
+	vmovdqu		($ivp),$T1		# input counter value
+	mov		12($ivp),$counter
+	lea		.Lbswap_mask(%rip),$const
+	lea		0x80($key),$key		# size optimization
+	vmovdqu		($const),$Ii		# borrow $Ii for .Lbswap_mask
+	mov		0xf0-0x80($key),$rounds
+
+	sub		\$128,%rsp		#! alloca size (gcm)
+	mov		%rsp,$end0		#! alloca result (gcm)
+.Lenc_no_key_aliasing:
+___
+} else {
+	$code.=<<___;
 	vmovdqu		($ivp),$T1		# input counter value
 	add		\$-128,%rsp
 	mov		12($ivp),$counter
@@ -706,6 +749,9 @@ $code.=<<___;
 	jnc		.Lenc_no_key_aliasing
 	sub		$end0,%rsp		# avoid aliasing with key
 .Lenc_no_key_aliasing:
+___
+}
+$code.=<<___;
 
 	lea		($out),$in0
 	lea		-0xc0($out,$len),$end0

@@ -1,7 +1,8 @@
-# Top-level (inter-function) data cannot be given a capability automatically:
-# a .data/.quad block outside any function -- here under a global label -- must
-# be rejected, not silently dropped (a silently dropped global would make any
-# reach of it hand out a raw address). Mirrors the arm64 top-level data
+# Top-level (inter-function) data that sarcasm cannot turn into a data object
+# must still be rejected, not silently dropped (a silently dropped global would
+# make any reach of it hand out a raw address). Data under .rodata/.data/.bss
+# IS collected into Fil-C data objects now; a live (global) label naming data
+# in a NON-collectable section keeps the original "label outside any function"
 # rejection with the same diagnostic.
 	.text
 	.globl	foo
@@ -12,7 +13,7 @@ foo:                            ;! unsigned(void)
 	movl	$42, %eax
 	ret
 	.size	foo, .-foo
-	.data
+	.section	.mydata,"aw",@progbits
 	.globl	myglob
 myglob:
 	.quad	42

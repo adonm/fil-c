@@ -125,11 +125,25 @@ function lift.liftFunction(body, opts)
 		siteId[k] = id
 		return id
 	end
-	-- Which regs are used anywhere (to bound entry pseudo-defs).
+	-- Which regs are used anywhere (to bound entry pseudo-defs). (Defensive: a
+	-- def/use register with no number is an internal bug — a stale temp operand
+	-- leaked into the lifted body — not a user error; name it as such.)
 	local usedRegs = {}
 	for i = 1, n do
-		for _, r in flow[i].c.uses do usedRegs[r.num] = true end
-		for _, r in flow[i].c.defs do usedRegs[r.num] = true end
+		for _, r in flow[i].c.uses do
+			if r.num == nil then
+				error("sarcasm: internal error: unnumbered register use (rc="
+					.. tostring(r.rc) .. ") in '" .. tostring(flow[i].stmt and flow[i].stmt.raw or "?") .. "'")
+			end
+			usedRegs[r.num] = true
+		end
+		for _, r in flow[i].c.defs do
+			if r.num == nil then
+				error("sarcasm: internal error: unnumbered register def (rc="
+					.. tostring(r.rc) .. ") in '" .. tostring(flow[i].stmt and flow[i].stmt.raw or "?") .. "'")
+			end
+			usedRegs[r.num] = true
+		end
 	end
 	-- ENTRY defs for every used reg.
 	local entrySites = {}

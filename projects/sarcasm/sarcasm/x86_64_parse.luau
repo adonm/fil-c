@@ -32,13 +32,16 @@ do
 		REG[b[i]] = { num = i - 1, width = 8 }
 	end
 	-- The high-byte aliases ah/ch/dh/bh (the bytes 8-15 of rax/rcx/rdx/rbx — a
-	-- separate x86 encoding from the low-byte al/cl/dl/bl). They parse so every
-	-- input gets ONE clean rejection (x86_64_isa.classify: only the low byte of a
-	-- register is modeled) instead of masquerading as bare symbols and dying with
-	-- the misleading "memory access with a symbolic address" error. parseOnly
-	-- keeps them out of the canonical-name fill (NAMES), so regName/canonical
-	-- behavior stays byte-identical and the canonical names for (width=8, num) are
-	-- the low-byte al/cl/dl/bl — these aliases can never become canonical.
+	-- separate x86 encoding from the low-byte al/cl/dl/bl). They parse to their
+	-- register's web with the name preserved, so x86_64_isa.classify can model
+	-- them exactly (classifyHighByte pins the enclosing web to the spelled
+	-- physical register) instead of their masquerading as bare symbols and dying
+	-- with the misleading "memory access with a symbolic address" error.
+	-- parseOnly keeps them out of the canonical-name fill (NAMES), so
+	-- regName/canonical behavior stays byte-identical and the canonical names
+	-- for (width=8, num) are the low-byte al/cl/dl/bl — these aliases can never
+	-- become canonical (the renderer names a pinned high-byte operand via its
+	-- own highByte tag instead, see emitPinned).
 	REG["ah"] = { num = 0, width = 8, parseOnly = true }
 	REG["ch"] = { num = 1, width = 8, parseOnly = true }
 	REG["dh"] = { num = 2, width = 8, parseOnly = true }
@@ -217,7 +220,7 @@ local function parseDispExpr(text, what)
 			table.insert(tokens, c .. c)
 			i += 2
 		elseif c == "+" or c == "-" or c == "*" or c == "/" or c == "%"
-			or c == "(" or c == ")" then
+			or c == "(" or c == ")" or c == "~" then
 			table.insert(tokens, c)
 			i += 1
 		else
@@ -260,6 +263,8 @@ local function parseDispExpr(text, what)
 		end
 		if t == "-" then return { const = -constOf(parseFactor(), "-") } end
 		if t == "+" then return { const = constOf(parseFactor(), "+") } end
+		-- unary bitwise NOT (gas: ~x = -x - 1, exact in integer range)
+		if t == "~" then return { const = -1 - constOf(parseFactor(), "~") } end
 		if type(t) == "table" then return { sym = t.sym, const = t.num or 0 } end
 		error("sarcasm: unexpected '" .. tostring(t) .. "' in " .. what .. " expression: " .. text)
 	end
@@ -321,6 +326,9 @@ local function parseDispExpr(text, what)
 	result.folded = true
 	return result
 end
+-- Exported for the driver's data-object collector (sarcasm.luau), which folds the
+-- constant expressions of data directives (`.zero 64+32`, `.long 1<<4`, ...).
+x86parse.parseDispExpr = parseDispExpr
 
 -- AVX512 decorator handling -------------------------------------------------
 -- Strip trailing {...} groups off an operand field (`%zmm0{%k1}{z}`, `(%rdi){1to16}`,
@@ -707,6 +715,24 @@ end
 -- instruction is indistinguishable from a spelled one in every downstream pass
 -- (validation, frame analysis, lift, codegen, rendering).
 local function parseInsnText(t, syntax)
+	-- gas ENCODING-HINT pseudo-prefixes ({vex}/{vex2}/{vex3}/{evex}/{np}):
+	-- OpenSSL perlasm emits `{vex} vpmadd52luq ...` to force a VEX (rather than
+	-- EVEX) encoding of an instruction that has both. The hint changes only the
+	-- encoding, never the semantics — sarcasm models the instruction — so strip
+	-- it and let the renderer emit the plain spelling (gas picks an encoding
+	-- with identical semantics). An unrecognized {...} prefix stays a parse
+	-- error.
+	while true do
+		local pfx, restP = string.match(t, "^(%b{})%s*(.*)$")
+		if not pfx then break end
+		local inner = string.lower(string.sub(pfx, 2, -2))
+		if inner ~= "vex" and inner ~= "vex2" and inner ~= "vex3"
+			and inner ~= "evex" and inner ~= "np" then
+			error("sarcasm: unsupported encoding-hint prefix '" .. pfx
+				.. "' (only {vex}/{vex2}/{vex3}/{evex}/{np} are recognized): " .. t)
+		end
+		t = restP
+	end
 	local mnem, rest = string.match(t, "^([%.%w_][%w_.]*)%s*(.*)$")
 	if not mnem then
 		-- The line starts with something that can neither begin a mnemonic nor a
@@ -782,7 +808,12 @@ function x86parse.parseString(text, syntax)
 				if t == "" then break end
 			end
 			if t ~= "" then
+				-- A leading {..} group is a gas encoding-hint pseudo-prefix
+				-- ({vex} & co — see parseInsnText): the mnemonic follows it.
 				local mnem, rest = string.match(t, "^([%.%w_][%w_.]*)%s*(.*)$")
+				if not mnem and string.sub(t, 1, 1) == "{" then
+					mnem, rest = string.match(t, "^%b{}%s*([%.%w_][%w_.]*)%s*(.*)$")
+				end
 				if not mnem then
 					-- The line starts with something that can neither begin a
 					-- mnemonic nor a directive (e.g. `//!` annotation text, which is
@@ -853,11 +884,288 @@ local BYTE_DECODE = {
 	{ bytes = { 0x48, 0x81, 0xec, 0x08, 0x01, 0x00, 0x00 }, text = "subq $0x108,%rsp" },
 	{ bytes = { 0x4c, 0x8d, 0x14, 0x24 }, text = "leaq (%rsp),%r10" },
 	-- single-byte filler prefixes gas emits as standalone `.byte` lines for
-	-- alignment padding: each lone byte is its own nop.
+	-- alignment padding: each lone byte is its own nop. (0x64/0x65 fs/gs are
+	-- deliberately NOT here: a segment override changes the next instruction's
+	-- addressing, so it may never be dropped.)
 	{ bytes = { 0x66 }, text = "nop" },
 	{ bytes = { 0x67 }, text = "nop" },
 	{ bytes = { 0x3e }, text = "nop" },
+	{ bytes = { 0x2e }, text = "nop" },
+	-- 0x90 (xchg %eax,%eax) is the one-byte nop. (The pattern decoder also
+	-- catches it inside prefixed multi-byte nop forms.)
+	{ bytes = { 0x90 }, text = "nop" },
 }
+
+-- Pattern-based .byte decoding (OpenSSL perlasm encodings with operands) ------
+--
+-- The fixed BYTE_DECODE table covers whole instructions with no operand
+-- variation. OpenSSL also perlasm-emits instructions whose OPERANDS vary (the
+-- legacy-gas workarounds for AES/SHA/movbe/mulx/vmovdqu and the always-.byte
+-- SHA512-NI forms): those need a real (small) decoder over the encodings the
+-- corpus uses — a ModRM/SIB/displacement walk that reconstructs the canonical
+-- AT&T spelling, which is then re-parsed through parseInsnText exactly like a
+-- table entry (so a decoded instruction is indistinguishable from a spelled one
+-- downstream). Anything not matching one of these families stays `.byte` data
+-- and hits the usual in-body-data rejection.
+
+-- GPR name for (num, width) — the parser's canonical names.
+local function gprName(num, width) return x86parse.regName(num, width) end
+
+-- Sign-extend a displacement of `bits` (8 or 32).
+local function sx(v, bits)
+	if bits == 8 and v >= 128 then return v - 256 end
+	if bits == 32 and v >= 2147483648 then return v - 4294967296 end
+	return v
+end
+
+-- Decode a ModRM/SIB/disp sequence at b[p] into the rm operand text (register
+-- or memory) and the position past it. regFieldExt/rmExt/indexExt are the
+-- extension bits (0 or 8) from REX/VEX/EVEX prefix bits; regNumFn(rmNumFn)
+-- names registers for the reg field (rm field in mod=11). Returns nil when the
+-- form cannot be expressed as one operand (RIP-relative or baseless
+-- absolute-addressing forms — a .byte run has no symbol to name them with).
+local function decodeModRM(b, p, regExt, rmExt, indexExt, rmNumFn)
+	local modrm = b[p]
+	if not modrm then return nil end
+	local mod = math.floor(modrm / 64) % 4
+	local rm = modrm % 8
+	p += 1
+	if mod == 3 then
+		return rmNumFn(rm + rmExt), p
+	end
+	-- memory operand
+	local base, index, scale = nil, nil, nil
+	if rm == 4 then
+		-- SIB
+		local sib = b[p]
+		if not sib then return nil end
+		p += 1
+		scale = 2 ^ (math.floor(sib / 64) % 4)
+		local idx = (math.floor(sib / 8) % 8) + indexExt
+		if idx ~= 4 then index = idx end   -- 4 = no index (rsp encoding)
+		local baseField = (sib % 8) + rmExt
+		if (sib % 8) == 5 and mod == 0 then
+			return nil   -- disp32 with no base: absolute — cannot express
+		end
+		base = baseField
+	elseif rm == 5 and mod == 0 then
+		return nil   -- RIP-relative disp32: no symbol — cannot express
+	else
+		base = rm + rmExt
+	end
+	local disp = 0
+	if mod == 1 then
+		if not b[p] then return nil end
+		disp = sx(b[p], 8); p += 1
+	elseif mod == 2 then
+		if not (b[p] and b[p + 1] and b[p + 2] and b[p + 3]) then return nil end
+		disp = sx(b[p] + b[p + 1] * 256 + b[p + 2] * 65536 + b[p + 3] * 16777216, 32)
+		p += 4
+	end
+	local text = tostring(disp) .. "(%" .. gprName(base, 64)
+	if index then
+		text = text .. ",%" .. gprName(index, 64) .. "," .. tostring(scale)
+	end
+	return text .. ")", p
+end
+
+-- VEX/EVEX inverted prefix bit -> extension (0 or 8): bit CLEAR means extended.
+local function vexExt(byte, mask) return (byte % (mask * 2)) < mask and 8 or 0 end
+
+-- Try to decode one instruction at b[pos]; returns (text, length) or nil.
+local function matchPattern(b, pos)
+	local p = pos
+	-- legacy prefix bytes we accept in front of the families below: 0x66
+	-- (operand-size — semantic for movbe/movw), REX 0x40-0x4F.
+	local saw66 = false
+	local rex = 0
+	while true do
+		local c = b[p]
+		if c == 0x66 then saw66 = true; p += 1
+		elseif c and c >= 0x40 and c <= 0x4F then rex = c; p += 1
+		else break end
+	end
+	local rexW = (rex % 16) >= 8
+	-- REX extension bits are DIRECT (bit set = the register field is extended by
+	-- 8), unlike the VEX/EVEX inverted prefix bits vexExt decodes.
+	local rexR = (rex % 8) >= 4 and 8 or 0    -- REX.R (bit 2)
+	local rexX = (rex % 4) >= 2 and 8 or 0    -- REX.X (bit 1)
+	local rexB = (rex % 2) >= 1 and 8 or 0    -- REX.B (bit 0)
+	local function gprFn(width)
+		return function(n) return "%" .. gprName(n, width) end
+	end
+	local c = b[p]
+	if not c then return nil end
+
+	-- VEX 3-byte prefix
+	if c == 0xC4 and b[p + 1] and b[p + 2] then
+		local b2, b3 = b[p + 1], b[p + 2]
+		local map = b2 % 32
+		local rE = vexExt(b2, 128)   -- R̅
+		local xE = vexExt(b2, 64)    -- X̅
+		local bE = vexExt(b2, 32)    -- B̅
+		local W = math.floor(b3 / 128) % 2
+		local vvvv = 15 - (math.floor(b3 / 8) % 16)
+		local L = math.floor(b3 / 4) % 2
+		local pp = b3 % 4
+		local op = b[p + 3]
+		if map == 2 and pp == 3 and L == 1 and (op == 0xCB or op == 0xCC or op == 0xCD) then
+			-- SHA512-NI (VEX.256.F2.0F38.W0; always .byte in perlasm — gas before
+			-- 2.42 does not know them):
+			--   vsha512rnds2 ymm1, ymm2, xmm3/m128 (CB): dst=reg, src1=vvvv, src2=rm
+			--   vsha512msg1  ymm1, xmm3/m128       (CC): dst=reg, src=rm (vvvv unused)
+			--   vsha512msg2  ymm1, ymm3/m256       (CD): dst=reg, src=rm (vvvv unused)
+			local regN = (math.floor(b[p + 4] / 8) % 8) + rE
+			if op == 0xCB then
+				local rmT, np = decodeModRM(b, p + 4, rE, bE, xE, function(n) return "%xmm" .. n end)
+				if not rmT then return nil end
+				return "vsha512rnds2 " .. rmT .. ",%ymm" .. vvvv .. ",%ymm" .. regN, np - pos
+			end
+			local rmClass = (op == 0xCC) and "xmm" or "ymm"
+			local rmT, np = decodeModRM(b, p + 4, rE, bE, xE, function(n) return "%" .. rmClass .. n end)
+			if not rmT then return nil end
+			local mnem = (op == 0xCC) and "vsha512msg1" or "vsha512msg2"
+			return mnem .. " " .. rmT .. ",%ymm" .. regN, np - pos
+		end
+		if map == 2 and pp == 3 and L == 0 and op == 0xF6 then
+			-- mulx (VEX.F2.0F38.Wx F6): dst=reg, src1=vvvv, src2=rm (GPR or mem)
+			local w = (W == 1) and 64 or 32
+			local mnem = (W == 1) and "mulxq" or "mulxl"
+			local rmT, np = decodeModRM(b, p + 4, rE, bE, xE, gprFn(w))
+			if not rmT then return nil end
+			return mnem .. " " .. rmT .. ",%" .. gprName(vvvv, w) .. ",%"
+				.. gprName((math.floor(b[p + 4] / 8) % 8) + rE, w), np - pos
+		end
+		if map == 1 and pp == 2 and (op == 0x6F or op == 0x7F) then
+			-- vmovdqu (VEX.F3.0F 6F/7F, L=0 xmm / L=1 ymm)
+			local vec = (L == 1) and "ymm" or "xmm"
+			local rmT, np = decodeModRM(b, p + 4, rE, bE, xE, function(n) return "%" .. vec .. n end)
+			if not rmT then return nil end
+			local regT = "%" .. vec .. ((math.floor(b[p + 4] / 8) % 8) + rE)
+			if op == 0x6F then return "vmovdqu " .. rmT .. "," .. regT, np - pos
+			else return "vmovdqu " .. regT .. "," .. rmT, np - pos end
+		end
+		return nil
+	end
+
+	-- EVEX (narrow: the vpshrd*-imm forms OpenSSL emits for aesni-xts)
+	if c == 0x62 and b[p + 1] and b[p + 2] and b[p + 3] then
+		local P0, P1, P2 = b[p + 1], b[p + 2], b[p + 3]
+		local op = b[p + 4]
+		-- P0: R̅ X̅ B̅ R̅' 0 0 m m ; require the two zero bits clear and map 0F3A
+		--     (mm=3) — i.e. the low nibble is exactly 0011.
+		-- P1: W v̅vvv 1 pp ; require the fixed one bit set and pp=01 (66).
+		-- P2: z L' L b V̅' aaa ; require z=0, L'L=00 (xmm), b=0, aaa=0 (no
+		--     writemask) — only the V̅' bit (vvvv's 4th bit, 0 for regs < 16)
+		--     may be set.
+		if (P0 % 16) == 3
+			and (P1 % 8) >= 4 and (P1 % 4) == 1
+			and (P2 == 0 or P2 == 8)
+			and op == 0x73 then
+			local W = math.floor(P1 / 128) % 2
+			local rE = vexExt(P0, 128) + (vexExt(P0, 16) * 2)   -- R̅ + R̅' (bits 3,4)
+			local bE = vexExt(P0, 32)
+			local vvvv = (15 - (math.floor(P1 / 8) % 16)) + (vexExt(P2, 8) * 2)
+			local mnem = (W == 1) and "vpshrdq" or "vpshrdd"
+			local modrm = b[p + 5]
+			if modrm and math.floor(modrm / 64) % 4 == 3 then
+				local dst = (math.floor(modrm / 8) % 8) + rE
+				local src2 = (modrm % 8) + bE
+				local imm = b[p + 6]
+				if dst < 16 and vvvv < 16 and src2 < 16 and imm then
+					return mnem .. " $" .. imm .. ",%xmm" .. src2 .. ",%xmm" .. vvvv
+						.. ",%xmm" .. dst, 7
+				end
+			end
+		end
+		return nil
+	end
+
+	-- two-byte NOPs and the generic multi-byte NOP (0F 1F /0); the prefix bytes
+	-- above (0x66, REX is NOT a nop prefix — exclude rex) — gas's padding nops
+	-- carry 0x66/0x2e/0x3e/0x67 filler prefixes, whose standalone table entries
+	-- would otherwise consume them one at a time and strand the 0F 1F body.
+	if not rex then
+		-- scan additional nop-prefix fillers we did not consume above (0x2e/0x3e/0x67)
+		local q = p
+		while b[q] == 0x2E or b[q] == 0x3E or b[q] == 0x67 or b[q] == 0x66 do q += 1 end
+		if b[q] == 0x90 then return "nop", q + 1 - pos end
+		if b[q] == 0x0F and b[q + 1] == 0x1F and b[q + 2] and (math.floor(b[q + 2] / 8) % 8) == 0 then
+			local _, np = decodeModRM(b, q + 2, 0, 0, 0, function() return "?" end)
+			if np then return "nop", np - pos end
+		end
+	end
+
+	-- 0F escape maps
+	if c == 0x0F and b[p + 1] == 0x38 and b[p + 2] then
+		local op = b[p + 2]
+		-- SHA-NI (NP 0F 38 C8-CD; no 66/REX prefix is architectural, but accept
+		-- and ignore a redundant one — the encoding is unambiguous).
+		local SHA = { [0xC8] = "sha1nexte", [0xC9] = "sha1msg1", [0xCA] = "sha1msg2",
+			[0xCB] = "sha256rnds2", [0xCC] = "sha256msg1", [0xCD] = "sha256msg2" }
+		if SHA[op] and not saw66 then
+			local rmT, np = decodeModRM(b, p + 3, rexR, rexB, rexX, function(n) return "%xmm" .. n end)
+			if not rmT then return nil end
+			local regT = "%xmm" .. ((math.floor(b[p + 3] / 8) % 8) + rexR)
+			return SHA[op] .. " " .. rmT .. "," .. regT, np - pos
+		end
+		-- AES-NI (66 0F 38 DB-DF)
+		local AES = { [0xDB] = "aesimc", [0xDC] = "aesenc", [0xDD] = "aesenclast",
+			[0xDE] = "aesdec", [0xDF] = "aesdeclast" }
+		if AES[op] and saw66 then
+			local rmT, np = decodeModRM(b, p + 3, rexR, rexB, rexX, function(n) return "%xmm" .. n end)
+			if not rmT then return nil end
+			local regT = "%xmm" .. ((math.floor(b[p + 3] / 8) % 8) + rexR)
+			return AES[op] .. " " .. rmT .. "," .. regT, np - pos
+		end
+		-- movbe (0F 38 F0 load / F1 store; REX.W = q, 66 = w, else l)
+		if op == 0xF0 or op == 0xF1 then
+			local mnem = rexW and "movbeq" or saw66 and "movbew" or "movbel"
+			local w = rexW and 64 or saw66 and 16 or 32
+			local rmT, np = decodeModRM(b, p + 3, rexR, rexB, rexX, gprFn(w))
+			if not rmT then return nil end
+			local regT = "%" .. gprName((math.floor(b[p + 3] / 8) % 8) + rexR, w)
+			if op == 0xF0 then return mnem .. " " .. rmT .. "," .. regT, np - pos
+			else return mnem .. " " .. regT .. "," .. rmT, np - pos end
+		end
+		return nil
+	end
+	if c == 0x0F and b[p + 1] == 0x3A and b[p + 2] and b[p + 3] then
+		local op = b[p + 2]
+		-- sha1rnds4 (NP 0F 3A CC /r ib)
+		if op == 0xCC and not saw66 then
+			local rmT, np = decodeModRM(b, p + 3, rexR, rexB, rexX, function(n) return "%xmm" .. n end)
+			if not rmT then return nil end
+			local imm = b[np]
+			if not imm then return nil end
+			local regT = "%xmm" .. ((math.floor(b[p + 3] / 8) % 8) + rexR)
+			return "sha1rnds4 $" .. imm .. "," .. rmT .. "," .. regT, np + 1 - pos
+		end
+		-- aeskeygenassist (66 0F 3A DF /r ib)
+		if op == 0xDF and saw66 then
+			local rmT, np = decodeModRM(b, p + 3, rexR, rexB, rexX, function(n) return "%xmm" .. n end)
+			if not rmT then return nil end
+			local imm = b[np]
+			if not imm then return nil end
+			local regT = "%xmm" .. ((math.floor(b[p + 3] / 8) % 8) + rexR)
+			return "aeskeygenassist $" .. imm .. "," .. rmT .. "," .. regT, np + 1 - pos
+		end
+		return nil
+	end
+
+	-- REX mov (8B load / 89 store; W = q, 66 = w, else l)
+	if rex ~= 0 and (c == 0x8B or c == 0x89) then
+		local w = rexW and 64 or saw66 and 16 or 32
+		local mnem = rexW and "movq" or saw66 and "movw" or "movl"
+		local rmT, np = decodeModRM(b, p + 1, rexR, rexB, rexX, gprFn(w))
+		if not rmT then return nil end
+		local regT = "%" .. gprName((math.floor(b[p + 1] / 8) % 8) + rexR, w)
+		if c == 0x8B then return mnem .. " " .. rmT .. "," .. regT, np - pos
+		else return mnem .. " " .. regT .. "," .. rmT, np - pos end
+	end
+
+	return nil
+end
 
 -- Parse the byte values of a `.byte` directive's argument list: a
 -- comma-separated list of decimal or 0x-hex literals, each in [0, 255]. Returns
@@ -950,22 +1258,34 @@ function x86parse.decodeByteInsns(body)
 						table.insert(lines, body[k].line)
 					end
 				end
-				-- Greedy longest-match decode of the buffer.
+				-- Greedy longest-match decode of the buffer: the fixed table and the
+				-- operand-decoding patterns (matchPattern) compete; the longer match
+				-- wins, ties go to the table (so existing entries keep their exact
+				-- semantics — the pattern matcher only adds the operand-varying
+				-- families the table cannot express).
 				local decoded = {}
 				local pos = 1
 				local lockPos = nil   -- buffer position of a pending (unjoined) lock byte
 				while pos <= #bytes do
 					local e, elen = matchBytes(bytes, pos)
-					if not e then break end
-					if e.lock then
-						lockPos = pos
-						pos += elen
+					local ptext, plen = matchPattern(bytes, pos)
+					local text, len, isLock
+					if ptext and (not e or plen > elen) then
+						text, len, isLock = ptext, plen, false
+					elseif e then
+						text, len, isLock = e.text, elen, e.lock or false
 					else
-						local insn = parseInsnText(e.text, "att")
+						break
+					end
+					if isLock then
+						lockPos = pos
+						pos += len
+					else
+						local insn = parseInsnText(text, "att")
 						insn.line = lines[pos]
 						if lockPos then insn.lockPrefix = true; lockPos = nil end
 						table.insert(decoded, insn)
-						pos += elen
+						pos += len
 					end
 				end
 				-- A lock byte pending at the end of the buffer joins the SPELLED

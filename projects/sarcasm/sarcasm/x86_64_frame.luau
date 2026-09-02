@@ -35,8 +35,11 @@
 --     fall-through escape check treats rbp as a stack register whenever usesRbp holds;
 --   * mid-function constant or non-constant rsp adjustments (`subq`/`addq` to %rsp, and
 --     `mov %reg,%rsp` from an unvalidated source) that are neither prologue/epilogue
---     frame setup, an `alloca`-idiom allocation, nor a recovery of a known-good saved
---     stack pointer (dynamic allocation must use the `;! alloca` annotation instead).
+--     frame setup, an `alloca`-idiom allocation, a recovery of a known-good saved
+--     stack pointer, nor a PROVEN mid-function constant decrease (`addq $imm, %rsp`
+--     at a statically known, non-negative resulting depth with provably dead flags
+--     — the ecp_nistz256 shared-tail frame-reshape shape, accepted and dropped)
+--     (dynamic allocation must use the `;! alloca` annotation instead).
 --     Recovering %rsp from a known-good value — `movq %rbp,%rsp`, `leaq N(%rbp),%rsp`,
 --     or a register the prologue saved %rsp into — is accepted and dropped anywhere,
 --     mid-function alloca "frees" included: rbp-relative virtualization is unaffected,
@@ -62,8 +65,11 @@
 --     accesses are accepted only where %rbp provably still holds the function's frame
 --     pointer on every path (an early-exit path that skipped the prologue, and any point
 --     after a paired `popq %rbp`, are "not established");
---   * stack accesses and returns executed while rsp is perturbed, unbalanced, or of
---     unknown depth (e.g. after a dynamic alloca with no rbp restore);
+--   * stack accesses and returns executed while rsp is of UNKNOWN depth
+--     (e.g. after a dynamic alloca with no rbp restore), or unbalanced
+--     (returns); accesses at a STATICALLY KNOWN perturbed depth key exactly in
+--     normalized coordinates (disp + D0 - d) and virtualize like any other
+--     slot (save-slot aliases ride the save model);
 --   * mid-function pushes/pops of non-callee-saved operands, pops of the frame pointer
 --     that do not pair with its save (a paired `popq %rbp` — e.g. the no-frame-cleanup
 --     leaf epilogue `popq %rbp; ret` — IS a sound restore), `leave` without an
@@ -129,6 +135,16 @@ local function immVal(op) if op and op.kind == "imm" then return op.value or ton
 local function isAlloca(st)
 	return st.annotation and string.find(st.annotation, "alloca", 1, true) ~= nil
 end
+
+-- The abstract rsp depth: a number (bytes below the entry rsp), "dyn" (unknown —
+-- a dynamic alloca's aftermath; no region coordinates), or a TABLE
+-- { anchored = <region> } — "inside an alignment-anchored alloca region's scope":
+-- the andq/sub that anchors the region only LOWERS rsp and nothing may move it
+-- again before the recovery, so rsp-relative offsets there are region
+-- coordinates (raw displacements). Any later rsp write leaves the scope (the
+-- depth degrades to plain "dyn"). isDyn covers both non-numeric forms.
+local function isDynDepth(d) return d == "dyn" or type(d) == "table" end
+x86_64_frame.isDynDepth = isDynDepth
 
 -- Does the instruction read or write rsp (as an explicit operand or memory base/index), or
 -- access memory through rbp while rbp is the frame pointer? push/pop/call/ret/leave also
@@ -212,7 +228,9 @@ local function yoloArgSlotOf(st, baseName, saveDepth)
 	if x86.isMemRmw(st) then return nil end
 	local b = x86.baseMnemonic(string.lower(st.mnemonic))
 	if b == "lea" then return nil end                 -- address escape, not a read
-	local i = (mem.dispVal or 0) - saveDepth - 8
+	-- A clone statement's rsp-relative displacement keys 8 lower (the +8 rule):
+	-- an incoming stack argument sits a further return-address word above it.
+	local i = (mem.dispVal or 0) - saveDepth - 8 - (st.localClone and 8 or 0)
 	if i < 0 or i % 8 ~= 0 then return nil end
 	i = i / 8
 	if i >= yoloCount then return nil end
@@ -225,14 +243,17 @@ end
 -- isSpSaveForm instead.)
 local function isYoloLeaSave(st, d)
 	if yoloCount == 0 then return false end
-	if d == nil or d == "dyn" then return false end
+	if d == nil or isDynDepth(d) then return false end
 	if isAlloca(st) or st.allocaPlace or st.allocaOwned then return false end
 	local ops = st.operands
 	if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea" then return false end
 	if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp") then return false end
 	local mem = ops[2]
+	-- The entry stack pointer relative to the access's rsp: d above it for a plain
+	-- statement, d + 8 for a clone (the return-address word — the +8 rule).
+	local want = st.localClone and (d + 8) or 0
 	return mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
-		and not mem.index and not mem.dispSym and (mem.dispVal or 0) == 0
+		and not mem.index and not mem.dispSym and (mem.dispVal or 0) == want
 end
 
 -- Pre-scan the frame: derive its geometry from the PROLOGUE PREFIX (net depth at the first
@@ -249,7 +270,7 @@ end
 --                            `ret` is part of the span);
 -- The frame size for rbp-based normalization is D0 - fpDepth (so rbp = rsp + frameSize at
 -- the post-prologue rsp); without a frame pointer it is the net constant allocation.
-function x86_64_frame.analyzeFrame(body, sigDesc)
+function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- analyzeFrame may run more than once on the same body (the transform calls it for
 	-- frame geometry before frame.preprocess runs it again for the rewrite), and it may
 	-- see a DIFFERENT body state each time (the transform's deferred dynamic-alloca
@@ -266,6 +287,36 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		st.x86_teardown = nil
 		st.x86_fp = nil
 		st.x86_spRecover = nil
+		st.x86_saveStore = nil
+		st.x86_carrierLoad = nil
+		st.x86_leaSave = nil
+		st.x86_spSave = nil
+		st.x86_dropRestore = nil
+	end
+
+	-- Fixed-alloca region lookup mirroring frame.preprocess's: `dyn` selects the
+	-- alignment-anchored regions ("dyn"-depth rsp coordinates), static the
+	-- lea/mov-anchored ones. `regions` is nil on the transform's early geometry run:
+	-- the region-sensitive decisions below (the caller-saved-save region corner and
+	-- the in-region lea exclusion) then conservatively fall back to the behaviors
+	-- that keep the early run error-free (the rewrite's run sees the regions).
+	local function regionOf(off, dyn)
+		for _, r in (regions or {}) do
+			if (r.anchored and true or false) == (dyn and true or false)
+				and off >= r.base and off < r.base + r.size then return r end
+		end
+		return nil
+	end
+	-- The alignment-anchored region (andq/sub forms) this statement anchors, if any:
+	-- the annotated instruction itself (its region's `stmt`), or the andq the region
+	-- scan marked as the anchoring machinery of a `subq $K, %rsp`-annotated region.
+	local anchoredOf = {}
+	for _, r in (regions or {}) do
+		if r.anchored and r.stmt then anchoredOf[r.stmt] = r end
+	end
+	local function anchoredRegionOf(st)
+		if st.allocaAnchor then return st.allocaAnchor end
+		return anchoredOf[st]
 	end
 
 	-- (sigDesc is the function's entry signature. A float/double argument or FP
@@ -396,6 +447,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					-- undoes part of the prologue allocation: net it out (an epilogue add
 					-- is never reached here — the scan has long stopped at the body)
 					depth -= immVal(ops[2]); subBytes -= immVal(ops[2])
+				elseif b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2]
+					and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+					and not ops[2].index and not ops[2].dispSym then
+					-- `leaq -N(%rsp), %rsp` is the lea spelling of `subq $N, %rsp`
+					-- (x25519/gf2m/bsaes prologue shape); `leaq +N(%rsp), %rsp`
+					-- undoes it like the constant add.
+					local v = ops[2].dispVal or 0
+					if v < 0 then
+						depth += -v; subBytes += -v
+					elseif v > 0 and v <= subBytes then
+						depth -= v; subBytes -= v
+					elseif v ~= 0 then
+						prologueEnd = i break
+					end
 				elseif insnWritesSp(st) then
 					-- any other rsp write (`leaq -N(%rbp), %rsp` teardown, register-source
 					-- `subq %reg, %rsp`, `movq %rbp, %rsp`) is not prologue frame setup
@@ -516,13 +581,23 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			local nd = fpDepth - (ops[2].dispVal or 0)
 			return nd, truncateSaves(sv, nd), fp
 		end
+		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+			and ops[2].base and ops[2].base.kind == "reg" and ops[2].base.name ~= "rbp"
+			and not ops[2].index and not ops[2].dispSym and recoverDepth then
+			-- `leaq K(%reg), %rsp` recovers rsp from a saved-rsp CARRIER (the lea form of
+			-- `movq %reg, %rsp` — the perlasm `leaq (%rsi), %rsp`): the incoming smap
+			-- proved the base register holds the save value (recoverDepth = the parked
+			-- depth minus K, computed in transfer), so exactly like the mov form the
+			-- recovery revives that known depth and the surviving save shape.
+			return recoverDepth, truncateSaves(sv, recoverDepth), fp
+		end
 		if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then
 			-- Establishing the frame pointer (`movq %rsp, %rbp`): from here %rbp holds a
 			-- fixed frame-relative value on this path. Re-establishing it mid-function
 			-- is rejected by the rewrite, so this is the one transition to "est".
 			return d, sv, "est"
 		end
-		if d == "dyn" or sv == "dyn" then
+		if isDynDepth(d) or sv == "dyn" then
 			-- Inside a dynamic-alloca region the DEPTH is unprovable, but the outstanding
 			-- saves still sit at their slots: an instruction that cannot touch rsp
 			-- propagates the save stack unchanged so a later `leave`/`movq %rbp, %rsp`
@@ -539,6 +614,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- INDEPENDENT of the rsp poison: an alloca perturbs rsp, never rbp, so
 			-- rbp-relative spill traffic stays provable through the poisoned region and
 			-- fp is propagated unchanged.
+			-- The {anchored} region scope propagates through inert computation exactly
+			-- like the plain "dyn": the andq only lowered rsp, and nothing may move it
+			-- again before the recovery — every rsp write below degrades to plain "dyn".
 			if sv == "dyn" then return "dyn", "dyn", fp end
 			if b == "push" then return "dyn", "dyn", fp end
 			if b == "pop" then
@@ -551,6 +629,17 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			end
 			if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp"
 				and not (isAlloca(st) or st.allocaPlace) then
+				return "dyn", sv, fp
+			end
+			-- An alloca-form rsp write inside the scope: the region's OWN anchoring
+			-- machinery (the andq marked for this region) keeps it; anything else (a
+			-- nested region, a second dynamic alloca) leaves the scope — region
+			-- coordinates shift with rsp, so further offsets can no longer be keyed.
+			if (b == "sub" or b == "add" or b == "and") and ops[1] and ops[1].rc == "sp"
+				and (isAlloca(st) or st.allocaPlace) then
+				if st.allocaAnchor and type(d) == "table" and d.anchored == st.allocaAnchor then
+					return d, sv, fp
+				end
 				return "dyn", sv, fp
 			end
 			-- Any modeled definition of a pushed register breaks the link between its
@@ -590,7 +679,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					sv = out
 				end
 			end
-			return "dyn", sv, fp
+			-- Inert computation: propagate the depth (plain "dyn" or the {anchored}
+			-- region scope) unchanged.
+			return d, sv, fp
 		end
 		if b == "push" then
 			local c = { table.unpack(sv) }
@@ -619,17 +710,42 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		end
 		local nd = d
 		if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then
-			if ops[2] and ops[2].kind == "imm" then
-				nd = (b == "sub") and (d + immVal(ops[2])) or (d - immVal(ops[2]))
-			elseif isAlloca(st) or st.allocaPlace then
-				-- dynamic alloca (`subq %rax, %rsp ;! alloca size (x)`, or the deferred
-				-- idiom's unannotated adjustment marked st.allocaPlace): the depth
+			if isAlloca(st) or st.allocaPlace then
+				-- dynamic alloca (`subq %rax, %rsp ;! alloca size (x)`, the deferred
+				-- idiom's unannotated adjustment marked st.allocaPlace, or an
+				-- `alloca result size=N`-annotated constant reservation): the depth
 				-- becomes unknown, but the alloca pops nothing — the outstanding saves
-				-- survive at their slots and a later fp restore revives them.
+				-- survive at their slots and a later fp restore revives them. (Checked
+				-- BEFORE the immediate case: an annotated constant `subq $imm, %rsp`
+				-- is the allocation — dropped — so its depth effect must not count.)
+				-- An ANCHORED region's reservation enters the region's scope (the
+				-- {anchored} depth: raw displacements are region coordinates there).
+				local ar = anchoredRegionOf(st)
+				if ar then return { anchored = ar }, sv, fp end
 				return "dyn", sv, fp
+			elseif ops[2] and ops[2].kind == "imm" then
+				nd = (b == "sub") and (d + immVal(ops[2])) or (d - immVal(ops[2]))
 			else
 				return "dyn", "dyn", fp  -- unanalyzable rsp write
 			end
+		end
+		if b == "and" and ops[1] and ops[1].rc == "sp" and (isAlloca(st) or st.allocaPlace) then
+			-- The alignment-anchored alloca form (`andq $-A, %rsp ;! alloca result size=N`,
+			-- or the andq marked as machinery of a `subq $K, %rsp`-anchored region): the
+			-- andq only LOWERS rsp to an alignment boundary — nothing is popped, so the
+			-- outstanding saves survive exactly as for a marked sub. (An UNMARKED andq
+			-- on rsp keeps its historical treatment: no depth change here, and the
+			-- rewrite rejects it as a stack-address escape.)
+			local ar = anchoredRegionOf(st)
+			if ar then return { anchored = ar }, sv, fp end
+			return "dyn", sv, fp
+		end
+		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+			and ops[2].base and ops[2].base.rc == "sp" and not ops[2].index and not ops[2].dispSym then
+			-- `leaq K(%rsp), %rsp`: the lea spelling of a constant rsp adjustment
+			-- (prologue `leaq -N(%rsp), %rsp` allocation, epilogue `leaq +N(%rsp), %rsp`
+			-- teardown) — same depth math as the sub/add forms.
+			nd = d - (ops[2].dispVal or 0)
 		end
 		if nd < d then sv = truncateSaves(sv, nd) end
 		-- A full-width (8-byte) plain store to a save slot RE-SYNCS the slot with the
@@ -704,79 +820,364 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		return nd, sv, fp
 	end
 
-	-- The full transition, adding the PROLOGUE RSP-SAVE MAP (smap) to the core state.
-	-- smap is { [regName] = { name, num, depth, redefined } } — the registers the
-	-- prologue parked %rsp into (`movq %rsp, %rbx`) and whether their saved value still
-	-- reaches this point. It behaves like a per-register resource, not a stack: a
-	-- register holds its save until it is redefined, CFG joins require per-register
-	-- agreement, and it rides UNCHANGED through dynamic-alloca "dyn" depths (an alloca
-	-- perturbs %rsp, never the GPRs) — which is exactly what lets a recovery revive a
-	-- KNOWN depth after an alloca poisoned the depth. Only CALLEE-SAVED registers can
-	-- hold a save (enforced by the rewrite at the save site): a call would clobber a
-	-- caller-saved one, and neither this analysis nor sarcasm's own injected runtime
-	-- calls model that. EXCEPTION: when the entry signature has incoming yolo STACK
-	-- ARGUMENTS (yoloCount > 0), a save in ANY register is recorded — not for %rsp
-	-- recovery (a caller-saved save still cannot recover, gated below) but as an
-	-- entry-rsp ALIAS whose entry-time reads of the incoming stack arguments the
-	-- rewrite redirects to the arguments' slots. Those reads REMOVE the register use
-	-- entirely, so injected calls cannot corrupt anything (and a modeled call still
-	-- marks the alias redefined, killing it).
+	-- The full transition, adding the SAVED-RSP CARRIER MAP (smap) to the core state.
+	-- The prologue `movq %rsp, %reg` save (and its `leaq K(%rsp), %reg` form) parks a
+	-- value sarcasm's synthesized frame makes PHANTOM: the save, every carrier flow of
+	-- it, and the recovery are ALL dropped, so the value has no output existence and
+	-- injected runtime calls / SysV callee clobbers can never corrupt it. The smap
+	-- tracks, per program point, which CARRIERS provably hold the save value:
+	--   * register carriers — keyed by register name; a save may be copied reg→reg
+	--     (`movq %carrier, %reg`), keeping both;
+	--   * frame-slot carriers — keyed by slot offset (`movq %carrier, off(%rsp)` /
+	--     `off(%rbp)`); a full-width load from the slot (`movq off(%rsp), %reg`)
+	--     re-materializes a register carrier. Slot keys live in the access's own
+	--     coordinates: "S"..<normalized frame offset> at provable depth (the same
+	--     key the slot virtualization uses), "D"..<disp> at "dyn" depth (the
+	--     anchored-region coordinates — cleared on any later rsp write, which would
+	--     shift those coordinates).
+	-- A recovery (`movq %reg, %rsp`, or `leaq K(%reg), %rsp`) may read any carrier
+	-- that provably holds the save value and revives the parked depth (minus K).
+	-- Any OTHER read of a register carrier, and any redefinition of one, poisons it
+	-- (the `redefined` merge rule); a store overlapping a slot carrier poisons the
+	-- slot, and a non-carrier-form LOAD from it is rejected outright (it would
+	-- observe the phantom value). CFG joins require per-key agreement.
+	-- Register class is unrestricted: the carrier discipline makes every use either
+	-- dropped or rejected, so a caller-saved register (or a caller-saved save riding
+	-- through a region slot — the sha256/sha512/wp idiom) is exactly as sound as a
+	-- callee-saved one. EXCEPTIONS: (a) with incoming yolo STACK ARGUMENTS
+	-- (yoloCount > 0) a save additionally serves as an entry-rsp ALIAS whose
+	-- entry-time argument reads the rewrite redirects to the arguments' slots
+	-- (those reads remove the register use entirely); (b) a caller-saved save with
+	-- a static fixed-alloca region based at rsp+0 is NOT a carrier — the region
+	-- redirect keeps it alive as a REAL value (the region corner). Only CALLEE-SAVED
+	-- prologue saves (and the yolo aliases) are recorded on the region-less early
+	-- analysis run: the corner and the in-region lea exclusion need the regions, and
+	-- every shape they legalize is then revalidated (and never errors early).
+	-- The FP/SIMD knowledge module, aliased for scopes where the `fp` frame-pointer
+	-- state parameter shadows the file-scope `fp` module.
+	local fpKnowledge = fp
+	local function slotKeyOf(mem, d, st)
+		-- Carrier-slot key for a plain base+disp stack memory operand (see the smap
+		-- comment), or nil for a non-stack/unkeyable operand. A clone statement's
+		-- displacement keys 8 lower (the +8 rule — localcall.luau).
+		if not (mem and mem.kind == "mem" and mem.base and mem.base.kind == "reg"
+			and not mem.index and not mem.dispSym) then return nil end
+		local disp = mem.dispVal or 0
+		local bias = (st and st.localClone) and 8 or 0
+		if mem.base.rc == "sp" then
+			if isDynDepth(d) then return "D" .. disp, disp, "D" end
+			if d == nil then return nil end
+			return "S" .. (disp + D0 - d - bias), disp + D0 - d - bias, "S"
+		end
+		if usesRbp and mem.base.name == "rbp" then
+			return "S" .. (frameSize + disp), frameSize + disp, "S"
+		end
+		return nil
+	end
+	-- A region-pointer value: a register provably holding <region base + K>, from a
+	-- region-redirect lea (`leaq K(%rsp), %reg` landing in a fixed region — the wp
+	-- `leaq 128(%rsp), %r10`). Recorded in the smap as { roff = K, rbase, rspace }:
+	-- the register is a REAL pointer (reads are legal — unlike carriers), and a
+	-- carrier save-store/load THROUGH it keys the slot in the region's coordinate
+	-- space (`movq %rax, 32(%r10)` parks the save in region slot 128+32).
+	-- Is `st` such a region-pointer lea? Returns (roff, rbase, rspace).
+	local function regionLeaOf(st, d)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea" then return nil end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp") then return nil end
+		local mem = ops[2]
+		if not (mem and mem.kind == "mem" and mem.base and mem.base.kind == "reg"
+			and not mem.index and not mem.dispSym) then return nil end
+		local disp = mem.dispVal or 0
+		if mem.base.rc == "sp" and type(d) == "table" then
+			-- anchored scope: raw displacements are the region's coordinates
+			local r = d.anchored
+			if disp >= r.base and disp < r.base + r.size then
+				return disp - r.base, r.base, "D"
+			end
+			return nil
+		end
+		if d == nil or isDynDepth(d) then return nil end
+		local off = disp
+		if mem.base.rc ~= "sp" then
+			if usesRbp and mem.base.name == "rbp" then off = frameSize + disp
+			else return nil end
+		elseif st.localClone then
+			-- the +8 rule (the return-address compensation on rsp-relative
+			-- clone accesses — localcall.luau)
+			off = off + D0 - d - 8
+		end
+		local r = regionOf(off, false)
+		if r then return off - r.base, r.base, "S" end
+		return nil
+	end
+	-- Is `st` a full-width `movq %rA, %rB` copy of a region-pointer value?
+	local function roffCopyOf(st, smap)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "mov" then return nil end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+			and (ops[1].width == 64 or ops[1].width == nil)) then return nil end
+		if not (ops[2] and ops[2].kind == "reg" and ops[2].rc == "gpr" and ops[2].name ~= "rbp"
+			and (ops[2].width == 64 or ops[2].width == nil)) then return nil end
+		local e = smap[ops[2].name]
+		if e and e.roff and not e.redefined then return e end
+		return nil
+	end
+	-- Slot key for a plain base+disp memory operand: stack-based (slotKeyOf), or a
+	-- region-pointer-derived base register (smap[base].roff) — the latter keys the
+	-- slot in the region's own coordinate space, so the two spellings of one slot
+	-- (rsp-relative direct, or through a region pointer) unify.
+	local function memSlotKey(mem, d, smap, st)
+		if not (mem and mem.kind == "mem" and mem.base and mem.base.kind == "reg"
+			and not mem.index and not mem.dispSym) then return nil end
+		if mem.base.rc == "sp" or (usesRbp and mem.base.name == "rbp") then
+			return slotKeyOf(mem, d, st)
+		end
+		local e = smap and smap[mem.base.name]
+		if e and e.roff and not e.redefined then
+			local off = e.rbase + e.roff + (mem.dispVal or 0)
+			return e.rspace .. off, off, e.rspace
+		end
+		return nil
+	end
+	-- Is `st` a full-width `movq %carrier, %reg` carrier copy (reg→reg save flow)?
+	local function carrierCopyOf(st, smap)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "mov" then return nil end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+			and (ops[1].width == 64 or ops[1].width == nil)) then return nil end
+		if not (ops[2] and ops[2].kind == "reg" and ops[2].rc == "gpr" and ops[2].name ~= "rbp"
+			and (ops[2].width == 64 or ops[2].width == nil)) then return nil end
+		local e = smap[ops[2].name]
+		if e and not e.redefined and not e.slot and not e.roff then return e end
+		return nil
+	end
+	-- Is `st` a full-width `movq %carrier, off(%rsp)/off(%rbp)` save-store (register
+	-- carrier -> slot carrier)? Returns the carrier and the slot key.
+	local function saveStoreOf(st, smap, d)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "mov" then return nil end
+		local mem = ops[1]
+		if not (mem and mem.kind == "mem") then return nil end
+		if not (ops[2] and ops[2].kind == "reg" and ops[2].rc == "gpr" and ops[2].name ~= "rbp"
+			and (ops[2].width == 64 or ops[2].width == nil)) then return nil end
+		local e = smap[ops[2].name]
+		if not (e and not e.redefined and not e.slot and not e.roff) then return nil end
+		local key, off, space = memSlotKey(mem, d, smap, st)
+		if not key then return nil end
+		return e, key, off, space
+	end
+	-- Is `st` a full-width `movq off(%rsp)/off(%rbp), %reg` carrier-load (slot carrier
+	-- -> register carrier)? Returns the slot carrier.
+	local function carrierLoadOf(st, smap, d)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "mov" then return nil end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+			and (ops[1].width == 64 or ops[1].width == nil)) then return nil end
+		local key = memSlotKey(ops[2], d, smap, st)
+		if not key then return nil end
+		local e = smap[key]
+		if e and not e.redefined then return e end
+		return nil
+	end
+	-- Is `st` a `movq K(%carrier), %dest` epilogue restore load through a saved-rsp
+	-- carrier (the perlasm movq-restore riding the recovered pointer)? The carrier's
+	-- parked depth minus K names the read save slot; it is a restore iff an
+	-- outstanding pushed save sits at exactly that depth and the destination is that
+	-- save's register. Returns the save-stack entry, or nil.
+	local function restoreLoadOf(st, smap, sv)
+		local ops = st.operands
+		if x86.baseMnemonic(string.lower(st.mnemonic)) ~= "mov" then return nil end
+		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+			and (ops[1].width == 64 or ops[1].width == nil)) then return nil end
+		local mem = ops[2]
+		if not (mem and mem.kind == "mem" and mem.base and mem.base.kind == "reg"
+			and not mem.index and not mem.dispSym) then return nil end
+		if not (sv and sv ~= "dyn") then return nil end
+		local e = smap and smap[mem.base.name]
+		if not (e and not e.redefined and not e.slot and not e.roff) then return nil end
+		local sdepth = e.depth - (mem.dispVal or 0)
+		for _, s in sv do
+			if s.depth == sdepth then
+				if s.name == ops[1].name then return s end
+				return nil
+			end
+		end
+		return nil
+	end
 	local function transfer(st, d, sv, smap, fp, idx)
 		local ops = st.operands
 		-- The alloca machinery owns its statements outright (they are dropped or
 		-- replaced wholesale by the transform — frame.preprocess routes them around the
-		-- rewrite), so they are neither saves nor recoveries.
-		-- A CALLEE-SAVED prologue save form records its save (idx < prologueEnd: only
-		-- prologue saves are legal — a post-prologue `movq %rsp, %reg` stays an escape,
-		-- or, in the fixed-alloca-region corner, KEEPS executing with its destination
+		-- rewrite), so they are neither saves nor recoveries nor carriers.
+		-- A save form records its save wherever the depth is provable (a "dyn" or
+		-- unreachable depth cannot name a parked value). Post-prologue saves are as
+		-- sound as prologue ones — the value derives from the CURRENT rsp at a static
+		-- depth, and the carrier discipline drops or rejects every use of it — which
+		-- is exactly what the perlasm shortcut-dispatch preamble needs (the save sits
+		-- behind the dispatch's merge label, after the prologue scan stopped). The
+		-- fixed-alloca-region corner is the one exclusion: a caller-saved save with a
+		-- static region based at rsp+0 KEEPS executing with its destination
 		-- redirected to the allocation pointer, so it is no save at all and its
-		-- register may be read). Callee-saved only: these are exactly the saves the
-		-- rewrite drops — a caller-saved save is rejected by the rewrite (a call
-		-- clobbers it) unless the region corner keeps it alive with a redirected,
-		-- REAL value, and neither case leaves a dropped save behind. A prologue save
-		-- is recorded even when the deferred-idiom discovery marked it
-		-- allocaPlace/allocaOwned: those marks mean the statement is DROPPED by the
-		-- emitter (the discovery's coarse straight-line region around a dynamic-alloca
-		-- result swallows prologue frame setup, saves included) — and a dropped save is
-		-- exactly what the frame rewrite does with it, so the register keeps holding
-		-- the save either way. An ANNOTATED save form is excluded: a `;! alloca size`
-		-- definition STAYS and computes the size, not a parked %rsp.
-		-- (With yolo stack arguments the save's register class is unrestricted — see
-		-- the smap comment above; a caller-saved save combined with the region corner
-		-- is rejected at the rewrite rather than given the alias treatment.)
-		local isSave = idx < prologueEnd and isSpSaveForm(st) and not isAlloca(st)
-			and (x86.CALLEE_SAVED[ops[1].name] ~= nil or yoloCount > 0)
-		-- An entry-rsp materialization via lea (`leaq 0(%rsp), %reg`, the aesni_ocb
-		-- prologue shape) is the same kind of save: it ENDS the prologue prefix (it
-		-- reads rsp), so it is not covered by isSave; record it at any statement
-		-- whose depth is provable. The rewrite drops it like the mov form, and reads
-		-- through the register are redirected the same way.
+		-- register may be read. A save is recorded even when the deferred-idiom
+		-- discovery marked it allocaPlace/allocaOwned: those marks mean the statement
+		-- is DROPPED by the emitter — and a dropped save is exactly what the frame
+		-- rewrite does with it, so the register keeps holding the save either way. An
+		-- ANNOTATED save form is excluded: a `;! alloca size` definition STAYS and
+		-- computes the size, not a parked %rsp. (Register classes: see the smap
+		-- comment — callee-saved always; any register with yolo stack arguments;
+		-- caller-saved otherwise only on the region-carrying run and outside the
+		-- rsp+0 region corner.)
+		local isSave = isSpSaveForm(st) and not isAlloca(st) and d ~= nil and not isDynDepth(d)
+			and (x86.CALLEE_SAVED[ops[1].name] ~= nil or yoloCount > 0
+				or (regions ~= nil and not regionOf(0, false)))
+			-- A POST-prologue save form owned by the deferred alloca idiom is the
+			-- idiom's BASE computation (clang's VLA shape `movq %rsp, %rcx; ...;
+			-- subq %rax, %rcx ;! alloca result`), not a parked stack pointer: the
+			-- idiom machinery drops it. (Prologue saves are recorded even when the
+			-- discovery's coarse region swallowed them — see the comment above.)
+			and (idx < prologueEnd or not (st.allocaPlace or st.allocaOwned))
+		-- A saved-rsp materialization via lea. The yolo form (`leaq 0(%rsp), %reg`,
+		-- the aesni_ocb prologue shape) is an entry-rsp alias like the mov save. The
+		-- general form — `leaq d(%rsp), %reg` at a provable depth d (the perlasm
+		-- recovery-address computation, `leaq 280+48(%rsp), %rsi` at depth 328) —
+		-- parks the ENTRY stack pointer (depth 0). A lea with K < d computes a
+		-- frame-INTERIOR address: that is frame-address-taking into the buffer (the
+		-- region redirect's domain when K lands in a region, the escape rejection
+		-- otherwise), not a saved stack pointer. Excluded when K lands in a static
+		-- alloca region: that lea is the region redirect's REAL pointer arithmetic,
+		-- not a carrier. (Recorded only on the region-carrying run, like
+		-- caller-saved saves.)
 		local isLeaSave = isYoloLeaSave(st, d)
+		local leaSaveForm = nil
+		if not isLeaSave and regions ~= nil and not isAlloca(st)
+			and not (st.allocaPlace or st.allocaOwned)
+			and d ~= nil and not isDynDepth(d)
+			and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
+			local mem = ops[2]
+			if ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+				and mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
+				and not mem.index and not mem.dispSym then
+				local k = mem.dispVal or 0
+				-- A clone statement parks the ENTRY stack pointer with K = d + 8
+				-- (the return-address word — the +8 rule); the static-region
+				-- membership test keys its displacement the same way.
+				local pk = st.localClone and (k - 8) or k
+				local rkey = st.localClone and (k + D0 - d - 8) or k
+				if pk == d and not regionOf(rkey, false) then
+					isLeaSave = true
+					leaSaveForm = "leaq " .. k .. "(%rsp)"
+				end
+			end
+		end
 		local owned = st.allocaPlace or st.allocaOwned or isAlloca(st)
+		-- The recovery forms: `movq %reg, %rsp` revives the parked depth; `leaq K(%reg),
+		-- %rsp` (base register not rbp — that is the frame-pointer recovery above)
+		-- revives the parked depth minus K. Either may read any live carrier. (No
+		-- callee-saved requirement: the recovery is dropped, so no clobber is
+		-- observable — the carrier discipline makes every other use a rejection.)
 		local recoverDepth = nil
 		if not owned and isSpRecoverForm(st) then
 			local e = smap[ops[2].name]
-			-- a %rsp recovery needs the save to survive CALLS, which a caller-saved
-			-- register cannot do (injected runtime calls are invisible to this
-			-- analysis): those stay rejected at the rewrite, as without yolo args.
-			if e and not e.redefined and x86.CALLEE_SAVED[e.name] then recoverDepth = e.depth end
+			if e and not e.redefined and not e.slot and not e.roff then recoverDepth = e.depth end
 		end
+		if not owned and recoverDepth == nil
+			and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea"
+			and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+			and (ops[1].width == 64 or ops[1].width == nil)
+			and ops[2] and ops[2].kind == "mem" and ops[2].base and ops[2].base.kind == "reg"
+			and ops[2].base.name ~= "rbp" and not ops[2].index and not ops[2].dispSym then
+			local e = smap[ops[2].base.name]
+			if e and not e.redefined and not e.slot and not e.roff then
+				local rd = e.depth - (ops[2].dispVal or 0)
+				if rd >= 0 then recoverDepth = rd end
+			end
+		end
+		-- The remaining carrier flows (register copy, save-store, carrier-load), all
+		-- dropped by the rewrite exactly like the save itself.
+		local copySrc = (not owned) and carrierCopyOf(st, smap) or nil
+		local storeSrc, storeKey, storeOff, storeSpace = nil, nil, nil, nil
+		if not owned and not copySrc then storeSrc, storeKey, storeOff, storeSpace = saveStoreOf(st, smap, d) end
+		local loadSrc = (not owned and not copySrc and not storeSrc) and carrierLoadOf(st, smap, d) or nil
+		local restoreSave = (not owned) and restoreLoadOf(st, smap, sv) or nil
+		-- Region-pointer values (the region-redirect lea and its copies): tracked so
+		-- carrier save-stores/loads THROUGH them key the slot in region coordinates.
+		local rOff, rBase, rSpace = nil, nil, nil
+		if not owned and not copySrc and not storeSrc and not loadSrc then
+			rOff, rBase, rSpace = regionLeaOf(st, d)
+		end
+		local roffCopySrc = (not owned and not rOff) and roffCopyOf(st, smap) or nil
 		local nd, nsv, nfp = transferCore(st, d, sv, fp, recoverDepth)
+		-- An rsp write (of any form — including a recovery or a push/pop) shifts the
+		-- "dyn"-space coordinates: slot carriers keyed in it cannot survive.
+		local function clearDynSlots(out)
+			if not insnWritesSp(st) then return out end
+			local cleaned = nil
+			for k, e in pairs(out) do
+				if e.slot and e.space == "D" then
+					if not cleaned then cleaned = {} for k2, e2 in pairs(out) do cleaned[k2] = e2 end end
+					cleaned[k] = nil
+				end
+			end
+			return cleaned or out
+		end
 		if isSave or isLeaSave then
-			-- A (re)definition of the save: the register freshly parks the CURRENT rsp
-			-- depth (always known where a save survives the rewrite — the prologue).
-			-- This must not run the def-marking below: the save re-registers itself.
+			-- A (re)definition of the save: the register freshly parks a known rsp
+			-- depth. This must not run the def-marking below: the save re-registers
+			-- itself. (A clone statement's parked depth carries the return-address
+			-- word too — the +8 rule.)
 			local out = {}
 			for k, e in pairs(smap) do out[k] = e end
-			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = d,
-				redefined = false, form = isLeaSave and "leaq 0(%rsp)" or nil }
-			return nd, nsv, out, nfp
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num,
+				depth = isLeaSave and (d + (st.localClone and 8 or 0) - (ops[2].dispVal or 0)) or d,
+				redefined = false, form = leaSaveForm
+					or (isLeaSave and "leaq 0(%rsp)" or nil) }
+			return nd, nsv, clearDynSlots(out), nfp
 		end
 		if recoverDepth then
 			-- The recovery reads the save and writes %rsp; the save REGISTER is
 			-- unchanged, so it still holds the save — a second recovery from it stays
 			-- valid, and so does further traffic that does not read it.
-			return nd, nsv, smap, nfp
+			return nd, nsv, clearDynSlots(smap), nfp
+		end
+		if copySrc then
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = copySrc.depth,
+				redefined = false, form = copySrc.form }
+			return nd, nsv, clearDynSlots(out), nfp
+		end
+		if storeSrc then
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[storeKey] = { slot = true, name = "the frame slot", depth = storeSrc.depth,
+				redefined = false, off = storeOff, space = storeSpace }
+			return nd, nsv, clearDynSlots(out), nfp
+		end
+		if loadSrc then
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = loadSrc.depth,
+				redefined = false }
+			return nd, nsv, clearDynSlots(out), nfp
+		end
+		if rOff then
+			-- The region-redirect lea defines a region-pointer value (a REAL pointer —
+			-- reads are legal, unlike carriers): record its offset for carrier-slot
+			-- keying through the register.
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num,
+				roff = rOff, rbase = rBase, rspace = rSpace, redefined = false }
+			return nd, nsv, clearDynSlots(out), nfp
+		end
+		if roffCopySrc then
+			local out = {}
+			for k, e in pairs(smap) do out[k] = e end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num,
+				roff = roffCopySrc.roff, rbase = roffCopySrc.rbase,
+				rspace = roffCopySrc.rspace, redefined = false }
+			return nd, nsv, clearDynSlots(out), nfp
 		end
 		-- Any other instruction. A modeled def of a save register (an ordinary move, a
 		-- pop INTO it, an implicit clobber like cpuid's ebx) breaks the link between the
@@ -789,17 +1190,16 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		local c = classOf(st)
 		local out = smap
 		for name, e in pairs(smap) do
-			if not e.redefined then
-				-- Count this instruction's modeled uses of the save register. The ONE
-				-- use allowed to survive is the memory base of an entry-time read of
-				-- an incoming yolo stack argument (the rewrite redirects it to the
-				-- argument's slot, removing the register use entirely); anything else
-				-- — a value use, a second use, a write through the register — observes
-				-- the dropped save and is rejected. EXCEPT the self-xor/self-sub
-				-- zeroing idiom (`xorl %eax, %eax`): the value written does not
-				-- depend on the register's old value, so the modeled use observes
-				-- nothing (and the def below kills the alias, exactly as a plain
-				-- redefinition).
+			if not e.redefined and not e.slot and not e.roff then
+				-- Count this instruction's modeled uses of the save register. Allowed
+				-- survivors: the memory base of an entry-time read of an incoming yolo
+				-- stack argument (the rewrite redirects it to the argument's slot,
+				-- removing the register use entirely); an epilogue restore load through
+				-- the carrier (its base is the only use, and the load is dropped);
+				-- the self-xor/self-sub zeroing idiom (`xorl %eax, %eax` — the value
+				-- written does not depend on the register's old value, so the modeled
+				-- use observes nothing; the def below kills the alias, exactly as a
+				-- plain redefinition). Anything else observes the dropped save.
 				local zeroing = false
 				do
 					local bb = x86.baseMnemonic(string.lower(st.mnemonic))
@@ -814,7 +1214,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					if u.kind == "reg" and u.rc == "gpr" and u.num == e.num then nUses += 1 end
 				end
 				if nUses > 0 and not zeroing
-					and not (nUses == 1 and yoloArgSlotOf(st, name, e.depth)) then
+					and not (nUses == 1 and yoloArgSlotOf(st, name, e.depth))
+					and not (restoreSave and nUses == 1) then
 					error("sarcasm: reading %" .. name .. " while it holds the prologue"
 						.. " `" .. (e.form or "movq %rsp") .. ", %" .. name .. "` save cannot be proven safe (the"
 						.. " save is dropped by the rewrite — the register's stack value"
@@ -822,7 +1223,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 						.. " redefine it): " .. (st.raw or st.mnemonic))
 				end
 			end
-			if not e.redefined then
+			if not e.redefined and not e.slot then
 				for _, dd in c.defs do
 					if dd.kind == "reg" and dd.rc == "gpr" and dd.num == e.num then
 						if out == smap then
@@ -836,7 +1237,43 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				end
 			end
 		end
-		return nd, nsv, out, nfp
+		-- Slot-carrier traffic: a stack WRITE overlapping a live slot carrier poisons
+		-- the slot (the slot then holds an ordinary value; a later carrier-load or
+		-- recovery from it is rejected); a stack LOAD from a live slot carrier that is
+		-- not the carrier-load form would observe the phantom value — reject it.
+		-- (Region-pointer-derived bases key the slot in the region's coordinates —
+		-- the same space the direct rsp-relative spelling uses.)
+		for _, o in ops do
+			if o.kind == "mem" then
+				local key, off, space = memSlotKey(o, d, smap, st)
+				if key then
+					local w = nil
+					-- (fpKnowledge, not the `fp` frame-pointer state parameter.)
+					local fpe = fpKnowledge.lookup(string.lower(st.mnemonic))
+					if isFpInsn(fpe, st) then w = fpKnowledge.accessWidth(string.lower(st.mnemonic), ops, st.raw)
+					else w = gprStackWidth(string.lower(st.mnemonic), o) end
+					for k, e in pairs(smap) do
+						if e.slot and not e.redefined and e.space == space and w
+							and off < e.off + 8 and off + w > e.off then
+							if ops[1] == o then
+								-- a write (the mem operand is the destination): poison
+								if out == smap then
+									out = {}
+									for k2, v in pairs(smap) do out[k2] = v end
+								end
+								out[k] = nil
+							else
+								error("sarcasm: stack access into a frame slot that holds the"
+									.. " saved stack pointer cannot be proven safe (the save is"
+									.. " phantom — the slot's value does not exist in the output;"
+									.. " overwrite the slot first): " .. (st.raw or st.mnemonic))
+							end
+						end
+					end
+				end
+			end
+		end
+		return nd, nsv, clearDynSlots(out), nfp
 	end
 
 	local function mergeSaves(a, b)
@@ -870,7 +1307,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		local out = a
 		for name, e in pairs(a) do
 			local f = b[name]
-			if not f or f.depth ~= e.depth or f.redefined ~= e.redefined then
+			if not f or f.depth ~= e.depth or f.redefined ~= e.redefined
+				or f.roff ~= e.roff or f.rbase ~= e.rbase or f.rspace ~= e.rspace then
 				if out == a then
 					out = {}
 					for k, v in pairs(a) do out[k] = v end
@@ -885,6 +1323,25 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	end
 	local function successors(i)
 		local st = body[i]
+		-- Local-subroutine marks (localcall.luau): a local call transfers to the
+		-- per-caller clone's entry (no fall-through — the continuation is reached
+		-- only through the clone's ret dispatch); a local ret branches to the
+		-- clone's continuations. The clone executes at the CALLER's depth (the
+		-- no-push clone model moves no stack pointer), so the state flows through
+		-- both edges unchanged.
+		if st.localCall then
+			local t = labelAt[st.localCall.entry]
+			if t then return { t } end
+			return {}
+		end
+		if st.localRet then
+			local out = {}
+			for _, cont in st.localRet.conts do
+				local t = labelAt[cont]
+				if t then table.insert(out, t) end
+			end
+			return out
+		end
 		local m = string.lower(st.mnemonic)
 		local b = x86.baseMnemonic(m)
 		local nxt = nextInsn[i]
@@ -902,8 +1359,59 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		if nxt <= #body then table.insert(out, nxt) end
 		return out
 	end
+
+	-- Are the condition flags DEAD after statement i — nothing reads them before a
+	-- full flag write on any control-flow path? Conservative forward scan over the
+	-- CFG: a flag READER (flagUse, incl. carry-in consumers) kills the proof; a
+	-- full flag WRITER (flagDef: all six flags defined or documented-undefined)
+	-- terminates the path soundly. A PARTIAL writer (flagWriteNoDef: inc/dec
+	-- preserve CF, stc/clc replace only CF, sahf, bt*, shifts) neither reads nor
+	-- fully rewrites — the flags a later reader would see through it depend on
+	-- the pre-instruction value, so it also kills the proof. Paths that reach a
+	-- `ret` (or the body end) are sound: nothing reads flags there. Used by the
+	-- mid-function `addq $imm, %rsp` drop below (the add clobbers the flags).
+	local function flagsDeadAfter(i)
+		local work, seen = {}, {}
+		for _, s in successors(i) do table.insert(work, s) end
+		while #work > 0 do
+			local j = table.remove(work)
+			if not seen[j] then
+				seen[j] = true
+				local st = body[j]
+				if st.kind == "insn" then
+					if x86.flagUse(st) or x86.flagWriteNoDef(st) then return false end
+					if not x86.flagDef(st) then
+						for _, s in successors(j) do table.insert(work, s) end
+					end
+				end
+			end
+		end
+		return true
+	end
 	local depthIn, savesIn, fpIn, smapIn = {}, {}, {}, {}
 	do
+		-- Local-ret state source (localcall.luau): a local ret resumes its
+		-- continuation with the CLONE ENTRY's depth/saves/frame-pointer state —
+		-- the clone's own frame machinery (its pushes, its frame sub/add) is
+		-- dropped exactly like a top-level frame, so the real rsp never moved
+		-- inside the clone, and the continuation executes at the caller's
+		-- (callsite's) depth. The smap keeps the clone's flow (carrier
+		-- redefinitions inside the clone still poison the caller's carriers;
+		-- carriers created inside the clone park the clone's rsp and are
+		-- dropped). Because the clone entry is not a CFG predecessor of the ret,
+		-- the fixpoint re-enqueues a clone's local rets whenever the entry's
+		-- state changes (see the merge below), so the override always evaluates
+		-- against the converged entry state.
+		local localRetByEntry = {}
+		for i, st in body do
+			if st.kind == "insn" and st.localRet then
+				local e = labelAt[st.localRet.entry]
+				if e then
+					if not localRetByEntry[e] then localRetByEntry[e] = {} end
+					table.insert(localRetByEntry[e], i)
+				end
+			end
+		end
 		local firstInsn
 		for i, st in body do
 			if st.kind == "insn" then firstInsn = i break end
@@ -919,11 +1427,55 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				inq[i] = nil
 				local od, osv, osmap, ofp = transfer(body[i], depthIn[i], savesIn[i],
 					smapIn[i], fpIn[i], i)
+				local st = body[i]
+				if st.localRet then
+					local e = labelAt[st.localRet.entry]
+					if e and depthIn[i] ~= nil then
+						od = depthIn[e]
+						osv = savesIn[e]
+						ofp = fpIn[e]
+						local esmap = smapIn[e]
+						if esmap then
+							local out = {}
+							for name, ee in pairs(osmap) do
+								if esmap[name] then out[name] = ee end
+							end
+							osmap = out
+						end
+					end
+				end
 				for _, s in successors(i) do
+					-- A nil od carries NO state across the edge: it arises only
+					-- from the local-ret override above when the clone's entry
+					-- has not been reached yet (the clone is entered only
+					-- through its callsite, so a local ret can transiently be
+					-- dequeued — through a shared clone whose other callsites
+					-- ARE reached — before its own entry has state). Propagating
+					-- then would poison the continuation: with an unreached
+					-- successor a nil "merged" could still be assigned when a
+					-- saves/smap/fp component alone differed (enqueueing a
+					-- statement with depthIn nil — crashing the transfer), and
+					-- with a reached one it would spuriously reset it to "dyn".
+					-- The continuation is reached for real once the entry's
+					-- state arrives and the ret is re-evaluated (the
+					-- localRetByEntry re-enqueue below), so skipping the edge
+					-- now loses nothing and keeps the fixpoint's invariant:
+					-- depthIn nil means UNREACHED, and is never assigned.
+					if od ~= nil then
 					local cur = depthIn[s]
 					local merged
 					if cur == nil then merged = od
 					elseif cur == "dyn" or od == "dyn" then merged = "dyn"
+					elseif type(cur) == "table" or type(od) == "table" then
+						-- The {anchored} region scope survives a merge only when every
+						-- path sits in the SAME region's scope (a loop inside one is
+						-- fine); anything else is the ordinary unprovable "dyn".
+						if type(cur) == "table" and type(od) == "table"
+							and cur.anchored == od.anchored then
+							merged = cur
+						else
+							merged = "dyn"
+						end
 					elseif cur == od then merged = cur
 					else merged = "dyn" end
 					local mergedSv = mergeSaves(savesIn[s], osv)
@@ -940,6 +1492,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 						smapIn[s] = mergedSmap
 						fpIn[s] = mergedFp
 						if not inq[s] then inq[s] = true table.insert(worklist, s) end
+						-- A clone entry's state changed: re-evaluate its local rets
+						-- (their override reads this state; see above). Only when the
+						-- ret's own flow has already reached it.
+						for _, lr in (localRetByEntry[s] or {}) do
+							if depthIn[lr] ~= nil and not inq[lr] then
+								inq[lr] = true table.insert(worklist, lr)
+							end
+						end
+					end
 					end
 				end
 			end
@@ -960,6 +1521,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				local b = x86.baseMnemonic(m)
 				local ops = st.operands
 				if isAlloca(st) then return nil end
+				-- A local call inside a teardown span is control flow the
+				-- straight-line proof cannot cover. A local RET is the span's
+				-- terminator exactly like a top-level ret (the clone's own epilogue
+				-- teardown leads to it): it terminates the span below.
+				if st.localCall then return nil end
 				-- The terminating `ret` is part of the verified span (the annotation pass
 				-- accepts a return at an UNKNOWN depth only inside such a span).
 				if b == "ret" then table.insert(marks, j) return marks end
@@ -1020,6 +1586,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			end
 		end
 	end
+	-- Does the entry signature return an integer-class value (in %rax)? A restore
+	-- into %rax can never be proven unobservable (the frame analysis does not model
+	-- `ret`'s operand read), and a %rax carrier live at a `ret` is an escaping stack
+	-- address — both checks below key off this.
+	local retIsGpr = sigDesc and not sigDesc.isVoid
+		and not (sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]))
 	for i, st in body do
 		if st.kind == "insn" then
 			st.x86_prologue = i < prologueEnd
@@ -1055,10 +1627,102 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- diagnostic naming the register.
 			if isSpRecoverForm(st) and not (st.allocaPlace or st.allocaOwned or isAlloca(st)) then
 				local e = smapIn[i] and smapIn[i][st.operands[2].name]
-				-- caller-saved saves (recorded only when yolo stack arguments exist)
-				-- cannot recover %rsp: an injected runtime call could clobber them.
-				if e and not e.redefined and x86.CALLEE_SAVED[e.name] then
+				-- any live carrier recovers (the recovery is dropped — no register
+				-- clobber can be observed through it).
+				if e and not e.redefined and not e.slot then
 					st.x86_spRecover = true
+				end
+			end
+			-- The lea recovery form (`leaq K(%reg), %rsp`, base not rbp): same proof as
+			-- the mov form — the carrier's parked depth minus K is revived.
+			if not (st.allocaPlace or st.allocaOwned or isAlloca(st))
+				and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea"
+				and st.operands[1] and st.operands[1].kind == "reg" and st.operands[1].rc == "sp"
+				and st.operands[2] and st.operands[2].kind == "mem"
+				and st.operands[2].base and st.operands[2].base.kind == "reg"
+				and st.operands[2].base.name ~= "rbp"
+				and not st.operands[2].index and not st.operands[2].dispSym then
+				local e = smapIn[i] and smapIn[i][st.operands[2].base.name]
+				if e and not e.redefined and not e.slot
+					and e.depth - (st.operands[2].dispVal or 0) >= 0 then
+					st.x86_spRecover = true
+				end
+			end
+			-- Phantom saved-rsp flow marks (see the smap comment in the fixpoint):
+			-- save-stores and carrier-loads are dropped by the rewrite; a lea-save is
+			-- dropped with the save; a restore load through a carrier is dropped like
+			-- the epilogue pops (proven unobservable when the save was redefined).
+			if depthIn[i] ~= nil and not (st.allocaPlace or st.allocaOwned or isAlloca(st)) then
+				-- A recorded `movq %rsp, %reg` save carrier (the fixpoint's isSave,
+				-- recomputed exactly): dropped by the rewrite anywhere it appears.
+				if isSpSaveForm(st) and not isDynDepth(depthIn[i])
+					and (x86.CALLEE_SAVED[st.operands[1].name] ~= nil or yoloCount > 0
+						or (regions ~= nil and not regionOf(0, false)))
+					and (st.x86_prologue or not (st.allocaPlace or st.allocaOwned)) then
+					st.x86_spSave = true
+				end
+				local se = saveStoreOf(st, smapIn[i] or {}, depthIn[i])
+				if se then st.x86_saveStore = true end
+				if not se and carrierLoadOf(st, smapIn[i] or {}, depthIn[i]) then
+					st.x86_carrierLoad = true
+				end
+				local rs = restoreLoadOf(st, smapIn[i], savesIn[i])
+				if rs then
+					if rs.redefined then
+						if retIsGpr and st.operands[1].num == 0 then
+							error("sarcasm: epilogue restore load into the integer return"
+								.. " register cannot be modeled (the register was redefined"
+								.. " after its save, so the restore's value and the web's"
+								.. " value disagree): " .. (st.raw or st.mnemonic))
+						end
+						checkLostReload(i, rs,
+							"epilogue restore load of a save whose register was redefined"
+								.. " after the push (the load cannot be modeled — the slot"
+								.. " holds the pre-push value while the register's web holds"
+								.. " the redefined one — and this read would observe the"
+								.. " web's value)")
+					end
+					st.x86_dropRestore = true
+				end
+				-- The general lea-save (`leaq d(%rsp), %reg` parking the entry stack
+				-- pointer in a carrier): mark it for the rewrite's drop. The condition
+				-- mirrors the fixpoint's isLeaSave computation exactly — including the
+				-- +8 rule for clone statements (K = d + 8 parks the entry rsp).
+				if regions ~= nil and not isDynDepth(depthIn[i])
+					and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
+					local ops = st.operands
+					local mem = ops[2]
+					if ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+						and ops[1].name ~= "rbp"
+						and mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
+						and not mem.index and not mem.dispSym then
+						local k = mem.dispVal or 0
+						local pk = st.localClone and (k - 8) or k
+						local rkey = st.localClone and (k + D0 - depthIn[i] - 8) or k
+						if pk == depthIn[i] and not regionOf(rkey, false)
+							and not (yoloCount > 0 and k == 0) then
+							st.x86_leaSave = true
+						end
+					end
+				end
+			end
+			-- A return reads the integer return register: if %rax still carries the
+			-- saved stack pointer at a `ret`, the RETURN VALUE would be the live stack
+			-- address — the one carrier read that is never droppable. Reject it.
+			-- (A local subroutine's ret is exempt: it does not produce this function's
+			-- Fil-C return value — a carrier %rax flowing to the continuation is the
+			-- caller's phantom recovery working as intended. A cross-function-jump
+			-- synthetic epilogue ret (st.tailRet — tailcall.luau) is exempt the same
+			-- way: its return value is the tail-called callee's result, defined by
+			-- the call, never the saved stack pointer.)
+			if x86.baseMnemonic(string.lower(st.mnemonic)) == "ret" and not st.localRet
+				and not st.tailRet and retIsGpr and smapIn[i] then
+				local e = smapIn[i]["rax"]
+				if e and not e.redefined and not e.slot then
+					error("sarcasm: returning while %rax holds the saved stack pointer cannot"
+						.. " be proven safe (the return value would be the live stack"
+						.. " address; redefine %rax or recover %rsp from it first): "
+						.. (st.raw or st.mnemonic))
 				end
 			end
 			-- A pop provably restores a matching save only when the incoming abstract save
@@ -1076,7 +1740,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				local sv, d = savesIn[i], depthIn[i]
 				local n = (st.operands[1] and st.operands[1].kind == "reg")
 					and st.operands[1].name or "?"
-				if d ~= "dyn" then
+				if not isDynDepth(d) then
 					if sv == "dyn" or #sv == 0
 						or sv[#sv].name ~= n or sv[#sv].depth ~= d then
 						st.x86_unpairedPop = true
@@ -1101,12 +1765,33 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 					or (b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2]
 						and ops[2].kind == "mem" and ops[2].base and ops[2].base.name == "rbp"
 						and usesRbp and not ops[2].index and not ops[2].dispSym)
+					or (b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2]
+						and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+						and not ops[2].index and not ops[2].dispSym
+						and (ops[2].dispVal or 0) >= 0)
 					or (b == "leave" and usesRbp)
 				if isTeardownStart then
 					local marks = validateTeardown(nextInsn[i])
 					if marks then
 						st.x86_teardownStart = true
 						for _, j in marks do body[j].x86_teardown = true end
+					end
+				end
+				-- A constant mid-function rsp DECREASE (`addq $imm, %rsp`) that is not
+				-- a verified epilogue teardown: sound to drop when the resulting
+				-- depth is statically known and stays non-negative (every later
+				-- slot access keys off the depth exactly, pops stay
+				-- save-pairing-gated, returns stay depth-0-gated) AND the flags the
+				-- add clobbers are provably dead — nothing reads them before a full
+				-- flag write on any path. (The ecp_nistz256_point_add shape:
+				-- `addq $416, %rsp` reshaping the frame into a sibling's smaller
+				-- one ahead of a shared-tail join.)
+				if b == "add" and ops[1] and ops[1].rc == "sp"
+					and ops[2] and ops[2].kind == "imm" and not st.x86_teardownStart then
+					local imm = immVal(ops[2])
+					if type(depthIn[i]) == "number" and depthIn[i] - imm >= 0
+						and flagsDeadAfter(i) then
+						st.x86_midAdd = true
 					end
 				end
 			end
@@ -1128,8 +1813,6 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 	-- then drops them like the pops it already drops. A restore into the
 	-- integer return register can never be proven unobservable (the frame
 	-- analysis does not model `ret`'s operand read), so it stays rejected.
-	local retIsGpr = sigDesc and not sigDesc.isVoid
-		and not (sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]))
 	for i, st in body do
 		if st.kind ~= "insn" then continue end
 		local ops = st.operands
@@ -1142,7 +1825,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 		local sv = st.x86_saves
 		if not (sv and sv ~= "dyn" and #sv > 0) then continue end
 		local off = (mem.dispVal or 0)
-		if mem.base.rc ~= "sp" then off = frameSize + off end
+		if mem.base.rc == "sp" then
+			-- EXACTLY the rewrite's normalization: at a KNOWN perturbed depth (the
+			-- early-ret-then-frame shape) the slot sits at disp + D0 - d in frame
+			-- coordinates. At an UNKNOWN ("dyn") rsp depth the raw offset is NOT
+			-- the slot's frame coordinate — the perturbed rsp points who-knows-where
+			-- (an alloca region, a disagreeing merge) — so the load can never be a
+			-- proven restore-load here. (The perlasm epilogue-restore shape this
+			-- pass exists for runs at a STATIC depth.)
+			local d = st.x86_depth
+			if d == nil or isDynDepth(d) then continue end
+			off = off + D0 - d
+		else
+			off = frameSize + off
+		end
 		local hit = nil
 		for _, s in sv do
 			if not (usesRbp and s.name == "rbp") then
@@ -1187,11 +1883,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 			-- it is redirected to the arguments' own materialized area, not to an
 			-- FP cluster.
 			if mem and isStackReg(mem.base, usesRbp) and not mem.dispSym and not mem.index
-				and not (mem.base.rc == "sp" and st.x86_depth ~= nil and st.x86_depth ~= "dyn"
-					and yoloArgSlotOf(st, "rsp", st.x86_depth)) then
+				and not (mem.base.rc == "sp" and st.x86_depth ~= nil and not isDynDepth(st.x86_depth)
+					and yoloArgSlotOf(st, "rsp", st.x86_depth))
+				-- Phantom saved-rsp traffic (save-stores / carrier-loads) is dropped by
+				-- the rewrite — no real memory exists for it — and an access landing
+				-- in a fixed alloca region rides the region pointer instead of a
+				-- frame slot (region coordinates never collide with cluster offsets).
+				and not st.x86_saveStore and not st.x86_carrierLoad then
 				local m = string.lower(st.mnemonic)
 				local fpe = fp.lookup(m)
-				if not (fpe and fpe.noCheck) then  -- prefetch: memory-neutral, needs no slot
+				-- Region membership in the rewrite's exact coordinates/classification.
+				local rOff = (mem.dispVal or 0)
+				if mem.base.rc ~= "sp" then rOff = frameSize + rOff end
+				local rDyn = mem.base.rc == "sp" and not st.x86_prologue and type(st.x86_depth) == "table"
+				if not (fpe and fpe.noCheck) and not regionOf(rOff, rDyn) then  -- prefetch: memory-neutral, needs no slot
 					-- Normalized rsp-relative frame offset: EXACTLY the rewrite's formula.
 					local off = (mem.dispVal or 0)
 					if mem.base.rc ~= "sp" then off = frameSize + off end
@@ -1293,7 +1998,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc)
 				for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
 				local i = nil
 				if mem and mem.base then
-					if mem.base.rc == "sp" and st.x86_depth ~= nil and st.x86_depth ~= "dyn" then
+					if mem.base.rc == "sp" and st.x86_depth ~= nil and not isDynDepth(st.x86_depth) then
 						i = yoloArgSlotOf(st, "rsp", st.x86_depth)
 					elseif st.x86_smap then
 						local e = st.x86_smap[mem.base.name]
@@ -1432,8 +2137,9 @@ function x86_64_frame.rewrite(st, ctx)
 			return
 		end
 		if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then
-			if b == "add" and ops[2] and ops[2].kind == "imm" and st.x86_teardownStart then
-				return  -- verified epilogue teardown: drop
+			if b == "add" and ops[2] and ops[2].kind == "imm"
+				and (st.x86_teardownStart or st.x86_midAdd) then
+				return  -- verified epilogue teardown / proven mid-function decrease: drop
 			end
 			error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
 				.. " (frame teardown must be an epilogue `addq $imm, %rsp` leading to `ret`;"
@@ -1476,6 +2182,30 @@ function x86_64_frame.rewrite(st, ctx)
 			if st.x86_fp == "est" then return end
 			error("sarcasm: restoring %rsp from %rbp via lea while the frame pointer is not"
 				.. " provably established cannot be proven safe: " .. (st.raw or m))
+		end
+		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+			and not ops[2].index and not ops[2].dispSym then
+			if ops[2].base and ops[2].base.rc == "sp" then
+				-- `leaq +N(%rsp), %rsp`: the lea spelling of the constant epilogue
+				-- teardown — accepted exactly like `addq $imm, %rsp` when the teardown
+				-- analysis verified the span; anything else is a mid-function
+				-- stack-pointer adjustment.
+				if (ops[2].dispVal or 0) >= 0 and st.x86_teardownStart then return end
+				error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
+					.. " (frame teardown must be an epilogue `addq $imm, %rsp` /"
+					.. " `leaq $imm(%rsp), %rsp` leading to `ret`; dynamic allocation must"
+					.. " use `alloca`): " .. (st.raw or m))
+			end
+			if ops[2].base and ops[2].base.kind == "reg" and ops[2].base.name ~= "rbp" then
+				-- `leaq K(%reg), %rsp`: recovery from a saved-rsp carrier (the analysis
+				-- proved the base register holds the save value); dropped with it.
+				if st.x86_spRecover then return end
+				local rn = "%" .. ops[2].base.name
+				error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+					.. " `movq %rsp, " .. rn .. "` (or lea) save that has not been redefined"
+					.. " (or recover it from %rbp, or use an `alloca` annotation): "
+					.. (st.raw or m))
+			end
 		end
 		if b == "push" then
 			-- Balanced callee-saved save/restore pairs are dropped; the rsp-depth analysis
@@ -1521,8 +2251,15 @@ function x86_64_frame.rewrite(st, ctx)
 		-- teardown (x86_teardown: everything in the span is dropped and the synthesized
 		-- epilogue owns the real %rsp — see the pop pairing above); anywhere else a
 		-- return must provably sit at the entry rsp.
-		if b == "ret" and d ~= nil and d ~= 0
-			and not (d == "dyn" and st.x86_teardown) then
+		-- A local subroutine's ret (st.localRet) is exempt: it is not a return — the
+		-- no-push clone executes at the caller's depth and branches to the
+		-- continuation, which resumes at exactly that depth. A cross-function-jump
+		-- synthetic epilogue ret (st.tailRet — tailcall.luau) is exempt too: it sits
+		-- at the tail branch's (arbitrary) virtual depth, but the body's stack is
+		-- virtual, so the synthesized epilogue — which owns the real %rsp — tears
+		-- the frame down correctly regardless.
+		if b == "ret" and not st.localRet and not st.tailRet and d ~= nil and d ~= 0
+			and not (isDynDepth(d) and st.x86_teardown) then
 			error("sarcasm: return with a perturbed or unknown stack pointer cannot be proven"
 				.. " safe: " .. (st.raw or m))
 		end
@@ -1559,6 +2296,17 @@ function x86_64_frame.rewrite(st, ctx)
 		return
 	end
 	if (b == "sub" or b == "add") and ops[1] and ops[1].rc == "sp" then return end
+	-- `leaq -N(%rsp), %rsp` prologue allocation / `leaq +N(%rsp), %rsp` teardown (the
+	-- lea spellings; post-prologue ones were handled — and gated — above).
+	if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+		and ops[2].base and ops[2].base.rc == "sp" and not ops[2].index and not ops[2].dispSym then
+		if st.x86_prologue then return end
+		if (ops[2].dispVal or 0) >= 0 and st.x86_teardownStart then return end
+		error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
+			.. " (frame teardown must be an epilogue `addq $imm, %rsp` / `leaq $imm(%rsp),"
+			.. " %rsp` leading to `ret`; dynamic allocation must use `alloca`): "
+			.. (st.raw or m))
+	end
 	if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then return end
 	if b == "mov" and ops[1] and ops[1].rc == "sp" then
 		if (ops[2] and ops[2].name == "rbp" and st.x86_fp == "est") or st.x86_spRecover then
@@ -1660,20 +2408,34 @@ function x86_64_frame.rewrite(st, ctx)
 			raw = st.raw, line = st.line, annotation = st.annotation })
 	end
 
-	-- Entry-time read of an incoming yolo stack argument THROUGH an entry-rsp alias
-	-- register (`movq %rsp, %rax` / `leaq 0(%rsp), %rax`, then `8(%rax)` — the
-	-- aesni_ocb / bn_mul_mont_gather5 prologue shape): the smap proves the register
-	-- still holds the parked stack pointer on every path. Redirect the read to the
-	-- argument's slot; any other access through the alias is the same escape class
-	-- as reading the saved stack pointer itself (the transfer's use-check rejects
-	-- those first — this is the defensive mirror).
+	-- Memory access THROUGH a saved-rsp carrier register. Three legal shapes:
+	--   * an entry-time read of an incoming yolo stack argument through an entry-rsp
+	--     alias (`movq %rsp, %rax` / `leaq 0(%rsp), %rax`, then `8(%rax)` — the
+	--     aesni_ocb / bn_mul_mont_gather5 prologue shape): the smap proves the
+	--     register still holds the parked stack pointer on every path; redirect the
+	--     read to the argument's slot;
+	--   * an epilogue restore load through the carrier (the perlasm movq-restore
+	--     riding the recovered pointer, `movq -48(%rsi), %r15`): the analysis proved
+	--     it a save/restore pair (and unobservable when the save was redefined) and
+	--     marked it x86_dropRestore — dropped like the epilogue pops;
+	--   * anything else is the same escape class as reading the saved stack pointer
+	--     itself (the transfer's use-check rejects those first — this is the
+	--     defensive mirror).
+	-- Phantom saved-rsp flow: save-stores and carrier-loads are DROPPED, whatever
+	-- base spelling carries the slot (a stack base below, or a region-pointer-
+	-- derived register — the wp `movq %rax, 32(%r10)`): the value is phantom —
+	-- sarcasm owns the real frame — so no real memory exists for it (the analysis
+	-- proved the flow and marked the statements).
+	if st.x86_saveStore or st.x86_carrierLoad then return end
 	if mem and mem.base and not isStackReg(mem.base, usesRbp) and not mem.index and not mem.dispSym then
 		local e = st.x86_smap and st.x86_smap[mem.base.name]
-		if e and not e.redefined then
+		if e and not e.redefined and not e.slot and not e.roff then
+			if st.x86_dropRestore then return end
 			local i = yoloArgSlotOf(st, mem.base.name, e.depth)
 			if not i then
 				error("sarcasm: memory access through the saved stack pointer that is not"
-					.. " an incoming stack-argument read cannot be proven safe: " .. (st.raw or m))
+					.. " an incoming stack-argument read or a saved-register restore cannot"
+					.. " be proven safe: " .. (st.raw or m))
 			end
 			emitYoloRead(i)
 			return
@@ -1716,6 +2478,44 @@ function x86_64_frame.rewrite(st, ctx)
 		-- stack address is always safe to hint at (a prefetch can never fault).
 		local fpEntry = fp.lookup(m)
 		if fpEntry and fpEntry.noCheck then emit(st); return end
+		-- Region membership is a static fact even at a perturbed/"dyn" depth, so the
+		-- region lookup runs FIRST: an access landing in a fixed alloca region passes
+		-- through for the transform's region redirect (a region-pointer-relative
+		-- checked access), whatever the depth. The lookup rides the access's own
+		-- coordinate space: inside an {anchored} region scope (the depth is the
+		-- region's table — raw displacements are that region's coordinates); plain
+		-- "dyn" has NO valid coordinates (a later rsp write moved the base); and
+		-- everything else matches the static regions in normalized frame coordinates
+		-- (rbp-relative offsets are static at any depth). A CLONE statement's
+		-- rsp-relative displacement at a static depth keys with the +8 rule (the
+		-- return-address compensation: hardware has the pushed return address
+		-- between the clone's rsp and the caller's frame — localcall.luau).
+		local region = nil
+		local rOff = (mem.dispVal or 0)
+		if mem.base.rc ~= "sp" then rOff = ctx.frameSize + rOff
+		elseif st.localClone and d ~= nil and not isDynDepth(d) then rOff = rOff + D0 - d - 8 end
+		if mem.base.rc == "sp" and not st.x86_prologue and type(d) == "table" then
+			if rOff >= d.anchored.base and rOff < d.anchored.base + d.anchored.size then
+				region = d.anchored
+			end
+		else
+			region = ctx.regionOf(rOff, false)
+		end
+		if region then
+			-- An aligned FP/vector access needing MORE than the region's provable
+			-- alignment: reject at compile time (deterministic — the alternative is a
+			-- runtime alignment trap that fires only when the GC payload happens to
+			-- be under-aligned). Ordinary regions are 16-aligned (the GC payload);
+			-- align=A regions (and the andq-anchored forms) provably cover A.
+			local _, fa = fp.accessWidth(m, ops, st.raw)
+			if fa and fa > (region.align or 16) then
+				error("sarcasm: aligned " .. fa .. "-byte access into a " .. (region.align or 16)
+					.. "-byte-aligned alloca region cannot be proven safe (annotate the region"
+					.. " `alloca result size=N align=" .. fa .. "`, or use the unaligned form): "
+					.. (st.raw or m))
+			end
+			emit(st); return
+		end
 		-- A stack access is only keyable to a frame slot when rsp provably sits at the
 		-- post-prologue frame base; anything else (mid-function push/sub region, dynamic
 		-- alloca aftermath, unbalanced merge) is unprovable: reject. (nil depth = dead code.)
@@ -1728,24 +2528,44 @@ function x86_64_frame.rewrite(st, ctx)
 		-- AFTER the alloca perturbed rsp — hand-written code and optimized builds alike
 		-- rely on it — and the arm64 backend has always allowed the analogous
 		-- x29-relative accesses there.
+		-- SECOND EXCEPTION: an rsp-relative access at a KNOWN perturbed depth (the
+		-- early-ret-then-frame shape: an early return before the pushes leaves the
+		-- framed path's pushes POST-prologue, so D0 stays 0 while the body executes
+		-- at depth 8k) may still alias an outstanding pushed register's save slot —
+		-- the save-slot model below keys it in normalized coordinates
+		-- (disp + D0 - d) exactly like the transient prologue pad; a non-aliased
+		-- access at such a depth stays rejected.
+		local perturbedRsp = false
 		if not st.x86_prologue and d ~= nil and d ~= D0
 			and not (usesRbp and mem.base.name == "rbp" and st.x86_fp == "est") then
-			error("sarcasm: stack access while the stack pointer is perturbed or unknown"
-				.. " (cannot prove which frame slot this is): " .. (st.raw or m))
+			if not isDynDepth(d) and mem.base.rc == "sp" then
+				perturbedRsp = true
+			else
+				error("sarcasm: stack access while the stack pointer is perturbed or unknown"
+					.. " (cannot prove which frame slot this is): " .. (st.raw or m))
+			end
 		end
 		-- Normalize to an rsp-relative frame offset: rbp, when it is the frame pointer,
 		-- sits at the frame TOP (rbp = rsp + frameSize), so an rbp-relative displacement d
 		-- is frame offset frameSize + d. The slot key, region lookup, and bounds check all
 		-- use this NORMALIZED offset, so rbp- and rsp-relative accesses to the same address
 		-- (e.g. -8(%rbp) and 8(%rsp) with a 16-byte frame) share one slot web, while
-		-- distinct addresses (e.g. -8(%rbp) vs -8(%rsp)) never alias.
+		-- distinct addresses (e.g. -8(%rbp) vs -8(%rsp)) never alias. A CLONE statement's
+		-- rsp-relative displacement additionally keys 8 lower (the +8 rule: hardware has
+		-- the pushed return address between the clone's rsp and the caller's frame — at
+		-- the callsite depth this is exactly disp-8).
 		local off = (mem.dispVal or 0)
-		if mem.base.rc ~= "sp" then off = ctx.frameSize + off end
-		if ctx.regionOf(off) then emit(st); return end
+		if mem.base.rc ~= "sp" then off = ctx.frameSize + off
+		elseif st.localClone and d ~= nil and not isDynDepth(d) then off = off + D0 - d - 8
+		elseif perturbedRsp then off = off + D0 - d end
 		-- An entry-rsp materialization for reading the incoming yolo stack arguments
 		-- (`leaq 0(%rsp), %reg` at a provable depth — the aesni_ocb shape): dropped;
 		-- reads through the register are redirected by the alias handling above.
 		if b == "lea" and isYoloLeaSave(st, d) then return end
+		-- A saved-rsp materialization (`leaq K(%rsp), %reg` parking a known-depth stack
+		-- pointer in a carrier — the ghash/aesni-gcm recovery-address computation):
+		-- dropped with the save (the carrier discipline rejects every non-carrier use).
+		if st.x86_leaSave then return end
 		-- A DIRECT entry-time read of an incoming yolo stack argument: %rsp-based
 		-- at a PROVABLE depth d (before the body's own frame setup, in a frameless
 		-- body, or — the compiler style — above the established frame), e.g.
@@ -1753,7 +2573,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- sits at d+8+8*i(%rsp). The address is above the caller's frame, so the
 		-- ordinary bounds check below would reject it; redirect it to the
 		-- argument's slot instead.
-		if mem.base.rc == "sp" and d ~= nil and d ~= "dyn" and not mem.index then
+		if mem.base.rc == "sp" and d ~= nil and not isDynDepth(d) and not mem.index then
 			local i = yoloArgSlotOf(st, "rsp", d)
 			if i then emitYoloRead(i); return end
 		end
@@ -1912,6 +2732,17 @@ function x86_64_frame.rewrite(st, ctx)
 				raw = st.raw, line = st.line, annotation = st.annotation })
 			return
 		end
+		-- A KNOWN-perturbed-depth rsp-relative access that aliases no outstanding save
+		-- slot virtualizes like any other slot: the normalized offset (disp + D0 - d)
+		-- is exact at a statically-known depth, so the slot web connects every access
+		-- to the same address across the depth change, the bounds check below gates
+		-- the frame extent, and pops/returns stay pairing/depth-gated. (Historically
+		-- this was rejected: with mid-function `addq $imm, %rsp` decreases accepted
+		-- above — the ecp_nistz256 shared-tail frame-reshape shape — static
+		-- perturbed depths are ordinary working points, not just the early-ret
+		-- transient the save-alias model was built for. An UNKNOWN depth — a
+		-- dynamic-alloca poison or an anchored region's coordinates — stays
+		-- rejected above.)
 		-- Replace the stack-slot memory operand in place with a slot pseudo-register of the
 		-- access width, keeping the original mnemonic. This uniformly handles plain moves
 		-- (movq), zero/sign-extending loads (movzwl/movsbl/...), and other reg<->slot forms:
@@ -2015,51 +2846,36 @@ function x86_64_frame.rewrite(st, ctx)
 	-- in-region leas pass through for the transform's region redirect, symbolic-displacement
 	-- stack operands were rejected above, and every other stack-based lea hits rejectEscape.)
 
-	-- A PROLOGUE `movq %rsp, %reg` save (the prefix scan treats it as transparent and the
-	-- rsp-depth fixpoint tracks it as the save a later `movq %reg, %rsp` recovery
-	-- restores from). CALLEE-SAVED destinations: DROP it — sarcasm synthesizes its own
-	-- frame, so the parked value has no meaning in the output; the recovery is dropped
-	-- with it, and the analysis rejects every read of the register while the save is
-	-- outstanding. Caller-saved destinations are REJECTED outright unless the
-	-- fixed-alloca-region passthrough below keeps the read alive: every SysV callee and
-	-- every runtime call sarcasm injects (pollcheck, allocation, bounds-check slow
-	-- paths) clobbers caller-saved registers, and this analysis models no call clobbers.
-	-- Post-prologue `movq %rsp, %reg` stays an escape (only prologue saves are legal).
-	if st.x86_prologue and isSpSaveForm(st) then
-		if x86.CALLEE_SAVED[ops[1].name] then
-			return
-		end
-		if not ctx.regionOf(0) then
-			-- With incoming yolo stack arguments the save is an entry-rsp ALIAS:
-			-- dropped like a callee-saved save — every read of the register while
-			-- the alias is live is redirected to the argument's slot (or rejected
-			-- by the transfer's use-check), and a %rsp recovery from a
-			-- caller-saved register stays rejected above. (The corner of a
-			-- caller-saved save AND a fixed-alloca region at rsp+0 falls through
-			-- to the region passthrough below — the alias is recorded regardless,
-			-- so reads of the register then hit the use-check rejection.)
-			if yoloCount > 0 then return end
-			error("sarcasm: saving %rsp into %" .. ops[1].name .. " cannot be proven safe (a"
-				.. " call clobbers caller-saved registers; park it in a callee-saved register"
-				.. " such as %rbx or %r12-%r15): " .. (st.raw or m))
-		end
-		-- Caller-saved with a fixed-alloca region based at rsp+0: fall through to the
-		-- region passthrough below, which KEEPS the read with its destination
-		-- redirected to the allocation pointer — a real value, so the register may
-		-- still be read (this corner predates the rsp-save machinery).
-	end
+	-- A recorded `movq %rsp, %reg` saved-rsp carrier: DROP it — sarcasm synthesizes
+	-- its own frame, so the parked value has no meaning in the output (it is
+	-- phantom): the carrier flows and the recovery are dropped with it, and the
+	-- analysis rejects every non-carrier read of the value while the save is
+	-- outstanding. Register class and position are unrestricted (every use of a
+	-- carrier is dropped or rejected, so no call clobber can be observed) — EXCEPT
+	-- the fixed-alloca-region corner below, which keeps a caller-saved save alive as
+	-- a REAL redirected value and so records no carrier.
+	if st.x86_spSave then return end
+	-- Caller-saved save with a static fixed-alloca region based at rsp+0 (unrecorded
+	-- by the analysis): fall through to the region passthrough below, which KEEPS
+	-- the read with its destination redirected to the allocation pointer — a real
+	-- value, so the register may still be read (this corner predates the rsp-save
+	-- machinery).
 
-	-- `movq %rsp, %reg`: when a fixed-alloca region is based at rsp+0 the transform redirects
-	-- this to the allocation pointer (mirrors arm64's `mov xD, sp` handling); pass through.
-	-- The region base is only known relative to the post-prologue frame base: reject when
-	-- rsp is perturbed/unknown here.
+	-- `movq %rsp, %reg`: when a fixed-alloca region is based at rsp+0 (static region, or
+	-- — at a post-prologue "dyn" depth — an anchored one) the transform redirects this
+	-- to the allocation pointer (mirrors arm64's `mov xD, sp` handling); pass through.
+	-- The static region base is only known relative to the post-prologue frame base:
+	-- reject when rsp is perturbed/unknown here (the anchored case IS the dyn one).
 	if b == "mov" and ops[2] and ops[2].rc == "sp" and ops[1] and ops[1].kind == "reg"
-		and ops[1].rc == "gpr" and ctx.regionOf(0) then
-		if not st.x86_prologue and d ~= nil and d ~= D0 then
-			error("sarcasm: reading the stack pointer while it is perturbed or unknown"
-				.. " cannot be proven safe: " .. (st.raw or m))
+		and ops[1].rc == "gpr" then
+		local movDyn = not st.x86_prologue and type(d) == "table"
+		if ctx.regionOf(0, movDyn) then
+			if not st.x86_prologue and d ~= nil and d ~= D0 and not movDyn then
+				error("sarcasm: reading the stack pointer while it is perturbed or unknown"
+					.. " cannot be proven safe: " .. (st.raw or m))
+			end
+			emit(st); return
 		end
-		emit(st); return
 	end
 
 	-- Any remaining instruction consuming a stack register as a VALUE (e.g.
@@ -2093,5 +2909,11 @@ end
 -- arm64_frame.VEC_SAVE_BYTES. Consumed by codegen (which also widens its
 -- save/restore activation to any forced reservation) and the layout.
 x86_64_frame.VEC_SAVE_BYTES = 16 * 16
+
+-- The net rsp depth at the end of the prologue prefix (the frame base) of the
+-- function most recently analyzed — the coordinate origin the +8 rule's clone
+-- displacement bias is computed against (set by analyzeFrame; single-threaded
+-- discipline, like D0).
+function x86_64_frame.frameBaseDepth() return D0 end
 
 return x86_64_frame

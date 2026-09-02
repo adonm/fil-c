@@ -486,7 +486,7 @@ inputline(void)
 	    inbuf = zalloc(oldlen + newlen + 1);
 	    memcpy(inbuf, oinbuf, oldlen);
 	}
-	inbufptr += inbuf - oinbuf;
+	inbufptr = inbuf + (inbufptr - oinbuf);
 	strcpy(inbuf + oldlen, ingetcline);
 	free(ingetcline);
 	inbufleft += newlen;

@@ -467,6 +467,15 @@ test -d ../../fil
 rm -rf pizlonated-bash
 hash -r
 
+tar -xf $FILCSRC/projects/zsh-5.9.2/pizlonated-zsh.tar.gz
+cd pizlonated-zsh
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
+make -j `nproc`
+make -j `nproc` install.bin install.modules install.fns
+cd ..
+rm -rf pizlonated-zsh
+hash -r
+
 tar -xf $FILCSRC/projects/openssl-3.5.7/pizlonated-openssl.tar.gz
 cd pizlonated-openssl
 CC='/opt/fil/bin/filcc -yolo-assembler' CXX=/opt/fil/bin/fil++ ./config --prefix=/opt/fil \

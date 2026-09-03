@@ -29,9 +29,9 @@
 set -e
 set -x
 
-cd projects/curl-8.21.0
+cd projects/curl-8.22.0
 extract_source
-# --enable-websockets: WebSocket support is on by default in curl 8.21.0 (it
+# --enable-websockets: WebSocket support is on by default in curl 8.22.0 (it
 # was still experimental and off by default in curl 8.9.1), but pass it
 # explicitly since lute's net module implements its websocket client on top of
 # libcurl's connect-only mode (CURLOPT_CONNECT_ONLY=2 + curl_ws_send/

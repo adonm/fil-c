@@ -33,6 +33,10 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.  */
 #endif
 #include <tramp.h>
 
+#ifdef __FILC__
+#include <stdfil.h>
+#endif
+
 /* Force FFI_TYPE_LONGDOUBLE to be different than FFI_TYPE_DOUBLE;
    all further uses in this file will refer to the 128-bit type.  */
 #if FFI_TYPE_DOUBLE != FFI_TYPE_LONGDOUBLE
@@ -350,6 +354,86 @@ is_vfp_type (const ffi_type *ty)
   return candidate * 4 + (4 - (int)ele_count);
 }
 
+#ifdef __FILC__
+
+/* Computes how the i'th argument travels through the Fil-C calling
+   convention blob.  The blob is laid out like a struct whose fields are
+   the arguments: *slot_size and *slot_align give the size and alignment of
+   the argument's slot and *byref is set if the slot holds a pointer to a
+   copy of the argument instead of the argument's bytes.  is_unnamed must
+   be set for arguments past nfixedargs in a variadic call.  This mirrors
+   what the Fil-C compiler does on aarch64: homogeneous floating-point
+   and vector aggregates are coerced to packed arrays of their base type;
+   other aggregates of at most 16 bytes are coerced to a two-word array
+   (a 16-byte slot); bigger named aggregates are passed by reference; and
+   variadic arguments are read by va_arg, which consumes their raw bytes
+   at a max(8, alignment)-aligned offset.  */
+static void
+filc_arg_slot (ffi_type *ty, int is_unnamed, size_t *slot_size, size_t *slot_align,
+	       int *byref)
+{
+  *byref = 0;
+
+  if (is_unnamed)
+    {
+      *slot_size = ty->size;
+      *slot_align = ty->alignment;
+      if (*slot_align < 8)
+	*slot_align = 8;
+      return;
+    }
+
+  switch (ty->type)
+    {
+    case FFI_TYPE_STRUCT:
+    case FFI_TYPE_VECTOR:
+    case FFI_TYPE_COMPLEX:
+      {
+	int h = is_vfp_type (ty);
+	if (h)
+	  {
+	    int base = h / 4;
+	    *slot_size = ty->size;
+	    *slot_align = 4 << (base - 2);
+	    if (*slot_align < 8)
+	      *slot_align = 8;
+	    return;
+	  }
+	if (ty->size <= 16)
+	  {
+	    *slot_size = 16;
+	    *slot_align = 8;
+	    return;
+	  }
+	*byref = 1;
+	*slot_size = sizeof (void *);
+	*slot_align = 8;
+	return;
+      }
+    default:
+      *slot_size = ty->size;
+      *slot_align = ty->alignment;
+      if (*slot_align < 8)
+	*slot_align = 8;
+      return;
+    }
+}
+
+/* Advances ARG to its next slot boundary without round-tripping the
+   pointer through an integer type, since that would lose the pointer's
+   Fil-C capability.  */
+static char *
+filc_align_argp (char *arg, size_t align)
+{
+  uintptr_t addr = (uintptr_t) arg;
+  uintptr_t aligned = (addr + align - 1) & ~((uintptr_t) align - 1);
+  return arg + (ptrdiff_t) (aligned - addr);
+}
+
+#endif /* __FILC__ */
+
+#ifndef __FILC__
+
 /* Representation of the procedure call argument marshalling
    state.
 
@@ -423,6 +507,10 @@ allocate_and_copy_struct_to_stack (struct arg_state *state, void *stack,
   return memcpy ((char *) stack + dest, value, size);
 }
 
+#endif /* __FILC__ */
+
+#ifndef __FILC__
+
 static ffi_arg
 extend_integer_type (void *source, int type)
 {
@@ -482,6 +570,10 @@ extend_integer_type (void *source, int type)
       abort();
     }
 }
+
+#endif /* __FILC__ */
+
+#ifndef __FILC__
 
 #if defined(_MSC_VER) && !defined(__clang__)
 void extend_hfa_type (void *dest, void *src, int h);
@@ -627,6 +719,10 @@ compress_hfa_type (void *dest, void *reg, int h)
 }
 #endif
 
+#endif /* __FILC__ */
+
+#ifndef __FILC__
+
 /* Either allocate an appropriate register for the argument type, or if
    none are available, allocate a stack slot and return a pointer
    to the allocated space.  */
@@ -671,12 +767,32 @@ allocate_int128_to_reg_or_stack (struct call_context *context,
   return ret;
 }
 
+#endif /* __FILC__ */
+
 ffi_status FFI_HIDDEN
 ffi_prep_cif_machdep (ffi_cif *cif)
 {
   ffi_type *rtype = cif->rtype;
   size_t bytes = cif->bytes;
   int flags, i, n;
+
+#ifdef __FILC__
+  if (cif->abi != FFI_FILC)
+    return FFI_BAD_ABI;
+
+  /* ffi_prep_cif_core zeroes cif->flags before calling in here.
+     ffi_prep_cif_machdep_var pre-sets AARCH64_FLAG_VARARG as a sentinel
+     meaning that it already recorded the fixed/vararg split in the
+     Fil-C cif fields; any other value means this is a non-variadic cif
+     whose arguments are all fixed.  */
+  if (cif->flags == AARCH64_FLAG_VARARG)
+    cif->flags = 0;
+  else
+    {
+      cif->filc_variadic = 0;
+      cif->filc_nfixedargs = cif->nargs;
+    }
+#endif
 
   switch (rtype->type)
     {
@@ -743,6 +859,31 @@ ffi_prep_cif_machdep (ffi_cif *cif)
       abort();
     }
 
+#ifdef __FILC__
+  /* When the return value is passed in memory, the pointer to the return
+     buffer is the first field of the zcall argument blob, like the hidden
+     first parameter of a struct-returning C function.  The rest of the
+     blob is laid out with filc_arg_slot to mirror what the Fil-C compiler
+     does with the arguments.  */
+  bytes = (flags & AARCH64_RET_IN_MEM) ? sizeof (void *) : 0;
+  for (i = 0, n = cif->nargs; i < n; i++)
+    {
+      size_t slot_size, slot_align;
+      int byref;
+      int is_unnamed = cif->filc_variadic
+	&& (unsigned) i >= cif->filc_nfixedargs;
+
+      filc_arg_slot (cif->arg_types[i], is_unnamed,
+		     &slot_size, &slot_align, &byref);
+      bytes = FFI_ALIGN (bytes, slot_align);
+      bytes += slot_size;
+    }
+
+  cif->bytes = (unsigned) FFI_ALIGN (bytes, 8);
+  cif->flags = flags;
+
+  return FFI_OK;
+#else
   for (i = 0, n = cif->nargs; i < n; i++)
     if (is_vfp_type (cif->arg_types[i]))
       {
@@ -775,6 +916,7 @@ ffi_prep_cif_machdep (ffi_cif *cif)
 #endif
 
   return FFI_OK;
+#endif
 }
 
 #if defined (__APPLE__)
@@ -791,9 +933,20 @@ ffi_prep_cif_machdep_var(ffi_cif *cif, unsigned int nfixedargs,
 ffi_status FFI_HIDDEN
 ffi_prep_cif_machdep_var(ffi_cif *cif, unsigned int nfixedargs, unsigned int ntotalargs)
 {
+#ifdef __FILC__
+  /* Record the fixed/vararg split so the blob builder knows which
+     arguments are unnamed.  AARCH64_FLAG_VARARG in cif->flags acts as a
+     sentinel for ffi_prep_cif_machdep, since ffi_prep_cif_core always
+     zeroes cif->flags before calling in.  */
+  cif->filc_variadic = 1;
+  cif->filc_nfixedargs = nfixedargs;
+  cif->flags = AARCH64_FLAG_VARARG;
+  return ffi_prep_cif_machdep (cif);
+#else
   ffi_status status = ffi_prep_cif_machdep (cif);
   cif->flags |= AARCH64_FLAG_VARARG;
   return status;
+#endif
 }
 #endif /* __APPLE__ */
 
@@ -810,6 +963,69 @@ static void
 ffi_call_int (ffi_cif *cif, void (*fn)(void), void *orig_rvalue,
 	      void **avalue, void *closure)
 {
+#ifdef __FILC__
+  char *stack, *argp;
+  ffi_type **arg_types;
+  int i, nargs;
+  void *rets;
+  void *rvalue;
+  int flags;
+  int variadic;
+
+  FFI_ASSERT (closure == NULL);
+
+  flags = cif->flags;
+  variadic = cif->filc_variadic;
+
+  if (flags & AARCH64_RET_IN_MEM)
+    {
+      rvalue = orig_rvalue;
+      if (rvalue == NULL)
+	rvalue = alloca (cif->rtype->size);
+    }
+  else
+    rvalue = orig_rvalue;
+
+  stack = alloca (cif->bytes);
+  argp = stack;
+
+  if (flags & AARCH64_RET_IN_MEM)
+    {
+      *(void **) argp = rvalue;
+      argp += sizeof (void *);
+    }
+
+  arg_types = cif->arg_types;
+  for (i = 0, nargs = cif->nargs; i < nargs; i++)
+    {
+      ffi_type *ty = arg_types[i];
+      size_t slot_size, slot_align;
+      int byref;
+      int is_unnamed = variadic && (unsigned) i >= cif->filc_nfixedargs;
+
+      filc_arg_slot (ty, is_unnamed, &slot_size, &slot_align, &byref);
+      argp = filc_align_argp (argp, slot_align);
+
+      if (byref)
+	{
+	  /* Big aggregates travel by reference; pass a pointer to a copy
+	     so the callee cannot modify the caller's data.  */
+	  void *tmp = alloca (ty->size);
+	  memcpy (tmp, avalue[i], ty->size);
+	  *(void **) argp = tmp;
+	}
+      else
+	memcpy (argp, avalue[i], ty->size);
+
+      argp += slot_size;
+    }
+
+  rets = zcall (fn, stack);
+
+  if (rvalue != NULL && !(flags & AARCH64_RET_IN_MEM))
+    memcpy (rvalue, rets, cif->rtype->size);
+  return;
+#else
   struct call_context *context;
   void *stack, *frame, *rvalue;
   struct arg_state state;
@@ -997,6 +1213,7 @@ ffi_call_int (ffi_cif *cif, void (*fn)(void), void *orig_rvalue,
 
   if (flags & AARCH64_RET_NEED_COPY)
     memcpy (orig_rvalue, rvalue, rtype_size);
+#endif
 }
 
 void
@@ -1032,6 +1249,12 @@ ffi_prep_closure_loc (ffi_closure *closure,
                       void *user_data,
                       void *codeloc)
 {
+#ifdef __FILC__
+  if (cif->abi != FFI_FILC)
+    return FFI_BAD_ABI;
+
+  zclosure_set_data (codeloc, closure);
+#else
   if (cif->abi != FFI_SYSV && cif->abi != FFI_WIN64)
     return FFI_BAD_ABI;
 
@@ -1092,6 +1315,7 @@ ffi_prep_closure_loc (ffi_closure *closure,
 out:
 # endif
 #endif
+#endif /* __FILC__ */
 
   closure->cif = cif;
   closure->fun = fun;
@@ -1142,6 +1366,7 @@ ffi_prep_go_closure (ffi_go_closure *closure, ffi_cif* cif,
    descriptors, invokes the wrapped function, then marshalls the return
    value back into the call context.  */
 
+#ifndef __FILC__
 int FFI_HIDDEN
 ffi_closure_SYSV_inner (ffi_cif *cif,
 			void (*fun)(ffi_cif*,void*,void**,void*),
@@ -1297,6 +1522,7 @@ ffi_closure_SYSV_inner (ffi_cif *cif,
 
   return flags;
 }
+#endif /* __FILC__ */
 
 #if defined(FFI_EXEC_STATIC_TRAMP)
 void *
@@ -1307,6 +1533,64 @@ ffi_tramp_arch (size_t *tramp_size, size_t *map_size)
   *tramp_size = AARCH64_TRAMP_SIZE;
   *map_size = AARCH64_TRAMP_MAP_SIZE;
   return &trampoline_code_table;
+}
+#endif
+
+#ifdef __FILC__
+void FFI_HIDDEN
+ffi_closure_callback (void)
+{
+  ffi_closure *closure;
+  ffi_cif *cif;
+  void (*fun)(ffi_cif*, void*, void**, void*);
+  char *argp;
+  void *user_data, **avalue, *rvalue;
+  int i, nargs;
+  int flags, variadic;
+
+  closure = zcallee_closure_data ();
+  cif = closure->cif;
+  fun = closure->fun;
+  user_data = closure->user_data;
+
+  nargs = cif->nargs;
+  flags = cif->flags;
+  variadic = cif->filc_variadic;
+
+  argp = zargs ();
+
+  avalue = alloca (nargs * sizeof (void *));
+
+  if (flags & AARCH64_RET_IN_MEM)
+    {
+      rvalue = *(void **) argp;
+      argp += sizeof (void *);
+    }
+  else
+    rvalue = alloca (cif->rtype->size);
+
+  for (i = 0; i < nargs; i++)
+    {
+      ffi_type *ty = cif->arg_types[i];
+      size_t slot_size, slot_align;
+      int byref;
+      int is_unnamed = variadic && (unsigned) i >= cif->filc_nfixedargs;
+
+      filc_arg_slot (ty, is_unnamed, &slot_size, &slot_align, &byref);
+      argp = filc_align_argp (argp, slot_align);
+
+      if (byref)
+	avalue[i] = *(void **) argp;
+      else
+	avalue[i] = argp;
+
+      argp += slot_size;
+    }
+
+  fun (cif, rvalue, avalue, user_data);
+
+  if (!(flags & AARCH64_RET_IN_MEM))
+    zreturn (rvalue);
 }
 #endif
 

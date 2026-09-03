@@ -24,12 +24,20 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
 
+. libpas/common.sh
+
 set -e
 set -x
 
 test ! -d projects/pizfix
 
 ./build_ffi.sh
+
+if [ "$ARCH" = aarch64 ]; then
+    # Only libffi has been ported to Fil-C on ARM64 so far.
+    exit 0
+fi
+
 ./build_pkgconf.sh
 ./build_dash.sh
 ./build_wg14_signals.sh

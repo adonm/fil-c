@@ -336,7 +336,18 @@ case "${TARGET}" in
 	;;
 esac
 
-SOURCES=ffi64.c
+case "${TARGET}" in
+    X86_64)
+	# Fil-C passes arguments through the zcall blob, so the x86-64
+	# assembly is not needed.
+	SOURCES=ffi64.c
+	;;
+    AARCH64)
+	# Fil-C passes arguments through the zcall blob, so the aarch64
+	# assembly is not needed.
+	SOURCES=ffi.c
+	;;
+esac
 
 # If we failed to configure SOURCES, we can't do anything.
 if test -z "${SOURCES}"; then

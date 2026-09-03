@@ -43,6 +43,13 @@ typedef signed long ffi_sarg;
 
 typedef enum ffi_abi
   {
+#if defined(__FILC__)
+    FFI_FIRST_ABI = 0,
+    FFI_FILC,
+    FFI_SYSV = FFI_FILC,
+    FFI_LAST_ABI,
+    FFI_DEFAULT_ABI = FFI_FILC
+#else
     FFI_FIRST_ABI = 0,
     FFI_SYSV,
     FFI_WIN64,
@@ -51,6 +58,7 @@ typedef enum ffi_abi
     FFI_DEFAULT_ABI = FFI_WIN64
 #else
     FFI_DEFAULT_ABI = FFI_SYSV
+#endif
 #endif
   } ffi_abi;
 #endif
@@ -83,10 +91,16 @@ typedef enum ffi_abi
 
 #if defined (__APPLE__)
 #define FFI_EXTRA_CIF_FIELDS unsigned aarch64_nfixedargs
-#elif !defined(_WIN32) && !defined(__ANDROID__)
+#elif !defined(__FILC__) && !defined(_WIN32) && !defined(__ANDROID__)
 /* iOS, Windows and Android reserve x18 for the system.  Disable Go closures until
    a new static chain is chosen.  */
 #define FFI_GO_CLOSURES 1
+#endif
+
+#ifdef __FILC__
+/* Fil-C needs to know the fixed/vararg argument split to lay out the
+   argument blob.  */
+#define FFI_EXTRA_CIF_FIELDS unsigned filc_nfixedargs, filc_variadic
 #endif
 
 #ifndef _WIN32

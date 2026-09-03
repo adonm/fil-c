@@ -2354,7 +2354,10 @@ if test "x$OPT_LIBPSL" != "xno"; then
       LIBS=$CLEANLIBS
   )
 
-  if test "$USE_LIBPSL" != "1"; then
+  dnl Fil-C: only error out when libpsl was explicitly requested; when
+  dnl auto-detecting (OPT_LIBPSL=off) a missing libpsl just means building
+  dnl without it, like curl 8.9.1 did.
+  if test "$OPT_LIBPSL" != "off" && test "$USE_LIBPSL" != "1"; then
     AC_MSG_ERROR([libpsl libs and/or directories were not found!])
   fi
 fi

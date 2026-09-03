@@ -175,6 +175,10 @@ LIB_CFILES =         \
   altsvc.c           \
   amigaos.c          \
   api.c              \
+  asyn-ares.c        \
+  asyn-base.c        \
+  asyn-thrdd.c       \
+  curl_ca_bundle.c   \
   bufq.c             \
   bufref.c           \
   cf-h1-proxy.c      \
@@ -323,6 +327,7 @@ LIB_HFILES =         \
   cookie.h           \
   creds.h            \
   curl_addrinfo.h    \
+  curl_ca_bundle.h   \
   curl_ctype.h       \
   curl_endian.h      \
   curl_fnmatch.h     \

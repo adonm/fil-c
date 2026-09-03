@@ -147,7 +147,7 @@ host_triplet = @host@
 @CURL_LT_SHLIB_USE_MIMPURE_TEXT_TRUE@am__append_5 = -mimpure-text
 @CURL_LT_SHLIB_USE_VERSIONED_SYMBOLS_TRUE@am__append_6 = -Wl,--version-script=libcurl.vers
 # if symbol-hiding is enabled, hide them!
-@CURL_LT_SHLIB_USE_VERSIONED_SYMBOLS_FALSE@@DOING_CURL_SYMBOL_HIDING_TRUE@am__append_7 = -export-symbols-regex '^curl_.*'
+@CURL_LT_SHLIB_USE_VERSIONED_SYMBOLS_FALSE@@DOING_CURL_SYMBOL_HIDING_TRUE@am__append_7 = -export-symbols-regex '^pizlonated_curl_.*'
 @USE_CPPFLAG_CURL_STATICLIB_TRUE@am__append_8 = -DCURL_STATICLIB
 @HAVE_WINDRES_TRUE@@USE_CPPFLAG_CURL_STATICLIB_FALSE@am__append_9 = $(LIB_RCFILES)
 @DOING_CURL_SYMBOL_HIDING_TRUE@am__append_10 = -DCURL_HIDDEN_SYMBOLS
@@ -357,7 +357,8 @@ am__objects_1 = libcurl_la-altsvc.lo libcurl_la-amigaos.lo \
 	libcurl_la-uint-bset.lo libcurl_la-uint-hash.lo \
 	libcurl_la-uint-hashset.lo libcurl_la-uint-spbset.lo \
 	libcurl_la-uint-table.lo libcurl_la-url.lo \
-	libcurl_la-urlapi.lo libcurl_la-version.lo libcurl_la-ws.lo
+	libcurl_la-urlapi.lo libcurl_la-version.lo libcurl_la-ws.lo \
+	libcurl_la-curl_ca_bundle.lo
 am__dirstamp = $(am__leading_dot)dirstamp
 am__objects_2 = vauth/libcurl_la-cleartext.lo vauth/libcurl_la-cram.lo \
 	vauth/libcurl_la-digest.lo vauth/libcurl_la-digest_sspi.lo \
@@ -3520,6 +3521,13 @@ libcurl_la-ws.lo: ws.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='ws.c' object='libcurl_la-ws.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -c -o libcurl_la-ws.lo `test -f 'ws.c' || echo '$(srcdir)/'`ws.c
+
+libcurl_la-curl_ca_bundle.lo: curl_ca_bundle.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -MT libcurl_la-curl_ca_bundle.lo -MD -MP -MF $(DEPDIR)/libcurl_la-curl_ca_bundle.Tpo -c -o libcurl_la-curl_ca_bundle.lo `test -f 'curl_ca_bundle.c' || echo '$(srcdir)/'`curl_ca_bundle.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libcurl_la-curl_ca_bundle.Tpo $(DEPDIR)/libcurl_la-curl_ca_bundle.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='curl_ca_bundle.c' object='libcurl_la-curl_ca_bundle.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -c -o libcurl_la-curl_ca_bundle.lo `test -f 'curl_ca_bundle.c' || echo '$(srcdir)/'`curl_ca_bundle.c
 
 vauth/libcurl_la-cleartext.lo: vauth/cleartext.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -MT vauth/libcurl_la-cleartext.lo -MD -MP -MF vauth/$(DEPDIR)/libcurl_la-cleartext.Tpo -c -o vauth/libcurl_la-cleartext.lo `test -f 'vauth/cleartext.c' || echo '$(srcdir)/'`vauth/cleartext.c

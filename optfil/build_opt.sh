@@ -870,7 +870,7 @@ cd ..
 rm -rf nghttp2-1.70.0
 hash -r
 
-tar -xf $FILCSRC/projects/curl-8.21.0/pizlonated-curl.tar.gz
+tar -xf $FILCSRC/projects/curl-8.22.0/pizlonated-curl.tar.gz
 cd pizlonated-curl
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --disable-static --with-openssl --enable-threaded-resolver --with-ca-path=/etc/ssl/certs --with-gsssapi
 make -j `nproc`

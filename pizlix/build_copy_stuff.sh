@@ -40,7 +40,7 @@ cp -v \
     check-0.15.2.tar.gz \
     coreutils-9.11-i18n-1.patch \
     coreutils-9.11.tar.xz \
-    curl-8.21.0.tar.xz \
+    curl-8.22.0.tar.xz \
     dejagnu-1.6.3.tar.gz \
     dhcpcd-10.0.8.tar.xz \
     diffutils-3.12.tar.xz \

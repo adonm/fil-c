@@ -113,7 +113,7 @@ find docs \( -name Makefile\* -o  \
              -name \*.1       -o  \
              -name \*.3       -o  \
              -name CMakeLists.txt \) -delete
-cp -v -R docs -T /usr/share/doc/curl-8.21.0
+cp -v -R docs -T /usr/share/doc/curl-8.22.0
 cd ..
 rm -rf pizlonated-curl
 hash -r

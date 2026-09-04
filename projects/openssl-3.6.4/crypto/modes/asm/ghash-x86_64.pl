@@ -154,6 +154,11 @@ sub LB() { my $r=shift; $r =~ s/%[er]([a-d])x/%\1l/	or
 			$r =~ s/%[er](bp)/%\1l/		or
 			$r =~ s/%(r[0-9]+)[d]?/%\1b/;   $r; }
 
+sub RD() { my $r=shift; $r =~ s/%[er]([a-d])x/%e\1x/	or
+			$r =~ s/%[er]([sd]i)/%e\1i/	or
+			$r =~ s/%[er](bp)/%e\1p/		or
+			$r =~ s/%(r[0-9]+)[d]?/%\1d/;   $r; }
+
 sub AUTOLOAD()		# thunk [simplified] 32-bit style perlasm
 { my $opcode = $AUTOLOAD; $opcode =~ s/.*:://;
   my $arg = pop;
@@ -166,7 +171,22 @@ sub AUTOLOAD()		# thunk [simplified] 32-bit style perlasm
   my $inp = shift;
 
 	$N++;
-$code.=<<___;
+if ($ENV{SARCASM}) {
+    # sarcasm drops the xor-zeroing as redundant, but 8-bit movb writes
+    # preserve the upper bits; movzbl needs no prior zeroing.
+    $code.=<<___;
+	movzbl	`&LB("$Zlo")`,`&RD("$nlo")`
+	movzbl	`&LB("$Zlo")`,`&RD("$nhi")`
+	shl	\$4,`&LB("$nlo")`
+	mov	\$14,$cnt
+	mov	8($Htbl,$nlo),$Zlo
+	mov	($Htbl,$nlo),$Zhi
+	and	\$0xf0,`&LB("$nhi")`
+	mov	$Zlo,$rem
+	jmp	.Loop$N
+___
+} else {
+    $code.=<<___;
 	xor	$nlo,$nlo
 	xor	$nhi,$nhi
 	mov	`&LB("$Zlo")`,`&LB("$nlo")`
@@ -178,6 +198,9 @@ $code.=<<___;
 	and	\$0xf0,`&LB("$nhi")`
 	mov	$Zlo,$rem
 	jmp	.Loop$N
+___
+}
+$code.=<<___;
 
 .align	16
 .Loop$N:
@@ -249,6 +272,16 @@ $code=<<___;
 gcm_gmult_4bit:
 .cfi_startproc
 	endbranch
+___
+if ($ENV{SARCASM}) {
+    # save the original %rsp for the phantom-sp epilogue; the region
+    # grows by 8 bytes to host it (offsets are all %rsp-relative).
+    $code.=<<___;
+	mov	%rsp,%rax
+.cfi_def_cfa_register	%rax
+___
+}
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp		# %rbp and others are pushed exclusively in
@@ -261,9 +294,22 @@ gcm_gmult_4bit:
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
+___
+if ($ENV{SARCASM}) {
+    $code.=<<___;
+	sub	\$288,%rsp		#! alloca result size=288
+.cfi_adjust_cfa_offset	288
+	mov	%rax,280(%rsp)	# save original stack pointer
+.Lgmult_prologue:
+___
+} else {
+    $code.=<<___;
 	sub	\$280,%rsp
 .cfi_adjust_cfa_offset	280
 .Lgmult_prologue:
+___
+}
+$code.=<<___;
 
 	movzb	15($Xi),$Zlo
 	lea	.Lrem_4bit(%rip),$rem_4bit
@@ -273,12 +319,30 @@ $code.=<<___;
 	mov	$Zlo,8($Xi)
 	mov	$Zhi,($Xi)
 
+___
+if ($ENV{SARCASM}) {
+    # phantom-sp epilogue: reload the saved %rsp and restore the
+    # pushed registers through it (the lea 280+48(%rsp) form computes
+    # an out-of-region address).
+    $code.=<<___;
+	mov	280(%rsp),%rsi	# restore saved stack pointer
+.cfi_def_cfa	%rsi,8
+	mov	-8(%rsi),%rbx
+.cfi_restore	%rbx
+	lea	(%rsi),%rsp
+.cfi_def_cfa_register	%rsp
+___
+} else {
+    $code.=<<___;
 	lea	280+48(%rsp),%rsi
 .cfi_def_cfa	%rsi,8
 	mov	-8(%rsi),%rbx
 .cfi_restore	%rbx
 	lea	(%rsi),%rsp
 .cfi_def_cfa_register	%rsp
+___
+}
+$code.=<<___;
 .Lgmult_epilogue:
 	ret
 .cfi_endproc
@@ -297,6 +361,14 @@ $code.=<<___;
 gcm_ghash_4bit:
 .cfi_startproc
 	endbranch
+___
+if ($ENV{SARCASM}) {
+    $code.=<<___;
+	mov	%rsp,%rax
+.cfi_def_cfa_register	%rax
+___
+}
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -309,9 +381,22 @@ gcm_ghash_4bit:
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
+___
+if ($ENV{SARCASM}) {
+    $code.=<<___;
+	sub	\$288,%rsp		#! alloca result size=288
+.cfi_adjust_cfa_offset	288
+	mov	%rax,280(%rsp)	# save original stack pointer
+.Lghash_prologue:
+___
+} else {
+    $code.=<<___;
 	sub	\$280,%rsp
 .cfi_adjust_cfa_offset	280
 .Lghash_prologue:
+___
+}
+$code.=<<___;
 	mov	$inp,%r14		# reassign couple of args
 	mov	$len,%r15
 ___
@@ -362,9 +447,14 @@ $code.=".align	16\n.Louter_loop:\n";
 	&mov	("8($Xi)","%rdx");
 	&shr	("%rdx",32);
 
-	&xor	($nlo,$nlo);
-	&rol	($dat,8);
-	&mov	(&LB($nlo),&LB($dat));
+	if ($ENV{SARCASM}) {
+	    &rol	($dat,8);
+	    &movz	(&RD($nlo),&LB($dat));
+	} else {
+	    &xor	($nlo,$nlo);
+	    &rol	($dat,8);
+	    &mov	(&LB($nlo),&LB($dat));
+	}
 	&movz	($nhi[0],&LB($dat));
 	&shl	(&LB($nlo),4);
 	&shr	($nhi[0],4);
@@ -376,7 +466,7 @@ $code.=".align	16\n.Louter_loop:\n";
 	    &mov	($Zlo,"8($Htbl,$nlo)")			if ($i==0);
 	    &mov	($Zhi,"($Htbl,$nlo)")			if ($i==0);
 
-	    &mov	(&LB($nlo),&LB($dat));
+	    if ($ENV{SARCASM}) { &movz	(&RD($nlo),&LB($dat)); } else { &mov	(&LB($nlo),&LB($dat)); }
 	    &xor	($Zlo,$tmp)				if ($i>0);
 	    &movzw	($rem[1],"($rem_8bit,$rem[1],2)")	if ($i>0);
 
@@ -394,7 +484,13 @@ $code.=".align	16\n.Louter_loop:\n";
 	    &shr	($Zlo,8);
 
 	    &movz	($rem[0],&LB($rem[0]));
-	    &mov	($dat,"$j($Xi)")			if (--$j%4==0);
+	    if ($ENV{SARCASM}) {
+		# the final refill reads -4($Xi) and is dead on loop exit;
+		# it is out of bounds under capabilities, so skip it.
+		&mov	($dat,"$j($Xi)")			if (--$j%4==0 && $j>=0);
+	    } else {
+		&mov	($dat,"$j($Xi)")			if (--$j%4==0);
+	    }
 	    &shr	($Zhi,8);
 
 	    &xor	($Zlo,"-128($Hshr4,$nhi[0],8)");
@@ -438,6 +534,29 @@ $code.=<<___;
 	mov	$Zlo,8($Xi)
 	mov	$Zhi,($Xi)
 
+___
+if ($ENV{SARCASM}) {
+    # phantom-sp epilogue
+    $code.=<<___;
+	mov	280(%rsp),%rsi	# restore saved stack pointer
+.cfi_def_cfa	%rsi,8
+	mov	-48(%rsi),%r15
+.cfi_restore	%r15
+	mov	-40(%rsi),%r14
+.cfi_restore	%r14
+	mov	-32(%rsi),%r13
+.cfi_restore	%r13
+	mov	-24(%rsi),%r12
+.cfi_restore	%r12
+	mov	-16(%rsi),%rbp
+.cfi_restore	%rbp
+	mov	-8(%rsi),%rbx
+.cfi_restore	%rbx
+	lea	(%rsi),%rsp
+.cfi_def_cfa_register	%rsp
+___
+} else {
+    $code.=<<___;
 	lea	280+48(%rsp),%rsi
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
@@ -454,6 +573,9 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	0(%rsi),%rsp
 .cfi_def_cfa_register	%rsp
+___
+}
+$code.=<<___;
 .Lghash_epilogue:
 	ret
 .cfi_endproc

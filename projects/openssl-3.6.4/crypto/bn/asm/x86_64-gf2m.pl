@@ -50,6 +50,13 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
 ($a1,$a2,$a4,$a8,$a12,$a48)=map("%r$_",(9..15));
 ($R,$Tx)=("%xmm0","%xmm1");
 
+# Sarcasm: _mul_1x1 gets no frame of its own — when inlined as a localcall
+# clone, any %rsp write in the clone clears the caller's parked-%rsp slot
+# carrier (clearDynSlots). Its 16-entry tab lives in the caller's grown
+# region instead: clone displacement D keys to the caller's D-8 (the +8
+# rule), so the tab at caller offset 144 is spelled at displacement 152.
+my $TAB = $ENV{SARCASM} ? 152 : 0;
+
 $code.=<<___;
 .text
 
@@ -57,7 +64,11 @@ $code.=<<___;
 .align	16
 _mul_1x1:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	sub	\$128+8,%rsp
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	128+8
 	mov	\$-1,$a1
 	lea	($a,$a),$i0
@@ -88,57 +99,57 @@ _mul_1x1:
 	xor	$t0,$hi
 
 	mov	$a1,$a12
-	movq	\$0,0(%rsp)		# tab[0]=0
+	movq	\$0,`$TAB+0`(%rsp)		# tab[0]=0
 	xor	$a2,$a12		# a1^a2
-	mov	$a1,8(%rsp)		# tab[1]=a1
+	mov	$a1,`$TAB+8`(%rsp)		# tab[1]=a1
 	 mov	$a4,$a48
-	mov	$a2,16(%rsp)		# tab[2]=a2
+	mov	$a2,`$TAB+16`(%rsp)		# tab[2]=a2
 	 xor	$a8,$a48		# a4^a8
-	mov	$a12,24(%rsp)		# tab[3]=a1^a2
+	mov	$a12,`$TAB+24`(%rsp)		# tab[3]=a1^a2
 
 	xor	$a4,$a1
-	mov	$a4,32(%rsp)		# tab[4]=a4
+	mov	$a4,`$TAB+32`(%rsp)		# tab[4]=a4
 	xor	$a4,$a2
-	mov	$a1,40(%rsp)		# tab[5]=a1^a4
+	mov	$a1,`$TAB+40`(%rsp)		# tab[5]=a1^a4
 	xor	$a4,$a12
-	mov	$a2,48(%rsp)		# tab[6]=a2^a4
+	mov	$a2,`$TAB+48`(%rsp)		# tab[6]=a2^a4
 	 xor	$a48,$a1		# a1^a4^a4^a8=a1^a8
-	mov	$a12,56(%rsp)		# tab[7]=a1^a2^a4
+	mov	$a12,`$TAB+56`(%rsp)		# tab[7]=a1^a2^a4
 	 xor	$a48,$a2		# a2^a4^a4^a8=a1^a8
 
-	mov	$a8,64(%rsp)		# tab[8]=a8
+	mov	$a8,`$TAB+64`(%rsp)		# tab[8]=a8
 	xor	$a48,$a12		# a1^a2^a4^a4^a8=a1^a2^a8
-	mov	$a1,72(%rsp)		# tab[9]=a1^a8
+	mov	$a1,`$TAB+72`(%rsp)		# tab[9]=a1^a8
 	 xor	$a4,$a1			# a1^a8^a4
-	mov	$a2,80(%rsp)		# tab[10]=a2^a8
+	mov	$a2,`$TAB+80`(%rsp)		# tab[10]=a2^a8
 	 xor	$a4,$a2			# a2^a8^a4
-	mov	$a12,88(%rsp)		# tab[11]=a1^a2^a8
+	mov	$a12,`$TAB+88`(%rsp)		# tab[11]=a1^a2^a8
 
 	xor	$a4,$a12		# a1^a2^a8^a4
-	mov	$a48,96(%rsp)		# tab[12]=a4^a8
+	mov	$a48,`$TAB+96`(%rsp)		# tab[12]=a4^a8
 	 mov	$mask,$i0
-	mov	$a1,104(%rsp)		# tab[13]=a1^a4^a8
+	mov	$a1,`$TAB+104`(%rsp)		# tab[13]=a1^a4^a8
 	 and	$b,$i0
-	mov	$a2,112(%rsp)		# tab[14]=a2^a4^a8
+	mov	$a2,`$TAB+112`(%rsp)		# tab[14]=a2^a4^a8
 	 shr	\$4,$b
-	mov	$a12,120(%rsp)		# tab[15]=a1^a2^a4^a8
+	mov	$a12,`$TAB+120`(%rsp)		# tab[15]=a1^a2^a4^a8
 	 mov	$mask,$i1
 	 and	$b,$i1
 	 shr	\$4,$b
 
-	movq	(%rsp,$i0,8),$R		# half of calculations is done in SSE2
+	movq	`$TAB`(%rsp,$i0,8),$R		# half of calculations is done in SSE2
 	mov	$mask,$i0
 	and	$b,$i0
 	shr	\$4,$b
 ___
     for ($n=1;$n<8;$n++) {
 	$code.=<<___;
-	mov	(%rsp,$i1,8),$t1
+	mov	`$TAB`(%rsp,$i1,8),$t1
 	mov	$mask,$i1
 	mov	$t1,$t0
 	shl	\$`8*$n-4`,$t1
 	and	$b,$i1
-	 movq	(%rsp,$i0,8),$Tx
+	 movq	`$TAB`(%rsp,$i0,8),$Tx
 	shr	\$`64-(8*$n-4)`,$t0
 	xor	$t1,$lo
 	 pslldq	\$$n,$Tx
@@ -151,7 +162,7 @@ ___
 ___
     }
 $code.=<<___;
-	mov	(%rsp,$i1,8),$t1
+	mov	`$TAB`(%rsp,$i1,8),$t1
 	mov	$t1,$t0
 	shl	\$`8*$n-4`,$t1
 	movq	$R,$i0
@@ -162,8 +173,12 @@ $code.=<<___;
 	movq	$R,$i1
 	xor	$i0,$lo
 	xor	$i1,$hi
+___
+$code.=<<___ if (!$ENV{SARCASM});
 
 	add	\$128+8,%rsp
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	-128-8
 	ret
 .Lend_mul_1x1:
@@ -217,7 +232,21 @@ $code.=<<___;
 
 .align	16
 .Lvanilla_mul_2x2:
+___
+if ($ENV{SARCASM}) {
+	# Fixed region + parked entry %rsp (the balanced mid-function
+	# lea-alloc pair cannot be proven safe); region grows by 8 for the
+	# save slot plus 136 for _mul_1x1's tab (see $TAB above).
+	$code.=<<___;
+	sub	\$8*17+8+136,%rsp	#! alloca result size=280
+	mov	%rax,8*17(%rsp)		# park entry %rsp in the region
+___
+} else {
+	$code.=<<___;
 	lea	-8*17(%rsp),%rsp
+___
+}
+$code.=<<___;
 .cfi_adjust_cfa_offset	8*17
 ___
 $code.=<<___ if ($win64);
@@ -237,7 +266,7 @@ $code.=<<___;
 	mov	%rbx,8*14(%rsp)
 .cfi_rel_offset	%rbx,8*14
 .Lbody_mul_2x2:
-	mov	$rp,32(%rsp)		# save the arguments
+	mov	$rp,32(%rsp)		#! store ptr
 	mov	$a1,40(%rsp)
 	mov	$a0,48(%rsp)
 	mov	$b1,56(%rsp)
@@ -268,7 +297,7 @@ $code.=<<___;
 	mov	8(%rsp),@r[1]
 	mov	16(%rsp),@r[2]
 	mov	24(%rsp),@r[3]
-	mov	32(%rsp),%rbp
+	mov	32(%rsp),%rbp		#! load ptr
 
 	xor	$hi,$lo
 	xor	@r[1],$hi
@@ -297,8 +326,14 @@ $code.=<<___ if ($win64);
 	mov	8*15(%rsp),%rdi
 	mov	8*16(%rsp),%rsi
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	mov	8*17(%rsp),%rsi		# reload parked entry %rsp
+	lea	(%rsi),%rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	8*17(%rsp),%rsp
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	-8*17
 .Lepilogue_mul_2x2:
 	ret

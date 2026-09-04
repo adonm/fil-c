@@ -1219,8 +1219,8 @@ $code.=<<___;
 	mov	%eax,%ebx		# backup rounds
 	shl	\$7,%rax		# 128 bytes per inner round key
 	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
-	sub	%rax,%rsp
-	mov	%rsp,%rax		# pass key schedule
+	sub	%rax,%rsp		#! alloca size (ks)
+	mov	%rsp,%rax		#! alloca result (ks)	# pass key schedule
 	mov	$key,%rcx		# pass key
 	mov	%ebx,%r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -1438,8 +1438,8 @@ $code.=<<___;
 	mov	%eax,%ebx		# backup rounds
 	shl	\$7,%rax		# 128 bytes per inner round key
 	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
-	sub	%rax,%rsp
-	mov	%rsp,%rax		# pass key schedule
+	sub	%rax,%rsp		#! alloca size (ks)
+	mov	%rsp,%rax		#! alloca result (ks)	# pass key schedule
 	mov	$key,%rcx		# pass key
 	mov	%ebx,%r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -1623,9 +1623,9 @@ $code.=<<___ if ($win64);
 ___
 $code.=<<___;
 	cmp	\$0,$arg6
-	jne	asm_AES_cbc_encrypt
+	jne	asm_AES_cbc_encrypt	#! void(ptr,ptr,size_t,ptr,ptr,int)
 	cmp	\$128,$arg3
-	jb	asm_AES_cbc_encrypt
+	jb	asm_AES_cbc_encrypt	#! void(ptr,ptr,size_t,ptr,ptr,int)
 
 	mov	%rsp, %rax
 .Lcbc_dec_prologue:
@@ -1673,9 +1673,9 @@ $code.=<<___;
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp
+	sub	%rax, %rsp		#! alloca size (ks)
 
-	mov	%rsp, %rax		# pass key schedule
+	mov	%rsp, %rax		#! alloca result (ks)	# pass key schedule
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -1873,11 +1873,16 @@ $code.=<<___;
 	movdqu	@XMM[15], (%rbx)	# return IV
 	lea	(%rsp), %rax
 	pxor	%xmm0, %xmm0
+	mov	240($key), %r11d	# rounds
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
+	mov	%rsp, %r10
+	add	%r10, %r11		# key schedule end (== %rbp, sans frame-base read)
 .Lcbc_dec_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
-	cmp	%rax, %rbp
+	cmp	%rax, %r11
 	ja	.Lcbc_dec_bzero
 
 	lea	0x78(%rbp),%rax
@@ -1971,9 +1976,9 @@ $code.=<<___;
 	mov	%eax, %ebx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp
+	sub	%rax, %rsp		#! alloca size (ks)
 
-	mov	%rsp, %rax		# pass key schedule
+	mov	%rsp, %rax		#! alloca result (ks)	# pass key schedule
 	mov	$key, %rcx		# pass key
 	mov	%ebx, %r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -2120,17 +2125,24 @@ $code.=<<___;
 	mov	%eax, 0x2c(%rsp)	# save 32-bit counter
 	dec	$len
 	jnz	.Lctr_enc_short
+	jmp	.Lctr_enc_wiped		# no key schedule was built on the short path
 
 .Lctr_enc_done:
 	lea	(%rsp), %rax
 	pxor	%xmm0, %xmm0
+	mov	240($key), %r11d	# rounds
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
+	mov	%rsp, %r10
+	add	%r10, %r11		# key schedule end (== %rbp, sans frame-base read)
 .Lctr_enc_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
-	cmp	%rax, %rbp
+	cmp	%rax, %r11
 	ja	.Lctr_enc_bzero
 
+.Lctr_enc_wiped:
 	lea	0x78(%rbp),%rax
 .cfi_def_cfa	%rax,8
 ___
@@ -2234,10 +2246,11 @@ $code.=<<___;
 
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
-	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp
+	sub	\$`128-32-128`, %rax	# size of bit-sliced key schedule and tweak[8]
+	sub	%rax, %rsp		#! alloca size (ks)
 
-	mov	%rsp, %rax		# pass key schedule
+	mov	%rsp, %rax		#! alloca result (ks)
+	lea	0x80(%rax), %rax	# pass key schedule (past tweak[8])
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -2245,7 +2258,6 @@ $code.=<<___;
 	movdqa	%xmm7, (%rax)		# save last round key
 
 	and	\$-16, $len
-	sub	\$0x80, %rsp		# place for tweak[8]
 	movdqa	0x20(%rbp), @XMM[7]	# initial tweak
 
 	pxor	$twtmp, $twtmp
@@ -2533,11 +2545,16 @@ $code.=<<___;
 .Lxts_enc_ret:
 	lea	(%rsp), %rax
 	pxor	%xmm0, %xmm0
+	mov	240($key), %r11d	# rounds
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32-128`, %r11	# size of bit-sliced key schedule and tweak[8]
+	mov	%rsp, %r10
+	add	%r10, %r11		# region end (== %rbp, sans frame-base read)
 .Lxts_enc_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
-	cmp	%rax, %rbp
+	cmp	%rax, %r11
 	ja	.Lxts_enc_bzero
 
 	lea	0x78(%rbp),%rax
@@ -2633,16 +2650,17 @@ $code.=<<___;
 
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
-	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp
+	sub	\$`128-32-128`, %rax	# size of bit-sliced key schedule and tweak[8]
+	sub	%rax, %rsp		#! alloca size (ks)
 
-	mov	%rsp, %rax		# pass key schedule
+	mov	%rsp, %rax		#! alloca result (ks)
+	lea	0x80(%rax), %rax	# pass key schedule (past tweak[8])
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
 	call	_bsaes_key_convert
-	pxor	(%rsp), %xmm7		# fix up round 0 key
+	pxor	0x80(%rsp), %xmm7	# fix up round 0 key
 	movdqa	%xmm6, (%rax)		# save last round key
-	movdqa	%xmm7, (%rsp)
+	movdqa	%xmm7, 0x80(%rsp)
 
 	xor	%eax, %eax		# if ($len%16) len-=16;
 	and	\$-16, $len
@@ -2651,7 +2669,6 @@ $code.=<<___;
 	shl	\$4, %rax
 	sub	%rax, $len
 
-	sub	\$0x80, %rsp		# place for tweak[8]
 	movdqa	0x20(%rbp), @XMM[7]	# initial tweak
 
 	pxor	$twtmp, $twtmp
@@ -2958,11 +2975,16 @@ $code.=<<___;
 .Lxts_dec_ret:
 	lea	(%rsp), %rax
 	pxor	%xmm0, %xmm0
+	mov	240($key), %r11d	# rounds
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32-128`, %r11	# size of bit-sliced key schedule and tweak[8]
+	mov	%rsp, %r10
+	add	%r10, %r11		# region end (== %rbp, sans frame-base read)
 .Lxts_dec_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
-	cmp	%rax, %rbp
+	cmp	%rax, %r11
 	ja	.Lxts_dec_bzero
 
 	lea	0x78(%rbp),%rax

@@ -111,6 +111,11 @@ $code.=<<___;
 .align	32
 rsaz_512_sqr:				# 25-29% faster than rsaz_512_mul
 .cfi_startproc
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -124,7 +129,12 @@ rsaz_512_sqr:				# 25-29% faster than rsaz_512_mul
 	push	%r15
 .cfi_push	%r15
 
-	subq	\$128+24, %rsp
+	subq	\$128+24, %rsp		#! alloca result size=152
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rax, 144(%rsp)		# park entry %rsp in the region
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lsqr_body:
 	movq	$mod, %xmm1		# common off-load
@@ -499,7 +509,6 @@ $code.=<<___;
 	adcq	112(%rsp), %r14
 	adcq	120(%rsp), %r15
 	sbbq	%rcx, %rcx
-
 	call	__rsaz_512_subtract
 
 	movq	%r8, %rdx
@@ -517,7 +526,10 @@ $code.=<<___;
 .align	32
 .Loop_sqrx:
 	movl	$times,128+8(%rsp)
+___
+$code.=<<___;
 	movq	$out, %xmm0		# off-load
+___
 #first iteration
 	mulx	%rax, %r8, %r9
 	mov	%rax, %rbx
@@ -748,7 +760,6 @@ $code.=<<___;
 	adox	%rbp, %rbx
 	adcx	%r13, %rax
 	adcx	%rdx, %rbx
-
 	movq	%xmm0, $out
 	movq	%xmm1, %rbp
 
@@ -792,6 +803,25 @@ ___
 }
 $code.=<<___;
 
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	144(%rsp), %rsi		# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi), %r15
+.cfi_restore	%r15
+	movq	-40(%rsi), %r14
+.cfi_restore	%r14
+	movq	-32(%rsi), %r13
+.cfi_restore	%r13
+	movq	-24(%rsi), %r12
+.cfi_restore	%r12
+	movq	-16(%rsi), %rbp
+.cfi_restore	%rbp
+	movq	-8(%rsi), %rbx
+.cfi_restore	%rbx
+	leaq	(%rsi), %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	128+24+48(%rsp), %rax
 .cfi_def_cfa	%rax,8
 	movq	-48(%rax), %r15
@@ -807,6 +837,8 @@ $code.=<<___;
 	movq	-8(%rax), %rbx
 .cfi_restore	%rbx
 	leaq	(%rax), %rsp
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lsqr_epilogue:
 	ret
@@ -822,6 +854,11 @@ $code.=<<___;
 .align	32
 rsaz_512_mul:
 .cfi_startproc
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -835,13 +872,34 @@ rsaz_512_mul:
 	push	%r15
 .cfi_push	%r15
 
-	subq	\$128+24, %rsp
+___
+if ($ENV{SARCASM}) {
+	# Grow the region to 160 so $out/$mod can be parked in region slots
+	# (xmm pointer parking loses capabilities under sarcasm).
+	$code.="\tsubq	\$128+32, %rsp		#! alloca result size=160\n";
+} else {
+	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+}
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rax, 144(%rsp)		# park entry %rsp in the region
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lmul_body:
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	movq	$out, 136(%rsp)		#! store ptr
+	movq	$mod, 152(%rsp)		#! store ptr
+	movq	$n0, 128(%rsp)
+___
+} else {
+$code.=<<___;
 	movq	$out, %xmm0		# off-load arguments
 	movq	$mod, %xmm1
 	movq	$n0, 128(%rsp)
 ___
+}
 $code.=<<___ if ($addx);
 	movl	\$0x80100,%r11d
 	andl	OPENSSL_ia32cap_P+8(%rip),%r11d
@@ -853,8 +911,10 @@ $code.=<<___;
 	movq	$bp, %rbp		# pass argument
 	call	__rsaz_512_mul
 
-	movq	%xmm0, $out
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr\n"; }
+else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	(%rsp), %r8
 	movq	8(%rsp), %r9
@@ -876,8 +936,10 @@ $code.=<<___ if ($addx);
 	movq	($bp), %rdx		# pass b[0]
 	call	__rsaz_512_mulx
 
-	movq	%xmm0, $out
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr\n"; }
+else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	128(%rsp), %rdx		# pull $n0
 	movq	(%rsp), %r8
@@ -905,6 +967,25 @@ $code.=<<___;
 
 	call	__rsaz_512_subtract
 
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	144(%rsp), %rsi		# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi), %r15
+.cfi_restore	%r15
+	movq	-40(%rsi), %r14
+.cfi_restore	%r14
+	movq	-32(%rsi), %r13
+.cfi_restore	%r13
+	movq	-24(%rsi), %r12
+.cfi_restore	%r12
+	movq	-16(%rsi), %rbp
+.cfi_restore	%rbp
+	movq	-8(%rsi), %rbx
+.cfi_restore	%rbx
+	leaq	(%rsi), %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	128+24+48(%rsp), %rax
 .cfi_def_cfa	%rax,8
 	movq	-48(%rax), %r15
@@ -920,6 +1001,8 @@ $code.=<<___;
 	movq	-8(%rax), %rbx
 .cfi_restore	%rbx
 	leaq	(%rax), %rsp
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lmul_epilogue:
 	ret
@@ -935,6 +1018,11 @@ $code.=<<___;
 .align	32
 rsaz_512_mul_gather4:
 .cfi_startproc
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -948,7 +1036,20 @@ rsaz_512_mul_gather4:
 	push	%r15
 .cfi_push	%r15
 
+___
+if ($ENV{SARCASM}) {
+	# Region grows by 16 to host the saved stack pointer (slot 144 is
+	# $mod in this function).
+	$code.=<<___;
+	subq	\$`128+24+16+($win64?0xb0:0)`, %rsp	#! alloca result size=`128+24+16+($win64?0xb0:0)`
+	movq	%rax, 152(%rsp)		# park entry %rsp in the region
+___
+} else {
+	$code.=<<___;
 	subq	\$`128+24+($win64?0xb0:0)`, %rsp
+___
+}
+$code.=<<___;
 .cfi_adjust_cfa_offset	`128+24+($win64?0xb0:0)`
 ___
 $code.=<<___	if ($win64);
@@ -1359,6 +1460,8 @@ $code.=<<___;
 
 	call	__rsaz_512_subtract
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	128+24+48(%rsp), %rax
 ___
 $code.=<<___	if ($win64);
@@ -1374,7 +1477,7 @@ $code.=<<___	if ($win64);
 	movaps	0x130-0xc8(%rax),%xmm15
 	lea	0xb0(%rax),%rax
 ___
-$code.=<<___;
+$code.=<<___ if (!$ENV{SARCASM});
 .cfi_def_cfa	%rax,8
 	movq	-48(%rax), %r15
 .cfi_restore	%r15
@@ -1389,6 +1492,25 @@ $code.=<<___;
 	movq	-8(%rax), %rbx
 .cfi_restore	%rbx
 	leaq	(%rax), %rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	152(%rsp), %rsi		# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi), %r15
+.cfi_restore	%r15
+	movq	-40(%rsi), %r14
+.cfi_restore	%r14
+	movq	-32(%rsi), %r13
+.cfi_restore	%r13
+	movq	-24(%rsi), %r12
+.cfi_restore	%r12
+	movq	-16(%rsi), %rbp
+.cfi_restore	%rbp
+	movq	-8(%rsi), %rbx
+.cfi_restore	%rbx
+	leaq	(%rsi), %rsp
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lmul_gather4_epilogue:
 	ret
@@ -1404,6 +1526,11 @@ $code.=<<___;
 .align	32
 rsaz_512_mul_scatter4:
 .cfi_startproc
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -1418,7 +1545,12 @@ rsaz_512_mul_scatter4:
 .cfi_push	%r15
 
 	mov	$pwr, $pwr
-	subq	\$128+24, %rsp
+	subq	\$128+24, %rsp		#! alloca result size=152
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rax, 144(%rsp)		# park entry %rsp in the region
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lmul_scatter4_body:
 	leaq	($tbl,$pwr,8), $tbl
@@ -1501,6 +1633,25 @@ $code.=<<___;
 	movq	%r14, 128*6($inp)
 	movq	%r15, 128*7($inp)
 
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	144(%rsp), %rsi		# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi), %r15
+.cfi_restore	%r15
+	movq	-40(%rsi), %r14
+.cfi_restore	%r14
+	movq	-32(%rsi), %r13
+.cfi_restore	%r13
+	movq	-24(%rsi), %r12
+.cfi_restore	%r12
+	movq	-16(%rsi), %rbp
+.cfi_restore	%rbp
+	movq	-8(%rsi), %rbx
+.cfi_restore	%rbx
+	leaq	(%rsi), %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	128+24+48(%rsp), %rax
 .cfi_def_cfa	%rax,8
 	movq	-48(%rax), %r15
@@ -1516,6 +1667,8 @@ $code.=<<___;
 	movq	-8(%rax), %rbx
 .cfi_restore	%rbx
 	leaq	(%rax), %rsp
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lmul_scatter4_epilogue:
 	ret
@@ -1531,6 +1684,11 @@ $code.=<<___;
 .align	32
 rsaz_512_mul_by_one:
 .cfi_startproc
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -1544,7 +1702,12 @@ rsaz_512_mul_by_one:
 	push	%r15
 .cfi_push	%r15
 
-	subq	\$128+24, %rsp
+	subq	\$128+24, %rsp		#! alloca result size=152
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rax, 144(%rsp)		# park entry %rsp in the region
+___
+$code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lmul_by_one_body:
 ___
@@ -1599,6 +1762,25 @@ $code.=<<___;
 	movq	%r14, 48($out)
 	movq	%r15, 56($out)
 
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	144(%rsp), %rsi		# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi), %r15
+.cfi_restore	%r15
+	movq	-40(%rsi), %r14
+.cfi_restore	%r14
+	movq	-32(%rsi), %r13
+.cfi_restore	%r13
+	movq	-24(%rsi), %r12
+.cfi_restore	%r12
+	movq	-16(%rsi), %rbp
+.cfi_restore	%rbp
+	movq	-8(%rsi), %rbx
+.cfi_restore	%rbx
+	leaq	(%rsi), %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	128+24+48(%rsp), %rax
 .cfi_def_cfa	%rax,8
 	movq	-48(%rax), %r15
@@ -1614,6 +1796,8 @@ $code.=<<___;
 	movq	-8(%rax), %rbx
 .cfi_restore	%rbx
 	leaq	(%rax), %rsp
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lmul_by_one_epilogue:
 	ret

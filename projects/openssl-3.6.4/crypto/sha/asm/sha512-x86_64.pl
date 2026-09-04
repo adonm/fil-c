@@ -348,12 +348,12 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 	shl	\$4,%rdx		# num*16
-	sub	\$$framesz,%rsp
+	sub	\$$framesz,%rsp		#! alloca result size=`16*$SZ+4*8`
 	lea	($inp,%rdx,$SZ),%rdx	# inp+num*16*$SZ
 	and	\$-64,%rsp		# align stack frame
-	mov	$ctx,$_ctx		# save ctx, 1st arg
-	mov	$inp,$_inp		# save inp, 2nd arh
-	mov	%rdx,$_end		# save end pointer, "3rd" arg
+	mov	$ctx,$_ctx		# save ctx, 1st arg	#! store ptr
+	mov	$inp,$_inp		# save inp, 2nd arh	#! store ptr
+	mov	%rdx,$_end		# save end pointer, "3rd" arg	#! store ptr
 	mov	%rax,$_rsp		# save copy of %rsp
 .cfi_cfa_expression	$_rsp,deref,+8
 .Lprologue:
@@ -396,7 +396,7 @@ $code.=<<___;
 	cmpb	\$0,`$SZ-1`($Tbl)
 	jnz	.Lrounds_16_xx
 
-	mov	$_ctx,$ctx
+	mov	$_ctx,$ctx			#! load ptr
 	add	$a1,$A			# modulo-scheduled h+=Sigma0(a)
 	lea	16*$SZ($inp),$inp
 
@@ -878,12 +878,12 @@ ${func}_ssse3:
 	push	%r15
 .cfi_push	%r15
 	shl	\$4,%rdx		# num*16
-	sub	\$`$framesz+$win64*16*4`,%rsp
+	sub	\$`$framesz+$win64*16*4`,%rsp	#! alloca result size=`16*$SZ+4*8`
 	lea	($inp,%rdx,$SZ),%rdx	# inp+num*16*$SZ
 	and	\$-64,%rsp		# align stack frame
-	mov	$ctx,$_ctx		# save ctx, 1st arg
-	mov	$inp,$_inp		# save inp, 2nd arh
-	mov	%rdx,$_end		# save end pointer, "3rd" arg
+	mov	$ctx,$_ctx		# save ctx, 1st arg	#! store ptr
+	mov	$inp,$_inp		# save inp, 2nd arh	#! store ptr
+	mov	%rdx,$_end		# save end pointer, "3rd" arg	#! store ptr
 	mov	%rax,$_rsp		# save copy of %rsp
 .cfi_cfa_expression	$_rsp,deref,+8
 ___
@@ -1158,7 +1158,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	foreach(body_00_15()) { eval; }
     }
 $code.=<<___;
-	mov	$_ctx,$ctx
+	mov	$_ctx,$ctx			#! load ptr
 	mov	$a1,$A
 
 	add	$SZ*0($ctx),$A
@@ -1240,12 +1240,12 @@ ${func}_xop:
 	push	%r15
 .cfi_push	%r15
 	shl	\$4,%rdx		# num*16
-	sub	\$`$framesz+$win64*16*($SZ==4?4:6)`,%rsp
+	sub	\$`$framesz+$win64*16*($SZ==4?4:6)`,%rsp	#! alloca result size=`16*$SZ+4*8`
 	lea	($inp,%rdx,$SZ),%rdx	# inp+num*16*$SZ
 	and	\$-64,%rsp		# align stack frame
-	mov	$ctx,$_ctx		# save ctx, 1st arg
-	mov	$inp,$_inp		# save inp, 2nd arh
-	mov	%rdx,$_end		# save end pointer, "3rd" arg
+	mov	$ctx,$_ctx		# save ctx, 1st arg	#! store ptr
+	mov	$inp,$_inp		# save inp, 2nd arh	#! store ptr
+	mov	%rdx,$_end		# save end pointer, "3rd" arg	#! store ptr
 	mov	%rax,$_rsp		# save copy of %rsp
 .cfi_cfa_expression	$_rsp,deref,+8
 ___
@@ -1548,7 +1548,7 @@ my @insns = (&$body,&$body);			# 52 instructions
     }
 }
 $code.=<<___;
-	mov	$_ctx,$ctx
+	mov	$_ctx,$ctx			#! load ptr
 	mov	$a1,$A
 
 	add	$SZ*0($ctx),$A
@@ -1634,12 +1634,12 @@ ${func}_avx:
 	push	%r15
 .cfi_push	%r15
 	shl	\$4,%rdx		# num*16
-	sub	\$`$framesz+$win64*16*($SZ==4?4:6)`,%rsp
+	sub	\$`$framesz+$win64*16*($SZ==4?4:6)`,%rsp	#! alloca result size=`16*$SZ+4*8`
 	lea	($inp,%rdx,$SZ),%rdx	# inp+num*16*$SZ
 	and	\$-64,%rsp		# align stack frame
-	mov	$ctx,$_ctx		# save ctx, 1st arg
-	mov	$inp,$_inp		# save inp, 2nd arh
-	mov	%rdx,$_end		# save end pointer, "3rd" arg
+	mov	$ctx,$_ctx		# save ctx, 1st arg	#! store ptr
+	mov	$inp,$_inp		# save inp, 2nd arh	#! store ptr
+	mov	%rdx,$_end		# save end pointer, "3rd" arg	#! store ptr
 	mov	%rax,$_rsp		# save copy of %rsp
 .cfi_cfa_expression	$_rsp,deref,+8
 ___
@@ -1874,7 +1874,7 @@ my @insns = (&$body,&$body);			# 52 instructions
     }
 }
 $code.=<<___;
-	mov	$_ctx,$ctx
+	mov	$_ctx,$ctx			#! load ptr
 	mov	$a1,$A
 
 	add	$SZ*0($ctx),$A
@@ -1935,6 +1935,29 @@ $code.=<<___;
 ___
 
 if ($avx>1) {{
+if ($ENV{SARCASM}) {
+######################################################################
+# Sarcasm: the AVX2 frame below is a rolling stack window — the X+K
+# xfer area slides with mid-body `leaq -$PUSH8(%rsp),%rsp` pairs, a
+# `pushq` into the moving window, and red-zone stores relative to a
+# moving %rsp. That shape cannot be proven memory-safe (the alloca
+# model needs a fixed region), so the AVX2 body delegates to the AVX
+# body: the dispatcher's `je .Lavx2_shortcut` lands here and this tail
+# branch becomes a call to ${func}_avx (same signature, fixed frame).
+# AVX2 hardware runs the AVX code path correctly, just slower.
+
+$code.=<<___;
+.type	${func}_avx2,\@function,3
+.align	16
+${func}_avx2:
+.Lavx2_shortcut:
+.cfi_startproc
+	jmp	.Lavx_shortcut
+.cfi_endproc
+.size	${func}_avx2,.-${func}_avx2
+___
+} else {
+
 ######################################################################
 # AVX2+BMI code path
 #
@@ -2007,9 +2030,9 @@ ${func}_avx2:
 	and	\$-256*$SZ,%rsp		# align stack frame
 	lea	($inp,%rdx,$SZ),%rdx	# inp+num*16*$SZ
 	add	\$`2*$SZ*($rounds-8)`,%rsp
-	mov	$ctx,$_ctx		# save ctx, 1st arg
-	mov	$inp,$_inp		# save inp, 2nd arh
-	mov	%rdx,$_end		# save end pointer, "3rd" arg
+	mov	$ctx,$_ctx		# save ctx, 1st arg	#! store ptr
+	mov	$inp,$_inp		# save inp, 2nd arh	#! store ptr
+	mov	%rdx,$_end		# save end pointer, "3rd" arg	#! store ptr
 	mov	%rax,$_rsp		# save copy of %rsp
 .cfi_cfa_expression	$_rsp,deref,+8
 ___
@@ -2383,6 +2406,7 @@ $code.=<<___;
 .cfi_endproc
 .size	${func}_avx2,.-${func}_avx2
 ___
+}
 }}
 }}}}}
 

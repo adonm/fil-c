@@ -92,7 +92,22 @@ $code .= <<___;
 .type   ossl_vaes_vpclmulqdq_capable,\@abi-omnipotent
 .align 32
 ossl_vaes_vpclmulqdq_capable:
+___
+if ($ENV{SARCASM}) {
+  # ; sarcasm's alignment==width check would fault the 64-bit load of the
+  # ; 4-byte-aligned global; split it into two 32-bit loads (same semantics).
+  $code .= <<___;
+    mov OPENSSL_ia32cap_P+8(%rip), %ecx
+    mov OPENSSL_ia32cap_P+12(%rip), %edx
+    shl \$32, %rdx
+    or %rdx, %rcx
+___
+} else {
+  $code .= <<___;
     mov OPENSSL_ia32cap_P+8(%rip), %rcx
+___
+}
+$code .= <<___;
     # avx512vpclmulqdq + avx512vaes + avx512vl + avx512bw + avx512dq + avx512f
     mov \$`1<<42|1<<41|1<<31|1<<30|1<<17|1<<16`,%rdx
     xor %eax,%eax
@@ -382,7 +397,15 @@ ___
     #
     # ; It also serves as an anchor for retrieving stack arguments on both Linux
     # ; and Windows.
-    lea     `$XMM_STORAGE`(%rsp),%rbp
+___
+  if ($ENV{SARCASM} && !$win64) {
+    # ; sarcasm recognizes `mov %rsp,%rbp` as frame-pointer establishment but
+    # ; not `lea 0(%rsp),%rbp`; spell it as mov (identical semantics).
+    $code .= "    mov     %rsp,%rbp\n";
+  } else {
+    $code .= "    lea     `$XMM_STORAGE`(%rsp),%rbp\n";
+  }
+  $code .= <<___;
 .cfi_def_cfa_register %rbp
 .L${func_name}_seh_setfp:
 ___
@@ -405,7 +428,7 @@ ___
 
   if ($DYNAMIC_STACK_ALLOC_SIZE) {
     $code .= <<___;
-        sub               \$`$DYNAMIC_STACK_ALLOC_SIZE + $DYNAMIC_STACK_ALLOC_ALIGNMENT_SPACE`,%rsp
+        sub               \$`$DYNAMIC_STACK_ALLOC_SIZE + $DYNAMIC_STACK_ALLOC_ALIGNMENT_SPACE`,%rsp	#! alloca result size=`$DYNAMIC_STACK_ALLOC_SIZE + $DYNAMIC_STACK_ALLOC_ALIGNMENT_SPACE`
         and               \$(-64),%rsp
 ___
   }

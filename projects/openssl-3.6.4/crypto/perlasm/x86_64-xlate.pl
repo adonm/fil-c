@@ -170,6 +170,12 @@ my %SARCASM_SIGS = (
     "RC4_set_key"                       => "void(ptr,int,ptr)",
     "SHA3_absorb"                       => "size_t(ptr,ptr,size_t,size_t)",
     "SHA3_squeeze"                      => "void(ptr,ptr,size_t,size_t,int)",
+    # File-local (not .globl) round function in keccak1600-x86_64.pl:
+    # called only by SHA3_squeeze, in a loop. As a local subroutine its
+    # clone would be re-entered by that loop, and its save/restore of
+    # registers it redefines cannot be modeled across the re-entry; as a
+    # signatured function the call is an ordinary call boundary.
+    "KeccakF1600"                       => "void(ptr)",
     "aesni_cbc_encrypt"                 => "void(ptr,ptr,size_t,ptr,ptr,int)",
     "aesni_cbc_sha1_enc"                => "void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",
     "aesni_cbc_sha256_enc"              => "int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)",

@@ -602,7 +602,11 @@ local EXACT = {
 	fsubrs = { w = 4, claim = true }, fsubrl = { w = 8, claim = true },
 	fdivrs = { w = 4, claim = true }, fdivrl = { w = 8, claim = true },
 	fbld = { w = 10, claim = true }, fbstp = { w = 10, claim = true },
-	fnstsw = { w = 2, gpr = "dst", claim = true }, fstsw = { w = 2, gpr = "dst", claim = true },
+	-- fnstsw/fstsw %ax write ONLY %ax: bits 16-63 of the enclosing register are
+	-- preserved — a partial write, so the GPR destination is an RMW of its web
+	-- (gprRmwDst + the auto-rmw below; codegen's lowerSpecial pins the reaching
+	-- web into physical rax so the preserved bits are the web's own).
+	fnstsw = { w = 2, gpr = gprRmwDst, claim = true }, fstsw = { w = 2, gpr = gprRmwDst, claim = true },
 	fnstcw = { w = 2, claim = true }, fstcw = { w = 2, claim = true }, fldcw = { w = 2, claim = true },
 
 	-- fxsave/fxrstor: fixed 512-byte state image, 16-byte aligned -----------------

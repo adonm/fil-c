@@ -76,6 +76,75 @@ if (!$addx && `$ENV{CC} -x c /dev/null -dM -E|grep __clang_major__`
 	}
 }
 
+# Sarcasm compiles bn_sqr8x_internal/bn_sqrx8x_internal as file-local
+# subroutines (see the .globl/.type gating at their definitions): their
+# bodies address the caller's frame with the return-address-compensated
+# (+8) convention, which only the localcall clone machinery can legalize
+# (a standalone sig'd function may not touch the caller's frame). Calls
+# therefore target the local __ aliases, which carry no signature
+# annotation, exactly like other local subroutines.
+my $sqr8x_internal = "__bn_sqr8x_internal";
+my $sqrx8x_internal = "__bn_sqrx8x_internal";
+
+# Sarcasm: mul4x_internal takes the n0 VALUE in %r8, not a pointer. (bn_power5
+# hands it the address of the region slot holding *n0; a region-pointer
+# register read inside a localcall clone trips the yolo stack-argument scan.)
+# The plain-gas build keeps the original pointer convention.
+my $mul4x_pull_n0 = $ENV{SARCASM} ? "" : "\tmov\t(%r8),%r8\t\t# pull n0[0] value\n";
+my $power5_pass_n0 = $ENV{SARCASM} ? "\tmov\t32(%rsp),%r8\t# n0 value\n" : "\tlea\t32(%rsp),%r8\n";
+
+# Sarcasm: the tp[] rewind `lea 48+8(%rsp),%rdi` inside the sqr8x/sqrx8x
+# clones creates a non-indexed region-pointer save whose later non-indexed
+# loads crash the yolo stack-argument scan (7-arg callers). Spelling it as
+# an indexed lea (with a zeroed %rdi as the index) routes the pointer
+# through the general region redirect instead. The xor is flag-safe at
+# every site: each downstream consumer re-establishes flags explicitly
+# (`xor`/`shr`/`adox` chains all set their own flags first).
+my $rewind_tptr = $ENV{SARCASM}
+	? "\txor\t%edi,%edi\n\tlea\t48+8(%rsp,%rdi,1),%rdi"
+	: "\tlea\t48+8(%rsp),%rdi";
+
+# Sarcasm: bn_powerx5's header is fully occupied (saved $num, &t[2*$num],
+# two carry bits, saved *n0, saved %rsp), leaving no free fixed slots to
+# park rp/np/table across the sqrx8x/postx4x calls (xmm pointer parking
+# loses capabilities). Shift sqrx8x's tp[] base from region+48 to
+# region+72 (the region is grown by 24), freeing fixed header slots
+# 48/56/64 for rp/np/table. Plain-gas output keeps the 48 base everywhere.
+my $rewind_tptr_sqrx = $ENV{SARCASM}
+	? "\txor\t%edi,%edi\n\tlea\t80+8(%rsp,%rdi,1),%rdi"
+	: "\tlea\t48+8(%rsp),%rdi";
+
+# Sarcasm: at the sqrx8x zero-loop entry the indexed spelling leaves the
+# tp aux register un-seeded at the clone-entry merge (sarcasm bug: the aux
+# for an indexed-lea result is assumed inherited across localcall-clone
+# entry, so the tp bounds checks read a stale aux). The non-indexed lea is
+# fully region-redirected, aux included, so use it here. Flag-safe: lea
+# does not modify flags.
+my $seed_tptr = $ENV{SARCASM}
+	? "\tlea\t80+8(%rsp),%rdi"
+	: "\tlea\t48+8(%rsp),%rdi";
+
+# Sarcasm: tp[0] displacement inside the sqrx8x clones, matching the
+# shifted tp[] base (see $rewind_tptr_sqrx above). Plain gas keeps 48+8.
+my $tp0_sqrx = $ENV{SARCASM} ? "80+8" : "48+8";
+# Compound displacements that embed the tp[] base in a constant: tp[8+%rcx]
+# and tp[9+%rcx] for the n0*a[i] put-aside/pull. Same base shift as $tp0_sqrx.
+my $tp8_sqrx = $ENV{SARCASM} ? "64+80+8" : "64+48+8";
+my $tp9_sqrx = $ENV{SARCASM} ? "72+80+8" : "72+48+8";
+
+# Sarcasm: an indexed lea off %rsp inside a localcall clone redirects the
+# value but leaves the result's aux un-seeded (the clone-entry register-aux
+# merge drops the region-aux assignment), so later bounds checks through
+# the pointer read a stale/null aux. Routing the lea through `movq %rsp` +
+# register-index form seeds the region aux correctly (the same pattern the
+# mask-area leas use). The computed value is identical; plain-gas output is
+# unchanged.
+sub lea_rsp_idx {
+    my ($dst,$disp,$idx) = @_;
+    return "\tlea\t$disp(%rsp,$idx),$dst" if (!$ENV{SARCASM});
+    return "\tmovq\t%rsp,$dst\n\tlea\t$disp($dst,$idx),$dst";
+}
+
 # int bn_mul_mont_gather5(
 $rp="%rdi";	# BN_ULONG *rp,
 $ap="%rsi";	# const BN_ULONG *ap,
@@ -202,8 +271,29 @@ ___
 $code.=<<___;
 	movdqa	0(%r10),%xmm0		# 00000001000000010000000000000000
 	movdqa	16(%r10),%xmm1		# 00000002000000020000000200000002
+___
+if ($ENV{SARCASM}) {
+	# The andq $-16 capability-mask is invalid on a region pointer, and
+	# the pre-alignment coordinate (region+8*num-24) has a provably-
+	# negative lower bound for small num. Place the mask right after
+	# the tp[num+2] buffer instead (region+8*num+64): 16-aligned,
+	# The andq $-16 capability-mask is invalid on a region pointer, and
+	# an indexed stack lea is not region-redirected. Compute the same
+	# address (region+8*num-32, the andq result) with region-pointer
+	# arithmetic: non-indexed lea, register-index lea, then subtract
+	# (the pre-alignment offset is always 8 mod 16, so andq $-16
+	# subtracts exactly 8; 24-112+64-8 = -32 in region coordinates).
+	$code.=<<___;
+	movq	%rsp,%r10		# place the mask after tp[num+3] (+ICache optimization)
+	lea	-96(%r10,$num,8),%r10
+___
+} else {
+	$code.=<<___;
 	lea	24-112(%rsp,$num,8),%r10# place the mask after tp[num+3] (+ICache optimization)
 	and	\$-16,%r10
+___
+}
+$code.=<<___;
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
 	movdqa	%xmm1,%xmm4
@@ -350,8 +440,22 @@ $code.=<<___;
 	jmp	.Louter
 .align	16
 .Louter:
+___
+if ($ENV{SARCASM}) {
+	# The andq $-16 capability-mask is invalid on a region pointer;
+	# compute the same address (region+8*num+208) with region-pointer
+	# arithmetic (see the mask-build lea above).
+	$code.=<<___;
+	movq	%rsp,%rdx		# where 256-byte mask is (+size optimization)
+	lea	144(%rdx,$num,8),%rdx
+___
+} else {
+	$code.=<<___;
 	lea	24+128(%rsp,$num,8),%rdx	# where 256-byte mask is (+size optimization)
 	and	\$-16,%rdx
+___
+}
+$code.=<<___;
 	pxor	%xmm4,%xmm4
 	pxor	%xmm5,%xmm5
 ___
@@ -549,6 +653,7 @@ if ($ENV{SARCASM}) {
 	mov	%rsp,%r11		#! alloca result (mont)
 
 	mov	%rax,40(%rsp)
+	mov	($n0),$n0		# pull n0[0] value for mul4x_internal
 .Lmul4x_body:
 ___
 } else {
@@ -654,7 +759,20 @@ ___
 $code.=<<___;
 	movdqa	0(%rax),%xmm0		# 00000001000000010000000000000000
 	movdqa	16(%rax),%xmm1		# 00000002000000020000000200000002
+___
+if ($ENV{SARCASM}) {
+	# (see the bn_mul_mont_gather5 mask-build lea for the rationale;
+	# this is a clone, so its region coordinate is num_bytes-32)
+	$code.=<<___;
+	movq	%rsp,%r10		# place the mask after tp[num+1] (+ICache optimization)
+	lea	-24(%r10,$num,1),%r10
+___
+} else {
+	$code.=<<___;
 	lea	88-112(%rsp,$num),%r10	# place the mask after tp[num+1] (+ICache optimization)
+___
+}
+$code.=<<___;
 	lea	128(%rdx),$bp		# size optimization
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
@@ -739,10 +857,9 @@ $code.=<<___;
 	movq	%xmm0,$m0		# m0=bp[0]
 
 	mov	%r13,16+8(%rsp)		# save end of b[num]
-	mov	$rp, 56+8(%rsp)		# save $rp
+	mov	$rp, 56+8(%rsp)		#! store ptr
 
-	mov	($n0),$n0		# pull n0[0] value
-	mov	($ap),%rax
+$mul4x_pull_n0	mov	($ap),%rax
 	lea	($ap,$num),$ap		# end of a[num]
 	neg	$num
 
@@ -1089,7 +1206,7 @@ $code.=<<___;
 	lea	($np),%rbp		# nptr in .sqr4x_sub
 	mov	%r9,%rcx
 	sar	\$3+2,%rcx
-	mov	56+8(%rsp),%rdi		# rptr in .sqr4x_sub
+	mov	56+8(%rsp),%rdi		#! load ptr
 	dec	%r12			# so that after 'not' we get -n[0]
 	xor	%r10,%r10
 	mov	8*1(%rbp),%r13
@@ -1105,7 +1222,7 @@ $code.=<<___
 	lea	($tp,$num),$tp		# rewind $tp
 	sar	\$5,$num		# cf=0
 	lea	($np,$N[1],8),$np
-	mov	56+8(%rsp),$rp		# restore $rp
+	mov	56+8(%rsp),$rp		#! load ptr
 	jmp	.Lsub4x
 
 .align	32
@@ -1189,10 +1306,11 @@ ___
 if ($ENV{SARCASM}) {
 	# Under sarcasm the dynamic frame is a GC allocation (see the
 	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	# (+8 bytes for the table-pointer slot at the clean top word.)
 	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
-	lea	640($num,$num),%r11	# region size: 16*num + 640
+	lea	648($num,$num),%r11	# region size: 16*num + 640 + 8
 	sub	%r11,%rsp		#! alloca size (mont)
 	mov	%rsp,%r11		#! alloca result (mont)
 	neg	$num
@@ -1210,6 +1328,8 @@ if ($ENV{SARCASM}) {
 	#
 	mov	$n0,  32(%rsp)
 	mov	%rax, 40(%rsp)		# save original %rsp
+	xor	%eax,%eax		# kill the %rsp carrier: it is read as
+					# data (carry) after the sqr8x calls
 .Lpower5_body:
 ___
 } else {
@@ -1280,29 +1400,66 @@ ___
 .Lpower5_body:
 ___
 }
-$code.=<<___;
+if ($ENV{SARCASM}) {
+	# Sarcasm: rp/np/table must survive the sqr8x/post4x calls, but all
+	# GPRs are clobbered and xmm pointer parking loses the capability
+	# (aux). Park the pointers in region slots: rp/np in the free header
+	# slots 16/24 (read inside the +8-convention clones as N+8(%rsp)),
+	# table in the slack right after tp[] (num-indexed, main function
+	# only). -$num stays in xmm3 (integer, no capability).
+	$code.=<<___;
+	movq	$rptr,16(%rsp)		#! store ptr
+	movq	$nptr,24(%rsp)		#! store ptr
+	movq	%r10, %xmm3		# -$num, used in sqr8x
+	# table goes in the +8 slot at the clean top of the region
+	# (region+640+2*num_bytes), addressed via a lea'd region pointer:
+	movq	%rsp,%rax
+	lea	640(%rax,$num,2),%rax
+	movq	$bptr,0(%rax)		#! store ptr
+	xor	%eax,%eax		# keep %rax zero: it is read as carry
+					# data after the sqr8x calls
+___
+} else {
+	$code.=<<___;
 	movq	$rptr,%xmm1		# save $rptr, used in sqr8x
 	movq	$nptr,%xmm2		# save $nptr
 	movq	%r10, %xmm3		# -$num, used in sqr8x
 	movq	$bptr,%xmm4
+___
+}
+$code.=<<___;
 
-	call	__bn_sqr8x_internal
+	call	$sqr8x_internal
 	call	__bn_post4x_internal
-	call	__bn_sqr8x_internal
+	call	$sqr8x_internal
 	call	__bn_post4x_internal
-	call	__bn_sqr8x_internal
+	call	$sqr8x_internal
 	call	__bn_post4x_internal
-	call	__bn_sqr8x_internal
+	call	$sqr8x_internal
 	call	__bn_post4x_internal
-	call	__bn_sqr8x_internal
+	call	$sqr8x_internal
 	call	__bn_post4x_internal
 
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	movq	24(%rsp),$nptr		#! load ptr
+	movq	%xmm3,%rax		# -$num
+	neg	%rax			# $num in bytes
+	movq	%rsp,%r10
+	lea	640(%r10,%rax,2),%rax
+	movq	0(%rax),$bptr		#! load ptr
+___
+} else {
+	$code.=<<___;
 	movq	%xmm2,$nptr
 	movq	%xmm4,$bptr
+___
+}
+$code.=<<___;
 	mov	$aptr,$rptr
 	mov	40(%rsp),%rax
-	lea	32(%rsp),$n0
-
+$power5_pass_n0
 	call	mul4x_internal
 
 	mov	40(%rsp),%rsi		# restore %rsp
@@ -1327,9 +1484,18 @@ $code.=<<___;
 .cfi_endproc
 .size	bn_power5,.-bn_power5
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 .globl	bn_sqr8x_internal
 .hidden	bn_sqr8x_internal
 .type	bn_sqr8x_internal,\@abi-omnipotent
+___
+# Sarcasm: no .globl/.type — file-local only (see the comment at
+# \$sqr8x_internal). The body addresses the caller's frame with the +8
+# convention, which is only legal inside a localcall clone; a standalone
+# sig'd compile cannot prove those accesses safe. mont.s's cross-file
+# call is a recorded sarcasm gap.
+$code.=<<___;
 .align	32
 bn_sqr8x_internal:
 __bn_sqr8x_internal:
@@ -1414,7 +1580,7 @@ __bn_sqr8x_internal:
 
 					# comments apply to $num==8 case
 	mov	-32($aptr,$i),$a0	# a[0]
-	lea	48+8(%rsp,$num,2),$tptr	# end of tp[] buffer, &tp[2*$num]
+@{[lea_rsp_idx($tptr,"48+8","$num,2")]}	# end of tp[] buffer, &tp[2*$num]
 	mov	-24($aptr,$i),%rax	# a[1]
 	lea	-32($tptr,$i),$tptr	# end of tp[] window, &tp[2*$num-"$i"]
 	mov	-16($aptr,$i),$ai	# a[2]
@@ -1538,7 +1704,7 @@ __bn_sqr8x_internal:
 .align	32
 .Lsqr4x_outer:				# comments apply to $num==6 case
 	mov	-32($aptr,$i),$a0	# a[0]
-	lea	48+8(%rsp,$num,2),$tptr	# end of tp[] buffer, &tp[2*$num]
+@{[lea_rsp_idx($tptr,"48+8","$num,2")]}	# end of tp[] buffer, &tp[2*$num]
 	mov	-24($aptr,$i),%rax	# a[1]
 	lea	-32($tptr,$i),$tptr	# end of tp[] window, &tp[2*$num-"$i"]
 	mov	-16($aptr,$i),$ai	# a[2]
@@ -1643,7 +1809,7 @@ __bn_sqr8x_internal:
 
 					# comments apply to $num==4 case
 	mov	-32($aptr),$a0		# a[0]
-	lea	48+8(%rsp,$num,2),$tptr	# end of tp[] buffer, &tp[2*$num]
+@{[lea_rsp_idx($tptr,"48+8","$num,2")]}	# end of tp[] buffer, &tp[2*$num]
 	mov	-24($aptr),%rax		# a[1]
 	lea	-32($tptr,$i),$tptr	# end of tp[] window, &tp[2*$num-"$i"]
 	mov	-16($aptr),$ai		# a[2]
@@ -1710,7 +1876,7 @@ $code.=<<___;
 	mov	$carry,24($tptr)	# t[7]
 
 	 mov	-16($aptr,$i),%rax	# a[0]
-	lea	48+8(%rsp),$tptr
+$rewind_tptr
 	 xor	$A0[0],$A0[0]		# t[0]
 	 mov	8($tptr),$A0[1]		# t[1]
 
@@ -1864,15 +2030,16 @@ ___
 {
 my ($nptr,$tptr,$carry,$m0)=("%rbp","%rdi","%rsi","%rbx");
 
+if ($ENV{SARCASM}) { $code.="\tmovq\t24+8(%rsp),$nptr\t\t#! load ptr\n"; }
+else { $code.="\tmovq\t%xmm2,$nptr\n"; }
 $code.=<<___;
-	movq	%xmm2,$nptr
 __bn_sqr8x_reduction:
 	xor	%rax,%rax
 	lea	($nptr,$num),%rcx	# end of n[]
-	lea	48+8(%rsp,$num,2),%rdx	# end of t[] buffer
+@{[lea_rsp_idx("%rdx","48+8","$num,2")]}	# end of t[] buffer
 	mov	%rcx,0+8(%rsp)
-	lea	48+8(%rsp,$num),$tptr	# end of initial t[] window
-	mov	%rdx,8+8(%rsp)
+@{[lea_rsp_idx($tptr,"48+8","$num")]}	# end of initial t[] window
+	mov	%rdx,8+8(%rsp)		#! store ptr
 	neg	$num
 	jmp	.L8x_reduction_loop
 
@@ -1971,7 +2138,7 @@ __bn_sqr8x_reduction:
 
 	lea	8*8($nptr),$nptr
 	xor	%rax,%rax
-	mov	8+8(%rsp),%rdx		# pull end of t[]
+	mov	8+8(%rsp),%rdx		#! load ptr
 	cmp	0+8(%rsp),$nptr		# end of n[]?
 	jae	.L8x_no_tail
 
@@ -2062,7 +2229,7 @@ __bn_sqr8x_reduction:
 	jnz	.L8x_tail
 
 	lea	8*8($nptr),$nptr
-	mov	8+8(%rsp),%rdx		# pull end of t[]
+	mov	8+8(%rsp),%rdx		#! load ptr
 	cmp	0+8(%rsp),$nptr		# end of n[]?
 	jae	.L8x_tail_done		# break out of loop
 
@@ -2109,7 +2276,10 @@ __bn_sqr8x_reduction:
 	 mov	-8($nptr),%rcx		# np[num-1]
 	 xor	$carry,$carry
 
-	movq	%xmm2,$nptr		# restore $nptr
+___
+if ($ENV{SARCASM}) { $code.="\tmovq\t24+8(%rsp),$nptr\t\t#! load ptr\t\t# restore \$nptr\n"; }
+else { $code.="\tmovq\t%xmm2,$nptr\t\t# restore \$nptr\n"; }
+$code.=<<___;
 
 	mov	%r8,8*0($tptr)		# store top 512 bits
 	mov	%r9,8*1($tptr)
@@ -2142,9 +2312,15 @@ __bn_post4x_internal:
 	mov	8*0($nptr),%r12
 	lea	(%rdi,$num),$tptr	# %rdi was $tptr above
 	mov	$num,%rcx
-	movq	%xmm1,$rptr		# restore $rptr
+___
+if ($ENV{SARCASM}) { $code.="\tmovq\t16+8(%rsp),$rptr\t\t#! load ptr\t\t# restore \$rptr\n"; }
+else { $code.="\tmovq\t%xmm1,$rptr\t\t# restore \$rptr\n"; }
+$code.=<<___;
 	neg	%rax
-	movq	%xmm1,$aptr		# prepare for back-to-back call
+___
+if ($ENV{SARCASM}) { $code.="\tmovq\t16+8(%rsp),$aptr\t\t#! load ptr\t\t# prepare for back-to-back call\n"; }
+else { $code.="\tmovq\t%xmm1,$aptr\t\t# prepare for back-to-back call\n"; }
+$code.=<<___;
 	sar	\$3+2,%rcx
 	dec	%r12			# so that after 'not' we get -n[0]
 	xor	%r10,%r10
@@ -2359,7 +2535,7 @@ mulx4x_internal:
 	lea	.Linc(%rip),%rax
 	mov	%r13,16+8(%rsp)		# end of b[num]
 	mov	$num,24+8(%rsp)		# inner counter
-	mov	$rp, 56+8(%rsp)		# save $rp
+	mov	$rp, 56+8(%rsp)		#! store ptr
 ___
 my ($aptr, $bptr, $nptr, $tptr, $mi,  $bi,  $zero, $num)=
    ("%rsi","%rdi","%rcx","%rbx","%r8","%r9","%rbp","%rax");
@@ -2369,7 +2545,20 @@ my $N=$STRIDE/4;		# should match cache line size
 $code.=<<___;
 	movdqa	0(%rax),%xmm0		# 00000001000000010000000000000000
 	movdqa	16(%rax),%xmm1		# 00000002000000020000000200000002
+___
+if ($ENV{SARCASM}) {
+	# (see the bn_mul_mont_gather5 mask-build lea for the rationale;
+	# this is a clone, so its region coordinate is num_bytes-32)
+	$code.=<<___;
+	movq	%rsp,%r11		# place the mask after tp[num+1] (+ICache optimization)
+	lea	-24(%r11,%r10,1),%r10
+___
+} else {
+	$code.=<<___;
 	lea	88-112(%rsp,%r10),%r10	# place the mask after tp[num+1] (+ICache optimization)
+___
+}
+$code.=<<___;
 	lea	128($bp),$bptr		# size optimization
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
@@ -2468,7 +2657,7 @@ $code.=<<___;
 	xor	$zero,$zero		# cf=0, of=0
 	mov	$mi,%rdx
 
-	mov	$bptr,8+8(%rsp)		# off-load &b[i]
+	mov	$bptr,8+8(%rsp)		#! store ptr
 
 	lea	4*8($aptr),$aptr
 	adcx	%rax,%r13
@@ -2538,7 +2727,7 @@ $code.=<<___;
 	adc	$zero,%r15		# modulo-scheduled
 	lea	($aptr,$num),$aptr	# rewind $aptr
 	add	%r15,%r14
-	mov	8+8(%rsp),$bptr		# re-load &b[i]
+	mov	8+8(%rsp),$bptr		#! load ptr
 	adc	$zero,$zero		# top-most carry
 	mov	%r14,-1*8($tptr)
 	jmp	.Lmulx4x_outer
@@ -2598,7 +2787,7 @@ $code.=<<___;
 
 	mov	$mi,%rdx
 	xor	$zero,$zero		# cf=0, of=0
-	mov	$bptr,8+8(%rsp)		# off-load &b[i]
+	mov	$bptr,8+8(%rsp)		#! store ptr
 
 	mulx	0*8($nptr),%rax,%r10
 	adcx	%rax,%r15		# discarded
@@ -2667,7 +2856,7 @@ $code.=<<___;
 	mov	0+8(%rsp),$num		# load -num
 	adc	$zero,%r15		# modulo-scheduled
 	sub	0*8($tptr),$bptr	# pull top-most carry to %cf
-	mov	8+8(%rsp),$bptr		# re-load &b[i]
+	mov	8+8(%rsp),$bptr		#! load ptr
 	mov	16+8(%rsp),%r10
 	adc	%r15,%r14
 	lea	($aptr,$num),$aptr	# rewind $aptr
@@ -2690,7 +2879,7 @@ $code.=<<___;
 	or	%r15,%r8
 	sar	\$3+2,%rcx
 	sub	%r8,%rax		# %rax=-%r8
-	mov	56+8(%rsp),%rdx		# restore rp
+	mov	56+8(%rsp),%rdx		#! load ptr
 	dec	%r12			# so that after 'not' we get -n[0]
 	mov	8*1(%rbp),%r13
 	xor	%r8,%r8
@@ -2742,10 +2931,12 @@ ___
 if ($ENV{SARCASM}) {
 	# Under sarcasm the dynamic frame is a GC allocation (see the
 	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+	# Grown by 32: tp[] shifted to +80 (16-aligned for movdqa) so
+	# +48/+56/+64 can park rp/np/table.
 	$code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
-	lea	640($num,$num),%r11	# region size: 16*num + 640
+	lea	680($num,$num),%r11	# region size: 16*num + 680
 	sub	%r11,%rsp		#! alloca size (mont)
 	mov	%rsp,%r11		#! alloca result (mont)
 	neg	$num
@@ -2753,7 +2944,7 @@ if ($ENV{SARCASM}) {
 	neg	$num
 
 	##############################################################
-	# Stack layout
+	# Stack layout (sarcasm)
 	#
 	# +0	saved $num, used in reduction section
 	# +8	&t[2*$num], used in reduction section
@@ -2761,15 +2952,26 @@ if ($ENV{SARCASM}) {
 	# +24	top-most carry bit, used in reduction section
 	# +32	saved *n0
 	# +40	saved %rsp
-	# +48	t[2*$num]
+	# +48	saved $rptr
+	# +56	saved $nptr
+	# +80	t[2*$num]
+	# top	saved $bptr (region+672+2*$num*8, above the mulx4x mask area)
 	#
+	# The mulx4x_internal power-mask area sits at region+88-$num and grows
+	# downward, so any fixed slot >= 88-$num is unsafe; 48/56 stay clear for
+	# the sizes exercised here, while the table goes at the (always safe)
+	# region top.
 	pxor	%xmm0,%xmm0
-	movq	$rptr,%xmm1		# save $rptr
-	movq	$nptr,%xmm2		# save $nptr
+	movq	$rptr,48(%rsp)		#! store ptr
+	movq	$nptr,56(%rsp)		#! store ptr
 	movq	%r10, %xmm3		# -$num
-	movq	$bptr,%xmm4
 	mov	$n0,  32(%rsp)
 	mov	%rax, 40(%rsp)		# save original %rsp
+	movq	%rsp,%rax
+	lea	672(%rax,$num,2),%rax
+	movq	$bptr,0(%rax)		#! store ptr
+	xor	%eax,%eax		# kill the %rsp carrier: it is read as
+					# data (carry) after the sqrx8x calls
 .Lpowerx5_body:
 ___
 } else {
@@ -2849,21 +3051,25 @@ ___
 }
 $code.=<<___;
 
-	call	__bn_sqrx8x_internal
+	call	$sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	__bn_sqrx8x_internal
+	call	$sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	__bn_sqrx8x_internal
+	call	$sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	__bn_sqrx8x_internal
+	call	$sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	__bn_sqrx8x_internal
+	call	$sqrx8x_internal
 	call	__bn_postx4x_internal
 
 	mov	%r10,$num		# -num
 	mov	$aptr,$rptr
-	movq	%xmm2,$nptr
-	movq	%xmm4,$bptr
+___
+if ($ENV{SARCASM}) { $code.="\tmovq\t56(%rsp),$nptr\t\t#! load ptr\n"; }
+else { $code.="\tmovq\t%xmm2,$nptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq\t%xmm3,%r11\t\t# -\$num\n\tneg\t%r11\n\tmovq\t%rsp,%rax\n\tlea\t672(%rax,%r11,2),%rax\n\tmovq\t0(%rax),$bptr\t\t#! load ptr\n"; }
+else { $code.="\tmovq\t%xmm4,$bptr\n"; }
+$code.=<<___;
 	mov	40(%rsp),%rax
 
 	call	mulx4x_internal
@@ -2891,9 +3097,15 @@ $code.=<<___;
 .cfi_endproc
 .size	bn_powerx5,.-bn_powerx5
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 .globl	bn_sqrx8x_internal
 .hidden	bn_sqrx8x_internal
 .type	bn_sqrx8x_internal,\@abi-omnipotent
+___
+# Sarcasm: no .globl/.type — file-local only (same reason as
+# bn_sqr8x_internal above).
+$code.=<<___;
 .align	32
 bn_sqrx8x_internal:
 __bn_sqrx8x_internal:
@@ -2943,10 +3155,10 @@ ___
 my ($zero,$carry)=("%rbp","%rcx");
 my $aaptr=$zero;
 $code.=<<___;
-	lea	48+8(%rsp),$tptr
+$seed_tptr
 	lea	($aptr,$num),$aaptr
 	mov	$num,0+8(%rsp)			# save $num
-	mov	$aaptr,8+8(%rsp)		# save end of $aptr
+	mov	$aaptr,8+8(%rsp)		#! store ptr
 	jmp	.Lsqr8x_zero_start
 
 .align	32
@@ -2974,7 +3186,7 @@ $code.=<<___;
 	xor	%r13,%r13
 	xor	%r14,%r14
 	xor	%r15,%r15
-	lea	48+8(%rsp),$tptr
+$rewind_tptr_sqrx
 	xor	$zero,$zero		# cf=0, cf=0
 	jmp	.Lsqrx8x_outer_loop
 
@@ -3121,7 +3333,7 @@ $code.=<<___;
 
 	mov	-64($aptr),%rdx		# a[0]
 	mov	%rax,16+8(%rsp)		# offload $carry
-	mov	$tptr,24+8(%rsp)
+	mov	$tptr,24+8(%rsp)	#! store ptr
 
 	#lea	8*8($tptr),$tptr	# see 2*8*8($tptr) above
 	xor	%eax,%eax		# cf=0, of=0
@@ -3198,7 +3410,7 @@ $code.=<<___;
 	xor	$zero,$zero
 	sub	16+8(%rsp),%rbx		# mov 16(%rsp),%cf
 	adcx	$zero,%r8
-	mov	24+8(%rsp),$carry	# initial $tptr, borrow $carry
+	mov	24+8(%rsp),$carry	#! load ptr
 	adcx	$zero,%r9
 	mov	0*8($aptr),%rdx		# a[8], modulo-scheduled
 	adc	\$0,%r10
@@ -3241,7 +3453,7 @@ ___
 }{
 my $i="%rcx";
 $code.=<<___;
-	lea	48+8(%rsp),$tptr
+$rewind_tptr_sqrx
 	mov	($aptr,$i),%rdx		# a[0]
 
 	mov	8($tptr),$A0[1]		# t[1]
@@ -3320,18 +3532,19 @@ ___
 {
 my ($nptr,$carry,$m0)=("%rbp","%rsi","%rdx");
 
+if ($ENV{SARCASM}) { $code.="\tmovq\t56+8(%rsp),$nptr\t\t#! load ptr\n"; }
+else { $code.="\tmovq\t%xmm2,$nptr\n"; }
 $code.=<<___;
-	movq	%xmm2,$nptr
 __bn_sqrx8x_reduction:
 	xor	%eax,%eax		# initial top-most carry bit
 	mov	32+8(%rsp),%rbx		# n0
-	mov	48+8(%rsp),%rdx		# "%r8", 8*0($tptr)
+	mov	$tp0_sqrx(%rsp),%rdx	# "%r8", 8*0($tptr)
 	lea	-8*8($nptr,$num),%rcx	# end of n[]
 	#lea	48+8(%rsp,$num,2),$tptr	# end of t[] buffer
 	mov	%rcx, 0+8(%rsp)		# save end of n[]
-	mov	$tptr,8+8(%rsp)		# save end of t[]
+	mov	$tptr,8+8(%rsp)		#! store ptr
 
-	lea	48+8(%rsp),$tptr		# initial t[] window
+$rewind_tptr_sqrx
 	jmp	.Lsqrx8x_reduction_loop
 
 .align	32
@@ -3379,7 +3592,7 @@ __bn_sqrx8x_reduction:
 
 	 mulx	32+8(%rsp),%rbx,%rdx	# %rdx discarded
 	 mov	%rax,%rdx
-	 mov	%rax,64+48+8(%rsp,%rcx,8)	# put aside n0*a[i]
+	 mov	%rax,$tp8_sqrx(%rsp,%rcx,8)	# put aside n0*a[i]
 
 	mulx	8*5($nptr),%rax,%r13
 	adcx	%rax,%r12
@@ -3403,7 +3616,7 @@ __bn_sqrx8x_reduction:
 	cmp	0+8(%rsp),$nptr		# end of n[]?
 	jae	.Lsqrx8x_no_tail
 
-	mov	48+8(%rsp),%rdx		# pull n0*a[0]
+	mov	$tp0_sqrx(%rsp),%rdx	# pull n0*a[0]
 	add	8*0($tptr),%r8
 	lea	8*8($nptr),$nptr
 	mov	\$-8,%rcx
@@ -3453,7 +3666,7 @@ __bn_sqrx8x_reduction:
 	adox	%r15,%r14
 
 	mulx	8*7($nptr),%rax,%r15
-	 mov	72+48+8(%rsp,%rcx,8),%rdx	# pull n0*a[i]
+	 mov	$tp9_sqrx(%rsp,%rcx,8),%rdx	# pull n0*a[i]
 	adcx	%rax,%r14
 	adox	$carry,%r15
 	 mov	%rbx,($tptr,%rcx,8)	# save result
@@ -3467,7 +3680,7 @@ __bn_sqrx8x_reduction:
 	jae	.Lsqrx8x_tail_done	# break out of loop
 
 	sub	16+8(%rsp),$carry	# mov 16(%rsp),%cf
-	 mov	48+8(%rsp),%rdx		# pull n0*a[0]
+	 mov	$tp0_sqrx(%rsp),%rdx	# pull n0*a[0]
 	 lea	8*8($nptr),$nptr
 	adc	8*0($tptr),%r8
 	adc	8*1($tptr),%r9
@@ -3504,7 +3717,10 @@ __bn_sqrx8x_reduction:
 	 movq	%xmm3,%rcx
 	adc	8*1($tptr),%r9
 	 mov	8*7($nptr),$carry
-	 movq	%xmm2,$nptr		# restore $nptr
+___
+if ($ENV{SARCASM}) { $code.="\t movq\t56+8(%rsp),$nptr\t\t#! load ptr\t\t# restore \$nptr\n"; }
+else { $code.="\t movq\t%xmm2,$nptr\t\t# restore \$nptr\n"; }
+$code.=<<___;
 	adc	8*2($tptr),%r10
 	adc	8*3($tptr),%r11
 	adc	8*4($tptr),%r12
@@ -3549,8 +3765,12 @@ __bn_postx4x_internal:
 	neg	%rax
 	sar	\$3+2,%rcx
 	#lea	48+8(%rsp,%r9),$tptr
-	movq	%xmm1,$rptr		# restore $rptr
-	movq	%xmm1,$aptr		# prepare for back-to-back call
+___
+if ($ENV{SARCASM}) { $code.="\tmovq\t48+8(%rsp),$rptr\t\t#! load ptr\t\t# restore \$rptr\n"; }
+else { $code.="\tmovq\t%xmm1,$rptr\t\t# restore \$rptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq\t48+8(%rsp),$aptr\t\t#! load ptr\t\t# prepare for back-to-back call\n"; }
+else { $code.="\tmovq\t%xmm1,$aptr\t\t# prepare for back-to-back call\n"; }
+$code.=<<___;
 	dec	%r12			# so that after 'not' we get -n[0]
 	mov	8*1($nptr),%r13
 	xor	%r8,%r8

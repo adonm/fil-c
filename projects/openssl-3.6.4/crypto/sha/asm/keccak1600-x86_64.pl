@@ -366,7 +366,7 @@ KeccakF1600:
 .cfi_push	%r15
 
 	lea	100(%rdi),%rdi		# size optimization
-	sub	\$200,%rsp
+	sub	\$200,%rsp			#! alloca result size=200
 .cfi_adjust_cfa_offset	200
 
 	notq	$A[0][1](%rdi)
@@ -431,7 +431,7 @@ SHA3_absorb:
 .cfi_push	%r15
 
 	lea	100(%rdi),%rdi		# size optimization
-	sub	\$232,%rsp
+	sub	\$232,%rsp			#! alloca result size=232
 .cfi_adjust_cfa_offset	232
 
 	mov	%rsi,$inp
@@ -464,10 +464,10 @@ SHA3_absorb:
 	sub	\$1,$bsz
 	jnz	.Lblock_absorb
 
-	mov	$inp,200-100(%rsi)	# save inp
+	mov	$inp,200-100(%rsi)	# save inp	#! store ptr
 	mov	$len,208-100(%rsi)	# save len
 	call	__KeccakF1600
-	mov	200-100(%rsi),$inp	# pull inp
+	mov	200-100(%rsi),$inp	# pull inp	#! load ptr
 	mov	208-100(%rsi),$len	# pull len
 	mov	216-100(%rsi),$bsz	# pull bsz
 	jmp	.Loop_absorb

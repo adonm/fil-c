@@ -3069,12 +3069,19 @@ my ($poly1,$poly3)=($acc6,$acc7);
 sub load_for_mul () {
 my ($a,$b,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
+# Sarcasm: a negative-offset frame lea (rsp-128) escapes the region;
+# materialize the in-region address and subtract via register arithmetic
+# (same address, region-pointer form). $bias is -128 exactly for the
+# x-variants, 0 otherwise.
+my $a_lea = ($ENV{SARCASM} && $bias)
+	? "	lea	$a, $a_ptr\n	lea	".$bias."($a_ptr), $a_ptr"
+	: "	lea	$bias+$a, $a_ptr";
 
 "	mov	$b, $src0
 	lea	$b, $b_ptr
 	mov	8*0+$a, $acc1
 	mov	8*1+$a, $acc2
-	lea	$bias+$a, $a_ptr
+$a_lea
 	mov	8*2+$a, $acc3
 	mov	8*3+$a, $acc4"
 }
@@ -3082,10 +3089,14 @@ my $bias = $src0 eq "%rax" ? 0 : -128;
 sub load_for_sqr () {
 my ($a,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
+# (see load_for_mul for the sarcasm split-lea rationale)
+my $a_lea = ($ENV{SARCASM} && $bias)
+	? "	lea	$a, $a_ptr\n	lea	".$bias."($a_ptr), $a_ptr"
+	: "	lea	$bias+$a, $a_ptr";
 
 "	mov	8*0+$a, $src0
 	mov	8*1+$a, $acc6
-	lea	$bias+$a, $a_ptr
+$a_lea
 	mov	8*2+$a, $acc7
 	mov	8*3+$a, $acc0"
 }
@@ -3265,6 +3276,11 @@ ecp_nistz256_point_doublex:
 ___
     }
 $code.=<<___;
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbp
 .cfi_push	%rbp
 	push	%rbx
@@ -3277,8 +3293,23 @@ $code.=<<___;
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$32*5+8, %rsp
-.cfi_adjust_cfa_offset	32*5+8
+___
+if ($ENV{SARCASM}) {
+	# Region + parked entry %rsp (the lea-recompute epilogue cannot be
+	# proven safe); the +8 tail slot of the frame hosts the save,
+	# and the following 8 bytes park $r_ptr (pointer parks in xmm
+	# registers cannot be tracked).
+	$code.=<<___;
+	sub	\$32*5+24, %rsp		#! alloca result size=184
+	movq	%rax, 32*5(%rsp)	# park entry %rsp in the region
+___
+} else {
+	$code.=<<___;
+	sub	\$32*5+24, %rsp
+___
+}
+$code.=<<___;
+.cfi_adjust_cfa_offset	32*5+24
 .Lpoint_double${x}_body:
 
 .Lpoint_double_shortcut$x:
@@ -3293,11 +3324,7 @@ $code.=<<___;
 	 mov	.Lpoly+8*3(%rip), $poly3
 	movdqa	%xmm0, $in_x(%rsp)
 	movdqa	%xmm1, $in_x+0x10(%rsp)
-	lea	0x20($r_ptr), $acc2
-	lea	0x40($r_ptr), $acc3
-	movq	$r_ptr, %xmm0
-	movq	$acc2, %xmm1
-	movq	$acc3, %xmm2
+	movq	$r_ptr, 32*5+8(%rsp)	#! store ptr	# park $r_ptr in the region
 
 	lea	$S(%rsp), $r_ptr
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(S, in_y);
@@ -3321,7 +3348,8 @@ $code.=<<___;
 	mov	0x40+8*3($b_ptr), $acc4
 	lea	0x40-$bias($b_ptr), $a_ptr
 	lea	0x20($b_ptr), $b_ptr
-	movq	%xmm2, $r_ptr
+	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_z = parked $r_ptr + 0x40
+	lea	0x40($r_ptr), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_z, in_z, in_y);
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(res_z, res_z);
 
@@ -3342,7 +3370,8 @@ $code.=<<___;
 	call	__ecp_nistz256_sub_from$x	# p256_sub(Zsqr, in_x, Zsqr);
 
 	`&load_for_sqr("$S(%rsp)", "$src0")`
-	movq	%xmm1, $r_ptr
+	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_y = parked $r_ptr + 0x20
+	lea	0x20($r_ptr), $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(res_y, S);
 ___
 {
@@ -3413,7 +3442,7 @@ $code.=<<___;
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(tmp0, S);
 
 	`&load_for_sqr("$M(%rsp)", "$src0")`
-	movq	%xmm0, $r_ptr
+	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_x = parked $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(res_x, M);
 
 	lea	$tmp0(%rsp), $b_ptr
@@ -3439,18 +3468,34 @@ $code.=<<___;
 	mov	$acc5, $S+8*1(%rsp)
 	cmovz	$acc0, $acc3
 	mov	$acc0, $S+8*2(%rsp)
+___
+$code.=<<___ if ($ENV{SARCASM} && $bias);
+	lea	$S(%rsp), $a_ptr
+	lea	-128($a_ptr), $a_ptr
+___
+$code.=<<___ if (!($ENV{SARCASM} && $bias));
 	lea	$S-$bias(%rsp), $a_ptr
+___
+$code.=<<___;
 	cmovz	$acc1, $acc4
 	mov	$acc1, $S+8*3(%rsp)
 	mov	$acc6, $acc1
 	lea	$S(%rsp), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S, S, M);
 
-	movq	%xmm1, $b_ptr
-	movq	%xmm1, $r_ptr
+	movq	32*5+8(%rsp), $b_ptr	#! load ptr	# res_y = parked $r_ptr + 0x20
+	lea	0x20($b_ptr), $b_ptr
+	mov	$b_ptr, $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, S, res_y);
 
-	lea	32*5+56(%rsp), %rsi
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	32*5(%rsp), %rsi	# reload parked entry %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	lea	32*5+72(%rsp), %rsi
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -3516,6 +3561,11 @@ ecp_nistz256_point_addx:
 ___
     }
 $code.=<<___;
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbp
 .cfi_push	%rbp
 	push	%rbx
@@ -3528,8 +3578,22 @@ $code.=<<___;
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$32*18+8, %rsp
-.cfi_adjust_cfa_offset	32*18+8
+___
+if ($ENV{SARCASM}) {
+	# Region + parked entry %rsp; the +8 tail slot hosts the save,
+	# and the following 16 bytes park $r_ptr / the in1 pointer
+	# (pointer parks in xmm registers cannot be tracked).
+	$code.=<<___;
+	sub	\$32*18+24, %rsp	#! alloca result size=600
+	movq	%rax, 32*18(%rsp)	# park entry %rsp in the region
+___
+} else {
+	$code.=<<___;
+	sub	\$32*18+24, %rsp
+___
+}
+$code.=<<___;
+.cfi_adjust_cfa_offset	32*18+24
 .Lpoint_add${x}_body:
 
 	movdqu	0x00($a_ptr), %xmm0		# copy	*(P256_POINT *)$a_ptr
@@ -3568,7 +3632,7 @@ $code.=<<___;
 	 por	%xmm4, %xmm5
 	 pxor	%xmm4, %xmm4
 	por	%xmm0, %xmm1
-	 movq	$r_ptr, %xmm0			# save $r_ptr
+	 movq	$r_ptr, 32*18+8(%rsp)	#! store ptr	# park $r_ptr in the region
 
 	lea	0x40-$bias($a_ptr), $a_ptr	# $a_ptr is still valid
 	 mov	$src0, $in2_z+8*0(%rsp)		# make in2_z copy
@@ -3591,7 +3655,7 @@ $code.=<<___;
 	 mov	0x40+8*1($b_ptr), $acc6
 	 mov	0x40+8*2($b_ptr), $acc7
 	 mov	0x40+8*3($b_ptr), $acc0
-	movq	$b_ptr, %xmm1
+	movq	$b_ptr, 32*18+16(%rsp)	#! store ptr	# park the in1 pointer in the region
 
 	lea	0x40-$bias($b_ptr), $a_ptr
 	lea	$Z1sqr(%rsp), $r_ptr		# Z1^2
@@ -3651,12 +3715,45 @@ $code.=<<___;
 	jnz	.Ladd_proceed$x
 
 .Ladd_double$x:
-	movq	%xmm1, $a_ptr			# restore $a_ptr
-	movq	%xmm0, $r_ptr			# restore $r_ptr
+	movq	32*18+16(%rsp), $a_ptr	#! load ptr	# restore $a_ptr
+	movq	32*18+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
+___
+if ($ENV{SARCASM}) {
+	# The B2 tail-join re-anchors %rsp mid-function (the +416 frame
+	# difference), which cannot be proven safe. A call + our own
+	# epilogue is exactly the tail-join's semantics (the shortcut is
+	# ecp_nistz256_point_double$x followed by ret). The epilogue is
+	# inlined here: jumping to the shared epilogue merges two paths
+	# with divergent parked-%rsp carrier state.
+	$code.=<<___;
+	call	ecp_nistz256_point_double$sfx
+	movq	32*18(%rsp), %rsi	# reload parked entry %rsp
+.cfi_def_cfa	%rsi,8
+	movq	-48(%rsi),%r15
+.cfi_restore	%r15
+	movq	-40(%rsi),%r14
+.cfi_restore	%r14
+	movq	-32(%rsi),%r13
+.cfi_restore	%r13
+	movq	-24(%rsi),%r12
+.cfi_restore	%r12
+	movq	-16(%rsi),%rbx
+.cfi_restore	%rbx
+	movq	-8(%rsi),%rbp
+.cfi_restore	%rbp
+	leaq	(%rsi),%rsp
+.cfi_def_cfa_register	%rsp
+	ret
+___
+} else {
+	$code.=<<___;
 	add	\$`32*(18-5)`, %rsp		# difference in frame sizes
 .cfi_adjust_cfa_offset	`-32*(18-5)`
 	jmp	.Lpoint_double_shortcut$x
 .cfi_adjust_cfa_offset	`32*(18-5)`
+___
+}
+$code.=<<___;
 
 .align	32
 .Ladd_proceed$x:
@@ -3756,7 +3853,7 @@ $code.=<<___;
 	lea	$res_y(%rsp), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, res_y, S2);
 
-	movq	%xmm0, $r_ptr		# restore $r_ptr
+	movq	32*18+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_z, in2_z, in1infty);
 	movdqa	%xmm5, %xmm1
@@ -3831,7 +3928,14 @@ $code.=<<___;
 	movdqu	%xmm3, 0x30($r_ptr)
 
 .Ladd_done$x:
-	lea	32*18+56(%rsp), %rsi
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	32*18(%rsp), %rsi	# reload parked entry %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	lea	32*18+72(%rsp), %rsi
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -3896,6 +4000,11 @@ ecp_nistz256_point_add_affinex:
 ___
     }
 $code.=<<___;
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	%rsp, %rax
+___
+$code.=<<___;
 	push	%rbp
 .cfi_push	%rbp
 	push	%rbx
@@ -3908,8 +4017,22 @@ $code.=<<___;
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$32*15+8, %rsp
-.cfi_adjust_cfa_offset	32*15+8
+___
+if ($ENV{SARCASM}) {
+	# Region + parked entry %rsp; the +8 tail slot hosts the save,
+	# and the following 8 bytes park $r_ptr (pointer parks in xmm
+	# registers cannot be tracked).
+	$code.=<<___;
+	sub	\$32*15+24, %rsp	#! alloca result size=504
+	movq	%rax, 32*15(%rsp)	# park entry %rsp in the region
+___
+} else {
+	$code.=<<___;
+	sub	\$32*15+24, %rsp
+___
+}
+$code.=<<___;
+.cfi_adjust_cfa_offset	32*15+24
 .Ladd_affine${x}_body:
 
 	movdqu	0x00($a_ptr), %xmm0	# copy	*(P256_POINT *)$a_ptr
@@ -3941,7 +4064,7 @@ $code.=<<___;
 	 pshufd	\$0x1e, %xmm5, %xmm4
 	movdqa	%xmm1, $in2_x+0x10(%rsp)
 	por	%xmm0, %xmm1
-	 movq	$r_ptr, %xmm0		# save $r_ptr
+	 movq	$r_ptr, 32*15+8(%rsp)	#! store ptr	# park $r_ptr in the region
 	movdqa	%xmm2, $in2_y(%rsp)
 	movdqa	%xmm3, $in2_y+0x10(%rsp)
 	por	%xmm2, %xmm3
@@ -3968,7 +4091,15 @@ $code.=<<___;
 	pcmpeqd	%xmm3, %xmm4
 	pshufd	\$0, %xmm4, %xmm4		# in2infty
 
+___
+$code.=<<___ if ($ENV{SARCASM} && $bias);
+	lea	$Z1sqr(%rsp), $a_ptr
+	lea	-128($a_ptr), $a_ptr
+___
+$code.=<<___ if (!($ENV{SARCASM} && $bias));
 	lea	$Z1sqr-$bias(%rsp), $a_ptr
+___
+$code.=<<___;
 	mov	$acc7, $acc4
 	lea	$U2(%rsp), $r_ptr		# U2 = X2*Z1^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, Z1sqr, in2_x);
@@ -4081,7 +4212,7 @@ $code.=<<___;
 	lea	$res_y(%rsp), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, H, S2);
 
-	movq	%xmm0, $r_ptr		# restore $r_ptr
+	movq	32*15+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_z, ONE, in1infty);
 	movdqa	%xmm5, %xmm1
@@ -4155,7 +4286,14 @@ $code.=<<___;
 	movdqu	%xmm2, 0x20($r_ptr)
 	movdqu	%xmm3, 0x30($r_ptr)
 
-	lea	32*15+56(%rsp), %rsi
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	32*15(%rsp), %rsi	# reload parked entry %rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	lea	32*15+72(%rsp), %rsi
+___
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15

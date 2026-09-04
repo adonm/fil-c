@@ -1167,8 +1167,12 @@ ___
     }
     $code .= "push 	 %rbp\n";
     $code .= "mov 	 $TW,%rbp\n";
-    $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\n";
+    $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\t #! alloca result size=$VARIABLE_OFFSET\n";
+    if ($ENV{SARCASM}) {
+      $code .= "and 	 \$-64,$TW\n";
+    } else {
     $code .= "and 	 \$0xffffffffffffffc0,$TW\n";
+    }
     $code .= "mov 	 %rbx,$GP_STORAGE($TW)\n";
 
     if ($win64) {
@@ -1850,8 +1854,12 @@ ___
     }
     $code .= "push 	 %rbp\n";
     $code .= "mov 	 $TW,%rbp\n";
-    $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\n";
+    $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\t #! alloca result size=$VARIABLE_OFFSET\n";
+    if ($ENV{SARCASM}) {
+      $code .= "and 	 \$-64,$TW\n";
+    } else {
     $code .= "and 	 \$0xffffffffffffffc0,$TW\n";
+    }
     $code .= "mov 	 %rbx,$GP_STORAGE($TW)\n";
 
     if ($win64) {

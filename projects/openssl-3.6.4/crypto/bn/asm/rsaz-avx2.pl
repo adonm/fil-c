@@ -175,6 +175,21 @@ $code.=<<___;
 	mov	%rax,%rbp
 .cfi_def_cfa_register	%rbp
 	mov	%rdx, $np			# reassigned argument
+___
+if ($ENV{SARCASM}) {
+	# Merged alloca + anchor: 896 used bytes + 1024 alignment slack.
+	# The conditional n-copy sub/and dance below is a page-crossing
+	# performance workaround that cannot be proven safe (mid-function
+	# andq on an anchored %rsp) and is pointless for a GC allocation.
+	$code.=<<___;
+	sub	\$1920,%rsp		#! alloca result size=1920
+	and	\$-1024,%rsp
+	sub	\$-128, $rp			# size optimization
+	sub	\$-128, $ap
+	sub	\$-128, $np
+___
+} else {
+	$code.=<<___;
 	sub	\$$FrameSize, %rsp
 	mov	$np, $tmp
 	sub	\$-128, $rp			# size optimization
@@ -186,6 +201,8 @@ $code.=<<___;
 	shr	\$12, $tmp
 	vpxor	$ACC9,$ACC9,$ACC9
 	jz	.Lsqr_1024_no_n_copy
+___
+$code.=<<___ if (!$ENV{SARCASM});
 
 	# unaligned 256-bit load that crosses page boundary can
 	# cause >2x performance degradation here, so if $np does
@@ -214,8 +231,16 @@ $code.=<<___;
 	vmovdqu		$ACC8, 32*8-128($np)
 	vmovdqu		$ACC9, 32*9-128($np)	# $ACC9 is zero
 
+___
+}
+$code.=<<___ if (!$ENV{SARCASM});
 .Lsqr_1024_no_n_copy:
 	and		\$-1024, %rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+.Lsqr_1024_no_n_copy:
+___
+$code.=<<___;
 
 	vmovdqu		32*1-128($ap), $ACC1
 	vmovdqu		32*2-128($ap), $ACC2
@@ -927,7 +952,20 @@ $code.=<<___;
 .cfi_def_cfa_register	%rbp
 	vzeroall
 	mov	%rdx, $bp	# reassigned argument
+___
+if ($ENV{SARCASM}) {
+	# Merged alloca + anchor: 64 used bytes + 64 alignment slack (see
+	# the sqr frame above for why the n-copy dance is dropped).
+	$code.=<<___;
+	sub	\$128,%rsp		#! alloca result size=128
+	and	\$-64,%rsp
+___
+} else {
+	$code.=<<___;
 	sub	\$64,%rsp
+___
+}
+$code.=<<___;
 
 	# unaligned 256-bit load that crosses page boundary can
 	# cause severe performance degradation here, so if $ap does
@@ -947,6 +985,9 @@ $code.=<<___;
 	sub	\$-128,$ap	# size optimization
 	sub	\$-128,$np
 	sub	\$-128,$rp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 
 	and	\$4095, $tmp	# see if $np crosses page
 	add	\$32*10, $tmp
@@ -989,8 +1030,16 @@ $code.=<<___;
 	vmovdqu		$ACC8, 32*8-128($np)
 	vmovdqa		$ACC0, $ACC8
 	vmovdqu		$ACC9, 32*9-128($np)	# $ACC9 is zero after vzeroall
+___
+}
+$code.=<<___ if (!$ENV{SARCASM});
 .Lmul_1024_no_n_copy:
 	and	\$-64,%rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+.Lmul_1024_no_n_copy:
+___
+$code.=<<___;
 
 	mov	($bp), %rbx
 	vpbroadcastq ($bp), $Bi
@@ -1636,10 +1685,36 @@ $code.=<<___ if ($win64);
 	.byte	0xc5,0x78,0x29,0x78,0x70	# vmovaps %xmm15,0x70(%rax)
 ___
 $code.=<<___;
+___
+if ($ENV{SARCASM}) {
+	# andq-anchored region: 256 used bytes + 32 alignment slack (one
+	# merged allocation; the lea-and two-step cannot be proven safe).
+	$code.=<<___;
+	sub	\$288,%rsp		#! alloca result size=288
+	and	\$-32, %rsp
+___
+} else {
+	$code.=<<___;
 	lea	-0x100(%rsp),%rsp
 	and	\$-32, %rsp
+___
+}
+$code.=<<___;
 	lea	.Linc(%rip), %r10
+___
+if ($ENV{SARCASM}) {
+	# lea -128(%rsp) is below the anchored region; materialize the
+	# region base and subtract (same address, region-pointer form).
+	$code.=<<___;
+	lea	0(%rsp),%rax
+	sub	\$128,%rax
+___
+} else {
+	$code.=<<___;
 	lea	-128(%rsp),%rax			# control u-op density
+___
+}
+$code.=<<___;
 
 	vmovd		$power, %xmm4
 	vmovdqa		(%r10),%ymm0

@@ -392,7 +392,16 @@ OPENSSL_instrument_bus2:
 	mov	$arg1,$out	# tribute to Win64
 	mov	$arg2,$cnt
 	mov	$arg3,$max
-	mov	$cnt,$redzone(%rsp)
+___
+if ($ENV{SARCASM}) {
+	# The outgoing-args-area spill (8(%rsp)) is outside the frame; give
+	# the function a small real frame and spill there instead.
+	print "\tsub	\$24,%rsp		#! alloca result size=24\n";
+	print "\tmov	$cnt,0(%rsp)\n";
+} else {
+	print "\tmov	$cnt,$redzone(%rsp)\n";
+}
+print<<___;
 
 	rdtsc			# collect 1st tick
 	mov	%eax,$lasttick	# lasttick = tick
@@ -428,8 +437,16 @@ OPENSSL_instrument_bus2:
 	jnz	.Loop2
 
 .Ldone2:
-	mov	$redzone(%rsp),%rax
-	sub	$cnt,%rax
+___
+if ($ENV{SARCASM}) {
+	print "\tmov	0(%rsp),%rax\n";
+	print "\tsub	$cnt,%rax\n";
+	print "\tadd	\$24,%rsp\n";
+} else {
+	print "\tmov	$redzone(%rsp),%rax\n";
+	print "\tsub	$cnt,%rax\n";
+}
+print<<___;
 	ret
 .cfi_endproc
 .size	OPENSSL_instrument_bus2,.-OPENSSL_instrument_bus2

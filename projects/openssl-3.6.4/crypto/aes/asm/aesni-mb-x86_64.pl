@@ -111,6 +111,8 @@ $inp_elm_size=2*$ptr_size+8+16;
 ($counters,$mask,$zero)=map("%xmm$_",(10..12));
 
 ($rounds,$one,$sink,$offset)=("%eax","%ecx","%rbp","%rbx");
+my $cancel_src=$ENV{SARCASM}?"%rbp":"%rsp";
+my $sink_src=$ENV{SARCASM}?"%rdx":"%rsp";
 
 $code.=<<___;
 .text
@@ -169,7 +171,7 @@ $code.=<<___;
 	# +16	input sink [original %rsp and $num]
 	# +32	counters
 
-	sub	\$48,%rsp
+	sub	\$48,%rsp		#! alloca result size=48
 	and	\$-64,%rsp
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
@@ -183,21 +185,24 @@ $code.=<<___;
 	mov	$num,24(%rsp)			# original $num
 	xor	$num,$num
 ___
+$code.=<<___ if ($ENV{SARCASM});	# sink dummy must be a proper object, not %rsp
+	leaq	aesni_mb_sink(%rip),$sink
+___
 for($i=0;$i<4;$i++) {
     $inptr_reg=&pointer_register($flavour,@inptr[$i]);
     $outptr_reg=&pointer_register($flavour,@outptr[$i]);
     $code.=<<___;
 	# borrow $one for number of blocks
 	mov	`$inp_elm_size*$i+2*$ptr_size-$inp_elm_size*2`($inp),$one
-	mov	`$inp_elm_size*$i+0-$inp_elm_size*2`($inp),$inptr_reg
+	mov	`$inp_elm_size*$i+0-$inp_elm_size*2`($inp),$inptr_reg		#! load ptr
 	cmp	$num,$one
-	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*2`($inp),$outptr_reg
+	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*2`($inp),$outptr_reg		#! load ptr
 	cmovg	$one,$num			# find maximum
 	test	$one,$one
 	# load IV
 	movdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*2`($inp),@out[$i]
 	mov	$one,`32+4*$i`(%rsp)		# initialize counters
-	cmovle	%rsp,@inptr[$i]			# cancel input
+	cmovle	$cancel_src,@inptr[$i]			# cancel input
 ___
 }
 $code.=<<___;
@@ -226,9 +231,21 @@ $code.=<<___;
 .align	32
 .Loop_enc4x:
 	add	\$16,$offset
+___
+if ($ENV{SARCASM}) {
+    # sink into a proper object, not below the frame
+    $code.=<<___;
+	mov	\$1,$one			# constant of 1
+	leaq	aesni_mb_sink(%rip),$sink
+___
+} else {
+    $code.=<<___;
 	lea	16(%rsp),$sink			# sink pointer
 	mov	\$1,$one			# constant of 1
 	sub	$offset,$sink
+___
+}
+$code.=<<___;
 
 	aesenc		$rndkey1,@out[0]
 	prefetcht0	31(@inptr[0],$offset)	# prefetch input
@@ -451,7 +468,7 @@ $code.=<<___;
 	# +16	input sink [original %rsp and $num]
 	# +32	counters
 
-	sub	\$48,%rsp
+	sub	\$48,%rsp		#! alloca result size=48
 	and	\$-64,%rsp
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
@@ -465,21 +482,24 @@ $code.=<<___;
 	mov	$num,24(%rsp)			# original $num
 	xor	$num,$num
 ___
+$code.=<<___ if ($ENV{SARCASM});	# sink dummy must be a proper object, not %rsp
+	leaq	aesni_mb_sink(%rip),$sink
+___
 for($i=0;$i<4;$i++) {
     $inptr_reg=&pointer_register($flavour,@inptr[$i]);
     $outptr_reg=&pointer_register($flavour,@outptr[$i]);
     $code.=<<___;
 	# borrow $one for number of blocks
 	mov	`$inp_elm_size*$i+2*$ptr_size-$inp_elm_size*2`($inp),$one
-	mov	`$inp_elm_size*$i+0-$inp_elm_size*2`($inp),$inptr_reg
+	mov	`$inp_elm_size*$i+0-$inp_elm_size*2`($inp),$inptr_reg		#! load ptr
 	cmp	$num,$one
-	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*2`($inp),$outptr_reg
+	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*2`($inp),$outptr_reg		#! load ptr
 	cmovg	$one,$num			# find maximum
 	test	$one,$one
 	# load IV
 	movdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*2`($inp),@inp[$i]
 	mov	$one,`32+4*$i`(%rsp)		# initialize counters
-	cmovle	%rsp,@inptr[$i]			# cancel input
+	cmovle	$cancel_src,@inptr[$i]			# cancel input
 ___
 }
 $code.=<<___;
@@ -504,9 +524,21 @@ $code.=<<___;
 .align	32
 .Loop_dec4x:
 	add	\$16,$offset
+___
+if ($ENV{SARCASM}) {
+    # sink into a proper object, not below the frame
+    $code.=<<___;
+	mov	\$1,$one			# constant of 1
+	leaq	aesni_mb_sink(%rip),$sink
+___
+} else {
+    $code.=<<___;
 	lea	16(%rsp),$sink			# sink pointer
 	mov	\$1,$one			# constant of 1
 	sub	$offset,$sink
+___
+}
+$code.=<<___;
 
 	aesdec		$rndkey1,@out[0]
 	prefetcht0	31(@inptr[0],$offset)	# prefetch input
@@ -723,7 +755,7 @@ $code.=<<___;
 	# +64	distances between inputs and outputs
 	# +128	off-load area for @inp[0..3]
 
-	sub	\$192,%rsp
+	sub	\$192,%rsp		#! alloca result size=192
 	and	\$-128,%rsp
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
@@ -747,19 +779,40 @@ for($i=0;$i<8;$i++) {
 	# borrow $one for number of blocks
 	mov	`$inp_elm_size*$i+2*$ptr_size-$inp_elm_size*4`($inp),$one
 	# input pointer
-	mov	`$inp_elm_size*$i+0-$inp_elm_size*4`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0-$inp_elm_size*4`($inp),$ptr_reg		#! load ptr
 	cmp	$num,$one
 	# output pointer
-	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*4`($inp),$temp_reg
+	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*4`($inp),$temp_reg		#! load ptr
 	cmovg	$one,$num			# find maximum
 	test	$one,$one
 	# load IV
 	vmovdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*4`($inp),@out[$i]
 	mov	$one,`32+4*$i`(%rsp)		# initialize counters
+___
+    if ($ENV{SARCASM}) {
+	# $cancel_src cannot survive the load-ptr of the output pointer
+	# above (same register): materialize sink at the assignment site.
+	$code.=<<___;
+	jg	.LkeepE$i
+	leaq	aesni_mb_sink(%rip),@ptr[$i]
+.LkeepE$i:
+___
+    } else {
+	$code.=<<___;
 	cmovle	%rsp,@ptr[$i]			# cancel input
+___
+    }
+    if ($ENV{SARCASM}) {
+	# output positions are kept as proper capabilities in the slots
+	$code.=<<___;
+	mov	$temp,`64+8*$i`(%rsp)		#! store ptr
+___
+    } else {
+	$code.=<<___;
 	sub	@ptr[$i],$temp			# distance between input and output
 	mov	$temp,`64+8*$i`(%rsp)		# initialize distances
 ___
+    }
 }
 $code.=<<___;
 	test	$num,$num
@@ -794,22 +847,60 @@ $code.=<<___;
 ___
 for($i=0;$i<8;$i++) {
 my $rndkey=($i&1)?$rndkey0:$rndkey1;
-$code.=<<___;
+if ($ENV{SARCASM}) {
+    # Capability-safe form: the output position lives in the 64+8*$i
+    # slot as a real capability (stored in the prologue, advanced by the
+    # tail); @ptr[$i] stays on the input side.  The original form keeps
+    # a distance in $offset and switches @ptr[$i] to the output side with
+    # lea, which would make the output store use the *input* capability.
+    $code.=<<___;
 	vaesenc		$rndkey,@out[0],@out[0]
+	 mov		64+8*$i(%rsp),$offset		#! load ptr
 	 cmp		32+4*$i(%rsp),$one
-___
-$code.=<<___ if ($i);
-	 mov		64+8*$i(%rsp),$offset
-___
-$code.=<<___;
 	vaesenc		$rndkey,@out[1],@out[1]
 	prefetcht0	31(@ptr[$i])			# prefetch input
 	vaesenc		$rndkey,@out[2],@out[2]
 ___
-$code.=<<___ if ($i>1);
+    $code.=<<___ if ($i>1);
 	prefetcht0	15(@ptr[$i-2])			# prefetch output
 ___
-$code.=<<___;
+    $code.=<<___;
+	vaesenc		$rndkey,@out[3],@out[3]
+	jl	.LcinE$i
+	leaq	aesni_mb_sink(%rip),@ptr[$i]
+.LcinE$i:
+	vaesenc		$rndkey,@out[4],@out[4]
+	jle	.LcoutE$i
+	leaq	aesni_mb_sink(%rip),$offset
+.LcoutE$i:
+	vaesenc		$rndkey,@out[5],@out[5]
+	 vpxor		16(@ptr[$i]),$zero,@inp[$i%4]	# load input and xor with 0-round
+	 mov		$offset,64+8*$i(%rsp)		#! store ptr
+	vaesenc		$rndkey,@out[6],@out[6]
+	vaesenc		$rndkey,@out[7],@out[7]
+	vmovups		`16*(3+$i)-0x78`($key),$rndkey
+	 lea		16(@ptr[$i]),@ptr[$i]	# advance input
+___
+    $code.=<<___ if ($i<4)
+	 vmovdqu	@inp[$i%4],`16*$i`($offload)	# off-load
+___
+} else {
+    $code.=<<___;
+	vaesenc		$rndkey,@out[0],@out[0]
+	 cmp		32+4*$i(%rsp),$one
+___
+    $code.=<<___ if ($i);
+	 mov		64+8*$i(%rsp),$offset
+___
+    $code.=<<___;
+	vaesenc		$rndkey,@out[1],@out[1]
+	prefetcht0	31(@ptr[$i])			# prefetch input
+	vaesenc		$rndkey,@out[2],@out[2]
+___
+    $code.=<<___ if ($i>1);
+	prefetcht0	15(@ptr[$i-2])			# prefetch output
+___
+    $code.=<<___;
 	vaesenc		$rndkey,@out[3],@out[3]
 	 lea		(@ptr[$i],$offset),$offset
 	 cmovge		%rsp,@ptr[$i]			# cancel input
@@ -824,9 +915,10 @@ $code.=<<___;
 	vmovups		`16*(3+$i)-0x78`($key),$rndkey
 	 lea		16(@ptr[$i],$offset),@ptr[$i]	# switch to output
 ___
-$code.=<<___ if ($i<4)
+    $code.=<<___ if ($i<4)
 	 vmovdqu	@inp[$i%4],`16*$i`($offload)	# off-load
 ___
+}
 }
 $code.=<<___;
 	 vmovdqu	32(%rsp),$counters
@@ -887,7 +979,7 @@ $code.=<<___;
 	 vpaddd		$counters,$zero,$zero		# decrement counters
 	 vmovdqu	48(%rsp),$counters
 	vaesenc		$rndkey1,@out[5],@out[5]
-	 mov		64(%rsp),$offset		# pre-load 1st offset
+	 mov		64(%rsp),$offset		#! load ptr	# pre-load 1st offset
 	vaesenc		$rndkey1,@out[6],@out[6]
 	vaesenc		$rndkey1,@out[7],@out[7]
 	vmovups		0x10-0x78($key),$rndkey1
@@ -908,6 +1000,55 @@ $code.=<<___;
 	vaesenclast	$rndkey0,@out[7],@out[7]
 	vmovups		0x20-0x78($key),$rndkey0
 
+___
+if ($ENV{SARCASM}) {
+    # write outputs through the output-position capabilities
+    $code.=<<___;
+	vmovups		@out[0],($offset)		# write output
+	 lea		16($offset),$offset
+	 mov		$offset,64(%rsp)		#! store ptr
+	 vpxor		0x00($offload),@out[0],@out[0]
+	mov		64+8(%rsp),$offset		#! load ptr
+	vmovups		@out[1],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+8(%rsp)		#! store ptr
+	 vpxor		0x10($offload),@out[1],@out[1]
+	mov		64+16(%rsp),$offset		#! load ptr
+	vmovups		@out[2],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+16(%rsp)		#! store ptr
+	 vpxor		0x20($offload),@out[2],@out[2]
+	mov		64+24(%rsp),$offset		#! load ptr
+	vmovups		@out[3],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+24(%rsp)		#! store ptr
+	 vpxor		0x30($offload),@out[3],@out[3]
+	mov		64+32(%rsp),$offset		#! load ptr
+	vmovups		@out[4],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+32(%rsp)		#! store ptr
+	 vpxor		@inp[0],@out[4],@out[4]
+	mov		64+40(%rsp),$offset		#! load ptr
+	vmovups		@out[5],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+40(%rsp)		#! store ptr
+	 vpxor		@inp[1],@out[5],@out[5]
+	mov		64+48(%rsp),$offset		#! load ptr
+	vmovups		@out[6],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+48(%rsp)		#! store ptr
+	 vpxor		@inp[2],@out[6],@out[6]
+	mov		64+56(%rsp),$offset		#! load ptr
+	vmovups		@out[7],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+56(%rsp)		#! store ptr
+	 vpxor		@inp[3],@out[7],@out[7]
+
+	dec	$num
+	jnz	.Loop_enc8x
+___
+} else {
+    $code.=<<___;
 	vmovups		@out[0],-16(@ptr[0])		# write output
 	 sub		$offset,@ptr[0]			# switch to input
 	 vpxor		0x00($offload),@out[0],@out[0]
@@ -935,6 +1076,9 @@ $code.=<<___;
 
 	dec	$num
 	jnz	.Loop_enc8x
+___
+}
+$code.=<<___;
 
 	mov	16(%rsp),%rax			# original %rsp
 .cfi_def_cfa	%rax,8
@@ -1021,9 +1165,23 @@ $code.=<<___;
 	# +128	off-load area for @inp[0..3]
 	# +192	IV/input offload
 
+___
+if ($ENV{SARCASM}) {
+	# One allocation (256+192 bytes): the two-subq form would leave the
+	# anchored-region scope at the second subq, and it is equivalent here
+	# (same total size, same 256-byte alignment of the final %rsp).
+	$code.=<<___;
+	sub	\$448,%rsp		#! alloca result size=448
+	and	\$-256,%rsp
+___
+} else {
+	$code.=<<___;
 	sub	\$256,%rsp
 	and	\$-256,%rsp
 	sub	\$192,%rsp
+___
+}
+$code.=<<___;
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
 
@@ -1046,20 +1204,42 @@ for($i=0;$i<8;$i++) {
 	# borrow $one for number of blocks
 	mov	`$inp_elm_size*$i+2*$ptr_size-$inp_elm_size*4`($inp),$one
 	# input pointer
-	mov	`$inp_elm_size*$i+0-$inp_elm_size*4`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0-$inp_elm_size*4`($inp),$ptr_reg		#! load ptr
 	cmp	$num,$one
 	# output pointer
-	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*4`($inp),$temp_reg
+	mov	`$inp_elm_size*$i+$ptr_size-$inp_elm_size*4`($inp),$temp_reg		#! load ptr
 	cmovg	$one,$num			# find maximum
 	test	$one,$one
 	# load IV
 	vmovdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*4`($inp),@out[$i]
 	mov	$one,`32+4*$i`(%rsp)		# initialize counters
+___
+    if ($ENV{SARCASM}) {
+	# $cancel_src cannot survive the load-ptr of the output pointer
+	# above (same register): materialize sink at the assignment site.
+	$code.=<<___;
+	jg	.LkeepD$i
+	leaq	aesni_mb_sink(%rip),@ptr[$i]
+.LkeepD$i:
+___
+    } else {
+	$code.=<<___;
 	cmovle	%rsp,@ptr[$i]			# cancel input
+___
+    }
+    if ($ENV{SARCASM}) {
+	# output positions are kept as proper capabilities in the slots
+	$code.=<<___;
+	mov	$temp,`64+8*$i`(%rsp)		#! store ptr
+	vmovdqu	@out[$i],`192+16*$i`(%rsp)	# offload IV
+___
+    } else {
+	$code.=<<___;
 	sub	@ptr[$i],$temp			# distance between input and output
 	mov	$temp,`64+8*$i`(%rsp)		# initialize distances
 	vmovdqu	@out[$i],`192+16*$i`(%rsp)	# offload IV
 ___
+    }
 }
 $code.=<<___;
 	test	$num,$num
@@ -1094,7 +1274,23 @@ $code.=<<___;
 	vpxor	$zero,@out[6],@out[6]
 	vmovdqu	@out[7],0x70($offload)
 	vpxor	$zero,@out[7],@out[7]
+___
+if ($ENV{SARCASM}) {
+    # The original xor $0x80 ping-pong between the IV area (rsp+192) and
+    # the ciphertext area (rsp+320) relies on %rsp%256==64 produced by the
+    # sub256/and/sub192 frame.  The merged alloca frame yields %rsp%256==0,
+    # under which xor $0x80 would land at rsp+448.  Switch to explicit,
+    # alignment-independent arithmetic (identical results under the original
+    # frame, too).
+    $code.=<<___;
+	lea	-128($offload),$offload
+___
+} else {
+    $code.=<<___;
 	xor	\$0x80,$offload
+___
+}
+$code.=<<___;
 	mov	\$1,$one			# constant of 1
 	jmp	.Loop_dec8x
 
@@ -1103,22 +1299,56 @@ $code.=<<___;
 ___
 for($i=0;$i<8;$i++) {
 my $rndkey=($i&1)?$rndkey0:$rndkey1;
-$code.=<<___;
+if ($ENV{SARCASM}) {
+    # Capability-safe form: see the encrypt loop above.
+    $code.=<<___;
 	vaesdec		$rndkey,@out[0],@out[0]
+	 mov		64+8*$i(%rsp),$offset		#! load ptr
 	 cmp		32+4*$i(%rsp),$one
-___
-$code.=<<___ if ($i);
-	 mov		64+8*$i(%rsp),$offset
-___
-$code.=<<___;
 	vaesdec		$rndkey,@out[1],@out[1]
 	prefetcht0	31(@ptr[$i])			# prefetch input
 	vaesdec		$rndkey,@out[2],@out[2]
 ___
-$code.=<<___ if ($i>1);
+    $code.=<<___ if ($i>1);
 	prefetcht0	15(@ptr[$i-2])			# prefetch output
 ___
-$code.=<<___;
+    $code.=<<___;
+	vaesdec		$rndkey,@out[3],@out[3]
+	jl	.LcinD$i
+	leaq	aesni_mb_sink(%rip),@ptr[$i]
+.LcinD$i:
+	vaesdec		$rndkey,@out[4],@out[4]
+	jle	.LcoutD$i
+	leaq	aesni_mb_sink(%rip),$offset
+.LcoutD$i:
+	vaesdec		$rndkey,@out[5],@out[5]
+	 vmovdqu	16(@ptr[$i]),@inp[$i%4]		# load input
+	 mov		$offset,64+8*$i(%rsp)		#! store ptr
+	vaesdec		$rndkey,@out[6],@out[6]
+	vaesdec		$rndkey,@out[7],@out[7]
+	vmovups		`16*(3+$i)-0x78`($key),$rndkey
+	 lea		16(@ptr[$i]),@ptr[$i]	# advance input
+___
+    $code.=<<___ if ($i<4);
+	 vmovdqu	@inp[$i%4],`128+16*$i`(%rsp)	# off-load
+___
+} else {
+    $code.=<<___;
+	vaesdec		$rndkey,@out[0],@out[0]
+	 cmp		32+4*$i(%rsp),$one
+___
+    $code.=<<___ if ($i);
+	 mov		64+8*$i(%rsp),$offset
+___
+    $code.=<<___;
+	vaesdec		$rndkey,@out[1],@out[1]
+	prefetcht0	31(@ptr[$i])			# prefetch input
+	vaesdec		$rndkey,@out[2],@out[2]
+___
+    $code.=<<___ if ($i>1);
+	prefetcht0	15(@ptr[$i-2])			# prefetch output
+___
+    $code.=<<___;
 	vaesdec		$rndkey,@out[3],@out[3]
 	 lea		(@ptr[$i],$offset),$offset
 	 cmovge		%rsp,@ptr[$i]			# cancel input
@@ -1133,9 +1363,10 @@ $code.=<<___;
 	vmovups		`16*(3+$i)-0x78`($key),$rndkey
 	 lea		16(@ptr[$i],$offset),@ptr[$i]	# switch to output
 ___
-$code.=<<___ if ($i<4);
+    $code.=<<___ if ($i<4);
 	 vmovdqu	@inp[$i%4],`128+16*$i`(%rsp)	# off-load
 ___
+}
 }
 $code.=<<___;
 	 vmovdqu	32(%rsp),$counters
@@ -1196,7 +1427,7 @@ $code.=<<___;
 	 vpaddd		$counters,$zero,$zero		# decrement counters
 	 vmovdqu	48(%rsp),$counters
 	vaesdec		$rndkey1,@out[5],@out[5]
-	 mov		64(%rsp),$offset		# pre-load 1st offset
+	 mov		64(%rsp),$offset		#! load ptr	# pre-load 1st offset
 	vaesdec		$rndkey1,@out[6],@out[6]
 	vaesdec		$rndkey1,@out[7],@out[7]
 	vmovups		0x10-0x78($key),$rndkey1
@@ -1224,6 +1455,79 @@ $code.=<<___;
 	vpxor		0x60($offload),@out[6],@out[6]
 	vmovups		0x20-0x78($key),$rndkey0
 
+___
+if ($ENV{SARCASM}) {
+    # write outputs through the output-position capabilities
+    $code.=<<___;
+	vmovups		@out[0],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+0(%rsp)		#! store ptr
+	 vmovdqu	128+0(%rsp),@out[0]
+	vpxor		0x70($offload),@out[7],@out[7]
+	mov		64+8(%rsp),$offset		#! load ptr
+	vmovups		@out[1],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+8(%rsp)		#! store ptr
+	 vmovdqu	@out[0],0x00($offload)
+	 vpxor		$zero,@out[0],@out[0]
+	 vmovdqu	128+16(%rsp),@out[1]
+	mov		64+16(%rsp),$offset		#! load ptr
+	vmovups		@out[2],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+16(%rsp)		#! store ptr
+	 vmovdqu	@out[1],0x10($offload)
+	 vpxor		$zero,@out[1],@out[1]
+	 vmovdqu	128+32(%rsp),@out[2]
+	mov		64+24(%rsp),$offset		#! load ptr
+	vmovups		@out[3],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+24(%rsp)		#! store ptr
+	 vmovdqu	@out[2],0x20($offload)
+	 vpxor		$zero,@out[2],@out[2]
+	 vmovdqu	128+48(%rsp),@out[3]
+	mov		64+32(%rsp),$offset		#! load ptr
+	vmovups		@out[4],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+32(%rsp)		#! store ptr
+	 vmovdqu	@out[3],0x30($offload)
+	 vpxor		$zero,@out[3],@out[3]
+	 vmovdqu	@inp[0],0x40($offload)
+	 vpxor		@inp[0],$zero,@out[4]
+	mov		64+40(%rsp),$offset		#! load ptr
+	vmovups		@out[5],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+40(%rsp)		#! store ptr
+	 vmovdqu	@inp[1],0x50($offload)
+	 vpxor		@inp[1],$zero,@out[5]
+	mov		64+48(%rsp),$offset		#! load ptr
+	vmovups		@out[6],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+48(%rsp)		#! store ptr
+	 vmovdqu	@inp[2],0x60($offload)
+	 vpxor		@inp[2],$zero,@out[6]
+	mov		64+56(%rsp),$offset		#! load ptr
+	vmovups		@out[7],($offset)
+	 lea		16($offset),$offset
+	 mov		$offset,64+56(%rsp)		#! store ptr
+	 vmovdqu	@inp[3],0x70($offload)
+	 vpxor		@inp[3],$zero,@out[7]
+
+	# toggle offload between rsp+192 (IV area) and rsp+320 (ciphertext
+	# area).  An xor mask cannot do this independently of %rsp alignment
+	# (carries into bit 8+); bit 7 of the address is 0xC0 for +192 and
+	# 0x40 for +320 regardless of alignment, so branch on it.
+	testb	\$0x80,%bpl
+	jz	.Ldec8x_offlo
+	lea	128($offload),$offload
+	jmp	.Ldec8x_offdone
+.Ldec8x_offlo:
+	lea	-128($offload),$offload
+.Ldec8x_offdone:
+	dec	$num
+	jnz	.Loop_dec8x
+___
+} else {
+    $code.=<<___;
 	vmovups		@out[0],-16(@ptr[0])		# write output
 	 sub		$offset,@ptr[0]			# switch to input
 	 vmovdqu	128+0(%rsp),@out[0]
@@ -1265,6 +1569,9 @@ $code.=<<___;
 	xor	\$128,$offload
 	dec	$num
 	jnz	.Loop_dec8x
+___
+}
+$code.=<<___;
 
 	mov	16(%rsp),%rax			# original %rsp
 .cfi_def_cfa	%rax,8
@@ -1504,6 +1811,13 @@ sub aesni {
     return $line;
 }
 
+if ($ENV{SARCASM}) {
+	# Sink for cancelled descriptors (see the sink-register notes at the
+	# cmov sites).
+	$code.=<<___;
+	.comm	aesni_mb_sink,4096,16
+___
+}
 $code =~ s/\`([^\`]*)\`/eval($1)/gem;
 $code =~ s/\b(aes.*%xmm[0-9]+).*$/aesni($1)/gem;
 

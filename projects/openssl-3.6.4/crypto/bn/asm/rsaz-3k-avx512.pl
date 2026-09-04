@@ -456,6 +456,27 @@ $code.=<<___;
     vmovdqu64   $R3_0h, `7*32`($res)
 
     vzeroupper
+___
+if ($ENV{SARCASM}) {
+    # The (%rsp)-via-%rax reload idiom takes a frame address; the plain
+    # (%rsp) form (as in rsaz-2k-avx512.pl) is equivalent here.
+    $code.=<<___;
+    mov  0(%rsp),%r15
+.cfi_restore    %r15
+    mov  8(%rsp),%r14
+.cfi_restore    %r14
+    mov  16(%rsp),%r13
+.cfi_restore    %r13
+    mov  24(%rsp),%r12
+.cfi_restore    %r12
+    mov  32(%rsp),%rbp
+.cfi_restore    %rbp
+    mov  40(%rsp),%rbx
+.cfi_restore    %rbx
+    lea  48(%rsp),%rsp       # restore rsp
+___
+} else {
+    $code.=<<___;
     lea     (%rsp),%rax
 .cfi_def_cfa_register   %rax
 ___
@@ -486,6 +507,9 @@ $code.=<<___;
     mov  40(%rax),%rbx
 .cfi_restore    %rbx
     lea  48(%rax),%rsp       # restore rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa %rsp,8
 .Lossl_rsaz_amm52x30_x1_ifma256_epilogue:
     ret
@@ -620,6 +644,27 @@ $code.=<<___;
     vmovdqu64   $R3_1h, `15*32`($res)
 
     vzeroupper
+___
+if ($ENV{SARCASM}) {
+    # The (%rsp)-via-%rax reload idiom takes a frame address; the plain
+    # (%rsp) form (as in rsaz-2k-avx512.pl) is equivalent here.
+    $code.=<<___;
+    mov  0(%rsp),%r15
+.cfi_restore    %r15
+    mov  8(%rsp),%r14
+.cfi_restore    %r14
+    mov  16(%rsp),%r13
+.cfi_restore    %r13
+    mov  24(%rsp),%r12
+.cfi_restore    %r12
+    mov  32(%rsp),%rbp
+.cfi_restore    %rbp
+    mov  40(%rsp),%rbx
+.cfi_restore    %rbx
+    lea  48(%rsp),%rsp       # restore rsp
+___
+} else {
+    $code.=<<___;
     lea     (%rsp),%rax
 .cfi_def_cfa_register   %rax
 ___
@@ -649,7 +694,10 @@ $code.=<<___;
 .cfi_restore    %rbp
     mov  40(%rax),%rbx
 .cfi_restore    %rbx
-    lea  48(%rax),%rsp
+    lea  48(%rax),%rsp       # restore rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa    %rsp,8
 .Lossl_rsaz_amm52x30_x2_ifma256_epilogue:
     ret

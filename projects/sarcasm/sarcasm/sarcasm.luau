@@ -979,7 +979,8 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	local localCalled = localcall.prescanCalls(stmts, target.arch)
 	local functions, consumed, aliases, aliasGlobals = splitFunctions(stmts,
 		{ globals = globals, localCalled = localCalled, arch = target.arch })
-	local locals = localcall.discover(stmts, consumed, globals, target.arch)
+	local locals = localcall.discover(stmts, consumed, globals, target.arch,
+		{ functions = functions, aliases = aliases })
 	-- Same-file FUNCTION name resolution (x86_64, for `#! funcref` and
 	-- `.section .init` calls): every signature-annotated function name AND
 	-- alias-entry name maps to the OWNING function (an alias entry shares the

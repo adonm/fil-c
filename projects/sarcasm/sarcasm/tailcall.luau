@@ -199,6 +199,7 @@ local function deepCopyStmt(st)
 	end
 	return st
 end
+tailcall.deepCopyStmt = deepCopyStmt
 
 -- Build the cross-jump resolution context. `functions` is the splitFunctions
 -- result (bodies already .byte-decoded on x86_64), `aliases` the scanAliases
@@ -320,6 +321,21 @@ function tailcall.computeRegion(ctx, srcName, srcStmts, srcEntryName, entryLabel
 	ctx.regions[key] = region
 	return region
 end
+
+-- Alloca-tag retagging for clones: a cloned `#! alloca size (x)` /
+-- `#! alloca result (x)` annotation names a SECOND allocation site with the
+-- same tag (mont's bn_mul_mont jumps to .Lmul4x_enter and the cloned tail
+-- carries the alloca) — the body's name-keyed size/result pairing would
+-- collide. Rewrite the tag with a per-clone suffix: the pairing inside the
+-- clone is preserved (size and result retag identically) and other clones /
+-- the original keep their own tags. (`alloca result size=N` carries no tag.)
+local function retagAlloca(ann, suffix)
+	if type(ann) ~= "string" then return ann end
+	local kind, nm = string.match(ann, "^(alloca%s+%a+)%s*%(%s*(.-)%s*%)$")
+	if not nm then return ann end
+	return kind .. " (" .. nm .. "@" .. suffix .. ")"
+end
+tailcall.retagAlloca = retagAlloca
 
 -- Operand/statement copying with in-clone label renaming (mirrors
 -- localcall.augment: regions are shared across jumpers and downstream passes
@@ -467,8 +483,12 @@ function tailcall.rewriteFunction(fnName, body, ctx, locals, userLabels)
 			end
 		end
 		local stmts = {}
+		local annSuffix = fnName .. "/" .. site.srcName .. "/" .. site.target
 		for idx, st in region.stmts do
 			local cp = cloneStmt(st, ren)
+			if cp.kind == "insn" and cp.annotation then
+				cp.annotation = retagAlloca(cp.annotation, annSuffix)
+			end
 			if idx == 1 then
 				-- validateBody: the clone's FIRST statement is reached only
 				-- through branches (the cross-jump edge or a backward branch

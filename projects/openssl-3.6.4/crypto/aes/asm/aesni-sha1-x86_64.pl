@@ -141,8 +141,23 @@ aesni_cbc_sha1_enc:
 .cfi_startproc
 	# caller should check for SSSE3 and AES-NI bits
 	mov	OPENSSL_ia32cap_P+0(%rip),%r10d
+___
+if ($ENV{SARCASM}) {
+	# sarcasm: Fil-C requires the access width to match the alignment,
+	# and OPENSSL_ia32cap_P is only 4-aligned, so the 64-bit load at +4
+	# traps; recompose the qword from two 32-bit loads. %eax is dead
+	# here (it is not an argument register).
+	$code.=<<___;
+	mov	OPENSSL_ia32cap_P+4(%rip),%r11d
+	mov	OPENSSL_ia32cap_P+8(%rip),%eax
+	shl	\$32,%rax
+	or	%rax,%r11
+___
+} else {
+	$code.=<<___;
 	mov	OPENSSL_ia32cap_P+4(%rip),%r11
 ___
+}
 $code.=<<___ if ($shaext);
 	bt	\$61,%r11		# check SHA bit
 	jc	aesni_cbc_sha1_enc_shaext
@@ -199,7 +214,11 @@ $code.=<<___;
 .align	32
 aesni_cbc_sha1_enc_ssse3:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
+___
+$code.=<<___;
 	#shr	\$6,$len			# debugging artefact
 	#jz	.Lepilogue_ssse3		# debugging artefact
 	push	%rbx
@@ -216,6 +235,15 @@ aesni_cbc_sha1_enc_ssse3:
 .cfi_push	%r15
 	lea	`-104-($win64?10*16:0)`(%rsp),%rsp
 .cfi_adjust_cfa_offset	`104+($win64?10*16:0)`
+___
+$code.=<<___ if ($ENV{SARCASM});
+	# sarcasm: read the 7th argument above the allocated frame (8 for the
+	# return address, 48 for the six saves, 104 for the frame) — a stack
+	# read ahead of the pushes ends the prologue scan and orphans the
+	# lea-alloc.
+	mov	`8+48+104`(%rsp),$inp	# load 7th argument
+___
+$code.=<<___;
 	#mov	$in0,$inp			# debugging artefact
 	#lea	64(%rsp),$ctx			# debugging artefact
 ___
@@ -292,8 +320,15 @@ my $aesenc=sub {
 	movups		`16*$n`($in0),$in		# load input
 	xorps		$rndkey0,$in
 ___
-      $code.=<<___ if ($n);
+      $code.=<<___ if ($n && !$ENV{SARCASM});
 	movups		$iv,`16*($n-1)`($out,$in0)	# write output
+___
+      $code.=<<___ if ($n && $ENV{SARCASM});
+	# sarcasm: a syntactically-zero displacement lets xlate flip the
+	# %r13 base with the index register, and the store would then be
+	# bounds-checked against $in0's object for an $out address. The
+	# `1-1` disp (zero after gas evaluation) keeps $out the base.
+	movups		$iv,`((16*($n-1))||"1-1")`($out,$in0)	# write output
 ___
       $code.=<<___;
 	xorps		$in,$iv
@@ -739,7 +774,7 @@ $code.=<<___ if ($win64);
 	movaps	96+128(%rsp),%xmm14
 	movaps	96+144(%rsp),%xmm15
 ___
-$code.=<<___;
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	`104+($win64?10*16:0)`(%rsp),%rsi
 .cfi_def_cfa	%rsi,56
 	mov	0(%rsi),%r15
@@ -756,6 +791,29 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	48(%rsi),%rsp
 .cfi_def_cfa	%rsp,8
+.Lepilogue_ssse3:
+	ret
+.cfi_endproc
+.size	aesni_cbc_sha1_enc_ssse3,.-aesni_cbc_sha1_enc_ssse3
+___
+$code.=<<___ if ($ENV{SARCASM});
+	# sarcasm: canonical teardown + pops — the register-indirect restore
+	# above computes a live frame-interior address, which is a rejected
+	# stack-address escape.
+	lea	`104`(%rsp),%rsp
+.cfi_adjust_cfa_offset	-104
+	pop	%r15
+.cfi_restore	%r15
+	pop	%r14
+.cfi_restore	%r14
+	pop	%r13
+.cfi_restore	%r13
+	pop	%r12
+.cfi_restore	%r12
+	pop	%rbp
+.cfi_restore	%rbp
+	pop	%rbx
+.cfi_restore	%rbx
 .Lepilogue_ssse3:
 	ret
 .cfi_endproc
@@ -1075,7 +1133,11 @@ $code.=<<___;
 .align	32
 aesni_cbc_sha1_enc_avx:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
+___
+$code.=<<___;
 	#shr	\$6,$len			# debugging artefact
 	#jz	.Lepilogue_avx			# debugging artefact
 	push	%rbx
@@ -1092,6 +1154,15 @@ aesni_cbc_sha1_enc_avx:
 .cfi_push	%r15
 	lea	`-104-($win64?10*16:0)`(%rsp),%rsp
 .cfi_adjust_cfa_offset	`104+($win64?10*16:0)`
+___
+$code.=<<___ if ($ENV{SARCASM});
+	# sarcasm: read the 7th argument above the allocated frame (8 for the
+	# return address, 48 for the six saves, 104 for the frame) — a stack
+	# read ahead of the pushes ends the prologue scan and orphans the
+	# lea-alloc.
+	mov	`8+48+104`(%rsp),$inp	# load 7th argument
+___
+$code.=<<___;
 	#mov	$in0,$inp			# debugging artefact
 	#lea	64(%rsp),$ctx			# debugging artefact
 ___
@@ -1166,8 +1237,13 @@ my $aesenc=sub {
 	vmovdqu		`16*$n`($in0),$in		# load input
 	vpxor		$rndkey[1],$in,$in
 ___
-      $code.=<<___ if ($n);
+      $code.=<<___ if ($n && !$ENV{SARCASM});
 	vmovups		$iv,`16*($n-1)`($out,$in0)	# write output
+___
+      $code.=<<___ if ($n && $ENV{SARCASM});
+	# sarcasm: see the ssse3 $aesenc note above — keep the displacement
+	# syntactically nonzero so xlate does not flip the %r13 base.
+	vmovups		$iv,`((16*($n-1))||"1-1")`($out,$in0)	# write output
 ___
       $code.=<<___;
 	vpxor		$in,$iv,$iv
@@ -1488,7 +1564,7 @@ $code.=<<___ if ($win64);
 	movaps	96+128(%rsp),%xmm14
 	movaps	96+144(%rsp),%xmm15
 ___
-$code.=<<___;
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	`104+($win64?10*16:0)`(%rsp),%rsi
 .cfi_def_cfa	%rsi,56
 	mov	0(%rsi),%r15
@@ -1505,6 +1581,29 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	48(%rsi),%rsp
 .cfi_def_cfa	%rsp,8
+.Lepilogue_avx:
+	ret
+.cfi_endproc
+.size	aesni_cbc_sha1_enc_avx,.-aesni_cbc_sha1_enc_avx
+___
+$code.=<<___ if ($ENV{SARCASM});
+	# sarcasm: canonical teardown + pops — the register-indirect restore
+	# above computes a live frame-interior address, which is a rejected
+	# stack-address escape.
+	lea	`104`(%rsp),%rsp
+.cfi_adjust_cfa_offset	-104
+	pop	%r15
+.cfi_restore	%r15
+	pop	%r14
+.cfi_restore	%r14
+	pop	%r13
+.cfi_restore	%r13
+	pop	%r12
+.cfi_restore	%r12
+	pop	%rbp
+.cfi_restore	%rbp
+	pop	%rbx
+.cfi_restore	%rbx
 .Lepilogue_avx:
 	ret
 .cfi_endproc

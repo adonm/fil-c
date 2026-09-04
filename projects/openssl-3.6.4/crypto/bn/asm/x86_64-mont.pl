@@ -129,7 +129,20 @@ $code.=<<___;
 	cmp	$ap,$bp
 	jne	.Lmul4x_enter
 	test	\$7,${num}d
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	jz	.Lsqr8x_enter
+___
+# Sarcasm: bn_mul_mont never dispatches to bn_sqr8x_mont. The bn_sqr8x_mont
+# body calls bn_sqr8x_internal/bn_sqrx8x_internal cross-file (they live in
+# x86_64-mont5.s); those callee bodies address their caller's frame with
+# the +8 convention, so under sarcasm they are de-globl'd file-local
+# subroutines and the cross-file call cannot link. Squaring (ap==bp,
+# num%8==0) therefore falls through to the generic mul4x multiply path,
+# which handles a==b correctly — same result, just slightly slower. The
+# bn_sqr8x_mont body itself is not emitted under SARCASM (see below), so
+# the .Lsqr8x_enter label has no producer and no consumer.
+$code.=<<___;
 	jmp	.Lmul4x_enter
 
 .align	16
@@ -474,7 +487,7 @@ ___
 ___
 }
 $code.=<<___;
-	mov	$rp,16(%rsp,$num,8)	# tp[num+2]=$rp
+	mov	$rp,16(%rsp,$num,8)	#! store ptr
 	mov	%rdx,%r12		# reassign $bp
 ___
 		$bp="%r12";
@@ -778,7 +791,7 @@ ___
 {
 my @ri=("%rax","%rdx",$m0,$m1);
 $code.=<<___;
-	mov	16(%rsp,$num,8),$rp	# restore $rp
+	mov	16(%rsp,$num,8),$rp	#! load ptr
 	lea	-4($num),$j
 	mov	0(%rsp),@ri[0]		# tp[0]
 	mov	8(%rsp),@ri[1]		# tp[1]
@@ -877,7 +890,9 @@ $code.=<<___;
 .size	bn_mul4x_mont,.-bn_mul4x_mont
 ___
 }}}
-{{{
+# Sarcasm: skip the bn_sqr8x_mont body entirely -- see the dispatch comment
+# above (its cross-file calls to x86_64-mont5's internals cannot link).
+if (!$ENV{SARCASM}) {{{{
 ######################################################################
 # void bn_sqr8x_mont(
 my $rptr="%rdi";	# const BN_ULONG *rptr,
@@ -1120,6 +1135,7 @@ $code.=<<___;
 .size	bn_sqr8x_mont,.-bn_sqr8x_mont
 ___
 }}}
+}	# !SARCASM (bn_sqr8x_mont body skipped)
 
 if ($addx) {{{
 my $bp="%rdx";	# original value
@@ -1202,10 +1218,10 @@ $code.=<<___;
 	#
 	mov	$num,0(%rsp)		# save $num
 	shr	\$5,$num
-	mov	%r10,16(%rsp)		# end of b[num]
+	mov	%r10,16(%rsp)		#! store ptr
 	sub	\$1,$num
 	mov	$n0, 24(%rsp)		# save *n0
-	mov	$rp, 32(%rsp)		# save $rp
+	mov	$rp, 32(%rsp)		#! store ptr
 	mov	%rax,40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 	mov	$num,48(%rsp)		# inner counter
@@ -1226,7 +1242,7 @@ $code.=<<___;
 	mulx	0*8($aptr),$mi,%rax	# a[0]*b[0]
 	mulx	1*8($aptr),%r11,%r14	# a[1]*b[0]
 	add	%rax,%r11
-	mov	$bptr,8(%rsp)		# off-load &b[i]
+	mov	$bptr,8(%rsp)		#! store ptr
 	mulx	2*8($aptr),%r12,%r13	# ...
 	adc	%r14,%r12
 	adc	\$0,%r13
@@ -1303,7 +1319,7 @@ $code.=<<___;
 	jnz	.Lmulx4x_1st
 
 	mov	0(%rsp),$num		# load num
-	mov	8(%rsp),$bptr		# re-load &b[i]
+	mov	8(%rsp),$bptr		#! load ptr
 	adc	$zero,%r15		# modulo-scheduled
 	add	%r15,%r14
 	sbb	%r15,%r15		# top-most carry
@@ -1332,7 +1348,7 @@ $code.=<<___;
 	adcx	$zero,%r13
 	adox	$zero,%r13
 
-	mov	$bptr,8(%rsp)		# off-load &b[i]
+	mov	$bptr,8(%rsp)		#! store ptr
 	mov	$mi,%r15
 	imulq	24(%rsp),$mi		# "t[0]"*n0
 	xor	%ebp,%ebp		# xor	$zero,$zero	# cf=0, of=0
@@ -1411,7 +1427,7 @@ $code.=<<___;
 	jnz	.Lmulx4x_inner
 
 	mov	0(%rsp),$num		# load num
-	mov	8(%rsp),$bptr		# re-load &b[i]
+	mov	8(%rsp),$bptr		#! load ptr
 	adc	$zero,%r15		# modulo-scheduled
 	sub	0*8($tptr),$zero	# pull top-most carry
 	adc	%r15,%r14
@@ -1426,7 +1442,7 @@ $code.=<<___;
 	neg	%r15
 	mov	$num,%rdx
 	shr	\$3+2,$num		# %cf=0
-	mov	32(%rsp),$rptr		# restore rp
+	mov	32(%rsp),$rptr		#! load ptr
 	jmp	.Lmulx4x_sub
 
 .align	32

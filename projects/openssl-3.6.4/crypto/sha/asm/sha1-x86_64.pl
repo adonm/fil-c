@@ -309,7 +309,7 @@ $code.=<<___;
 	push	%r14
 .cfi_push	%r14
 	mov	%rdi,$ctx	# reassigned argument
-	sub	\$`8+16*4`,%rsp
+	sub	\$`8+16*4`,%rsp		#! alloca result size=72
 	mov	%rsi,$inp	# reassigned argument
 	and	\$-64,%rsp
 	mov	%rdx,$num	# reassigned argument
@@ -538,7 +538,7 @@ $code.=<<___ if ($win64);
 .Lprologue_ssse3:
 ___
 $code.=<<___;
-	and	\$-64,%rsp
+	and	\$-64,%rsp		#! alloca result size=64
 	mov	%rdi,$ctx	# reassigned argument
 	mov	%rsi,$inp	# reassigned argument
 	mov	%rdx,$num	# reassigned argument
@@ -1013,7 +1013,7 @@ $code.=<<___ if ($win64);
 .Lprologue_avx:
 ___
 $code.=<<___;
-	and	\$-64,%rsp
+	and	\$-64,%rsp		#! alloca result size=64
 	mov	%rdi,$ctx	# reassigned argument
 	mov	%rsi,$inp	# reassigned argument
 	mov	%rdx,$num	# reassigned argument
@@ -1399,7 +1399,7 @@ $code.=<<___;
 	lea	-640(%rsp),%rsp
 	shl	\$6,$num
 	 lea	64($inp),$frame
-	and	\$-128,%rsp
+	and	\$-128,%rsp		#! alloca result size=640
 	add	$inp,$num
 	lea	K_XX_XX+64(%rip),$K_XX_XX
 

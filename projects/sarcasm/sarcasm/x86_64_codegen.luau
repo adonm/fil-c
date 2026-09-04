@@ -216,7 +216,9 @@ function M.allocaRegionBase(stmt, fctx)
 		if mem and mem.base and not mem.index and not mem.dispSym then
 			if mem.base.rc == "sp" then return mem.dispVal or 0, nil, false end
 			if fctx and fctx.usesFp and mem.base.name == "rbp" then
-				return fctx.frameSize + (mem.dispVal or 0), nil, false
+				-- rbp-relative base: normalize with the frame rewrite's base
+				-- (rbp = rsp + rbpNorm; 0 at the rbp-at-the-bottom layout).
+				return (fctx.rbpNorm or fctx.frameSize) + (mem.dispVal or 0), nil, false
 			end
 		end
 		return nil
@@ -875,10 +877,17 @@ function M.make(ctx)
 	-- slow path, filc_allocate, the ptr-store slow paths, the Phase-2 atomic pointer
 	-- load/store/compare-exchange runtime calls). The source program never saw
 	-- these calls, so its live xmm/ymm/zmm values would be silently clobbered by them:
-	-- SysV makes every FP/SIMD register caller-saved. The Fil-C runtime is compiled
-	-- SSE2-only (pizfix/lib/libpizlo.a contains xmm instructions but zero ymm/zmm), so
-	-- only xmm0-15 state can ever be at risk — ymm/zmm bits above 128, zmm16-31,
-	-- k0-7, mm and x87 state are all unreachable for it.
+	-- SysV makes every FP/SIMD register caller-saved. libpizlo itself is compiled
+	-- SSE2-only (pizfix/lib/libpizlo.a contains xmm instructions but zero ymm/zmm),
+	-- but the injected-call paths can ALSO reach libyolocimpl.so, whose string/memory
+	-- routines are EVEX-compiled (__memcpy_evex_unaligned_erms, __strcmp_evex, ...:
+	-- thousands of zmm16-31 and k0-7 uses). Those registers are caller-saved scratch
+	-- for the runtime, so live xmm/ymm/zmm16-31 and k0-7 state is at risk exactly
+	-- like xmm0-15, and the save/restore below covers every vector register the body
+	-- names (32 slots when any xmm/ymm/zmm >= 16 appears, 16 otherwise) plus k0-7
+	-- (saved unconditionally when the body uses any opmask register — vecRegOf
+	-- deliberately keeps k-regs out of the liveness model). mm and x87 state remain
+	-- unreachable for these paths.
 	--
 	-- Save/restore is LIVENESS- AND WIDTH-AWARE: cg.fpSave/fpRestore below emit
 	-- PLACEHOLDER nodes (kind "fpsave"/"fprestore"), and cg.expandFpSaves — called
@@ -913,10 +922,9 @@ function M.make(ctx)
 	-- filc_store_ptr_atomic_outline / filc_strong_cas_ptr_with_manual_tracking
 	-- — whose internal ensure-aux/box-allocation/barrier paths are the same
 	-- allocation/barrier code the first four already cover) never execute
-	-- those wrappers. k-opmask state genuinely cannot be clobbered by an
-	-- SSE2-only runtime (it is EVEX-only). If the runtime is ever compiled
-	-- with AVX512, this must be extended to also save zmm16-31 and k0-7 (EVEX
-	-- state an AVX512 build could clobber).
+	-- those wrappers. k-opmask and zmm16-31 state CAN be clobbered on these
+	-- paths whenever they reach libyolocimpl's EVEX-compiled routines; both
+	-- are covered by the extended save (see the expandFpSaves comment).
 	--
 	-- The save area sits above the GC root area of the synthesized frame
 	-- (reserved by x86_64_render.computeLayout) at the ORIGINAL 16*vecBytes
@@ -1112,16 +1120,27 @@ function M.make(ctx)
 
 		-- Expand each placeholder from its local liveness state (the pair
 		-- around an injected call naturally agrees: only GPR marshalling movs
-		-- and the transparent call intervene). Only xmm0-15 are ever saved —
-		-- the SSE2-only runtime cannot touch zmm16-31.
+		-- and the transparent call intervene). Registers 0-15 always save with
+		-- the legacy/VEX mnemonics; registers 16-31 (live only when the body
+		-- names them, i.e. saveSlots == 32) must use their EVEX forms — gas has
+		-- no VEX encodings for xmm16-31, so movdqu/vmovdqu/movss/movsd are
+		-- unsupported there and vmovdqu64/vmovss/vmovsd take over. Opmask
+		-- registers k0-7 have no liveness model (vecRegOf ignores them), so
+		-- when the body uses any of them ALL of them are saved — over-saving
+		-- is sound, and this is the only way to be safe against EVEX-compiled
+		-- runtime code (libyolocimpl's _evex routines clobber k0-7 freely).
 		local SAVE_FORM = { [4] = "movss", [8] = "movsd", [16] = "movdqu",
 			[32] = "vmovdqu", [64] = "vmovdqu64" }
 		local SAVE_CLASS = { [4] = "xmm", [8] = "xmm", [16] = "xmm", [32] = "ymm", [64] = "zmm" }
+		local EVEX_FORM = { [4] = "vmovss", [8] = "vmovsd", [16] = "vmovdqu64",
+			[32] = "vmovdqu64", [64] = "vmovdqu64" }
+		local saveSlots = fpInfo.saveSlots or 16
+		local usesK = fpInfo.usesK
 		local function emitPairMovs(isRestore, live, into)
-			for n = 0, 15 do
+			for n = 0, saveSlots - 1 do
 				local w = live[n]
 				if w then
-					local mnem = SAVE_FORM[w]
+					local mnem = (n > 15) and EVEX_FORM[w] or SAVE_FORM[w]
 					if not mnem or w > vecBytes then
 						error("sarcasm: internal error: bad live vector width "
 							.. tostring(w) .. " (vecBytes " .. tostring(vecBytes) .. ")")
@@ -1136,6 +1155,20 @@ function M.make(ctx)
 						table.insert(into, build.insn(mnem, { vreg, slot }, {}))
 					else
 						table.insert(into, build.insn(mnem, { slot, vreg }, {}))
+					end
+				end
+			end
+			if usesK then
+				-- The opmask area sits right after the vector slots
+				-- (16 + saveSlots*vecBytes + j*8); same frameSlot shift.
+				for j = 0, 7 do
+					local kreg = { kind = "reg", rc = "xmm", num = j, width = 64, name = "k" .. j }
+					local slot = build.memx(build.rp(4), { dispVal = 16 + saveSlots * vecBytes + j * 8 })
+					slot.frameSlot = true
+					if isRestore then
+						table.insert(into, build.insn("kmovq", { kreg, slot }, {}))
+					else
+						table.insert(into, build.insn("kmovq", { slot, kreg }, {}))
 					end
 				end
 			end
@@ -1157,7 +1190,12 @@ function M.make(ctx)
 	local function stackOff(base, disp)
 		if not base then return nil end
 		if base.rc == "sp" then return disp end
-		if fctx and fctx.usesFp and base.name == "rbp" then return fctx.frameSize + disp end
+		-- rbp-relative offsets normalize with the frame rewrite's own base (rbp =
+		-- rsp + rbpNorm; 0 for the rbp-at-the-bottom layout) — NOT the bare frame
+		-- size, which only agrees at the rbp-at-the-top layout.
+		if fctx and fctx.usesFp and base.name == "rbp" then
+			return (fctx.rbpNorm or fctx.frameSize) + disp
+		end
 		return nil  -- not a stack base (e.g. rbp as an ordinary GPR with frame-pointer omission)
 	end
 	-- The +8 rule for a clone statement's rsp-relative operand at a static depth
@@ -1183,18 +1221,41 @@ function M.make(ctx)
 		local ops = node.stmt.operands
 		-- Region membership, reproducing the frame rewrite exactly: inside an
 		-- {anchored} region scope (the statement's depth is the region's table) raw
-		-- displacements are that region's coordinates; plain "dyn" has no valid
-		-- coordinates; everything else matches the static regions (normalized frame
-		-- coordinates — rbp-relative offsets are static at any depth).
+		-- displacements are that region's coordinates; inside a {dynreg} scope rsp =
+		-- region base + bias, so the region offset is bias + disp (-8 for a clone —
+		-- the +8 rule) and membership is unconditional (the runtime bounds check
+		-- covers the dynamic extent); plain "dyn" has no valid coordinates;
+		-- everything else matches the static regions (normalized frame coordinates —
+		-- rbp-relative offsets are static at any depth). Returns the region and the
+		-- REGION-RELATIVE offset of the access.
 		local function nodeRegion(off, isSpBase)
 			local d = node.stmt.x86_depth
 			if isSpBase and not node.stmt.x86_prologue and type(d) == "table" then
-				if off >= d.anchored.base and off < d.anchored.base + d.anchored.size then
-					return d.anchored
+				if d.anchored then
+					-- A clone statement keys 8 lower (the +8 rule — the return-address
+					-- word sits between the clone's rsp and the caller's frame, so the
+					-- same physical slot is spelled 8 higher inside a clone). The frame
+					-- slot model (slotKeyOf) and the dynreg branch below already key it
+					-- this way; the anchored region must agree (rsaz_512_mul's
+					-- `leaq 8(%rsp),%rdi` t[] base in the __rsaz_512_mul clone — it must
+					-- redirect to region+0, not region+8).
+					local ao = off
+					if node.stmt.localClone then ao = ao - 8 end
+					if ao >= d.anchored.base and ao < d.anchored.base + d.anchored.size then
+						return d.anchored, ao - d.anchored.base
+					end
+					return nil
+				end
+				if d.dynreg then
+					local rl = off + d.dynreg.bias
+					if node.stmt.localClone then rl = rl - 8 end
+					return d.dynreg, rl
 				end
 				return nil
 			end
-			return regionOf(off, false)
+			local r = regionOf(off, false)
+			if r then return r, off - r.base end
+			return nil
 		end
 		-- Define the redirected pointer's lower: the ptrflow-SEEDED lower temp (shared
 		-- by every copy of the region pointer) is defined from the region's own lower;
@@ -1212,10 +1273,11 @@ function M.make(ctx)
 			local mem = M.memOperand(node.stmt)
 			if mem and not mem.index and not mem.dispSym then
 				local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
-				local r = off and nodeRegion(off, mem.base and mem.base.rc == "sp")
+				local r, reloff = nil, nil
+				if off then r, reloff = nodeRegion(off, mem.base and mem.base.rc == "sp") end
 				if r then
 					local rd = node.defTemps[1]
-					cg.addImm(rd, r.ptrTemp, off - r.base)
+					cg.addImm(rd, r.ptrTemp, reloff)
 					seedRegionLower(rd, r)
 					return true
 				end
@@ -1223,11 +1285,11 @@ function M.make(ctx)
 		end
 		if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
 			and ops[2] and ops[2].rc == "sp" then
-			local r = nodeRegion(cloneStackOff(node, { kind = "reg", rc = "sp" }, 0), true)
+			local r, reloff = nodeRegion(cloneStackOff(node, { kind = "reg", rc = "sp" }, 0), true)
 			if r then
 				local rd = node.defTemps[1]
 				-- rsp+0 redirected into the region: buffer + (0 - base), NOT buffer + 0.
-				cg.addImm(rd, r.ptrTemp, -r.base)
+				cg.addImm(rd, r.ptrTemp, reloff)
 				seedRegionLower(rd, r)
 				return true
 			end
@@ -1235,17 +1297,21 @@ function M.make(ctx)
 		local mem = M.memOperand(node.stmt)
 		if mem and not mem.dispSym then
 			local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
-			local r = off and nodeRegion(off, mem.base and mem.base.rc == "sp")
+			local r, reloff = nil, nil
+			if off then r, reloff = nodeRegion(off, mem.base and mem.base.rc == "sp") end
 			if r then
-				-- A DIRECT stack-relative access into a fixed region: rewrite the
-				-- memory operand to ride the region pointer (disp - base off the
-				-- region temp) and return false so the walk lowers it through the
-				-- ordinary checked path (bounds at the access's width/alignment,
-				-- CanWrite for stores — GC buffers are writable). The frame rewrite
-				-- proved region membership static; the redirect keeps real bounds.
+				-- A DIRECT stack-relative access into a region (fixed, or dynamic —
+				-- indexed forms included): rewrite the memory operand to ride the
+				-- region pointer (the region-relative offset off the region temp)
+				-- and return false so the walk lowers it through the ordinary
+				-- checked path (bounds at the access's width/alignment, CanWrite
+				-- for stores — GC buffers are writable). The frame rewrite proved
+				-- membership (static for fixed regions; the exact rsp = base +
+				-- bias identity for dynamic ones — the runtime bounds check
+				-- covers the dynamic extent); the redirect keeps real bounds.
 				local newBase = rt(r.ptrTemp)
 				mem.base = newBase
-				mem.dispVal = off - r.base
+				mem.dispVal = reloff
 				node.opTemp[newBase] = r.ptrTemp
 				table.insert(node.useTemps, r.ptrTemp)
 				if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
@@ -1289,10 +1355,17 @@ function M.make(ctx)
 		-- fnstsw/fstsw with a register destination write ONLY %ax (the encoding is
 		-- hardwired): pin the access to physical rax and copy out, rather than
 		-- letting regalloc rename the operand into an invalid `fnstsw %dx`.
+		-- The 16-bit write is PARTIAL (bits 16-63 of the enclosing register are
+		-- preserved), and classify models the destination web as an RMW: pin the
+		-- reaching web IN as well, so the preserved bits are the web's own
+		-- (a copy-out alone would leave whatever regalloc happened to park in
+		-- physical rax above the new %ax — the partial-write miscompile).
 		if (base == "fnstsw" or base == "fstsw") and node.stmt.operands[1]
 			and node.stmt.operands[1].kind == "reg" and node.stmt.operands[1].rc == "gpr" then
 			local t = node.defTemps and node.defTemps[1]
-			emit(build.insn(node.stmt.mnemonic, { build.rp(0, 16) }, { defs = { pColored(0) } }))
+			local tu = node.useTemps and node.useTemps[1]
+			if tu then cg.move(pColored(0), tu, true) end
+			emit(build.insn(node.stmt.mnemonic, { build.rp(0, 16) }, { defs = { pColored(0) }, uses = { pColored(0) } }))
 			if t then cg.move(t, pColored(0), true) end
 			return true
 		end
@@ -1320,11 +1393,16 @@ function M.make(ctx)
 			-- extension writes no flags, so the setcc's condition codes stay live for
 			-- any consumer (jcc/setcc/cmov) that follows. A MEMORY destination is a
 			-- complete 8-bit store — nothing to widen; it takes the normal
-			-- (bounds-checked) path untouched. (A %ah high-byte destination never
+			-- (bounds-checked) path untouched. A frame-SLOT pseudo-register
+			-- destination (a virtualized `setcb 8(%rsp)`) is the same shape: the
+			-- single byte is the whole access — widening it would zero the slot's
+			-- other seven bytes, which the input program never wrote. classify
+			-- models the slot destination as an RMW (a partial write), and the
+			-- literal setcc is already exact. (A %ah high-byte destination never
 			-- reaches here: classify models it as a pinned RMW of the enclosing
 			-- register's web, and the pin guard above routes it to emitPinned.)
 			local d = node.stmt.operands[1]
-			if d and d.kind == "reg" and d.rc == "gpr" then
+			if d and d.kind == "reg" and d.rc == "gpr" and not d.isSlot then
 				local t = node.defTemps and node.defTemps[1]
 				if not t then
 					error("sarcasm: internal error: setcc destination has no web temp: "

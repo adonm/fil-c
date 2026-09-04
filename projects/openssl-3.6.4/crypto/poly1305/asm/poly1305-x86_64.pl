@@ -189,8 +189,15 @@ poly1305_init:
 	lea	poly1305_blocks(%rip),%r10	#! funcref
 	lea	poly1305_emit(%rip),%r11	#! funcref
 ___
+# Fil-C requires memory access alignment to equal the access width, and
+# OPENSSL_ia32cap_P is only guaranteed 4-byte aligned, so the pristine
+# 8-byte load at OPENSSL_ia32cap_P+4 can never pass at runtime. Load the
+# two 32-bit halves instead (ungated: the semantics are identical).
 $code.=<<___	if ($avx);
-	mov	OPENSSL_ia32cap_P+4(%rip),%r9
+	mov	OPENSSL_ia32cap_P+4(%rip),%r9d
+	mov	OPENSSL_ia32cap_P+8(%rip),%r8d
+	shl	\$32,%r8
+	or	%r8,%r9
 	lea	poly1305_blocks_avx(%rip),%rax	#! funcref
 	lea	poly1305_emit_avx(%rip),%rcx	#! funcref
 	bt	\$`60-32`,%r9		# AVX?
@@ -790,7 +797,7 @@ ___
 $code.=<<___	if (!$win64);
 	lea		-0x58(%rsp),%r11
 .cfi_def_cfa		%r11,0x60
-	sub		\$0x178,%rsp
+	sub		\$0x178,%rsp		#! alloca result size=376
 ___
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11
@@ -1738,7 +1745,7 @@ ___
 $code.=<<___	if (!$win64);
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
-	sub		\$0x128,%rsp
+	sub		\$0x128,%rsp		#! alloca result size=296
 ___
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11
@@ -2164,7 +2171,7 @@ ___
 $code.=<<___	if (!$win64);
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
-	sub		\$0x128,%rsp
+	sub		\$0x128,%rsp		#! alloca result size=296
 ___
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11

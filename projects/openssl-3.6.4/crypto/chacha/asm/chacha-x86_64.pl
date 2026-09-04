@@ -267,8 +267,22 @@ ChaCha20_ctr32:
 .cfi_startproc
 	cmp	\$0,$len
 	je	.Lno_data
+___
+if ($ENV{SARCASM}) {
+    # Fil-C checks alignment equal to the access width, so the pristine
+    # 8-byte load at OPENSSL_ia32cap_P+4 can never pass (the global is
+    # only guaranteed 4-byte aligned). Load the two 32-bit halves instead.
+    $code.=<<___;
+	mov	OPENSSL_ia32cap_P+4(%rip),%r10d
+	mov	OPENSSL_ia32cap_P+8(%rip),%r11d
+	shl	\$32,%r11
+	or	%r11,%r10
+___
+} else {
+    $code.=<<___;
 	mov	OPENSSL_ia32cap_P+4(%rip),%r10
 ___
+}
 $code.=<<___	if ($avx>2);
 	bt	\$48,%r10		# check for AVX512F
 	jc	.LChaCha20_avx512
@@ -279,6 +293,16 @@ $code.=<<___;
 	test	\$`1<<(41-32)`,%r10d
 	jnz	.LChaCha20_ssse3
 
+___
+if ($ENV{SARCASM}) {
+    # phantom-sp prologue: preserve the original %rsp inside the alloca
+    # region so the epilogue can restore the pushed registers through it
+    # (the pristine lea 64+24+48(%rsp) form computes an out-of-region
+    # address). The region grows by 16 bytes to host the saved stack
+    # pointer while keeping %rsp 16-byte aligned for the movdqa traffic.
+    $code.=<<___;
+	mov	%rsp,%rax
+.cfi_def_cfa_register	%rax
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -291,9 +315,31 @@ $code.=<<___;
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$64+24,%rsp
+	sub	\$64+24+16,%rsp		#! alloca result size=`64+24+16`
+.cfi_adjust_cfa_offset	64+24+16
+	mov	%rax,64+24(%rsp)	# save original stack pointer
+.Lctr32_body:
+___
+} else {
+    $code.=<<___;
+	push	%rbx
+.cfi_push	%rbx
+	push	%rbp
+.cfi_push	%rbp
+	push	%r12
+.cfi_push	%r12
+	push	%r13
+.cfi_push	%r13
+	push	%r14
+.cfi_push	%r14
+	push	%r15
+.cfi_push	%r15
+	sub	\$64+24,%rsp		#! alloca result size=`64+24`
 .cfi_adjust_cfa_offset	64+24
 .Lctr32_body:
+___
+}
+$code.=<<___;
 
 	#movdqa	.Lsigma(%rip),%xmm0
 	movdqu	($key),%xmm1
@@ -325,9 +371,9 @@ $code.=<<___;
 
 	mov	%rbp,64+0(%rsp)		# save len
 	mov	\$10,%ebp
-	mov	$inp,64+8(%rsp)		# save inp
+	mov	$inp,64+8(%rsp)		# save inp	#! store ptr
 	movq	%xmm2,%rsi		# "@x[8]"
-	mov	$out,64+16(%rsp)	# save out
+	mov	$out,64+16(%rsp)	# save out	#! store ptr
 	mov	%rsi,%rdi
 	shr	\$32,%rdi		# "@x[9]"
 	jmp	.Loop
@@ -345,9 +391,9 @@ $code.=<<___;
 	mov	@t[0],4*8(%rsp)
 	mov	64(%rsp),%rbp		# load len
 	movdqa	%xmm2,%xmm1
-	mov	64+8(%rsp),$inp		# load inp
+	mov	64+8(%rsp),$inp		# load inp	#! load ptr
 	paddd	%xmm4,%xmm3		# increment counter
-	mov	64+16(%rsp),$out	# load out
+	mov	64+16(%rsp),$out	# load out	#! load ptr
 
 	add	\$0x61707865,@x[0]      # 'expa'
 	add	\$0x3320646e,@x[1]      # 'nd 3'
@@ -432,7 +478,20 @@ $code.=<<___;
 	jnz	.Loop_tail
 
 .Ldone:
+___
+if ($ENV{SARCASM}) {
+    # phantom-sp epilogue: reload the saved %rsp and restore the pushed
+    # registers through it (the lea 64+24+48(%rsp) form computes an
+    # out-of-region address).
+    $code.=<<___;
+	mov	64+24(%rsp),%rsi	# restore saved stack pointer
+___
+} else {
+    $code.=<<___;
 	lea	64+24+48(%rsp),%rsi
+___
+}
+$code.=<<___;
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -494,17 +553,31 @@ ChaCha20_ssse3:
 	mov	%rsp,%r9		# frame pointer
 .cfi_def_cfa_register	%r9
 ___
-$code.=<<___	if ($avx);
+if ($avx) {
+    if ($ENV{SARCASM}) {
+	# sarcasm rewrites the cross-function branch to this entry as a
+	# signature-marshalled tail call, which does not carry the capability
+	# words in %r10/%r11; reload them (4-byte load: an 8-byte load at
+	# +4 can never be 8-aligned under Fil-C).
+	$code.=<<___;
+	mov	OPENSSL_ia32cap_P+4(%rip),%r10d
 	test	\$`1<<(43-32)`,%r10d
 	jnz	.LChaCha20_4xop		# XOP is fastest even if we use 1/4
 ___
+    } else {
+	$code.=<<___;
+	test	\$`1<<(43-32)`,%r10d
+	jnz	.LChaCha20_4xop		# XOP is fastest even if we use 1/4
+___
+    }
+}
 $code.=<<___;
 	cmp	\$128,$len		# we might throw away some data,
 	je	.LChaCha20_128
 	ja	.LChaCha20_4x		# but overall it won't be slower
 
 .Ldo_sse3_after_all:
-	sub	\$64+$xframe,%rsp
+	sub	\$64+$xframe,%rsp	#! alloca result size=`64+$xframe`
 ___
 $code.=<<___	if ($win64);
 	movaps	%xmm6,-0x28(%r9)
@@ -675,7 +748,7 @@ ChaCha20_128:
 .LChaCha20_128:
 	mov	%rsp,%r9		# frame pointer
 .cfi_def_cfa_register	%r9
-	sub	\$64+$xframe,%rsp
+	sub	\$64+$xframe,%rsp	#! alloca result size=`64+$xframe`
 ___
 $code.=<<___	if ($win64);
 	movaps	%xmm6,-0x68(%r9)
@@ -924,13 +997,34 @@ ChaCha20_4x:
 .LChaCha20_4x:
 	mov		%rsp,%r9		# frame pointer
 .cfi_def_cfa_register	%r9
+___
+if ($ENV{SARCASM}) {
+    # sarcasm rewrites the cross-function branches to this entry as
+    # signature-marshalled tail calls, which do not carry the capability
+    # words in %r10/%r11; reload them (two 4-byte loads: an 8-byte load
+    # at +4 can never be 8-aligned under Fil-C).
+    $code.=<<___;
+	mov		OPENSSL_ia32cap_P+4(%rip),%r11d
+___
+    if ($avx>1) {
+	$code.=<<___;
+	mov		OPENSSL_ia32cap_P+8(%rip),%r10d
+	test		\$`1<<5`,%r10d		# test AVX2
+	jnz		.LChaCha20_8x
+___
+    }
+} else {
+    $code.=<<___;
 	mov		%r10,%r11
 ___
-$code.=<<___	if ($avx>1);
+    if ($avx>1) {
+	$code.=<<___;
 	shr		\$32,%r10		# OPENSSL_ia32cap_P+8
 	test		\$`1<<5`,%r10		# test AVX2
 	jnz		.LChaCha20_8x
 ___
+    }
+}
 $code.=<<___;
 	cmp		\$192,$len
 	ja		.Lproceed4x
@@ -940,7 +1034,7 @@ $code.=<<___;
 	je		.Ldo_sse3_after_all	# to detect Atom
 
 .Lproceed4x:
-	sub		\$0x140+$xframe,%rsp
+	sub		\$0x140+$xframe,%rsp	#! alloca result size=`0x140+$xframe`
 ___
 	################ stack layout
 	# +0x00		SIMD equivalent of @x[8-12]
@@ -1457,7 +1551,7 @@ ChaCha20_4xop:
 .LChaCha20_4xop:
 	mov		%rsp,%r9		# frame pointer
 .cfi_def_cfa_register	%r9
-	sub		\$0x140+$xframe,%rsp
+	sub		\$0x140+$xframe,%rsp	#! alloca result size=`0x140+$xframe`
 ___
 	################ stack layout
 	# +0x00		SIMD equivalent of @x[8-12]
@@ -1959,7 +2053,7 @@ ChaCha20_8x:
 .LChaCha20_8x:
 	mov		%rsp,%r9		# frame register
 .cfi_def_cfa_register	%r9
-	sub		\$0x280+$xframe,%rsp
+	sub		\$0x280+$xframe,%rsp	#! alloca result size=`0x280+$xframe`
 	and		\$-32,%rsp
 ___
 $code.=<<___	if ($win64);

@@ -461,7 +461,11 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo, yolo = yolo,
 			-- the frame base depth (x86_64: the +8 rule's clone displacement bias
 			-- origin for local subroutines — localcall.luau)
-			callerDepth = framePolicy.frameBaseDepth and framePolicy.frameBaseDepth() or nil }
+			callerDepth = framePolicy.frameBaseDepth and framePolicy.frameBaseDepth() or nil,
+			-- the rbp-relative normalization base (x86_64: rbp = rsp + rbpNorm;
+			-- 0 for the rbp-at-the-bottom layout — the frame rewrite's exact
+			-- rbp coordinate origin)
+			rbpNorm = framePolicy.rbpNormalization and framePolicy.rbpNormalization() or nil }
 	end
 
 	-- FP values ride in the arch's vector registers (xmm on x86_64, v on arm64)
@@ -944,6 +948,71 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		return nil
 	end
 
+	-- Fixed-frame escape promotion (D9, x86_64): the body takes the address of
+	-- its fixed frame (bsaes's `leaq 32(%rbp), %rsi` handed to a helper — a
+	-- "lea cluster" once the pointer is copied/offset and the traffic flows
+	-- through the derived registers). A plain frame slot's address cannot
+	-- escape, so promote the WHOLE fixed frame to a GC region [0, frameSize):
+	-- its slots stop virtualizing and every fixed-frame access redirects into
+	-- the region (checked accesses; the region's capability flows to helpers
+	-- with the lea). The detection must run with the annotated regions present
+	-- (a lea into one of THOSE is no escape), so the analysis runs again here
+	-- — it is pure and simply re-marks the body. No escape -> no region ->
+	-- byte-identical output.
+	local frameRegion = nil
+	if backend.arch == "x86_64" and framePolicy.analyzeFrame then
+		local _, _, _, _, _, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
+		if frameEscapes and fctx and fctx.frameSize > 0 then
+			-- LAST in the list: an explicit (annotated) region overlapping the
+			-- frame wins the membership test.
+			frameRegion = { base = 0, size = fctx.frameSize, align = 16,
+				anchored = false, frameRegion = true }
+			table.insert(allocaRegions, frameRegion)
+		end
+	end
+
+	-- DYNAMIC alloca regions (x86_64): a `;! alloca size (x)` + `;! alloca
+	-- result (x)` pair allocates a runtime-sized GC buffer; the result
+	-- instruction derives the buffer address from the perturbed rsp, so from
+	-- there rsp = <region base> + bias — the DYNAMIC-region scope (the frame
+	-- pass's {dynreg} depth). The bias is computable only for the direct
+	-- rsp-derived result forms: `movq %rsp,%rd` (bias 0 — aes/cmll/aesni-gcm)
+	-- and `leaq K(%rsp),%rd` (bias -K — mont's `leaq -64(%rsp),%r10`). The
+	-- region record rides the abstract depth; the frame rewrite passes
+	-- in-scope rsp-relative accesses (indexed forms included) through, and the
+	-- emission redirects them to the region temp (bias + disp, -8 inside
+	-- clones) where the ordinary checked path's runtime bounds check covers
+	-- the dynamic extent [0, size). Other result forms (a chain-derived
+	-- compiler VLA result) get no region: their rsp-relative traffic keeps
+	-- the ordinary perturbed-depth rejection.
+	local dynRegions = {}
+	if backend.arch == "x86_64" then
+		for _, st in body do
+			if st.kind == "insn" then
+				local al = parseAlloca(st.annotation)
+				if al and al.kind == "result" then
+					local ops = st.operands or {}
+					local bm = cgm.baseMnemonic(string.lower(st.mnemonic))
+					local bias = nil
+					if bm == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+						and ops[2] and ops[2].kind == "reg" and ops[2].rc == "sp" then
+						bias = 0
+					elseif bm == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+						and ops[2] and ops[2].kind == "mem" and ops[2].base
+						and ops[2].base.rc == "sp" and not ops[2].index and not ops[2].dispSym then
+						bias = -(ops[2].dispVal or 0)
+					end
+					if bias then
+						local r = { dynreg = true, bias = bias, stmt = st, name = al.name,
+							align = 16 }
+						st.dynRegion = r
+						table.insert(dynRegions, r)
+					end
+				end
+			end
+		end
+	end
+
 	-- (validateBody already ran at the top of this function — before the frame
 	-- analysis and every rewrite — see the comment there.)
 
@@ -1206,10 +1275,27 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			if al then
 				allocaNodes[node] = al
 				if al.kind == "size" then
-					if sizeNames[al.name] then error("sarcasm: duplicate `alloca size (" .. al.name .. ")`") end
-					sizeNames[al.name] = true
+					-- Duplicate size tags are sound only when EVERY size with
+					-- the tag is an rsp-writing allocation instruction (the
+					-- aes AES_cbc_encrypt encrypt/decrypt allocas): the size is
+					-- captured at the instruction itself and the walk-order
+					-- alloca-size table pairs each result with the size that
+					-- textually precedes it — no cross-instruction pairing to
+					-- confuse (a deferred-idiom size definition keys the idiom
+					-- discovery by tag, so those must stay unique).
+					local ops = node.stmt.operands or {}
+					local onSp = ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
+					local seen = sizeNames[al.name]
+					if seen and (seen ~= "onsp" or not onSp) then
+						error("sarcasm: duplicate `alloca size (" .. al.name .. ")`")
+					end
+					sizeNames[al.name] = onSp and "onsp" or "deferred"
 				else
 					allocaResultDefs[node] = true
+					-- A dynamic alloca region's result instruction (the region
+					-- scan marked the statement): link so emitAlloca defines
+					-- the region temps.
+					if node.stmt.dynRegion then al.dynRegion = node.stmt.dynRegion end
 				end
 			elseif ann and sig.PTR_ANNOTATIONS[ann] then
 				-- cmpxchg8b/cmpxchg16b cannot be made to work on pointers: an
@@ -1460,6 +1546,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					for _, t in (nd.defTemps or {}) do
 						if liveOut[i][t] then dead = false break end
 					end
+
 					-- the flags: a full flag write is a modeled def (FLAGSENT entered
 					-- the fixpoint's def set), so liveness protects it the same way; an
 					-- instruction whose flag writes the model deliberately does NOT
@@ -1567,7 +1654,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- `leaq 128(%rsp), %r10; movq %r10, %rbx` — checked traffic flows through the
 	-- copy exactly as through the lea). The emission defines the seeded lower from
 	-- the region's own lower, so every copy shares one capability.
-	if #allocaRegions > 0 and cgm.memOperand then
+	if (#allocaRegions > 0 or #dynRegions > 0) and cgm.memOperand then
 		for _, node in lf.nodes do
 			if node.kind == "insn" then
 				local st = node.stmt
@@ -1593,7 +1680,9 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						spBase = mem.base.rc == "sp"
 						if not spBase then
 							if fctx and fctx.usesFp and mem.base.name == "rbp" then
-								off = fctx.frameSize + off
+								-- rbp-relative: the frame rewrite's own normalization
+								-- base (rbp = rsp + rbpNorm; 0 at rbp-at-the-bottom).
+								off = (fctx.rbpNorm or fctx.frameSize) + off
 							else
 								off = nil
 							end
@@ -1612,7 +1701,11 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						local d = st.x86_depth
 						local hit = nil
 						if spBase and not st.x86_prologue and type(d) == "table" then
-							if off >= d.anchored.base and off < d.anchored.base + d.anchored.size then
+							-- A lea/rsp-copy in a region scope (anchored or
+							-- dynreg) computes a region pointer: seed it.
+							if d.anchored and off >= d.anchored.base and off < d.anchored.base + d.anchored.size then
+								hit = true
+							elseif d.dynreg then
 								hit = true
 							end
 						elseif regionOf(off, false) then
@@ -1638,11 +1731,16 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- later temp id, spill slot layout, and coloring tie-break) would reorder per run.
 	for _, node in lf.nodes do
 		local al = allocaNodes[node]
-		if al and al.kind == "resultSize" then
-			for _, r in allocaRegions do
-				if r.stmt == node.stmt then al.region = r; break end
+		if al and (al.kind == "resultSize" or (al.kind == "result" and al.dynRegion)) then
+			local r = nil
+			if al.kind == "resultSize" then
+				for _, r2 in allocaRegions do
+					if r2.stmt == node.stmt then r = r2 break end
+				end
+				al.region = r
+			else
+				r = al.dynRegion
 			end
-			local r = al.region
 			if r and not r.ptrTemp then
 				r.ptrTemp = allocTemp({ role = "regionptr" })
 				local resultIv = node.defTemps and node.defTemps[1]
@@ -1658,6 +1756,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if r.loTemp then pf.lowerTemp[r.ptrTemp] = r.loTemp end
 			end
 		end
+	end
+
+	-- The promoted fixed-frame region (D9): stable pointer + lower temps (there
+	-- is no result web to borrow a lower from — the region is the whole frame,
+	-- allocated up top), ptrflow-marked so region leas seed their lowers from
+	-- it and copies of the lea results share one capability.
+	if frameRegion and not frameRegion.ptrTemp then
+		frameRegion.ptrTemp = allocTemp({ role = "regionptr" })
+		frameRegion.loTemp = allocTemp({ isLower = true, role = "regionlo" })
+		pf.isPtr[frameRegion.ptrTemp] = true
+		pf.lowerTemp[frameRegion.ptrTemp] = frameRegion.loTemp
 	end
 
 	-- loop headers (targets of back edges) get a pollcheck. A header whose back edge
@@ -1729,6 +1838,10 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- bracketed when a flag consumer actually reaches it.
 	local nodeIndex = {}
 	for i, nd in lf.nodes do nodeIndex[nd] = i end
+	local labelIndex = {}
+	for i, nd in lf.nodes do
+		if nd.kind == "label" and labelIndex[nd.name] == nil then labelIndex[nd.name] = i end
+	end
 	local flagLiveCache = {}
 	local flagCapable = (cgm.flagUse and cgm.flagDef and cg.saveFlags and cg.restoreFlags) and true or false
 	local function flagsLiveFrom(i)
@@ -1736,6 +1849,16 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if flagLiveCache[i] ~= nil then return flagLiveCache[i] end
 		local res = true   -- conservative default (end of function = live-out)
 		local j = i
+		-- Follow a local CALL into the clone's entry: hardware `call` does not write
+		-- the flags, so the program's flags flow INTO the clone and the clone may
+		-- read them before defining them (rsaz_512_mul's mulx carry chain reads CF
+		-- across `call __rsaz_512_mulx`; mont5's sqr8x likewise). A local RET still
+		-- clobbers the flags (the ret dispatch's compare chain), so a flag consumer
+		-- reached only past the clone's return does NOT make the incoming flags
+		-- live. The visited set caps the walk at each entry label once, so a
+		-- recursive or mutually-recursive clone family terminates — conservatively
+		-- treating the re-entry as a live use.
+		local visited = {}
 		while j <= #lf.nodes do
 			local nd = lf.nodes[j]
 			if nd.kind == "insn" then
@@ -1749,11 +1872,21 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				local transparent = st.allocaPlace or st.allocaOwned
 					or (parseAlloca(st.annotation) or {}).kind == "result"
 				if not transparent then
-					-- A local call/ret CLOBBERS the flags (the ret dispatch's
-					-- compare chain writes them): flags are documented
-					-- call-clobbered across a local call, so — exactly like a
-					-- call — no valid code reads them across one.
-					if st.localCall or st.localRet then res = false; break
+					if st.localRet then
+						-- the clone returns here; the ret dispatch clobbers the
+						-- flags, so the incoming flags are dead past this point.
+						res = false; break
+					elseif st.localCall then
+						local ent = st.localCall.entry
+						local ei = ent and labelIndex[ent]
+						if ei and not visited[ent] then
+							visited[ent] = true
+							j = ei  -- resume at the clone entry (j += 1 skips the label)
+						elseif not ei then
+							res = true; break  -- unknown entry: conservative
+						else
+							res = true; break  -- re-entry (cycle): conservative
+						end
 					elseif cgm.flagUse(nd.stmt) then res = true; break
 					elseif cgm.flagDef(nd.stmt) then res = false; break
 					elseif ctrl == "call" or ctrl == "indcall" then res = false; break
@@ -3219,6 +3352,19 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			end
 			if resultIv then cg.move(resultIv, r.ptrTemp, true) end
 			if r.loTemp then emitRootStore(r.loTemp) end
+		elseif al.dynRegion then
+			-- Dynamic alloca region: the payload is the region base. Define the
+			-- region's stable temps (the result register's web may be redefined
+			-- later — mont clobbers %r10 — while rsp-relative accesses keep
+			-- riding the region temp); the result web and its ptrflow-seeded
+			-- lower (which IS the region's loTemp by the linking above) get the
+			-- same payload.
+			local dr = al.dynRegion
+			if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
+			cg.effAddr(dr.ptrTemp, ret, 16)
+			if dr.loTemp then cg.effAddr(dr.loTemp, ret, 16) end
+			cg.move(resultIv, dr.ptrTemp, true)
+			if dr.loTemp then emitRootStore(dr.loTemp) end
 		else
 			if not resultIv then error("sarcasm: `alloca result` instruction has no destination register: " .. node.stmt.raw) end
 			local resultLo = pf.lowerTemp[resultIv]
@@ -3228,11 +3374,33 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		end
 	end
 
-	-- Redirect an sp-relative address computation that lands inside a fixed alloca region to
-	-- the allocation pointer. Arch-specific; returns true if it replaced the node.
+	-- Redirect an sp-relative address computation that lands inside a fixed (or
+	-- dynamic) alloca region to the allocation pointer. Arch-specific; returns
+	-- true if it replaced the node.
 	local function emitRegionRedirect(node)
-		if #allocaRegions == 0 or not cg.regionRedirect then return false end
+		if (#allocaRegions == 0 and #dynRegions == 0) or not cg.regionRedirect then return false end
 		return cg.regionRedirect(node, regionOf)
+	end
+
+	-- The promoted fixed-frame region's allocation (D9): emitted ONCE, up top,
+	-- before any body statement — every fixed-frame access and lea redirects
+	-- into the region, so it must exist from the first instruction. Mirrors
+	-- emitAlloca's region path (payload = allocation + 16, lower rooted).
+	if frameRegion then
+		withFlagSave(flagsLiveFrom(1), function()
+			local rcxSave = counterGuardArm()
+			cg.move(pColored(cc.rtArg(1)), vMyth)
+			cg.moveImm(pColored(cc.rtArg(2)), frameRegion.size)
+			cg.fpSave()
+			cg.call("filc_allocate", { pColored(cc.rtArg(1)), pColored(cc.rtArg(2)) },
+				cg.callerSavedClobbers())
+			cg.fpRestore()
+			counterGuardRestore(rcxSave)
+			local ret = pColored(cc.rtRet)  -- allocation base; payload = base + 16
+			cg.effAddr(frameRegion.loTemp, ret, 16)
+			cg.effAddr(frameRegion.ptrTemp, ret, 16)
+			emitRootStore(frameRegion.loTemp)
+		end)
 	end
 
 	-- Walk the lifted body.

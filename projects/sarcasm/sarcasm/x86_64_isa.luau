@@ -180,6 +180,15 @@ end
 function x86.flagDef(stmt)
 	if not stmt then return false end
 	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	if FLAG_DEF[m] then return true end
+	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
+	-- keep their AT&T size suffix (crc32l, tzcntq, ...). Strip it ONLY as a
+	-- fallback after the exact-base check above: several bases themselves end in
+	-- b/w/l/q ("sub", "shl", "sal", "mul", "imul") and stripping them first would
+	-- mangle the base ("sub" -> "su"), wrongly reporting no flag write. (DCE then
+	-- deletes a flag-setting sub/shl/sal/mul/imul whose register result is dead
+	-- but whose flags are live — e.g. the x86_64-mont5 reduction's
+	-- `subq %r13,%rbp` feeding `adcq`.)
 	m = string.gsub(m, "[bwlq]$", "")
 	return FLAG_DEF[m] == true
 end
@@ -235,6 +244,30 @@ local LABEL_TARGET_MNEM = { loop = true, loopq = true, loopl = true, loopb = tru
 	xbegin = true }
 
 local function isGpr(op) return op and op.kind == "reg" and op.rc == "gpr" end
+
+-- Is a write of register operand `o` a PARTIAL write — one whose emission
+-- preserves the bits of the enclosing web above the written width, so the
+-- instruction read-modifies the web rather than replacing it?
+--   * a real GPR: an 8/16-bit write (%al/%ax & co) preserves bits 8/16-63 of
+--     the enclosing 64-bit register; a 32-bit write zero-extends (a full def).
+--   * a frame-slot pseudo-register (isSlot — the frame pass's virtualization
+--     of an 8-byte stack slot, keyed by byte offset so accesses of every width
+--     share one web): the slot web lives in a colored register, so an 8/16-bit
+--     store to it (movb/movw) preserves the register's upper bits exactly like
+--     a narrow memory store preserves the neighboring bytes. (A 32-bit store
+--     to a slot zero-extends the colored register — a full def of the web,
+--     like arm64's `str w` virtualization; a wider reload of that slot then
+--     reads zeroes where memory would have preserved bytes — a pre-existing,
+--     documented slot-virtualization gap, NOT expressible as register RMW.)
+-- A partial write must be modeled as def+use+rmw of the web — modeling it as a
+-- pure def lets reaching-definitions kill the previous web, so DCE drops the
+-- instruction that produced the preserved bits while the emitted instruction
+-- still preserves them (the ghash `xorq %rax,%rax` / `movb %sil,%al`
+-- miscompile: the zeroing vanished and the movb left garbage in bits 8-63 of
+-- an index register).
+local function partialRegWrite(o)
+	return (o.width or 64) < 32
+end
 
 local function memRegs(op, uses)
 	if op.base and isGpr(op.base) then table.insert(uses, op.base) end
@@ -676,6 +709,20 @@ function x86.classify(insn)
 		local dxD = { kind="reg", rc="gpr", num=2, width=64, name="rdx", implicit=true }
 		table.insert(uses, axU)
 		table.insert(defs, dxD)
+		if m == "cwd" then
+			-- cwd writes only %dx: bits 16-63 of the rdx web are PRESERVED — a
+			-- partial write. Model rdx as an implicit RMW pinned in exactly like
+			-- the accumulator: emitPinned copies the reaching rdx web into
+			-- physical rdx before the instruction, so the bits cwd preserves are
+			-- the web's own (a pure def would let the previous web be killed
+			-- while the hardware keeps its bits — the partial-write miscompile).
+			-- (cdq writes %edx — zero-extending, a full def; cqo writes %rdx.)
+			local dxU = { kind="reg", rc="gpr", num=2, width=64, name="rdx", implicit=true }
+			table.insert(uses, dxU)
+			table.insert(rmw, 2)
+			return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
+				pin = { uses = { axU, dxU }, defs = { dxD } } }
+		end
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
 			pin = { uses = { axU }, defs = { dxD } } }
 	elseif m == "div" or m == "idiv" or m == "mul" or (m == "imul" and #ops == 1) then
@@ -724,7 +771,19 @@ function x86.classify(insn)
 			local axU, axD, dxD = imp(0), imp(0), imp(2)
 			table.insert(uses, axU)
 			table.insert(defs, axD); table.insert(defs, dxD)
-			pin = { uses = { axU }, defs = { axD, dxD } }
+			if w == 2 then
+				-- mulw/imulw write only %dx: bits 16-63 of the rdx web are
+				-- PRESERVED — a partial write. Pin the reaching rdx web in
+				-- (exactly like cwd) so the preserved bits are the web's own.
+				-- (mull writes %edx — zero-extending; mulq writes %rdx; div/
+				-- idiv already read rdx as the dividend's high half.)
+				local dxU = imp(2)
+				table.insert(uses, dxU)
+				table.insert(rmw, 2)
+				pin = { uses = { axU, dxU }, defs = { axD, dxD } }
+			else
+				pin = { uses = { axU }, defs = { axD, dxD } }
+			end
 		else
 			local axU, dxU, axD, dxD = imp(0), imp(2), imp(0), imp(2)
 			table.insert(uses, axU); table.insert(uses, dxU)
@@ -1015,6 +1074,10 @@ function x86.classify(insn)
 					.. " forms; an 8-bit byte swap is a plain movb): " .. (insn.raw or rawMnem))
 			end
 			table.insert(defs, dst)
+			-- movbew writes only 16 bits of its destination (a partial write).
+			if partialRegWrite(dst) then
+				table.insert(uses, dst); table.insert(rmw, dst.num)
+			end
 			memRegs(src, uses)
 		else
 			error("sarcasm: movbe requires a memory operand (the register-to-register"
@@ -1122,6 +1185,21 @@ function x86.classify(insn)
 		elseif ops[1] and ops[1].kind == "mem" then memRegs(ops[1], uses) end
 		if (ops[1] and ops[1].kind == "mem") and isGpr(ops[2]) then table.insert(uses, ops[2]) end
 		if m == "cmov" and isGpr(ops[1]) then table.insert(uses, ops[1]); table.insert(rmw, ops[1].num) end
+		-- A PARTIAL-WIDTH destination (an 8/16-bit low register, or a narrow
+		-- frame-slot pseudo-register) read-modifies the enclosing web: the
+		-- hardware preserves every bit above the written width (see
+		-- partialRegWrite). Model the def as an RMW or the previous web is
+		-- silently killed and the preserved bits become whatever regalloc left
+		-- in the colored register. movzbl/movzwl & co keep their pure defs (a
+		-- zero/sign-extending write to a 32/64-bit register IS a full def).
+		-- setcc with a REAL register destination also stays a full def:
+		-- codegen's lowerSpecial appends the movzx that makes the full-width
+		-- model true (a slot destination gets no widening — its byte store is
+		-- a plain partial write, modeled here). cmov is already an RMW above.
+		if m ~= "cmov" and isGpr(ops[1]) and partialRegWrite(ops[1])
+			and not (m == "setcc" and not ops[1].isSlot) then
+			table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
+		end
 		for i = 2, #ops do
 			local o = ops[i]
 			if o and o.kind == "mem" then memRegs(o, uses)
@@ -1130,7 +1208,14 @@ function x86.classify(insn)
 	elseif m == "push" then
 		useOperand(ops[1])
 	elseif m == "pop" then
-		if isGpr(ops[1]) then table.insert(defs, ops[1]) end
+		-- popw writes only 16 bits of its destination (a partial write of the
+		-- enclosing web); popq is a full def.
+		if isGpr(ops[1]) then
+			table.insert(defs, ops[1])
+			if partialRegWrite(ops[1]) then
+				table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
+			end
+		end
 	else
 		-- Unknown mnemonic. With a memory operand there is no way to determine the
 		-- access width, so any default-width bounds check is unsound (enqcmd's m512
@@ -1143,11 +1228,19 @@ function x86.classify(insn)
 					.. "' (cannot prove memory safety): " .. (insn.raw or rawMnem))
 			end
 		end
-		-- unknown: conservative (first reg def, rest use)
+		-- unknown: conservative (first reg def, rest use). A partial-width first
+		-- register def additionally READS its web (an 8/16-bit write preserves
+		-- the upper bits — see partialRegWrite).
 		local first = true
 		for _, o in ops do
 			if isGpr(o) then
-				if first then table.insert(defs, o); first = false else table.insert(uses, o) end
+				if first then
+					table.insert(defs, o)
+					if partialRegWrite(o) then
+						table.insert(uses, o); table.insert(rmw, o.num)
+					end
+					first = false
+				else table.insert(uses, o) end
 			elseif o and o.kind == "mem" then memRegs(o, uses) end
 		end
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true, unknown = true }

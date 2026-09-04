@@ -84,12 +84,12 @@ $func:
 	push	%r15
 .cfi_push	%r15
 
-	sub	\$128+40,%rsp
+	sub	\$128+40,%rsp			#! alloca result size=168
 	and	\$-64,%rsp
 
 	lea	128(%rsp),%r10
-	mov	%rdi,0(%r10)		# save parameter block
-	mov	%rsi,8(%r10)
+	mov	%rdi,0(%r10)		# save parameter block	#! store ptr
+	mov	%rsi,8(%r10)			#! store ptr
 	mov	%rdx,16(%r10)
 	mov	%rax,32(%r10)		# saved stack pointer
 .cfi_cfa_expression	%rsp+`128+32`,deref,+8
@@ -200,8 +200,8 @@ $code.=<<___;
 	jmp	.Lround
 .align	16
 .Lroundsdone:
-	mov	0(%rbx),%rdi		# reload argument block
-	mov	8(%rbx),%rsi
+	mov	0(%rbx),%rdi		# reload argument block	#! load ptr
+	mov	8(%rbx),%rsi			#! load ptr
 	mov	16(%rbx),%rax
 ___
 for($i=0;$i<8;$i++) { $code.="xor $i*8(%rsi),@mm[$i]\n"; }	# L^=inp
@@ -211,7 +211,7 @@ $code.=<<___;
 	lea	64(%rsi),%rsi		# inp+=64
 	sub	\$1,%rax		# num--
 	jz	.Lalldone
-	mov	%rsi,8(%rbx)		# update parameter block
+	mov	%rsi,8(%rbx)		# update parameter block	#! store ptr
 	mov	%rax,16(%rbx)
 	jmp	.Louterloop
 .Lalldone:
@@ -613,6 +613,24 @@ se_handler:
 	.byte	9,0,0,0
 	.rva	se_handler
 ___
+}
+
+if ($ENV{SARCASM}) {
+    ######################################################################
+    # Sarcasm (Fil-C memory-safe assembler) enforces natural alignment on
+    # every memory access. The T-table reads at offsets +1..+7 within each
+    # duplicated 16-byte slot are deliberately misaligned: slot = [V,V],
+    # so an 8-byte read at +k yields rol(V,(8-k)*8), which is how tables
+    # C1..C7 are synthesized from C0. Rewrite each misaligned read as an
+    # aligned read of the slot base plus an explicit rotate -- the produced
+    # value is byte-identical by construction. The index register (%rsi or
+    # %rdi) is dead immediately after its single use in each group (it is
+    # unconditionally redefined by the following `lea (%rcx,%rcx),%rsi` /
+    # `lea (%rdx,%rdx),%rdi` pair before any other use), so it doubles as
+    # the scratch register. Only generated under SARCASM; the stock output
+    # keeps the original (misaligned) form.
+    $code =~ s/\t(mov|xor)\t([1-7])\(%rbp,%(rsi|rdi),8\),(%r\d+)\n
+               /"\tmov\t0(%rbp,%$3,8),%$3\n\trol\t\$".((8-$2)*8).",%$3\n\t$1\t%$3,$4\n"/gex;
 }
 
 $code =~ s/\`([^\`]*)\`/eval $1/gem;

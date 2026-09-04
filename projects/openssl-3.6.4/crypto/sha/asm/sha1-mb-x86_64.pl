@@ -379,9 +379,20 @@ $code.=<<___;
 .align	32
 sha1_multi_block:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	OPENSSL_ia32cap_P+4(%rip),%rcx
 	bt	\$61,%rcx			# check SHA bit
 	jc	_shaext_shortcut
+___
+# Sarcasm: the 8-byte capability read at OPENSSL_ia32cap_P+4 is a misaligned
+# access for the 4-aligned `unsigned int[]` global — read the two words with
+# two aligned 4-byte loads instead.
+$code.=<<___ if ($ENV{SARCASM});
+	movl	OPENSSL_ia32cap_P+8(%rip),%ecx
+	bt	\$29,%rcx			# check SHA bit
+	jc	_shaext_shortcut
+	movl	OPENSSL_ia32cap_P+4(%rip),%ecx
 ___
 $code.=<<___ if ($avx);
 	test	\$`1<<28`,%ecx
@@ -409,7 +420,7 @@ $code.=<<___ if ($win64);
 	movaps	%xmm15,-0x28(%rax)
 ___
 $code.=<<___;
-	sub	\$`$REG_SZ*18`,%rsp
+	sub	\$`$REG_SZ*18`,%rsp		#! alloca result size=`$REG_SZ*18`
 	and	\$-256,%rsp
 	mov	%rax,`$REG_SZ*17`(%rsp)		# original %rsp
 .cfi_cfa_expression	%rsp+`$REG_SZ*17`,deref,+8
@@ -425,7 +436,7 @@ for($i=0;$i<4;$i++) {
     $ptr_reg=&pointer_register($flavour,@ptr[$i]);
     $code.=<<___;
 	# input pointer
-	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg	#! load ptr
 	# number of blocks
 	mov	`$inp_elm_size*$i+$ptr_size`($inp),%ecx
 	cmp	$num,%ecx
@@ -568,12 +579,21 @@ $code.=<<___ if ($win64);
 	movaps	%xmm15,-0x28(%rax)
 ___
 $code.=<<___;
-	sub	\$`$REG_SZ*18`,%rsp
+	sub	\$`$REG_SZ*18`,%rsp		#! alloca result size=`$REG_SZ*18`
 	shl	\$1,$num			# we process pair at a time
 	and	\$-256,%rsp
 	lea	0x40($ctx),$ctx			# size optimization
 	mov	%rax,`$REG_SZ*17`(%rsp)		# original %rsp
 .Lbody_shaext:
+___
+# Sarcasm cannot use %rsp as a data pointer (stack-address escape) in
+# the cancel-input below; park the K table address in $Tbl as the dummy
+# input area (64 readable bytes), exactly like the other bodies.
+my $dummy = $ENV{SARCASM} ? $Tbl : "%rsp";
+$code.=<<___ if ($ENV{SARCASM});
+	lea	K_XX_XX(%rip),$Tbl
+___
+$code.=<<___;
 	lea	`$REG_SZ*16`(%rsp),%rbx
 	movdqa	K_XX_XX+0x80(%rip),$BSWAP	# byte-n-word swap
 
@@ -585,14 +605,14 @@ for($i=0;$i<2;$i++) {
     $ptr_reg=&pointer_register($flavour,@ptr[$i]);
     $code.=<<___;
 	# input pointer
-	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg	#! load ptr
 	# number of blocks
 	mov	`$inp_elm_size*$i+$ptr_size`($inp),%ecx
 	cmp	$num,%ecx
 	cmovg	%ecx,$num			# find maximum
 	test	%ecx,%ecx
 	mov	%ecx,`4*$i`(%rbx)		# initialize counters
-	cmovle	%rsp,@ptr[$i]			# cancel input
+	cmovle	$dummy,@ptr[$i]			# cancel input
 ___
 }
 $code.=<<___;
@@ -700,7 +720,7 @@ $code.=<<___;
 	mov		\$1,%ecx
 	pxor		@MSG0[2],@MSG0[2]	# zero
 	cmp		4*0(%rbx),%ecx		# examine counters
-	cmovge		%rsp,@ptr[0]		# cancel input
+	cmovge		$dummy,@ptr[0]		# cancel input
 
 	movdqa		$ABCD0,$E0
 	 movdqa		$ABCD1,$E1
@@ -712,7 +732,7 @@ $code.=<<___;
 	 sha1msg2	@MSG1[0],@MSG1[1]
 
 	cmp		4*1(%rbx),%ecx
-	cmovge		%rsp,@ptr[1]
+	cmovge		$dummy,@ptr[1]
 	movq		(%rbx),@MSG0[0]		# pull counters
 
 	movdqa		$ABCD0,$E0_
@@ -1044,10 +1064,22 @@ sha1_multi_block_avx:
 .cfi_startproc
 _avx_shortcut:
 ___
-$code.=<<___ if ($avx>1);
+$code.=<<___ if ($avx>1 && !$ENV{SARCASM});
 	shr	\$32,%rcx
 	cmp	\$2,$num
 	jb	.Lavx
+	test	\$`1<<5`,%ecx
+	jnz	_avx2_shortcut
+	jmp	.Lavx
+.align	32
+.Lavx:
+___
+$code.=<<___ if ($avx>1 && $ENV{SARCASM});
+	# sarcasm: re-read cap[2] with an aligned 4-byte load (no 8-byte +4
+	# read to shift down — see the main dispatch above).
+	cmp	\$2,$num
+	jb	.Lavx
+	movl	OPENSSL_ia32cap_P+8(%rip),%ecx
 	test	\$`1<<5`,%ecx
 	jnz	_avx2_shortcut
 	jmp	.Lavx
@@ -1076,7 +1108,7 @@ $code.=<<___ if ($win64);
 	movaps	%xmm15,-0x28(%rax)
 ___
 $code.=<<___;
-	sub	\$`$REG_SZ*18`, %rsp
+	sub	\$`$REG_SZ*18`, %rsp	#! alloca result size=`$REG_SZ*18`
 	and	\$-256,%rsp
 	mov	%rax,`$REG_SZ*17`(%rsp)		# original %rsp
 .cfi_cfa_expression	%rsp+`$REG_SZ*17`,deref,+8
@@ -1093,7 +1125,7 @@ for($i=0;$i<4;$i++) {
     $ptr_reg=&pointer_register($flavour,@ptr[$i]);
     $code.=<<___;
 	# input pointer
-	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg	#! load ptr
 	# number of blocks
 	mov	`$inp_elm_size*$i+$ptr_size`($inp),%ecx
 	cmp	$num,%ecx
@@ -1247,7 +1279,7 @@ $code.=<<___ if ($win64);
 	movaps	%xmm15,-0x48(%rax)
 ___
 $code.=<<___;
-	sub	\$`$REG_SZ*18`, %rsp
+	sub	\$`$REG_SZ*18`, %rsp	#! alloca result size=`$REG_SZ*18`
 	and	\$-256,%rsp
 	mov	%rax,`$REG_SZ*17`(%rsp)		# original %rsp
 .cfi_cfa_expression	%rsp+`$REG_SZ*17`,deref,+8
@@ -1265,7 +1297,7 @@ for($i=0;$i<8;$i++) {
     $ptr_reg=&pointer_register($flavour,@ptr[$i]);
     $code.=<<___;
 	# input pointer
-	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg
+	mov	`$inp_elm_size*$i+0`($inp),$ptr_reg	#! load ptr
 	# number of blocks
 	mov	`$inp_elm_size*$i+$ptr_size`($inp),%ecx
 	cmp	$num,%ecx

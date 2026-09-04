@@ -138,8 +138,27 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 					if not isPtr[d] then isPtr[d] = true; changed = true end
 					local lo = lowerTemp[srcPtr]
 					if lo and lowerTemp[d] ~= lo then
-						if lowerTemp[d] ~= nil then reassigned[d] = true end
-						lowerTemp[d] = lo; changed = true
+						if lowerTemp[d] ~= nil and widen then
+							-- d already carries a DIFFERENT lower: this def merges a
+							-- second, distinct pointer origin into the web, so no single
+							-- static lower is correct for it (a loop-carried pointer
+							-- swap or a conflicting join — rsaz_1024_sqr_avx2's
+							-- `movq %rdi,%rsi` out/inp swap, whose web is defined by the
+							-- entry arg `a` AND the loop-back `out`). Widen to a dynamic
+							-- lower that tracks each def's source in lockstep, rather
+							-- than overwriting and silently dropping one origin's
+							-- capability (which then mis-keys a later pointer arg).
+							if dynamicize(d) then
+								dynSrc[node] = dynSrc[node] or {}
+								dynSrc[node][d] = srcPtr
+							end
+						elseif lowerTemp[d] ~= nil then
+							reassigned[d] = true
+							lowerTemp[d] = lo
+						else
+							lowerTemp[d] = lo
+						end
+						changed = true
 					end
 				end
 				-- A memory operand's base/index registers are consumed as an ADDRESS, not
@@ -255,6 +274,23 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 								if addrUse and addrUse[u] then
 									-- consumed as a memory address, not a value source
 								elseif isPtr[u] then ptrSrc = u else intCount += 1 end
+							end
+							if m == "lea" and widen and sops and node.opTemp then
+								-- A lea whose BASE register is a pointer and whose index
+								-- only carries a stale lower (aes's cache-alias trick:
+								-- `leaq 768(%rsp),%rbp; subq %r14,%rbp; andq $0x300,%rbp;
+								-- leaq (%r14,%rbp,1),%r14` — the final address derives
+								-- from the T-table base, while the index is scalar math
+								-- that kept its seed's lower through the RMW web union):
+								-- the computed address derives from the base, so the
+								-- base's lower is the right one. Prefer it. (x86_64-gated
+								-- via widen: arm64's behavior is unchanged.)
+								for _, op in sops do
+									if op.kind == "mem" and op.base and op.base ~= op.index then
+										local bt = node.opTemp[op.base]
+										if bt and isPtr[bt] then ptrSrc = bt end
+									end
+								end
 							end
 							if ptrSrc and not (m == "sub" and intCount == 0) then
 								markFrom(d, ptrSrc)

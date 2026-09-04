@@ -23,7 +23,10 @@
 -- This module is the shared front half:
 --   * discover: identify subroutine regions at top level (a mid-body label
 --     INSIDE a subroutine — OpenSSL's .Lenc_loop6 / _vpaes_schedule_low_round
---     — is a valid call target; the clone is then [mid-label .. region end]),
+--     — is a valid call target; the clone is then the region statements
+--     REACHABLE from the mid-label, in source order — which may include
+--     backward-branch loop heads BEFORE the label, like aesni's
+--     .Lenc_loop8 reached from a `call .Lenc_loop8_enter`),
 --     claim the regions referenced by an unannotated or `#! local` call,
 --     reject recursion (direct or mutual), fall-off-the-end bodies, and
 --     branches that escape the clone range — EXCEPT a mid-body TAIL JOIN into
@@ -112,14 +115,17 @@ end
 
 -- Discover the local subroutines. `stmts` is the parsed file, `consumed` the
 -- splitFunctions consumption map (function name table per statement index),
--- `globals` the .globl set. Marks claimed region statements consumed and
+-- `globals` the .globl set. `opts` may carry { functions = <splitFunctions
+-- result>, aliases = <entry-alias name -> owner name> } for the sig'd-function
+-- alias-entry claims below. Marks claimed region statements consumed and
 -- returns nil (no local subroutines) or {
 --   subs       = sub name -> { name, region, entryPos },
 --   edges      = sub name -> { sub names it calls, in body order },
 --   callsByFn  = function name -> { { stmt, target } ... },   -- direct calls
 --   callsBySub = sub name  -> { { stmt, target } ... },       -- nested calls
 -- }.
-function localcall.discover(stmts, consumed, globals, arch)
+function localcall.discover(stmts, consumed, globals, arch, opts)
+	opts = opts or {}
 
 	-- Region identification. A subroutine region is a maximal span of
 	-- unconsumed top-level statements headed by a non-.globl, non-signature
@@ -196,19 +202,72 @@ function localcall.discover(stmts, consumed, globals, arch)
 		end
 	end
 
-	-- Claiming: a label is a local subroutine iff it is defined in a region,
-	-- is not .globl, and is referenced by a call from a function body or from
-	-- an (already claimed) subroutine. Worklist over claim edges; claim order
-	-- follows statement order (deterministic).
+	-- Sig'd-function alias entries (x86_64): an unannotated (or `#! local`)
+	-- call to an entry-adjacent ALIAS of a signatured function — mont5's
+	-- `call __bn_sqr8x_internal` naming the second label at bn_sqr8x_internal's
+	-- entry — claims the function's WHOLE body as the clone region (the alias
+	-- is entry-adjacent, so the call enters the function exactly at its entry;
+	-- the clone — frame setup included, rets dispatching to continuations — is
+	-- then exactly the hardware call+ret under the no-push model). This is the
+	-- only sound reading: such a body may address the caller's frame with the
+	-- +8 return-address-compensated convention (bn_sqr8x_internal writes its
+	-- tp[] into the caller's frame at 48+8(%rsp)), which no standalone sig'd
+	-- callee may do — annotating the call and compiling it as an ordinary
+	-- Fil-C-CC call would give the body its own frame and silently
+	-- miscompile those accesses. An unannotated call to the function's OWN
+	-- entry label keeps the annotate-the-callsite rejection (a direct sig'd
+	-- call is the normal annotated form), and a call to a .GLOBL alias keeps
+	-- it too (an exported symbol marshals through the CC). arm64 is unchanged:
+	-- no claims are added there.
+	local fnByName = {}
+	local aliasFn = {}   -- claimable alias name -> owning function's entry name
+	if arch == "x86_64" then
+		for _, fn in (opts.functions or {}) do fnByName[fn.name] = fn end
+		for a, o in (opts.aliases or {}) do
+			if fnByName[o] then aliasFn[a] = o end
+		end
+	end
+	-- The clone region for a sig'd function's body: a PRISTINE deep copy (the
+	-- transform rewrites some memory operands in place, so the owner's
+	-- already-compiled body is not a valid clone source), .byte-decoded (the
+	-- driver's later whole-body decode of the owner is independent). idx is
+	-- empty: the statements stay consumed by the owning function (the
+	-- standalone compile proceeds normally alongside the clones).
+	local fnRegions = {}
+	local function fnRegion(owner)
+		local r = fnRegions[owner]
+		if r then return r end
+		local fn = fnByName[owner]
+		local fstmts = {}
+		for pos, st in fn.body do fstmts[pos] = tailcall.deepCopyStmt(st) end
+		fstmts = x86_64_parse.decodeByteInsns(fstmts)
+		r = { stmts = fstmts, idx = {}, labels = {}, entry = owner, fnSub = true }
+		for pos, st in fstmts do
+			if st.kind == "label" and not r.labels[st.name] then r.labels[st.name] = pos end
+		end
+		fnRegions[owner] = r
+		return r
+	end
+
+	-- Claiming: a label is a local subroutine iff it is defined in a region
+	-- (or names a sig'd function's alias entry, x86_64 only), is not .globl,
+	-- and is referenced by a call from a function body or from an (already
+	-- claimed) subroutine. Worklist over claim edges; claim order follows
+	-- statement order (deterministic).
 	local subs = {}
 	local order = {}
 	local function claimable(name)
-		return labelRegion[name] ~= nil and not globals[name]
+		return (labelRegion[name] ~= nil or aliasFn[name] ~= nil) and not globals[name]
 	end
 	local function claim(name)
 		if subs[name] then return end
-		local r = labelRegion[name]
-		subs[name] = { name = name, region = r, entryPos = r.labels[name] }
+		if labelRegion[name] then
+			local r = labelRegion[name]
+			subs[name] = { name = name, region = r, entryPos = r.labels[name] }
+		else
+			local r = fnRegion(aliasFn[name])
+			subs[name] = { name = name, region = r, entryPos = r.labels[name] }
+		end
 		table.insert(order, name)
 	end
 	local function localMismatch(cs)
@@ -252,6 +311,60 @@ function localcall.discover(stmts, consumed, globals, arch)
 			.. " register convention)")
 	end
 
+	-- Reachable clone ranges (x86_64). The called subroutine is the set of
+	-- region statements REACHABLE from the entry label, following fall-through
+	-- and in-region branch targets — which may name labels BEFORE the entry
+	-- (aesni's `call .Lenc_loop8_enter`: the called range contains a backward
+	-- branch to the .Lenc_loop8 loop head, which precedes the entry label, so
+	-- the naive [entry .. region end] span cannot contain the loop). The clone
+	-- is the reachable set in source order — the whole loop structure, exactly
+	-- like tailcall.luau's reachability-based region extraction for B2 shared
+	-- tails. A region-head entry (the common case) reaches [entry .. end] minus
+	-- any dead code, so existing subroutines clone exactly as before.
+	for _, name in order do
+		local sub = subs[name]
+		local r = sub.region
+		local labelPos = {}
+		for pos, st in r.stmts do
+			if st.kind == "label" then
+				if not labelPos[st.name] then labelPos[st.name] = {} end
+				table.insert(labelPos[st.name], pos)
+			end
+		end
+		sub.labelPos = labelPos
+		local reachable, work = {}, { sub.entryPos }
+		while #work > 0 do
+			local pos = table.remove(work)
+			if not reachable[pos] then
+				reachable[pos] = true
+				if pos <= #r.stmts then
+					local st = r.stmts[pos]
+					local ft = true
+					if st.kind == "insn" then
+						local m = string.lower(st.mnemonic)
+						local b = x86_64_isa.baseMnemonic(m)
+						if isRetMnem(st.mnemonic, arch) then
+							ft = false
+						elseif b == "jmp" or b == "jcc" or string.match(m, "^loop") then
+							local op = st.operands and st.operands[1]
+							if op and op.kind == "sym" then
+								for _, p in (labelPos[op.text] or {}) do table.insert(work, p) end
+							end
+							ft = b ~= "jmp"
+						end
+					end
+					if ft then table.insert(work, pos + 1) end
+				end
+			end
+		end
+		local clonePos = {}
+		for pos = 1, #r.stmts do
+			if reachable[pos] then table.insert(clonePos, pos) end
+		end
+		sub.clonePos = clonePos
+		sub.reachesEnd = reachable[#r.stmts + 1] and true or false
+	end
+
 	-- Call edges (sub -> subs called from within its clone range) and the
 	-- per-caller/per-sub callsite lists, all in body order (deterministic).
 	local edges, callsBySub = {}, {}
@@ -259,7 +372,7 @@ function localcall.discover(stmts, consumed, globals, arch)
 		local sub = subs[name]
 		local es, cs = {}, {}
 		local r = sub.region
-		for pos = sub.entryPos, #r.stmts do
+		for _, pos in sub.clonePos do
 			local t = localCallTarget(r.stmts[pos], arch)
 			if t and subs[t] then
 				table.insert(es, t)
@@ -299,11 +412,11 @@ function localcall.discover(stmts, consumed, globals, arch)
 			local sub = subs[name]
 			local r = sub.region
 			local inRange = {}
-			for pos = sub.entryPos, #r.stmts do
+			for _, pos in sub.clonePos do
 				local st = r.stmts[pos]
 				if st.kind == "label" then inRange[st.name] = true end
 			end
-			for pos = sub.entryPos, #r.stmts do
+			for _, pos in sub.clonePos do
 				local st = r.stmts[pos]
 				if st.kind == "insn" then
 					local m = string.lower(st.mnemonic)
@@ -374,28 +487,19 @@ function localcall.discover(stmts, consumed, globals, arch)
 	-- inside it (a branch out is a cross-function jump — a separate later
 	-- feature), and no control-flow path may fall off the range's end (the
 	-- clone would fall into the next appended clone with a garbage retaddr).
+	-- The clone range is the reachable set computed above: an in-region branch
+	-- target — even one BEFORE the entry label (a loop head) — is inside the
+	-- clone by construction.
 	for _, name in order do
 		local sub = subs[name]
 		local r = sub.region
-		local labelPos = {}
-		for pos = sub.entryPos, #r.stmts do
-			local st = r.stmts[pos]
-			if st.kind == "label" then
-				if not labelPos[st.name] then labelPos[st.name] = {} end
-				table.insert(labelPos[st.name], pos)
-			end
-		end
-		local function branchTargets(st)
-			local m = string.lower(st.mnemonic)
-			local b = x86_64_isa.baseMnemonic(m)
-			if b == "jmp" then return true, false end
-			if b == "jcc" or string.match(m, "^loop") then return true, true end
-			return false, false
-		end
-		for pos = sub.entryPos, #r.stmts do
+		local labelPos = sub.labelPos
+		for _, pos in sub.clonePos do
 			local st = r.stmts[pos]
 			if st.kind == "insn" then
-				local isBr = branchTargets(st)
+				local m = string.lower(st.mnemonic)
+				local b = x86_64_isa.baseMnemonic(m)
+				local isBr = b == "jmp" or b == "jcc" or string.match(m, "^loop") ~= nil
 				if isBr then
 					local op = st.operands and st.operands[1]
 					if op and op.kind == "sym" and not labelPos[op.text] then
@@ -416,36 +520,12 @@ function localcall.discover(stmts, consumed, globals, arch)
 				end
 			end
 		end
-		local reachable, work = {}, { sub.entryPos }
-		while #work > 0 do
-			local pos = table.remove(work)
-			if not reachable[pos] then
-				reachable[pos] = true
-				if pos <= #r.stmts then
-					local st = r.stmts[pos]
-					local ft = true
-					if st.kind == "insn" then
-						local isBr, isCond = branchTargets(st)
-						if isRetMnem(st.mnemonic, arch) then
-							ft = false
-						elseif isBr then
-							local op = st.operands[1]
-							if op and op.kind == "sym" then
-								for _, p in (labelPos[op.text] or {}) do table.insert(work, p) end
-							end
-							ft = isCond
-						end
-					end
-					if ft then table.insert(work, pos + 1) end
-				end
-			end
-		end
-		if reachable[#r.stmts + 1] then
+		if sub.reachesEnd then
 			-- An undecodable `.byte` run swallows its tail bytes (a rep-ret at the
 			-- end of a run of legacy AES/SHA encodings hides the ret): name that
 			-- likely cause in the message.
 			local hint = ""
-			for pos = sub.entryPos, #r.stmts do
+			for _, pos in sub.clonePos do
 				local st = r.stmts[pos]
 				if st.kind == "directive" and st.name == ".byte" then
 					hint = " (the region contains undecodable .byte encodings,"
@@ -533,7 +613,7 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 		local sub = lc.subs[name]
 		local ren = {}
 		local r = sub.region
-		for pos = sub.entryPos, #r.stmts do
+		for _, pos in (sub.clonePos or {}) do
 			local st = r.stmts[pos]
 			if st.kind == "label" then
 				ren[st.name] = fresh(".Llocalsub_" .. fnName .. "_" .. name .. "_" .. st.name)
@@ -584,7 +664,7 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 		end
 		return cp
 	end
-	local function cloneStmt(st, ren, id)
+	local function cloneStmt(st, ren, id, annSuffix)
 		if st.kind == "label" then
 			return { kind = "label", name = ren[st.name], line = st.line }
 		end
@@ -599,6 +679,12 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 			-- Mark clone membership: the frame pass applies the +8 rule (the
 			-- return-address compensation on rsp-relative accesses) from it.
 			cp.localClone = id
+			-- A cloned alloca annotation names a second allocation site with
+			-- the same tag: retag per clone (the size/result pairing inside
+			-- the clone is preserved — both retag identically).
+			if cp.annotation and annSuffix then
+				cp.annotation = tailcall.retagAlloca(cp.annotation, annSuffix)
+			end
 			return cp
 		end
 		return st   -- blanks/directives are never mutated downstream
@@ -636,13 +722,20 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 		local tjByStmt = {}
 		for _, e in (tjLabels[name] or {}) do tjByStmt[e.tj.stmt] = e end
 		local r = sub.region
-		for pos = sub.entryPos, #r.stmts do
+		for pi, pos in ipairs(sub.clonePos) do
 			local st = r.stmts[pos]
-			local cp = cloneStmt(st, ren, id)
-			if pos == sub.entryPos then
-				-- validateBody: a clone entry reached by FALL-THROUGH (instead of
-				-- its localCall edge) is a fall-off-the-end of the preceding
-				-- body — the same rejection as a function without a ret.
+			local cp = cloneStmt(st, ren, id, fnName .. "/" .. name)
+			if pi == 1 then
+				-- validateBody: a clone's FIRST statement reached by FALL-THROUGH
+				-- (instead of a jump edge — the localCall edge, or a backward
+				-- branch inside the clone) is a fall-off-the-end of the preceding
+				-- body — the same rejection as a function without a ret. The
+				-- first statement is the called label for a region-head entry,
+				-- but a mid-label entry whose reachable region includes a
+				-- backward loop head (aesni's .Lenc_loop8) starts BEFORE the
+				-- entry label — and the entry label itself is then legitimately
+				-- fall-through-reachable inside the clone, so only the first
+				-- statement carries the mark.
 				cp.localCloneEntry = true
 			end
 			table.insert(newBody, cp)
@@ -674,7 +767,7 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 				if t then tnestedByStmt[tj.region.stmts[idx]] = t end
 			end
 			for idx, st in tj.region.stmts do
-				local cp = cloneStmt(st, tren, id)
+				local cp = cloneStmt(st, tren, id, fnName .. "/" .. name .. "/" .. tj.target)
 				if idx == 1 then
 					-- validateBody: the clone's FIRST statement is reached only
 					-- through branches (the tail-join edge or a backward branch

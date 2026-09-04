@@ -28,16 +28,6 @@
 set -e
 set -x
 
-# libffi sources are managed by projeny: projects/libffi.projeny plus
-# projects/libffi-3.8.0.tar.gz unpack into projects/libffi/. Build in a
-# separate extracted-source directory - the projeny equivalent of
-# extract_source - so generated files never pollute the projeny workdir.
-if [ ! -x filc/projeny ]; then
-    (cd projects/projeny && $MAKE -j $NCPU)
-    mkdir -p filc
-    cp projects/projeny/projeny filc/projeny
-fi
-
 cd projects
 rm -rf libffi/extracted-source
 ../filc/projeny extract libffi.projeny libffi/extracted-source

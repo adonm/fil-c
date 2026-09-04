@@ -30,7 +30,11 @@ set -x
 
 cd projects/BLAKE3-1.8.5
 extract_source
-CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DBLAKE3_SIMD_TYPE=x86-intrinsics -DCMAKE_BUILD_TYPE=RelWithDebInfo
+BLAKE3_SIMD_TYPE=x86-intrinsics
+if [ "$ARCH" = aarch64 ]; then
+    BLAKE3_SIMD_TYPE=neon-intrinsics
+fi
+CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DBLAKE3_SIMD_TYPE=$BLAKE3_SIMD_TYPE -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build c/build --target install -j $NCPU
 ../../../build/bin/clang -o example c/example.c -lblake3 -O2 -g
 test `./example < README.md` = "a5fdca3e301ce0f1b4bf92e9532fdd731842715b244b26f393404796a1c15b06"

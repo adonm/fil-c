@@ -28,7 +28,7 @@
 set -e
 set -x
 
-cd projects/libuv-1.51.0
+cd projects/libuv-1.52.1
 extract_source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU

@@ -1,6 +1,5 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
 # Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -22,37 +21,30 @@
 # PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
 # OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+. libpas/common.sh
 
 set -e
 set -x
 
-rm -rf pizfix
+# Fil-C build of projeny: compile projects/projeny with Fil-C++ (build/bin),
+# run the projeny test suite (fails the build on test failure), and install
+# the executable to filc/projeny, overwriting the yolo build installed by
+# build_projeny_yolo.sh. Runs first in build_all_slow.sh.
+cd projects/projeny
 
-./build_projeny_yolo.sh
-./build_compiler_rt.sh
-./build_yolounwind.sh
-./configure_llvm.sh
-./build_clang.sh
-./build_os_include.sh
+$MAKE clean
 
-if test "x$ALTYOLO" != "x"
-then
-    $ALTYOLO
-else
-    ./build_yolomusl.sh
-fi
+$MAKE -j $NCPU CC="$PWD/../../build/bin/clang" CXX="$PWD/../../build/bin/clang++"
 
-./build_runtime.sh
+$MAKE test CC="$PWD/../../build/bin/clang" CXX="$PWD/../../build/bin/clang++"
 
-if test "x$ALTUSER" != "x"
-then
-    $ALTUSER
-else
-    ./build_usermusl.sh
-fi
-    
-./build_cxx.sh
+cd ../..
 
-./build_minilute.sh
-./build_sarcasm.sh
+mkdir -p filc
+cp projects/projeny/projeny filc/projeny
+chmod +x filc/projeny
+
+# Validation: the Fil-C-built projeny must run.
+filc/projeny help

@@ -31,6 +31,7 @@ set -x
 
 test ! -d projects/pizfix
 
+./build_projeny.sh
 ./build_ffi.sh
 ./build_pkgconf.sh
 ./build_dash.sh

@@ -1,6 +1,5 @@
 #!/bin/sh
 #
-# Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
 # Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -22,37 +21,29 @@
 # PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
 # OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+. libpas/common.sh
 
 set -e
 set -x
 
-rm -rf pizfix
+# Yolo build of projeny: compile projects/projeny with the default system
+# C/C++ compiler (NOT Fil-C) and install the executable to filc/projeny.
+# Runs early in build_base.sh so a working projeny exists before the Fil-C
+# toolchain is built. build_projeny.sh later rebuilds projeny with Fil-C++
+# and overwrites filc/projeny.
+cd projects/projeny
 
-./build_projeny_yolo.sh
-./build_compiler_rt.sh
-./build_yolounwind.sh
-./configure_llvm.sh
-./build_clang.sh
-./build_os_include.sh
+$MAKE clean
 
-if test "x$ALTYOLO" != "x"
-then
-    $ALTYOLO
-else
-    ./build_yolomusl.sh
-fi
+$MAKE -j $NCPU CC=cc CXX=g++
 
-./build_runtime.sh
+cd ../..
 
-if test "x$ALTUSER" != "x"
-then
-    $ALTUSER
-else
-    ./build_usermusl.sh
-fi
-    
-./build_cxx.sh
+mkdir -p filc
+cp projects/projeny/projeny filc/projeny
+chmod +x filc/projeny
 
-./build_minilute.sh
-./build_sarcasm.sh
+# Validation.
+filc/projeny help

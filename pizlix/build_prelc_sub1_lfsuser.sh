@@ -290,13 +290,13 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf grep-3.12
 
-tar -xf gzip-1.13.tar.xz
-cd gzip-1.13
+tar -xf gzip-1.14.tar.xz
+cd gzip-1.14
 ./configure --prefix=/yolo --host=$LFS_TGT
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf gzip-1.13
+rm -rf gzip-1.14
 
 tar -xf make-4.4.1.tar.gz
 cd make-4.4.1

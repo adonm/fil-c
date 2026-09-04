@@ -64,7 +64,7 @@ cp -v \
     grep-3.12.tar.xz \
     groff-1.23.0.tar.gz \
     grub-2.12.tar.xz \
-    gzip-1.13.tar.xz \
+    gzip-1.14.tar.xz \
     iana-etc-20240806.tar.gz \
     inetutils-2.5.tar.xz \
     intltool-0.51.0.tar.gz \

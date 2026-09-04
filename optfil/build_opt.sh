@@ -513,7 +513,7 @@ cd ..
 rm -rf mg-3.7
 hash -r
 
-tar -xf $FILCSRC/projects/libuv-1.51.0/pizlonated-libuv.tar.gz
+tar -xf $FILCSRC/projects/libuv-1.52.1/pizlonated-libuv.tar.gz
 cd pizlonated-libuv
 CC=/opt/fil/bin/filcc ./configure --prefix=/opt/fil
 make -j `nproc`

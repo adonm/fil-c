@@ -28,8 +28,20 @@
 set -e
 set -x
 
-cd projects/libffi-3.8.0
-extract_source
+# libffi sources are managed by projeny: projects/libffi.projeny plus
+# projects/libffi-3.8.0.tar.gz unpack into projects/libffi/. Build in a
+# separate extracted-source directory - the projeny equivalent of
+# extract_source - so generated files never pollute the projeny workdir.
+if [ ! -x filc/projeny ]; then
+    (cd projects/projeny && $MAKE -j $NCPU)
+    mkdir -p filc
+    cp projects/projeny/projeny filc/projeny
+fi
+
+cd projects
+rm -rf libffi/extracted-source
+../filc/projeny extract libffi.projeny libffi/extracted-source
+cd libffi/extracted-source
 CC="$PWD/../../../build/bin/clang -g" CXX="$PWD/../../../build/bin/clang++ -g" ./configure --prefix=$PWD/../../../pizfix --disable-exec-static-tramp
 make -j $NCPU
 make check
@@ -39,3 +51,5 @@ make install
 ../../../build/bin/clang -O2 -g -o ffitest ffitest.c -lffi -Wno-incompatible-function-pointer-types
 ./ffitest > ffitest.actual
 diff ffitest.expected ffitest.actual
+cd ..
+rm -rf extracted-source

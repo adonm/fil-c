@@ -1,8 +1,9 @@
 #!/bin/bash
 # projeny test suite: fixture-based shell tests over tiny fake-project
 # tarballs v1/v2. Covers fresh setup, edit+commit roundtrips, setup-again
-# noops, divergent merges (clean + conflicting), add/rm/mv + commit,
-# rebase (clean + conflict), and the hard-error paths.
+# noops, divergent merges (clean + conflicting, the latter exiting nonzero),
+# add/rm/mv + commit, rebase (clean + conflict), package/extract (tracked-only
+# payloads, compression autodetect, conflict refusal), and the hard-error paths.
 #
 # Bash is required (process substitution in the status-copy comparisons
 # below); /bin/sh (dash) cannot run this suite.
@@ -317,7 +318,7 @@ open(p, "w").write(s)
 EOF
 (cd "$U4" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
 cp "$U4/fake.projeny" "$T4/fake.projeny"
-run_in "$T4" expect_ok "conflicting setup merge exits 0 (with markers)" "$PROJENY" setup fake.projeny
+run_in "$T4" expect_fail "conflicting setup merge exits nonzero (with markers)" "$PROJENY" setup fake.projeny
 expect_file_contains "conflicting merge leaves markers" "$T4/fake/src/a.c" "<<<<<<<"
 expect_file_contains "conflicting merge lists conflict in status" "$T4/fake.projeny.status" "Conflict: src/a.c"
 run_in "$T4" expect_fail "commit fails while conflicted" "$PROJENY" commit fake.projeny
@@ -611,7 +612,7 @@ open(p, "w").write(s)
 EOF
 (cd "$U19" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
 cp "$U19/fake.projeny" "$T19/fake.projeny"
-run_in "$T19" expect_ok "conflicting setup leaves markers (t19)" "$PROJENY" setup fake.projeny
+run_in "$T19" expect_fail "conflicting setup leaves markers (t19, nonzero)" "$PROJENY" setup fake.projeny
 expect_file_contains "t19 merge leaves markers" "$T19/fake/src/a.c" "<<<<<<<"
 out="$(cd "$T19" && "$PROJENY" resolve fake.projeny fake/src/a.c 2>&1)"
 rc=$?
@@ -920,24 +921,28 @@ else
 fi
 
 # ----------------------------------------- 29. binary files are refused
+
+# Untouched/untracked binaries are invisible to diffs (left out of patches),
+# but explicitly adding one fails: a patch could never carry its bytes.
 T29="$ROOT/t29"
 make_tarballs "$T29" fake
 write_projeny "$T29" fake 1.0 fake
 (cd "$T29" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
 python3 -c "open('$T29/fake/src/bin.dat','wb').write(b'ab\x00cd\n')"
-out="$(cd "$T29" && "$PROJENY" commit fake.projeny 2>&1)"
-rc=$?
-if [ $rc -ne 0 ]; then
-    ok "commit with binary file fails"
+run_in "$T29" expect_ok "commit ignores untracked binary" "$PROJENY" commit fake.projeny
+if grep -q "bin.dat" "$T29/fake.projeny"; then
+    fail "untracked binary stays out of the patch" "$(grep "bin.dat" "$T29/fake.projeny")"
 else
-    fail "commit with binary file fails" "exited 0"
+    ok "untracked binary stays out of the patch"
 fi
+run_in "$T29" expect_fail "add of binary fails" "$PROJENY" add fake.projeny fake/src/bin.dat
+out="$(cd "$T29" && "$PROJENY" add fake.projeny fake/src/bin.dat 2>&1 || true)"
 case "$out" in
 *inary*)
-    ok "binary failure message is clear"
+    ok "binary add failure message is clear"
     ;;
 *)
-    fail "binary failure message is clear" "out: $out"
+    fail "binary add failure message is clear" "out: $out"
     ;;
 esac
 rm -f "$T29/fake/src/bin.dat"
@@ -1801,7 +1806,7 @@ rm -rf "$T49/w" "$T49/w.projeny.status"
 (cd "$T49" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
 ln -sf b.txt "$T49/w/lnk"
 cp "$ROOT/t49-upstream.projeny" "$T49/w.projeny"
-run_in "$T49" expect_ok "symlink-vs-symlink divergent merge exits 0 (with conflict)" "$PROJENY" setup w.projeny
+run_in "$T49" expect_fail "symlink-vs-symlink divergent merge exits nonzero (with conflict)" "$PROJENY" setup w.projeny
 expect_file_contains "symlink target mismatch conflicts" "$T49/w.projeny.status" "Conflict: lnk"
 expect_file_contains "symlink conflict leaves markers" "$T49/w/lnk" "<<<<<<<"
 if [ -L "$T49/w/lnk" ]; then
@@ -1837,7 +1842,7 @@ rm -rf "$T50/w" "$T50/w.projeny.status"
 rm "$T50/w/f.c"
 ln -s other.txt "$T50/w/f.c"
 cp "$ROOT/t50-upstream.projeny" "$T50/w.projeny"
-run_in "$T50" expect_ok "symlink-vs-file divergent merge exits 0 (with conflict)" "$PROJENY" setup w.projeny
+run_in "$T50" expect_fail "symlink-vs-file divergent merge exits nonzero (with conflict)" "$PROJENY" setup w.projeny
 expect_file_contains "symlink-vs-file records conflict" "$T50/w.projeny.status" "Conflict: f.c"
 expect_file_contains "symlink-vs-file leaves markers" "$T50/w/f.c" "<<<<<<<"
 
@@ -2241,8 +2246,9 @@ else
     fail "mixed-endings file byte-identical after re-setup" "got: $(xxd "$T64/w/m.txt" 2>&1)"
 fi
 # ----------------------------------------- 63. binary base is inert until touched
-# A NUL-bearing file inside the base tarball sets up fine; any commit that
-# must read it (even a pure delete) refuses with a clear message.
+# A NUL-bearing file inside the base tarball sets up fine, and commits that
+# leave it alone succeed; any commit that must represent it (modify, or even
+# a pure delete) refuses with a clear message.
 T65="$ROOT/t65"
 mkdir -p "$T65/b-1.0"
 python3 -c "open('$T65/b-1.0/b.dat','wb').write(b'a\x00b\n')"
@@ -2250,6 +2256,9 @@ printf 'ok\n' > "$T65/b-1.0/f.c"
 (cd "$T65" && tar -czf b-1.0.tar.gz b-1.0 && rm -rf b-1.0)
 printf 'Archive: b-1.0.tar.gz\nOrigname: b-1.0\nName: b\n\n    Binary base.\n' > "$T65/b.projeny"
 run_in "$T65" expect_ok "setup with binary base file" "$PROJENY" setup b.projeny
+printf 'ok changed\n' > "$T65/b/f.c"
+run_in "$T65" expect_ok "commit leaving binary untouched succeeds" "$PROJENY" commit b.projeny
+python3 -c "open('$T65/b/b.dat','wb').write(b'a\x00B\n')"
 out="$(cd "$T65" && "$PROJENY" commit b.projeny 2>&1)"
 rc=$?
 if [ $rc -ne 0 ]; then
@@ -2265,8 +2274,15 @@ case "$out" in
     fail "binary-base failure message is clear" "out: $out"
     ;;
 esac
-run_in "$T65" expect_ok "rm binary file" "$PROJENY" rm b.projeny b/b.dat
-run_in "$T65" expect_fail "commit deleting binary still refused" "$PROJENY" commit b.projeny
+run_in "$T65" expect_fail "rm of binary base file fails" "$PROJENY" rm b.projeny b/b.dat
+if [ -f "$T65/b/b.dat" ]; then
+    ok "refused rm keeps the binary"
+else
+    fail "refused rm keeps the binary"
+fi
+run_in "$T65" expect_fail "commit with edited binary still refused" "$PROJENY" commit b.projeny
+python3 -c "open('$T65/b/b.dat','wb').write(b'a\x00b\n')"
+run_in "$T65" expect_ok "commit works after restoring binary" "$PROJENY" commit b.projeny
 
 # ----------------------------------------- 64. delete + recreate same path
 T66="$ROOT/t66"
@@ -2542,7 +2558,7 @@ rm "$T74B/w/f.c"
 mkdir "$T74B/w/f.c"
 printf 'local inner\n' > "$T74B/w/f.c/inner.txt"
 cp "$ROOT/t74b-up.projeny" "$T74B/w.projeny"
-run_in "$T74B" expect_ok "divergent file-to-dir merge exits 0" "$PROJENY" setup w.projeny
+run_in "$T74B" expect_fail "divergent file-to-dir merge exits nonzero" "$PROJENY" setup w.projeny
 expect_file_contains "divergent swap records conflict" "$T74B/w.projeny.status" "Conflict: f.c"
 expect_file_contains "divergent swap keeps local inner file" "$T74B/w/f.c/inner.txt" "local inner"
 if [ -d "$T74B/w/f.c" ]; then
@@ -2895,10 +2911,10 @@ cp "$U81/w.projeny" "$ROOT/t81-up.projeny"
 # simple case: no uncommitted changes; conflict the .projeny file.
 make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T81/w.projeny"
 out="$(cd "$T81" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "conflicted setup (simple) exits 0"
+if [ $? -ne 0 ]; then
+    ok "conflicted setup (simple) exits nonzero"
 else
-    fail "conflicted setup (simple) exits 0" "out: $out"
+    fail "conflicted setup (simple) exits nonzero" "out: $out"
 fi
 if cmp -s "$T81/w.projeny" "$ROOT/t81-up.projeny"; then
     ok ".projeny force-takes upstream"
@@ -2950,7 +2966,7 @@ open(p, "w").write(s)
 EOF
 make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T82/w.projeny" diff3
 expect_file_contains "diff3 fixture has base section" "$T82/w.projeny" "|||||||"
-run_in "$T82" expect_ok "conflicted setup (harder, diff3) exits 0" "$PROJENY" setup w.projeny
+run_in "$T82" expect_fail "conflicted setup (harder, diff3) exits nonzero" "$PROJENY" setup w.projeny
 expect_file_contains "harder case keeps uncommitted edit" "$T82/w/a.c" "delta UNCOMMITTED"
 expect_file_contains "harder case still marks the conflict" "$T82/w/a.c" "<<<<<<<"
 if cmp -s "$T82/w.projeny" "$ROOT/t81-up.projeny"; then
@@ -2967,7 +2983,7 @@ cp "$ROOT/t81-local.projeny" "$T83/w.projeny"
 (cd "$T83" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
 rm -rf "$T83/w"
 make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T83/w.projeny"
-run_in "$T83" expect_ok "conflicted setup (no checkout) exits 0" "$PROJENY" setup w.projeny
+run_in "$T83" expect_fail "conflicted setup (no checkout) exits nonzero" "$PROJENY" setup w.projeny
 if cmp -s "$T83/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "no-checkout case force-takes upstream"
 else
@@ -3065,10 +3081,10 @@ out = a[:i] + ["<<<<<<< HEAD"] + a[i:j0] + ["======="] + b[i:j1] + [">>>>>>> bra
 open(sys.argv[3], "w").write("\r\n".join(out))
 PYEOF
 out="$(cd "$T85" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "CRLF conflicted setup exits 0"
+if [ $? -ne 0 ]; then
+    ok "CRLF conflicted setup exits nonzero"
 else
-    fail "CRLF conflicted setup exits 0" "out: $out"
+    fail "CRLF conflicted setup exits nonzero" "out: $out"
 fi
 if echo "$out" | grep -qi "CRLF"; then
     ok "CRLF setup warns about line endings"
@@ -3115,10 +3131,10 @@ open(p, "w").write(s)
 PYEOF
 )
     out="$(cd "$G86/repo" && "$PROJENY" setup w.projeny 2>&1)"
-    if [ $? -eq 0 ]; then
-        ok "setup resolves git conflict markers"
+    if [ $? -ne 0 ]; then
+        ok "setup resolves git conflict markers (exits nonzero)"
     else
-        fail "setup resolves git conflict markers" "out: $out"
+        fail "setup resolves git conflict markers (exits nonzero)" "out: $out"
     fi
     if cmp -s "$G86/repo/w.projeny" "$ROOT/t86-up.projeny"; then
         ok "git conflict takes upstream bytes"
@@ -3160,10 +3176,10 @@ PYEOF
         fail "stash pop conflicts the .projeny file" "$(head -20 "$G86/repo/w.projeny")"
     fi
     out="$(cd "$G86/repo" && "$PROJENY" setup w.projeny 2>&1)"
-    if [ $? -eq 0 ] && grep -q "<<<<<<<" "$G86/repo/w/a.c"; then
-        ok "setup resolves stash-pop markers into workdir conflicts"
+    if [ $? -ne 0 ] && grep -q "<<<<<<<" "$G86/repo/w/a.c"; then
+        ok "setup resolves stash-pop markers into workdir conflicts (nonzero)"
     else
-        fail "setup resolves stash-pop markers into workdir conflicts" "out: $out"
+        fail "setup resolves stash-pop markers into workdir conflicts (nonzero)" "out: $out"
     fi
     unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_EDITOR
 else
@@ -3196,10 +3212,10 @@ blk = ["<<<<<<< HEAD"] + up[i:j1] + ["======="] + local[i:j0] + [">>>>>>> pick d
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
 out="$(cd "$T88" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "conflicted setup (rebase order) exits 0"
+if [ $? -ne 0 ]; then
+    ok "conflicted setup (rebase order) exits nonzero"
 else
-    fail "conflicted setup (rebase order) exits 0" "out: $out"
+    fail "conflicted setup (rebase order) exits nonzero" "out: $out"
 fi
 if cmp -s "$T88/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "rebase-order markers still take upstream"
@@ -3249,10 +3265,10 @@ blk = ["<<<<<<< Updated upstream"] + up[i:j1] + ["======="] + local[i:j0] + [">>
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
 out="$(cd "$T89" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "conflicted setup (stash labels) exits 0"
+if [ $? -ne 0 ]; then
+    ok "conflicted setup (stash labels) exits nonzero"
 else
-    fail "conflicted setup (stash labels) exits 0" "out: $out"
+    fail "conflicted setup (stash labels) exits nonzero" "out: $out"
 fi
 if cmp -s "$T89/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "stash labels take the checkout (upstream) side"
@@ -3354,7 +3370,7 @@ s = open(p).read().replace("Status: setup\n", "Status: setup\nConflict: stale/ol
 open(p, "w").write(s)
 PYEOF
 make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T91/w.projeny"
-run_in "$T91" expect_ok "conflicted setup with stale conflicts exits 0" "$PROJENY" setup w.projeny
+run_in "$T91" expect_fail "conflicted setup with stale conflicts exits nonzero" "$PROJENY" setup w.projeny
 expect_file_contains "new conflict recorded" "$T91/w.projeny.status" "Conflict: a.c"
 expect_file_contains "stale conflict kept (union)" "$T91/w.projeny.status" "Conflict: stale/old.c"
 # deletion on one side: empty first side.
@@ -3508,10 +3524,10 @@ blk = ["<<<<<<< HEAD"] + up[i:j1] + ["======="] + local[i:j0] + [">>>>>>> 99d93b
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
 out="$(cd "$T97" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "rebase-order setup without status exits 0"
+if [ $? -ne 0 ]; then
+    ok "rebase-order setup without status exits nonzero"
 else
-    fail "rebase-order setup without status exits 0" "out: $out"
+    fail "rebase-order setup without status exits nonzero" "out: $out"
 fi
 if cmp -s "$T97/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "no-status rebase markers still take upstream"
@@ -3541,7 +3557,7 @@ p = sys.argv[1]
 s = open(p).read().replace("    G.\n", "    Stale lineage.\n")
 open(p, "w").write(s)
 PYEOF
-run_in "$T97S" expect_ok "rebase-order setup with stale status exits 0" "$PROJENY" setup w.projeny
+run_in "$T97S" expect_fail "rebase-order setup with stale status exits nonzero" "$PROJENY" setup w.projeny
 if cmp -s "$T97S/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "stale-status rebase markers still take upstream"
 else
@@ -3572,7 +3588,7 @@ while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
 blk = ["<<<<<<< HEAD"] + local[i:j0] + ["======="] + up[i:j1] + [">>>>>>> original-work"]
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
-run_in "$T97M" expect_ok "substring-trap merge setup exits 0" "$PROJENY" setup w.projeny
+run_in "$T97M" expect_fail "substring-trap merge setup exits nonzero" "$PROJENY" setup w.projeny
 if cmp -s "$T97M/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "substring-trap branch still takes upstream"
 else
@@ -3610,10 +3626,10 @@ blk = ["<<<<<<< HEAD"] + local[i:j0] + ["======="] + up[i:j1] + [">>>>>>> " + sy
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
     out="$(cd "$T97X" && "$PROJENY" setup w.projeny 2>&1)"
-    if [ $? -eq 0 ]; then
-        ok "merge with closer '$closer' exits 0"
+    if [ $? -ne 0 ]; then
+        ok "merge with closer '$closer' exits nonzero"
     else
-        fail "merge with closer '$closer' exits 0" "out: $out"
+        fail "merge with closer '$closer' exits nonzero" "out: $out"
     fi
     if cmp -s "$T97X/w.projeny" "$ROOT/t81-up.projeny"; then
         ok "closer '$closer' still takes upstream"
@@ -3678,10 +3694,10 @@ PYEOF
         fail "git rebase conflicts the .projeny file" "$(head -20 "$G98/repo/w.projeny" 2>&1)"
     fi
     out="$(cd "$G98/repo" && "$PROJENY" setup w.projeny 2>&1)"
-    if [ $? -eq 0 ]; then
-        ok "setup resolves real rebase markers"
+    if [ $? -ne 0 ]; then
+        ok "setup resolves real rebase markers (exits nonzero)"
     else
-        fail "setup resolves real rebase markers" "out: $out"
+        fail "setup resolves real rebase markers (exits nonzero)" "out: $out"
     fi
     if cmp -s "$G98/repo/w.projeny" "$ROOT/t98-up.projeny"; then
         ok "real rebase takes upstream bytes"
@@ -3723,10 +3739,10 @@ PYEOF
         fail "git pull --rebase conflicts the .projeny file" "$(head -20 "$R98/local/w.projeny" 2>&1)"
     fi
     out="$(cd "$R98/local" && "$PROJENY" setup w.projeny 2>&1)"
-    if [ $? -eq 0 ]; then
-        ok "setup resolves real pull --rebase markers"
+    if [ $? -ne 0 ]; then
+        ok "setup resolves real pull --rebase markers (exits nonzero)"
     else
-        fail "setup resolves real pull --rebase markers" "out: $out"
+        fail "setup resolves real pull --rebase markers (exits nonzero)" "out: $out"
     fi
     if cmp -s "$R98/local/w.projeny" "$ROOT/t98r-up.projeny"; then
         ok "real pull --rebase takes upstream bytes"
@@ -4009,10 +4025,10 @@ open(sys.argv[2], "w").write("Status: setup\nConflict: a.c\n--- projeny content 
 PYEOF
 rm -rf "$T100/w"
 out="$(cd "$T100" && "$PROJENY" setup w.projeny 2>&1)"
-if [ $? -eq 0 ]; then
-    ok "split-brain setup recovers exits 0"
+if [ $? -ne 0 ]; then
+    ok "split-brain setup recovers exits nonzero"
 else
-    fail "split-brain setup recovers exits 0" "out: $out"
+    fail "split-brain setup recovers exits nonzero" "out: $out"
 fi
 if cmp -s "$T100/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "recovered setup keeps upstream bytes"
@@ -4094,7 +4110,7 @@ while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
 blk = ["<<<<<<<< HEAD"] + local[i:j0] + ["========"] + up[i:j1] + [">>>>>>>> branch"]
 open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
 PYEOF
-run_in "$T101" expect_ok "extended-marker setup exits 0" "$PROJENY" setup w.projeny
+run_in "$T101" expect_fail "extended-marker setup exits nonzero" "$PROJENY" setup w.projeny
 if cmp -s "$T101/w.projeny" "$ROOT/t81-up.projeny"; then
     ok "extended markers still take upstream"
 else
@@ -4124,6 +4140,340 @@ case "$out" in
     fail "nested-marker error names nesting" "out: $out"
     ;;
 esac
+
+# ----------------------------------------- 94. package/extract basics
+# package = setup + tar of exactly the tracked files (committed patch plus
+# uncommitted edits plus pending adds, minus pending rms and untracked
+# files, like `git archive`). extract puts the same set into a directory.
+TPKG="$ROOT/tpkg"
+make_tarballs "$TPKG" pkg
+write_projeny "$TPKG" pkg 1.0 pkg
+(cd "$TPKG" && "$PROJENY" setup pkg.projeny >/dev/null 2>&1)
+python3 - "$TPKG/pkg/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 10;")
+open(p, "w").write(s)
+EOF
+(cd "$TPKG" && "$PROJENY" commit pkg.projeny >/dev/null 2>&1)
+# uncommitted edit: must be included in package/extract output.
+python3 - "$TPKG/pkg/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int gamma = 1;", "int gamma = 99;")
+open(p, "w").write(s)
+EOF
+# untracked file: must be left out.
+printf 'junk\n' > "$TPKG/pkg/UNTRACKED.txt"
+# pending add: tracked, must be included.
+printf 'added but uncommitted\n' > "$TPKG/pkg/src/new.c"
+run_in "$TPKG" expect_ok "package fixture pending add" "$PROJENY" add pkg.projeny pkg/src/new.c
+# pending rm: must be excluded.
+run_in "$TPKG" expect_ok "package fixture pending rm" "$PROJENY" rm pkg.projeny pkg/README
+run_in "$TPKG" expect_ok "package exits 0" "$PROJENY" package pkg.projeny pkg-out.tar.gz
+(cd "$TPKG" && tar -tzf pkg-out.tar.gz | sort > pkg-members.txt)
+if grep -qx "pkg-out/src/a.c" "$TPKG/pkg-members.txt" && grep -qx "pkg-out/src/new.c" "$TPKG/pkg-members.txt"; then
+    ok "package holds tracked files"
+else
+    fail "package holds tracked files" "$(cat "$TPKG/pkg-members.txt")"
+fi
+if grep -q "README" "$TPKG/pkg-members.txt"; then
+    fail "package omits pending rm" "$(cat "$TPKG/pkg-members.txt")"
+else
+    ok "package omits pending rm"
+fi
+if grep -q "UNTRACKED" "$TPKG/pkg-members.txt"; then
+    fail "package omits untracked files" "$(cat "$TPKG/pkg-members.txt")"
+else
+    ok "package omits untracked files"
+fi
+mkdir -p "$TPKG/unpack" && (cd "$TPKG/unpack" && tar -xzf ../pkg-out.tar.gz)
+expect_file_contains "package keeps committed edit" "$TPKG/unpack/pkg-out/src/a.c" "beta = 10"
+expect_file_contains "package keeps uncommitted edit" "$TPKG/unpack/pkg-out/src/a.c" "gamma = 99"
+run_in "$TPKG" expect_ok "extract exits 0" "$PROJENY" extract pkg.projeny extracted
+if diff -r "$TPKG/unpack/pkg-out" "$TPKG/extracted" >/dev/null 2>&1; then
+    ok "extract equals package payload"
+else
+    fail "extract equals package payload" "$(diff -r "$TPKG/unpack/pkg-out" "$TPKG/extracted" 2>&1 | head -10)"
+fi
+expect_file_contains "extract keeps uncommitted edit" "$TPKG/extracted/src/a.c" "gamma = 99"
+if [ -e "$TPKG/extracted/UNTRACKED.txt" ]; then
+    fail "extract omits untracked files" "$(ls "$TPKG/extracted")"
+else
+    ok "extract omits untracked files"
+fi
+
+# ----------------------------------------- 95. package formats, args, conflicts
+TFMT="$ROOT/tfmt"
+make_tarballs "$TFMT" pkg
+write_projeny "$TFMT" pkg 1.0 pkg
+(cd "$TFMT" && "$PROJENY" setup pkg.projeny >/dev/null 2>&1)
+for ext in tar tgz tar.gz tar.bz2 tar.xz; do
+    run_in "$TFMT" expect_ok "package .$ext exits 0" "$PROJENY" package pkg.projeny "o.$ext"
+done
+if command -v zstd >/dev/null 2>&1 && tar --help 2>/dev/null | grep -q -- --zstd; then
+    run_in "$TFMT" expect_ok "package .tar.zst exits 0" "$PROJENY" package pkg.projeny o.tar.zst
+    (cd "$TFMT" && tar --zstd -tf o.tar.zst | sort > m.zst)
+fi
+(cd "$TFMT" && tar -tf o.tar | sort > m.tar)
+(cd "$TFMT" && tar -tzf o.tgz | sort > m.tgz)
+(cd "$TFMT" && tar -tzf o.tar.gz | sort > m.targz)
+(cd "$TFMT" && tar -tjf o.tar.bz2 | sort > m.tbz2)
+(cd "$TFMT" && tar -tJf o.tar.xz | sort > m.txz)
+if cmp -s "$TFMT/m.tar" "$TFMT/m.tgz" && cmp -s "$TFMT/m.tar" "$TFMT/m.targz" && cmp -s "$TFMT/m.tar" "$TFMT/m.tbz2" && cmp -s "$TFMT/m.tar" "$TFMT/m.txz"; then
+    ok "every compression holds the same members"
+else
+    fail "every compression holds the same members" "$(cat "$TFMT/m.tar" 2>&1)"
+fi
+if [ -f "$TFMT/m.zst" ]; then
+    if cmp -s "$TFMT/m.tar" "$TFMT/m.zst"; then
+        ok "zstd holds the same members"
+    else
+        fail "zstd holds the same members"
+    fi
+fi
+mkdir -p "$TFMT/u1" "$TFMT/u2" && (cd "$TFMT/u1" && tar -xf ../o.tar) && (cd "$TFMT/u2" && tar -xzf ../o.tar.gz)
+if diff -r "$TFMT/u1" "$TFMT/u2" >/dev/null 2>&1; then
+    ok "every compression holds the same payload"
+else
+    fail "every compression holds the same payload"
+fi
+# top-level dir matches the output name (package-source.sh $name prefix).
+if grep -qx "o/src/a.c" "$TFMT/m.tar"; then
+    ok "package top dir matches output name"
+else
+    fail "package top dir matches output name" "$(cat "$TFMT/m.tar")"
+fi
+run_in "$TFMT" expect_fail "package unknown extension fails" "$PROJENY" package pkg.projeny o.zip
+if [ -e "$TFMT/o.zip" ]; then
+    fail "failed package writes no archive" "$(ls "$TFMT")"
+else
+    ok "failed package writes no archive"
+fi
+# directory argument holding exactly one .projeny file.
+mkdir -p "$TFMT/proj" && cp "$TFMT/pkg-1.0.tar.gz" "$TFMT/proj/" && cp "$TFMT/pkg.projeny" "$TFMT/proj/"
+run_in "$TFMT" expect_ok "package accepts a project dir" "$PROJENY" package proj proj-out.tar.gz
+if [ -f "$TFMT/proj-out.tar.gz" ]; then
+    ok "project-dir package writes the archive"
+else
+    fail "project-dir package writes the archive"
+fi
+# workdir argument: resolves the "<dir>.projeny" sibling.
+run_in "$TFMT" expect_ok "package accepts the workdir" "$PROJENY" package pkg pkg/pkg-out.tar.gz
+if grep -q "pkg-out.tar.gz" "$TFMT/pkg/pkg-out.tar.gz" 2>/dev/null || (cd "$TFMT" && tar -tzf pkg/pkg-out.tar.gz | grep -q "pkg-out.tar.gz"); then
+    fail "workdir package excludes itself" "$(cd "$TFMT" && tar -tzf pkg/pkg-out.tar.gz)"
+else
+    ok "workdir package excludes itself"
+fi
+# conflicting tree: setup fails, and package/extract refuse without output.
+TCONF="$ROOT/tconf"
+make_tarballs "$TCONF" fake
+write_projeny "$TCONF" fake 1.0 fake
+(cd "$TCONF" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$TCONF/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 10;")
+open(p, "w").write(s)
+EOF
+(cd "$TCONF" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$TCONF/fake.projeny" "$ROOT/tconf-local.projeny"
+rm -rf "$TCONF/fake" "$TCONF/fake.projeny.status"
+cp "$ROOT/tconf-local.projeny" "$TCONF/fake.projeny"
+(cd "$TCONF" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$TCONF/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 999;")
+open(p, "w").write(s)
+EOF
+mkdir -p "$ROOT/tconfup"
+cp "$TCONF/fake-1.0.tar.gz" "$ROOT/tconfup/"
+cp "$ROOT/tconf-local.projeny" "$ROOT/tconfup/fake.projeny"
+(cd "$ROOT/tconfup" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$ROOT/tconfup/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 555;")
+open(p, "w").write(s)
+EOF
+(cd "$ROOT/tconfup" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$ROOT/tconfup/fake.projeny" "$TCONF/fake.projeny"
+run_in "$TCONF" expect_fail "conflicting setup exits nonzero (package fixture)" "$PROJENY" setup fake.projeny
+run_in "$TCONF" expect_fail "package refuses conflicted tree" "$PROJENY" package fake.projeny c.tar.gz
+if [ -e "$TCONF/c.tar.gz" ]; then
+    fail "refused package writes no archive" "$(ls "$TCONF")"
+else
+    ok "refused package writes no archive"
+fi
+run_in "$TCONF" expect_fail "extract refuses conflicted tree" "$PROJENY" extract fake.projeny cdir
+if [ -e "$TCONF/cdir" ]; then
+    fail "refused extract writes no directory" "$(ls "$TCONF")"
+else
+    ok "refused extract writes no directory"
+fi
+# repair and the commands succeed again.
+printf 'int alpha = 1;\n\nint beta = 777;\n\nint gamma = 1;\n\nint delta = 1;\n' > "$TCONF/fake/src/a.c"
+run_in "$TCONF" expect_ok "resolve clears package-fixture conflict" "$PROJENY" resolve fake.projeny fake/src/a.c
+run_in "$TCONF" expect_ok "commit stores package-fixture fix" "$PROJENY" commit fake.projeny
+run_in "$TCONF" expect_ok "package works after resolve+commit" "$PROJENY" package fake.projeny c.tar.gz
+run_in "$TCONF" expect_ok "extract works after resolve+commit" "$PROJENY" extract fake.projeny cdir
+expect_file_contains "repaired package holds the fix" "$TCONF/cdir/src/a.c" "beta = 777"
+
+# ----------------------------------------- 96. extract/package edge cases
+TEDGE="$ROOT/tedge"
+make_tarballs "$TEDGE" pkg
+write_projeny "$TEDGE" pkg 1.0 pkg
+(cd "$TEDGE" && "$PROJENY" setup pkg.projeny >/dev/null 2>&1)
+mkdir -p "$TEDGE/nonempty" && printf 'x\n' > "$TEDGE/nonempty/f"
+run_in "$TEDGE" expect_fail "extract refuses non-empty dest" "$PROJENY" extract pkg.projeny nonempty
+printf 'x\n' > "$TEDGE/afile"
+run_in "$TEDGE" expect_fail "extract refuses non-directory dest" "$PROJENY" extract pkg.projeny afile
+run_in "$TEDGE" expect_ok "extract creates nested dest" "$PROJENY" extract pkg.projeny a/b/c
+expect_file_contains "nested extract lands files" "$TEDGE/a/b/c/src/a.c" "alpha = 1"
+run_in "$TEDGE" expect_ok "package creates missing parents" "$PROJENY" package pkg.projeny sub/dir/o.tar.gz
+if [ -f "$TEDGE/sub/dir/o.tar.gz" ]; then
+    ok "package writes through missing parents"
+else
+    fail "package writes through missing parents"
+fi
+# pending rename: new name in, old name out.
+run_in "$TEDGE" expect_ok "edge mv records" "$PROJENY" mv pkg.projeny pkg/src/a.c pkg/src/renamed.c
+run_in "$TEDGE" expect_ok "package after mv exits 0" "$PROJENY" package pkg.projeny mv.tar.gz
+(cd "$TEDGE" && tar -tzf mv.tar.gz | sort > mv-members.txt)
+if grep -qx "mv/src/renamed.c" "$TEDGE/mv-members.txt"; then
+    ok "package holds the renamed file"
+else
+    fail "package holds the renamed file" "$(cat "$TEDGE/mv-members.txt")"
+fi
+if grep -qx "mv/src/a.c" "$TEDGE/mv-members.txt"; then
+    fail "package drops the old name" "$(cat "$TEDGE/mv-members.txt")"
+else
+    ok "package drops the old name"
+fi
+# CLI arity and missing inputs.
+run_in "$TEDGE" expect_fail "package with missing args fails" "$PROJENY" package pkg.projeny
+run_in "$TEDGE" expect_fail "package with extra args fails" "$PROJENY" package pkg.projeny o.tar.gz extra
+run_in "$TEDGE" expect_fail "extract with missing args fails" "$PROJENY" extract pkg.projeny
+run_in "$TEDGE" expect_fail "extract with extra args fails" "$PROJENY" extract pkg.projeny d extra
+run_in "$TEDGE" expect_fail "package of missing project fails" "$PROJENY" package gone.projeny o.tar.gz
+mkdir -p "$TEDGE/emptyproj"
+run_in "$TEDGE" expect_fail "package of empty dir fails" "$PROJENY" package emptyproj o2.tar.gz
+if [ -e "$TEDGE/o2.tar.gz" ]; then
+    fail "failed package writes no archive" "$(ls "$TEDGE")"
+else
+    ok "failed package writes no archive"
+fi
+
+# ----------------------------------------- 97. trailing blank lines roundtrip
+# Files ending in one or more blank lines must survive commit->setup exactly
+# (new files and modifications alike); blank lines are real content.
+TNL="$ROOT/tnl"
+mkdir -p "$TNL/w-1.0"
+printf 'seed\n' > "$TNL/w-1.0/s.txt"
+(cd "$TNL" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Blanks.\n' > "$TNL/w.projeny"
+(cd "$TNL" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'a\n\n\n' > "$TNL/w/blanks.txt"
+printf 'b\n\n' > "$TNL/w/one.txt"
+printf 'seed\n\n' > "$TNL/w/s.txt"
+(cd "$TNL" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+printf 'a\n\n\n' > "$TNL/expect-blanks.txt"
+printf 'b\n\n' > "$TNL/expect-one.txt"
+printf 'seed\n\n' > "$TNL/expect-s.txt"
+rm -rf "$TNL/w" "$TNL/w.projeny.status"
+(cd "$TNL" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+if cmp -s "$TNL/w/blanks.txt" "$TNL/expect-blanks.txt"; then
+    ok "new file keeps two trailing blank lines"
+else
+    fail "new file keeps two trailing blank lines" "$(xxd "$TNL/w/blanks.txt" | tail -2)"
+fi
+if cmp -s "$TNL/w/one.txt" "$TNL/expect-one.txt"; then
+    ok "new file keeps one trailing blank line"
+else
+    fail "new file keeps one trailing blank line" "$(xxd "$TNL/w/one.txt" | tail -2)"
+fi
+if cmp -s "$TNL/w/s.txt" "$TNL/expect-s.txt"; then
+    ok "modified file keeps appended blank line"
+else
+    fail "modified file keeps appended blank line" "$(xxd "$TNL/w/s.txt" | tail -2)"
+fi
+
+# ----------------------------------------- 98. binaries ride along, never in patches
+# Untracked binaries (like a package tarball written into the workdir) must
+# survive setup/package/extract/commit: preserved on disk, left out of
+# patches and archives. Tracked-binary edits still fail loudly.
+TBIN="$ROOT/tbin"
+make_tarballs "$TBIN" pkg
+write_projeny "$TBIN" pkg 1.0 pkg
+(cd "$TBIN" && "$PROJENY" setup pkg.projeny >/dev/null 2>&1)
+python3 -c "open('$TBIN/pkg/blob.bin','wb').write(b'\x00\x01\x02\n')"
+printf 'untracked text\n' > "$TBIN/pkg/NOTE.txt"
+run_in "$TBIN" expect_ok "package with binaries present exits 0" "$PROJENY" package pkg.projeny pkg/out.tar.gz
+(cd "$TBIN" && tar -tzf pkg/out.tar.gz | sort > bin-members.txt)
+if grep -q "blob.bin\|out.tar.gz\|NOTE" "$TBIN/bin-members.txt"; then
+    fail "package leaves all untracked files out" "$(cat "$TBIN/bin-members.txt")"
+else
+    ok "package leaves all untracked files out"
+fi
+# Second packaging run: the first run's tarball (an untracked binary sitting
+# in the workdir) must neither break setup nor sneak into the new archive.
+run_in "$TBIN" expect_ok "second package exits 0" "$PROJENY" package pkg.projeny pkg/out2.tar.gz
+(cd "$TBIN" && tar -tzf pkg/out2.tar.gz | sort > bin-members2.txt)
+if grep -q "blob.bin\|out.tar.gz\|out2.tar.gz\|NOTE" "$TBIN/bin-members2.txt"; then
+    fail "repackage leaves binaries out" "$(cat "$TBIN/bin-members2.txt")"
+else
+    ok "repackage leaves binaries out"
+fi
+if [ -f "$TBIN/pkg/blob.bin" ] && [ -f "$TBIN/pkg/out.tar.gz" ]; then
+    ok "setups preserve untracked binaries on disk"
+else
+    fail "setups preserve untracked binaries on disk" "$(ls "$TBIN/pkg")"
+fi
+run_in "$TBIN" expect_ok "commit ignores binaries" "$PROJENY" commit pkg.projeny
+if grep -q "blob.bin" "$TBIN/pkg.projeny" || grep -q "out.tar.gz" "$TBIN/pkg.projeny" || grep -q "out2.tar.gz" "$TBIN/pkg.projeny"; then
+    fail "commit leaves binaries out of the patch" "$(grep "blob.bin\|tar.gz" "$TBIN/pkg.projeny")"
+else
+    ok "commit leaves binaries out of the patch"
+fi
+if grep -q "NOTE" "$TBIN/pkg.projeny"; then
+    ok "commit still folds untracked text (binaries only are special)"
+else
+    fail "commit still folds untracked text (binaries only are special)"
+fi
+run_in "$TBIN" expect_ok "setup after binary commit" "$PROJENY" setup pkg.projeny
+if [ -f "$TBIN/pkg/blob.bin" ] && [ -f "$TBIN/pkg/NOTE.txt" ]; then
+    ok "post-commit setup preserves untracked files"
+else
+    fail "post-commit setup preserves untracked files" "$(ls "$TBIN/pkg")"
+fi
+# Explicit binary intent fails: adding an untracked binary is refused.
+run_in "$TBIN" expect_fail "add of binary fails" "$PROJENY" add pkg.projeny pkg/blob.bin
+if [ -f "$TBIN/pkg/blob.bin" ]; then
+    ok "refused add leaves the file alone"
+else
+    fail "refused add leaves the file alone"
+fi
+# Tracked binaries: edits fail commit and setup loudly (never silently
+# reverted or dropped), and rm refuses upfront.
+TBIN2="$ROOT/tbin2"
+mkdir -p "$TBIN2/b-1.0"
+python3 -c "open('$TBIN2/b-1.0/b.dat','wb').write(b'a\x00b\n')"
+printf 'ok\n' > "$TBIN2/b-1.0/f.c"
+(cd "$TBIN2" && tar -czf b-1.0.tar.gz b-1.0 && rm -rf b-1.0)
+printf 'Archive: b-1.0.tar.gz\nOrigname: b-1.0\nName: b\n\n    Tracked binary.\n' > "$TBIN2/b.projeny"
+(cd "$TBIN2" && "$PROJENY" setup b.projeny >/dev/null 2>&1)
+python3 -c "open('$TBIN2/b/b.dat','wb').write(b'a\x00CHANGED\n')"
+run_in "$TBIN2" expect_fail "commit of edited tracked binary fails" "$PROJENY" commit b.projeny
+run_in "$TBIN2" expect_fail "setup refuses to revert tracked binary edit" "$PROJENY" setup b.projeny
+python3 -c "open('$TBIN2/b/b.dat','wb').write(b'a\x00b\n')"
+run_in "$TBIN2" expect_ok "setup works after restoring binary" "$PROJENY" setup b.projeny
+run_in "$TBIN2" expect_fail "rm of tracked binary fails" "$PROJENY" rm b.projeny b/b.dat
+if [ -f "$TBIN2/b/b.dat" ]; then
+    ok "refused rm leaves the file alone"
+else
+    fail "refused rm leaves the file alone"
+fi
 
 # ------------------------------------------------------------- summary
 echo "---"

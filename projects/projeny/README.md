@@ -32,6 +32,8 @@ projeny rebase <f.projeny> <tarball>     point the project at a new tarball
 projeny status <f.projeny>               show setup/conflict/pending state
 projeny diff <dir> <other-dir>           print the diff between two trees
 projeny patch <dir> <patch-file>         apply a patch file to a tree
+projeny package <f.projeny|dir> <out>    setup, then tar the tracked files
+projeny extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir
 projeny help [command]                   show help (per-command with a name)
 ```
 
@@ -47,7 +49,10 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   them onto a fresh setup of the *current* `.projeny` (which may name a
   different `Archive:` — e.g. upstream moved to a newer tarball). Merge
   failures leave conflict markers in the workdir and record the files in
-  the status file.
+  the status file. A setup that leaves conflicts still finishes (workdir,
+  `.projeny` file, and status are all updated) but exits 1, so scripts
+  under `set -e` stop instead of building from a conflicted tree; fix the
+  files, `resolve` each one, and `commit`.
 - `commit`: requires the `.projeny` file to match the status copy exactly
   (else hard error: run `setup` to merge first) and refuses when conflicts
   are pending. Otherwise it diffs the workdir against the base archive and
@@ -85,6 +90,20 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   fuzz; already-applied blocks are skipped. Unapplyable blocks become
   conflicts: markers (`<<<<<<< current` / `=======` / `>>>>>>> patched`)
   go inline and the conflicted files are listed on stdout (exit stays 0).
+- `package <f.projeny|dir> <output-tarball>`: runs `setup` (so uncommitted
+  workdir changes are included, and conflicts fail the command with a
+  nonzero exit and no archive), then tars up exactly the tracked files —
+  base archive plus patch plus pending add/rm/mv ops, minus untracked
+  files — like `git archive` / `package-source.sh`. The first argument may
+  be the `.projeny` file or a directory holding (or, as `<dir>.projeny`
+  for a `<dir>` workdir, naming) exactly one of them. The archive holds a
+  single top-level directory named after the output file, and compression
+  is autodetected from its extension (`.tar`, `.tar.gz`/`.tgz`,
+  `.tar.bz2`, `.tar.xz`, `.tar.zst`).
+- `extract <f.projeny|dir> <dest-dir>`: like `package`, except the tracked
+  files are copied into `<dest-dir>` instead of archived — the projeny
+  variant of `extract_source`, for building outside the checkout. The
+  destination must not exist or must be empty.
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
 
@@ -186,8 +205,13 @@ in C++ (no `git` invocation anywhere): diffs are git-compatible unified
 diffs (`diff --git a/... b/...`, `---`/`+++`, `@@` hunks, new/deleted file
 entries) accepted by `git apply` and `patch -p1`, and the applier accepts
 git-style diffs (including `a/`/`b/` prefixes, `/dev/null` sides, and
-`new file mode` lines) with fuzz. Binary files are refused with a clear
-error.
+`new file mode` lines) with fuzz. NUL-bearing (binary) files are invisible
+to diffs — unified diffs cannot carry binary bytes — so untracked binaries
+(like a package tarball written into the workdir) are left out of patches
+and packages, while anything a patch would have to represent (a pending
+add/rename of a binary, or a tracked binary that changed or vanished)
+fails loudly instead of being silently dropped. `setup` carries untracked
+binaries across workdir replacement instead of deleting them.
 
 ## Build and test
 
@@ -223,7 +247,7 @@ setup-again noops, divergent merges (clean and conflicting, including
 across `Archive:` versions), resolve+commit, add/rm/mv+commit, clean and
 conflicting rebases, the setup-first rebase fallback, rebase with pending
 ops preserved, bare wid-relative `resolve`, marker-warning `resolve`,
-trailing-whitespace commit→setup roundtrips, pax-metadata tarballs,
+trailing-whitespace commit→setup roundtrips, trailing blank lines, pax-metadata tarballs,
 newline-less `.projeny` setup→commit, `" -> "` filenames in the status
 file, tar-escape rejection, and every hard-error path (missing status,
 multi-top-level tarball, commit-after-edit, dirty rebase). It further covers
@@ -238,9 +262,14 @@ preservation, no-change commits, and CLI error paths — plus optional
 `git apply --check` / `patch -p1 --dry-run` compatibility spot-checks that
 verify stored patches with those tools when they are installed, plus
 `diff`/`patch` roundtrips and minimum-diff cases, `patch` conflict
-markers with console lists, git-conflicted `.projeny` recovery via
+markers with console lists, untracked-binary tolerance (binaries ride
+along across setups but never enter patches) with explicit-binary
+refusal, git-conflicted `.projeny` recovery via
 `setup` (simple, harder, and no-checkout cases, with real `git` merges
 when `git` is installed and hand-made markers otherwise), malformed /
-truncated `.projeny` refusal, and per-command `help <cmd>` texts. It prints
+truncated `.projeny` refusal, per-command `help <cmd>` texts, and
+`package`/`extract` (tracked-only payloads, uncommitted-change inclusion,
+compression autodetect, conflict refusal, `extract`-equals-`package`). It prints
 `ok`/`FAIL` lines with a `passed/failed` summary and exits nonzero on
-any failure.
+any failure. A conflicting `setup` exits 1 (with markers left behind),
+so the suite asserts `expect_fail` for every conflict-leaving setup.

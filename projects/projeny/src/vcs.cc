@@ -79,8 +79,10 @@ FileLines split_content(const std::string& data)
         return fl; // empty file: no lines, ends_nl irrelevant (true)
     fl.ends_nl = data.back() == '\n';
     fl.lines = split_raw(data);
-    if (fl.ends_nl && !fl.lines.empty() && fl.lines.back().empty())
-        fl.lines.pop_back();
+    // NOTE: no pop_back here. split_raw already drops the artifact of the
+    // final terminator (a trailing '\n' yields no extra element), so a
+    // trailing "" element is a real blank line and must be kept: dropping
+    // it loses blank lines at end of file on every commit roundtrip.
     return fl;
 }
 
@@ -110,6 +112,11 @@ bool is_scratch_rel(const std::string& rel)
 struct Collected {
     bool is_symlink = false;
     bool is_exec = false; // regular files only
+    bool is_binary = false; // regular files only: content holds NUL bytes.
+        // Always false: collect_into() leaves NUL-bearing files out of the
+        // maps entirely, so diffs never see binary bytes (see below). The
+        // flag exists so the refusal sites in vcs_diff_trees stay explicit
+        // about the invariant instead of silently assuming it.
     std::string content;  // regular: raw bytes; symlink: link target
 };
 
@@ -169,11 +176,18 @@ void collect_into(const std::string& root, const std::string& rel,
     }
     if (S_ISREG(st.st_mode)) {
         std::string data = read_file_bytes(full);
-        if (data.find('\0') != std::string::npos)
-            die(what + ": '" + rel + "' is a binary file; binary files are not supported");
+        if (data.find(char(0)) != std::string::npos)
+            return; // NUL-bearing files are invisible to diffs: leaving them
+                    // out keeps every diff binary-free (unified diffs cannot
+                    // carry binary bytes). Callers in ops.cc enforce the rest
+                    // of the policy explicitly: setup carries untracked
+                    // binaries across workdir replacement and refuses to
+                    // silently revert tracked-binary edits/deletions, while
+                    // commit refuses any binary it would have to represent.
         Collected c;
         c.is_symlink = false;
         c.is_exec = (st.st_mode & 0111) != 0;
+        c.is_binary = false;
         c.content = data;
         out[rel] = c;
         return;
@@ -650,7 +664,11 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
         const Collected& nw = common_work[rel];
         if (ob.is_symlink == nw.is_symlink && ob.content == nw.content &&
             mode_of(ob) == mode_of(nw))
-            continue; // unchanged
+            continue; // unchanged (untouched binaries pass through silently)
+        if ((!ob.is_symlink && ob.is_binary) ||
+            (!nw.is_symlink && nw.is_binary))
+            die("cannot diff trees: '" + rel +
+                "' is a binary file; binary files are not supported");
         if (ob.is_symlink != nw.is_symlink) {
             // Typechange: emit as delete+add hunks in one block (mode lines
             // record the transition; hunks carry old->new content).
@@ -670,6 +688,8 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
         for (size_t j = 0; j < added.size(); ++j) {
             if (deleted[i].c.is_symlink != added[j].c.is_symlink)
                 continue;
+            if (deleted[i].c.is_binary || added[j].c.is_binary)
+                continue; // renames of binaries fall through to the refusal below
             if (deleted[i].c.content == added[j].c.content) {
                 renames.push_back({i, j, 100});
             }
@@ -696,10 +716,10 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
     };
     std::vector<Cand> cands;
     for (size_t i = 0; i < deleted.size(); ++i) {
-        if (used_d[i] || deleted[i].c.is_symlink)
+        if (used_d[i] || deleted[i].c.is_symlink || deleted[i].c.is_binary)
             continue;
         for (size_t j = 0; j < added.size(); ++j) {
-            if (used_a[j] || added[j].c.is_symlink)
+            if (used_a[j] || added[j].c.is_symlink || added[j].c.is_binary)
                 continue;
             int sim = line_similarity(deleted[i].c.content, added[j].c.content);
             if (sim >= 50)
@@ -726,6 +746,9 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
     for (size_t i = 0; i < deleted.size(); ++i) {
         if (used_d[i])
             continue;
+        if (!deleted[i].c.is_symlink && deleted[i].c.is_binary)
+            die("cannot diff trees: '" + deleted[i].rel +
+                "' is a binary file; binary files are not supported");
         jobs.push_back(
             {deleted[i].rel, emit_block(wid, deleted[i].rel, "", &deleted[i].c,
                                         nullptr, false, 0)});
@@ -733,6 +756,9 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
     for (size_t j = 0; j < added.size(); ++j) {
         if (used_a[j])
             continue;
+        if (!added[j].c.is_symlink && added[j].c.is_binary)
+            die("cannot diff trees: '" + added[j].rel +
+                "' is a binary file; binary files are not supported");
         jobs.push_back({added[j].rel, emit_block(wid, "", added[j].rel, nullptr,
                                                  &added[j].c, false, 0)});
     }

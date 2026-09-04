@@ -35,7 +35,7 @@ int usage(const char* arg0, bool err)
     FILE* f = err ? stderr : stdout;
     fprintf(f,
             "usage: %s "
-            "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|help> "
+            "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|package|extract|help> "
             "[args]\n"
             "  setup <f.projeny>\n"
             "  commit <f.projeny>\n"
@@ -47,6 +47,8 @@ int usage(const char* arg0, bool err)
             "  status <f.projeny>\n"
             "  diff <dir> <other-dir>\n"
             "  patch <dir> <patch-file>\n"
+            "  package <f.projeny|dir> <output-tarball>\n"
+            "  extract <f.projeny|dir> <dest-dir>\n"
             "  help [command]\n",
             arg0);
     return err ? 1 : 0;
@@ -119,6 +121,16 @@ int main(int argc, char** argv)
         if (args.size() != 3)
             return usage(arg0.c_str(), true);
         return cmd_patch(args[1], args[2]);
+    }
+    if (cmd == "package") {
+        if (args.size() != 3)
+            return usage(arg0.c_str(), true);
+        return cmd_package(args[1], args[2]);
+    }
+    if (cmd == "extract") {
+        if (args.size() != 3)
+            return usage(arg0.c_str(), true);
+        return cmd_extract(args[1], args[2]);
     }
     fprintf(stderr, "projeny: error: unknown command '%s'\n", cmd.c_str());
     return usage(arg0.c_str(), true);

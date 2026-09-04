@@ -35,6 +35,8 @@
 #include <iostream>
 #include <unistd.h>
 
+#include <sys/stat.h>
+
 Ctx resolve_ctx(const std::string& projeny_arg)
 {
     Ctx c;
@@ -207,23 +209,164 @@ void sort_unique(std::vector<std::string>* v)
     v->erase(std::unique(v->begin(), v->end()), v->end());
 }
 
+// True when `path` exists as a regular file whose bytes contain a NUL.
+// Missing paths and non-regular files are not binary.
+bool is_binary_file(const std::string& path)
+{
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0)
+        return false;
+    if (!S_ISREG(st.st_mode))
+        return false;
+    return read_file_bytes(path).find(char(0)) != std::string::npos;
+}
+
+// Die naming the first NUL-bearing regular file at or under `rel`
+// (workdir-relative), if any. Used to refuse explicit binary intent
+// (`add`/`rm`/`mv` targets, pending commit ops): a patch could never
+// carry those bytes.
+void refuse_binary_at(const std::string& workdir, const std::string& rel,
+                      const std::string& what)
+{
+    std::string full = join_path(workdir, rel);
+    if (is_binary_file(full))
+        die("cannot " + what + " '" + rel +
+            "': it is a binary file; binary files are not supported");
+    struct stat st;
+    if (lstat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        return;
+    std::vector<std::string> stack;
+    stack.push_back(rel);
+    while (!stack.empty()) {
+        std::string d = stack.back();
+        stack.pop_back();
+        for (const std::string& name : list_dir_names(join_path(workdir, d))) {
+            std::string r = d + "/" + name;
+            std::string f = join_path(workdir, r);
+            if (is_binary_file(f))
+                die("cannot " + what + " '" + rel + "': '" + r +
+                    "' is a binary file; binary files are not supported");
+            struct stat lst;
+            if (lstat(f.c_str(), &lst) == 0 && S_ISDIR(lst.st_mode))
+                stack.push_back(r);
+        }
+    }
+}
+
+// Binary-file policy for workdir replacement (setup/rebase) and commit.
+//
+// Diffs never see NUL-bearing files (collection skips them), so without
+// help here a tracked-binary edit would be silently reverted by setup (or
+// silently dropped by commit), while an untracked binary (like a package
+// tarball written into the workdir, or build junk) would be silently
+// deleted along with the old tree. Instead, comparing `workdir` against
+// `other_tree` (the incoming tree for setup/rebase, the unpacked base for
+// commit):
+//   - a workdir binary that differs from other_tree (content or exec bit)
+//     is a tracked-binary change diffs cannot represent: die;
+//   - an other_tree binary missing from the workdir is a tracked-binary
+//     deletion: die;
+//   - a workdir binary missing from other_tree is untracked: with carry it
+//     is copied over (setup/rebase preserve it on disk); commit passes
+//     carry=false and simply leaves it out of the patch, like git leaves
+//     untracked files out of commits.
+void reconcile_binaries(const std::string& workdir,
+                        const std::string& other_tree, bool carry)
+{
+    if (!is_dir(workdir) || !is_dir(other_tree))
+        return; // fresh setup: nothing to compare or preserve yet
+    auto same_bytes = [](const std::string& a, const std::string& b) {
+        return read_file_bytes(a) == read_file_bytes(b);
+    };
+    auto same_exec = [](const std::string& a, const std::string& b) {
+        struct stat sa, sb;
+        if (lstat(a.c_str(), &sa) != 0 || lstat(b.c_str(), &sb) != 0)
+            return false;
+        return ((sa.st_mode & 0111) != 0) == ((sb.st_mode & 0111) != 0);
+    };
+    // Forward: workdir binaries vs the other tree.
+    {
+        std::vector<std::string> stack;
+        stack.push_back("");
+        while (!stack.empty()) {
+            std::string d = stack.back();
+            stack.pop_back();
+            std::string abs = d.empty() ? workdir : join_path(workdir, d);
+            for (const std::string& name : list_dir_names(abs)) {
+                std::string rel = d.empty() ? name : d + "/" + name;
+                std::string full = join_path(workdir, rel);
+                struct stat lst;
+                if (lstat(full.c_str(), &lst) != 0)
+                    die("cannot stat '" + full + "': " + strerror(errno));
+                if (S_ISDIR(lst.st_mode)) {
+                    stack.push_back(rel);
+                    continue;
+                }
+                if (!S_ISREG(lst.st_mode) || !is_binary_file(full))
+                    continue;
+                std::string o = join_path(other_tree, rel);
+                if (path_exists(o)) {
+                    if (!same_bytes(full, o) || !same_exec(full, o))
+                        die("cannot proceed with '" + rel +
+                            "': it is a binary file with uncommitted changes; "
+                            "binary files are not supported");
+                } else if (carry) {
+                    make_dirs(dirname_of(o));
+                    copy_path_preserving(full, o);
+                }
+            }
+        }
+    }
+    // Reverse: other_tree binaries missing from the workdir are deletions.
+    {
+        std::vector<std::string> stack;
+        stack.push_back("");
+        while (!stack.empty()) {
+            std::string d = stack.back();
+            stack.pop_back();
+            std::string abs =
+                d.empty() ? other_tree : join_path(other_tree, d);
+            for (const std::string& name : list_dir_names(abs)) {
+                std::string rel = d.empty() ? name : d + "/" + name;
+                std::string full = join_path(other_tree, rel);
+                struct stat lst;
+                if (lstat(full.c_str(), &lst) != 0)
+                    die("cannot stat '" + full + "': " + strerror(errno));
+                if (S_ISDIR(lst.st_mode)) {
+                    stack.push_back(rel);
+                    continue;
+                }
+                if (!S_ISREG(lst.st_mode) || !is_binary_file(full))
+                    continue;
+                if (!path_exists(join_path(workdir, rel)))
+                    die("cannot proceed with '" + rel +
+                        "': it is a deleted binary file; binary files are "
+                        "not supported");
+            }
+        }
+    }
+}
+
 void write_status(const Ctx& ctx, const StatusData& sd)
 {
     write_file_bytes(ctx.statusfile, sd.serialize());
 }
 
-// Fresh setup: wipe workdir, unpack current archive, apply current patch.
+// Fresh setup: unpack the current archive, apply the current patch, and move
+// the result into place. Unpacks before touching the workdir (a bad patch
+// dies leaving the checkout intact), and reconciles binaries before the
+// replacement so untracked binaries survive and tracked-binary changes fail
+// loudly instead of being silently reverted.
 void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
 {
     std::string workdir = join_path(ctx.pdir, cur.name);
-    if (path_exists(workdir) && !remove_recursive(workdir))
-        die("cannot remove existing workdir '" + workdir + "'");
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-setup-");
     unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
-    if (!apply_patch_whole(join_path(tmp.path, cur.origname), cur.patch,
-                           cur.name, scratch_parent_for(ctx.pdir))) {
-        std::vector<VcsFailure> bad = apply_patch_per_file(
-            join_path(tmp.path, cur.origname), cur.patch, cur.name);
+    std::string fresh = join_path(tmp.path, cur.origname);
+    if (!apply_patch_whole(fresh, cur.patch, cur.name,
+                           scratch_parent_for(ctx.pdir))) {
+        std::vector<VcsFailure> bad =
+            apply_patch_per_file(fresh, cur.patch, cur.name);
         std::string detail;
         for (const auto& f : bad) {
             detail += "  " + f.display + "\n";
@@ -232,7 +375,12 @@ void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
                 cur.archive + "'",
             detail);
     }
-    move_path(join_path(tmp.path, cur.origname), workdir);
+    if (path_exists(workdir))
+        reconcile_binaries(workdir, fresh, true);
+    if (path_exists(workdir) && !remove_recursive(workdir))
+        die("cannot remove existing workdir '" + workdir + "'");
+    move_path(fresh, workdir);
+    tmp.release(); // fresh moved out; don't delete it
 }
 
 // Conflicted setup: the .projeny file holds git conflict markers (from
@@ -841,6 +989,8 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     sd.embedded = upstream_text;
     write_status(ctx, sd);
     write_file_bytes(ctx.projeny_arg, upstream_text);
+    if (!actual_workdir.empty())
+        reconcile_binaries(actual_workdir, Ntree, true);
     if (path_exists(cur_workdir) && !remove_recursive(cur_workdir))
         die("cannot remove existing workdir '" + cur_workdir + "'");
     move_path(Ntree, cur_workdir);
@@ -865,12 +1015,14 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
                ".projeny file and merging local changes into '%s'\n",
                ctx.projeny_arg.c_str(), cur_workdir.c_str());
     if (!sd.conflicts.empty()) {
-        printf("projeny: conflicted checkout has %zu conflict(s):\n",
-               sd.conflicts.size());
+        printf("projeny: merged with %zu conflict(s):\n", sd.conflicts.size());
         for (auto& c : sd.conflicts)
             printf("  %s\n", c.c_str());
+        printf("projeny: setup left conflicts (exit 1); fix them, then "
+               "`resolve` each file and `commit`\n");
+        return 1;
     } else {
-        printf("projeny: conflicted checkout merged cleanly\n");
+        printf("projeny: merged local changes onto '%s'\n", cur_workdir.c_str());
     }
     return 0;
 }
@@ -977,15 +1129,27 @@ int cmd_setup(const std::string& projeny_arg)
 
     if (normalize_patch_text(U) == normalize_patch_text(oldpf.patch)) {
         // No local changes: plain fresh setup from CURRENT .projeny. Keep
-        // pending add/rm/mv ops (documented choice); clear conflicts.
+        // pending add/rm/mv ops (documented choice); previously recorded
+        // conflicts are unioned, never silently dropped (like the
+        // conflicted-.projeny path below).
         do_fresh_setup(ctx, cur);
         StatusData sd;
         sd.status = "setup";
         sd.added = old.added;
         sd.removed = old.removed;
         sd.renamed = old.renamed;
+        sd.conflicts = old.conflicts;
+        sort_unique(&sd.conflicts);
         sd.embedded = cur.raw;
         write_status(ctx, sd);
+        if (!sd.conflicts.empty()) {
+            printf("projeny: re-set up '%s' from '%s' (no local changes) but "
+                   "%zu conflict(s) are still unresolved:\n",
+                   workdir.c_str(), cur.archive.c_str(), sd.conflicts.size());
+            for (auto& c : sd.conflicts)
+                printf("  %s\n", c.c_str());
+            return 1;
+        }
         printf("projeny: re-set up '%s' from '%s' (no local changes)\n",
                workdir.c_str(), cur.archive.c_str());
         return 0;
@@ -1001,7 +1165,9 @@ int cmd_setup(const std::string& projeny_arg)
     merge_user_diff_onto(Etree, Ntree, actual_workdir, Ntree, cur.name,
                          oldpf.name, U, &conflicts);
     // Move merged N into place: remove workdir (at old or new name), move N,
-    // and if the name changed, the old dir is gone.
+    // and if the name changed, the old dir is gone. Binaries reconcile first
+    // (untracked ones ride along; tracked changes fail loudly).
+    reconcile_binaries(actual_workdir, Ntree, true);
     if (path_exists(old_workdir) && old_workdir != workdir) {
         if (!remove_recursive(old_workdir))
             die("cannot remove old workdir '" + old_workdir + "'");
@@ -1014,6 +1180,15 @@ int cmd_setup(const std::string& projeny_arg)
     StatusData sd;
     sd.status = "setup";
     sd.conflicts = conflicts;
+    // Previously recorded (still unresolved) conflicts are unioned into the
+    // new list, never silently dropped: a clean re-merge of marker lines
+    // as ordinary content must not clear them behind the user's back
+    // (matches the conflicted-.projeny path, which unions the same way).
+    for (auto& c : old.conflicts) {
+        if (std::find(sd.conflicts.begin(), sd.conflicts.end(), c) ==
+            sd.conflicts.end())
+            sd.conflicts.push_back(c);
+    }
     sort_unique(&sd.conflicts);
     // Pending ops refer to workdir-relative files; keep them (documented).
     sd.added = old.added;
@@ -1025,6 +1200,9 @@ int cmd_setup(const std::string& projeny_arg)
         printf("projeny: merged with %zu conflict(s):\n", sd.conflicts.size());
         for (auto& c : sd.conflicts)
             printf("  %s\n", c.c_str());
+        printf("projeny: setup left conflicts (exit 1); fix them, then "
+               "`resolve` each file and `commit`\n");
+        return 1;
     } else {
         printf("projeny: merged local changes onto '%s'\n", workdir.c_str());
     }
@@ -1073,6 +1251,15 @@ int cmd_commit(const std::string& projeny_arg)
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-commit-");
     unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
     std::string base = join_path(tmp.path, cur.origname);
+    // Explicit binary intent is refused (a patch could never carry it), and
+    // tracked-binary changes/deletions fail loudly instead of being silently
+    // dropped from the patch. Untracked binaries are simply left out of the
+    // patch, like git leaves untracked files out of commits.
+    for (const auto& a : st.added)
+        refuse_binary_at(workdir, a, "commit with pending add");
+    for (const auto& rn : st.renamed)
+        refuse_binary_at(workdir, rn.second, "commit with pending rename");
+    reconcile_binaries(workdir, base, false);
     // diff_trees already returns canonical "a/<wid>/..." labels, so no
     // second canonicalization pass is needed (the old code double-wrapped
     // absolute paths and produced garbage labels). normalize_patch_text
@@ -1100,6 +1287,7 @@ int cmd_add(const std::string& projeny_arg, const std::string& path)
     std::string rel = normalize_workdir_rel(workdir, cur.name, path);
     if (!path_exists(join_path(workdir, rel)))
         die("path '" + path + "' does not exist in workdir '" + workdir + "'");
+    refuse_binary_at(workdir, rel, "add");
     // Adding a file that's already tracked by the base patch is allowed but
     // pointless; just record it idempotently.
     for (auto& a : st.added) {
@@ -1127,6 +1315,7 @@ int cmd_rm(const std::string& projeny_arg, const std::string& path)
     std::string workdir = join_path(ctx.pdir, cur.name);
     std::string rel = normalize_workdir_rel(workdir, cur.name, path);
     std::string full = join_path(workdir, rel);
+    refuse_binary_at(workdir, rel, "rm");
     // rm deletes the file from the workdir immediately AND records the
     // pending removal, so the deletion shows in the next commit's diff.
     if (path_exists(full) && !remove_recursive(full))
@@ -1167,6 +1356,7 @@ int cmd_mv(const std::string& projeny_arg, const std::string& src,
         die("source '" + src + "' does not exist in workdir '" + workdir + "'");
     if (path_exists(dfull))
         die("destination '" + dst + "' already exists in workdir '" + workdir + "'");
+    refuse_binary_at(workdir, srel, "mv");
     make_dirs(dirname_of(dfull));
     move_path(sfull, dfull);
     // Maintain pending-op bookkeeping: moving a pending-added file keeps it
@@ -1466,6 +1656,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     }
     write_file_bytes(ctx.projeny_arg, cur.raw);
 
+    reconcile_binaries(workdir, tree, true);
     if (path_exists(workdir) && !remove_recursive(workdir))
         die("cannot remove existing workdir '" + workdir + "'");
     move_path(tree, workdir);
@@ -1690,6 +1881,304 @@ int cmd_patch(const std::string& dir, const std::string& patch_file)
     return 0;
 }
 
+// ---- package / extract ----
+//
+// `package` is the projeny equivalent of package-source.sh: run `setup`
+// (so uncommitted workdir changes are included, and conflicts fail the
+// command), then tar up exactly the tracked files — the fresh base+patch
+// tree plus pending adds/renames, minus pending removals. Untracked files
+// (never committed, never `add`ed) are left out, just like `git archive`
+// leaves them out. `extract` does the same except it populates a directory
+// instead of creating an archive (the projeny variant of extract_source).
+
+namespace {
+
+// Resolve a `package`/`extract` project argument to a .projeny file path.
+// Accepts either the .projeny file itself or a directory: a directory holding
+// exactly one "*.projeny" file names it implicitly, otherwise a "<dir>.projeny"
+// sibling is used (so both the workdir and a project dir work). Dies otherwise.
+std::string resolve_projeny_path(const std::string& arg, const char* cmd)
+
+{
+    std::string a = strip_trailing_slashes(arg);
+    if (a.empty())
+        a = ".";
+    if (is_dir(a)) {
+        std::vector<std::string> cands;
+        for (const std::string& n : list_dir_names(a)) {
+            if (ends_with(n, ".projeny"))
+                cands.push_back(join_path(a, n));
+        }
+        if (cands.size() == 1)
+            return cands[0];
+        if (cands.empty()) {
+            std::string sib = a + ".projeny";
+            if (path_exists(sib) && !is_dir(sib))
+                return sib;
+            die(std::string("cannot ") + cmd + " '" + arg +
+                "': directory holds no .projeny file (nor a '" + sib +
+                "' sibling); name the .projeny file explicitly");
+        }
+        std::string detail;
+        for (auto& c : cands)
+            detail += "  " + c + "\n";
+        die(std::string("cannot ") + cmd + " '" + arg +
+            "': directory holds multiple .projeny files; name one explicitly",
+            detail);
+    }
+    return arg;
+}
+
+// Compression for `package`, autodetected from the output name, plus the
+// top-level directory name stored in the archive (the output basename with
+// the compression suffix stripped, like package-source.sh's $name prefix).
+struct ArchiveKind {
+    std::string comp; // "" | "-z" | "-j" | "-J" | "--zstd" (tar filter flag)
+    std::string prefix;
+};
+
+ArchiveKind classify_package_output(const std::string& output)
+{
+    std::string base =
+        basename_of(strip_trailing_slashes(output));
+    static const struct {
+        const char* suf;
+        const char* comp;
+    } table[] = {
+        {".tar.gz", "-z"}, {".tgz", "-z"},
+        {".tar.bz2", "-j"}, {".tbz2", "-j"}, {".tbz", "-j"},
+        {".tar.xz", "-J"}, {".txz", "-J"},
+        {".tar.zst", "--zstd"}, {".tzst", "--zstd"},
+        {".tar", ""},
+    };
+    for (auto& e : table) {
+        std::string suf = e.suf;
+        if (base.size() > suf.size() &&
+            base.compare(base.size() - suf.size(), suf.size(), suf) == 0) {
+            std::string prefix = base.substr(0, base.size() - suf.size());
+            if (prefix.empty() || prefix == "." || prefix == ".." ||
+                prefix.find('/') != std::string::npos)
+                die("bad package output name '" + output + "'");
+            return ArchiveKind{e.comp, prefix};
+        }
+    }
+    die("cannot determine archive format from '" + output +
+        "': expected one of .tar, .tar.gz/.tgz, .tar.bz2/.tbz2/.tbz, "
+        ".tar.xz/.txz, .tar.zst/.tzst");
+    return ArchiveKind{};
+}
+
+bool under_path(const std::string& rel, const std::string& base)
+{
+    return rel == base || starts_with(rel, base + "/");
+}
+
+// True when workdir-relative `rel` is tracked: present in the fresh
+// base+patch tree, pending-added (or under a pending-added dir), or a pending
+// rename destination — and not pending-removed. Untracked files (in neither)
+// are left out of packages, like `git archive` leaves them out.
+bool is_tracked_path(const std::string& rel, const std::string& fresh_root,
+                     const StatusData& st)
+{
+    for (auto& r : st.removed) {
+        if (under_path(rel, r))
+            return false;
+    }
+    for (auto& rn : st.renamed) {
+        if (under_path(rel, rn.second))
+            return true;
+    }
+    for (auto& a : st.added) {
+        if (under_path(rel, a))
+            return true;
+    }
+    return path_exists(join_path(fresh_root, rel));
+}
+
+// Copy every tracked file/symlink under `workdir` into `dest` (which must
+// already exist), recreating parent dirs on demand. Untracked files are
+// skipped; `skip_abs` (the package output itself, when it sits inside the
+// workdir) is skipped too. Empty dirs are never created (diffs cannot
+// represent them either). Dies on tracked files of unsupported type.
+void stage_tracked(const std::string& workdir, const std::string& fresh_root,
+                   const StatusData& st, const std::string& skip_abs,
+                   const std::string& dest, size_t* count)
+{
+    std::vector<std::string> stack;
+    stack.push_back("");
+    while (!stack.empty()) {
+        std::string d = stack.back();
+        stack.pop_back();
+        std::string abs = d.empty() ? workdir : join_path(workdir, d);
+        for (const std::string& name : list_dir_names(abs)) {
+            std::string rel = d.empty() ? name : d + "/" + name;
+            std::string full = join_path(workdir, rel);
+            struct stat lst;
+            if (lstat(full.c_str(), &lst) != 0)
+                die("cannot stat '" + full + "': " + strerror(errno));
+            bool is_dir = S_ISDIR(lst.st_mode) != 0;
+            bool is_link = S_ISLNK(lst.st_mode) != 0;
+            bool is_reg = S_ISREG(lst.st_mode) != 0;
+            if (is_dir)
+                stack.push_back(rel);
+            if (is_dir)
+                continue; // dirs are created on demand as parents
+            if (!is_link && !is_reg) {
+                if (is_tracked_path(rel, fresh_root, st))
+                    die("cannot package '" + rel +
+                        "': unsupported file type; only regular files, "
+                        "symlinks and directories are supported");
+                continue; // untracked special file: leave it out
+            }
+            if (!is_tracked_path(rel, fresh_root, st))
+                continue;
+            if (!skip_abs.empty() && absolutize(full) == skip_abs)
+                continue;
+            std::string dst = join_path(dest, rel);
+            make_dirs(dirname_of(dst));
+            copy_path_preserving(full, dst);
+            ++(*count);
+        }
+    }
+}
+
+} // namespace
+
+int cmd_package(const std::string& projeny_arg, const std::string& output)
+{
+    std::string pj = resolve_projeny_path(projeny_arg, "package");
+    ArchiveKind kind = classify_package_output(output); // fail fast on bad names
+    // Like `commit`, refuse upfront when a previous setup left unresolved
+    // conflicts: re-running setup here would otherwise re-merge the marker
+    // lines as ordinary content and silently clear the conflict list.
+    {
+        Ctx pre_ctx = resolve_ctx(pj);
+        if (path_exists(pre_ctx.statusfile)) {
+            StatusData pre = StatusData::parse(pre_ctx.statusfile);
+            if (!pre.conflicts.empty()) {
+                std::string detail;
+                for (auto& c : pre.conflicts)
+                    detail += "  " + c + "\n";
+                die("cannot package '" + pj +
+                    "' with unresolved conflicts from a previous setup; fix "
+                    "them and `projeny resolve` each file first",
+                    detail);
+            }
+        }
+    }
+    int rc = cmd_setup(pj);
+    if (rc != 0) {
+        warn("not packaging '" + pj + "': setup reported conflicts");
+        return rc;
+    }
+    Ctx ctx = resolve_ctx(pj);
+    StatusData st = StatusData::parse(ctx.statusfile);
+    if (!st.conflicts.empty()) {
+        std::string detail;
+        for (auto& c : st.conflicts)
+            detail += "  " + c + "\n";
+        die("cannot package '" + pj + "' with unresolved conflicts", detail);
+    }
+    ProjenyFile cur = ProjenyFile::parse(pj);
+    std::string workdir = join_path(ctx.pdir, cur.name);
+
+    // Fresh reference tree: what "tracked" means right now.
+    TempDir tref(system_scratch_parent(), "projeny-pkg-ref-");
+    std::string ref = build_tree_from_patch(
+        tref, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
+        cur.patch, "patch in '" + pj + "'");
+
+    TempDir tstage(system_scratch_parent(), "projeny-pkg-");
+    std::string payload = join_path(tstage.path, kind.prefix);
+    make_dirs(payload);
+    size_t count = 0;
+    stage_tracked(workdir, ref, st, absolutize(output), payload, &count);
+
+    std::string dd = dirname_of(output);
+    if (dd != "." && dd != "" && !path_exists(dd))
+        make_dirs(dd);
+    std::vector<std::string> argv;
+    argv.push_back("tar");
+    argv.push_back("-c");
+    if (!kind.comp.empty())
+        argv.push_back(kind.comp);
+    argv.push_back("-f");
+    argv.push_back(absolutize(output));
+    argv.push_back("-C");
+    argv.push_back(absolutize(tstage.path));
+    argv.push_back(kind.prefix);
+    CmdResult r = run_cmd(argv);
+    if (r.code != 0)
+        die("failed to create archive '" + output + "'", r.output);
+    fsync_dir(dd.empty() ? "." : dd);
+    printf("projeny: packaged %zu file(s) from '%s' into '%s' (%s/)\n",
+           count, workdir.c_str(), output.c_str(), kind.prefix.c_str());
+    return 0;
+}
+
+int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
+{
+    std::string pj = resolve_projeny_path(projeny_arg, "extract");
+    // Like `commit`, refuse upfront on conflicts left by a previous setup
+    // (see cmd_package: re-running setup would absorb the markers silently).
+    {
+        Ctx pre_ctx = resolve_ctx(pj);
+        if (path_exists(pre_ctx.statusfile)) {
+            StatusData pre = StatusData::parse(pre_ctx.statusfile);
+            if (!pre.conflicts.empty()) {
+                std::string detail;
+                for (auto& c : pre.conflicts)
+                    detail += "  " + c + "\n";
+                die("cannot extract '" + pj +
+                    "' with unresolved conflicts from a previous setup; fix "
+                    "them and `projeny resolve` each file first",
+                    detail);
+            }
+        }
+    }
+    int rc = cmd_setup(pj);
+    if (rc != 0) {
+        warn("not extracting '" + pj + "': setup reported conflicts");
+        return rc;
+    }
+    Ctx ctx = resolve_ctx(pj);
+    StatusData st = StatusData::parse(ctx.statusfile);
+    if (!st.conflicts.empty()) {
+        std::string detail;
+        for (auto& c : st.conflicts)
+            detail += "  " + c + "\n";
+        die("cannot extract '" + pj + "' with unresolved conflicts", detail);
+    }
+    ProjenyFile cur = ProjenyFile::parse(pj);
+    std::string workdir = join_path(ctx.pdir, cur.name);
+
+    std::string dest = strip_trailing_slashes(dest_dir);
+    if (dest.empty())
+        dest = ".";
+    if (path_exists(dest)) {
+        if (!is_dir(dest))
+            die("cannot extract to '" + dest_dir +
+                "': path exists but is not a directory");
+        if (!list_dir_names(dest).empty())
+            die("cannot extract to '" + dest_dir +
+                "': directory already exists and is not empty; remove it first");
+    } else {
+        make_dirs(dest);
+    }
+
+    TempDir tref(system_scratch_parent(), "projeny-ext-ref-");
+    std::string ref = build_tree_from_patch(
+        tref, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
+        cur.patch, "patch in '" + pj + "'");
+
+    size_t count = 0;
+    stage_tracked(workdir, ref, st, "", dest, &count);
+    fsync_dir(dest);
+    printf("projeny: extracted %zu file(s) from '%s' to '%s'\n", count,
+           workdir.c_str(), dest.c_str());
+    return 0;
+}
+
 int cmd_help(const std::string& arg0)
 {
     printf("usage: %s <command> [args]\n", arg0.c_str());
@@ -1706,6 +2195,8 @@ int cmd_help(const std::string& arg0)
            "  status <f.projeny>               show setup/conflict/pending state\n"
            "  diff <dir> <other-dir>           print the diff between two trees\n"
            "  patch <dir> <patch-file>         apply a patch file to a tree\n"
+           "  package <f.projeny|dir> <out>    setup, then tar the tracked files\n"
+           "  extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir\n"
            "  help [command]                   show this message or command help\n"
            "\n"
            "Paths into the work tree may be CWD-relative, absolute, or\n"
@@ -1737,7 +2228,11 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                ".projeny file (which may name a different Archive:). Merge\n"
                "failures leave conflict markers in the workdir and record\n"
                "the files in the status file; fix them, then `resolve` each\n"
-               "file and `commit`.\n"
+               "file and `commit`. A setup that leaves conflicts still\n"
+               "finishes (workdir, .projeny file, and status are all\n"
+               "updated) but exits 1, so scripts running under `set -e`\n"
+               "(like `projeny package`) stop instead of building from a\n"
+               "conflicted tree.\n"
                "\n"
                "setup is also the ONLY command that tolerates git conflict\n"
                "markers (<<<<<<<, =======, >>>>>>>, |||||||) in the .projeny\n"
@@ -1763,6 +2258,13 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "against the base archive and store the new patch in both the\n"
                ".projeny file and the status copy. Pending add/rm/mv\n"
                "operations are validated and folded in.\n"
+               "\n"
+               "NUL-bearing (binary) files are invisible to the diff:\n"
+               "untracked ones are simply left out of the patch, but\n"
+               "anything the patch would have to represent — a pending\n"
+               "add/rename of a binary, or a tracked binary that changed\n"
+               "or vanished — fails loudly instead of being silently\n"
+               "dropped.\n"
                "\n"
                "Requires the .projeny file to match the status copy exactly\n"
                "(else hard error: run `setup` to merge first) and refuses\n"
@@ -1847,6 +2349,9 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "hunks, new/deleted/rename entries; accepted by `git apply`\n"
                "and `patch -p1` as well as `projeny patch`). The diff is\n"
                "minimal: an internal Myers line diff with rename detection.\n"
+               "NUL-bearing (binary) files are invisible to the diff;\n"
+               "everything else roundtrips exactly, including trailing\n"
+               "blank lines.\n"
                "Labels use the second directory's basename, so\n"
                "`projeny diff A B > p` plus `projeny patch C p` reproduces\n"
                "B from a copy C of A. Both arguments must be directories.\n"
@@ -1875,12 +2380,52 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                t);
         return 0;
     }
+    if (topic == "package") {
+        printf("%s package <f.projeny|dir> <output-tarball>\n"
+               "\n"
+               "Run `setup` on the project, then tar up exactly the tracked\n"
+               "files into <output-tarball>: the base archive plus the patch\n"
+               "plus any uncommitted workdir changes (pending add/rm/mv ops\n"
+               "included), while untracked files (never committed, never\n"
+               "`add`ed) are left out — like `git archive` and\n"
+               "package-source.sh. The first argument may be the .projeny\n"
+               "file or a directory holding (or naming, as \"<dir>.projeny\"\n"
+               "for a \"<dir>\" workdir) exactly one .projeny file.\n"
+               "The archive holds a single top-level directory named after\n"
+               "the output file (pizlonated-libffi.tar.gz holds\n"
+               "pizlonated-libffi/...). Compression is autodetected from the\n"
+               "output extension: .tar (none), .tar.gz/.tgz (gzip),\n"
+               ".tar.bz2/.tbz2/.tbz (bzip2), .tar.xz/.txz (xz),\n"
+               ".tar.zst/.tzst (zstd). When `setup` reports conflicts the\n"
+               "command prints them and exits nonzero without writing any\n"
+               "archive.\n",
+               t);
+        return 0;
+    }
+    if (topic == "extract") {
+        printf("%s extract <f.projeny|dir> <dest-dir>\n"
+               "\n"
+               "Run `setup` on the project, then copy exactly the tracked\n"
+               "files (the same set `package` would archive: base plus patch\n"
+               "plus uncommitted changes, minus untracked files) into\n"
+               "<dest-dir>, so builds run outside the checkout — the projeny\n"
+               "variant of extract_source. The first argument may be the\n"
+               ".projeny file or a directory holding (or naming, as\n"
+               "\"<dir>.projeny\" for a \"<dir>\" workdir) exactly one\n"
+               ".projeny file. The destination must not exist or must be an\n"
+               "empty directory (remove it first to redo an extraction).\n"
+               "When `setup` reports conflicts the command prints them and\n"
+               "exits nonzero without writing anything.\n",
+               t);
+        return 0;
+    }
     if (topic == "help") {
         printf("%s help [command]\n"
                "\n"
                "With no arguments, list all commands. With a command name\n"
                "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
-               "patch, help), print a detailed explanation of that command.\n",
+               "patch, package, extract, help), print a detailed explanation\n"
+               "of that command.\n",
                t);
         return 0;
     }

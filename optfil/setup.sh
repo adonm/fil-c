@@ -182,7 +182,7 @@ else
     if [ ! -d /opt ]; then
         echo "  - Create /opt directory (doesn't currently exist)"
     fi
-    echo "  - Extract fil.tar.xz to /opt, creating /opt/fil (requires about 1.3 GB)"
+    echo "  - Extract fil.tar.xz to /opt, creating /opt/fil (requires about 1.5 GB)"
     echo
 
     if [ "$UNATTENDED" = false ]; then

@@ -1,3 +1,8 @@
+# A transient mid-function `subq $8, %rsp; addq $8, %rsp` pad around the frame
+# slot holding the argument. Historically rejected as a "mid-function
+# stack-pointer adjustment"; with static depth tracking through mid-function sp
+# writes the pad is an ordinary depth change and the slot web stays exact:
+# f(42) returns 42.
 	.file	"midframe-pad.c"
 	.text
 	.globl	f

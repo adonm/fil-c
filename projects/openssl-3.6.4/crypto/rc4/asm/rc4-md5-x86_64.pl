@@ -168,7 +168,11 @@ $code.=<<___;
 	mov	-4($dat),$YY#b
 
 	inc	$XX[0]#b
-	sub	$in0,$out
+___
+	# NOTE: $out is no longer biased by $in0 (that subtraction subtracts
+	# pointers to different objects, which capability-strict runtimes
+	# forbid); $out advances in lockstep with $in0 instead.
+$code.=<<___;
 	movl	($dat,$XX[0],4),$TX[0]#d
 ___
 $code.=<<___ if (!$md5);
@@ -189,8 +193,9 @@ $code.=<<___ if (!$md5);
 	movl	($dat,$TX[0],4),$TY#d
 	movl	($dat,$XX[0],4),$TX[0]#d
 	xorb	($in0),$TY#b
-	movb	$TY#b,($out,$in0)
+	movb	$TY#b,($out)
 	lea	1($in0),$in0
+	lea	1($out),$out
 	dec	$TX[1]
 	jnz	.Loop${MOD}_warmup
 
@@ -408,12 +413,13 @@ $code.=<<___;
 #md5#	add	2*4(%rsp),$V[2]
 #md5#	add	3*4(%rsp),$V[3]
 
-#rc4#	movdqu	%xmm2,($out,$in0)	# write RC4 output
-#rc4#	movdqu	%xmm3,16($out,$in0)
-#rc4#	movdqu	%xmm4,32($out,$in0)
-#rc4#	movdqu	%xmm5,48($out,$in0)
+#rc4#	movdqu	%xmm2,($out)		# write RC4 output
+#rc4#	movdqu	%xmm3,16($out)
+#rc4#	movdqu	%xmm4,32($out)
+#rc4#	movdqu	%xmm5,48($out)
 #md5#	lea	64($inp),$inp
 #rc4#	lea	64($in0),$in0
+#rc4#	lea	64($out),$out
 	cmp	16(%rsp),$inp		# are we done?
 	jb	.Loop
 
@@ -441,8 +447,9 @@ $code.=<<___ if ($rc4 && (!$md5 || $D));
 	movl	($dat,$TX[0],4),$TY#d
 	movl	($dat,$XX[0],4),$TX[0]#d
 	xorb	($in0),$TY#b
-	movb	$TY#b,($out,$in0)
+	movb	$TY#b,($out)
 	lea	1($in0),$in0
+	lea	1($out),$out
 	dec	$len
 	jnz	.Loop1
 

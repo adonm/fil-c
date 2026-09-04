@@ -129,15 +129,24 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 
-	subq	\$128+24, %rsp		#! alloca result size=152
 ___
+if ($ENV{SARCASM}) {
+	# Grow the region to 168 so $mod/$out can be parked in region slots
+	# (xmm pointer parking loses capabilities under sarcasm).
+	$code.="\tsubq	\$128+40, %rsp		#! alloca result size=168\n";
+} else {
+	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+}
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
 ___
 $code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lsqr_body:
-	movq	$mod, %xmm1		# common off-load
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	$mod, 152(%rsp)		#! store ptr	# park \$mod in the region\n"; }
+else { $code.="\tmovq	$mod, %xmm1		# common off-load\n"; }
+$code.=<<___;
 	movq	($inp), %rdx
 	movq	8($inp), %rax
 	movq	$n0, 128(%rsp)
@@ -493,7 +502,10 @@ $code.=<<___;
 	movq	40(%rsp), %r13
 	movq	48(%rsp), %r14
 	movq	56(%rsp), %r15
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), %rbp		#! load ptr	# reload parked \$mod\n"; }
+else { $code.="\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	%rax, 112(%rsp)
 	movq	%rdx, 120(%rsp)
@@ -527,9 +539,9 @@ $code.=<<___;
 .Loop_sqrx:
 	movl	$times,128+8(%rsp)
 ___
+if ($ENV{SARCASM}) { $code.="\tmovq	$out, 160(%rsp)		#! store ptr	# park \$out in the region\n"; }
+else { $code.="\tmovq	$out, %xmm0		# off-load\n"; }
 $code.=<<___;
-	movq	$out, %xmm0		# off-load
-___
 #first iteration
 	mulx	%rax, %r8, %r9
 	mov	%rax, %rbx
@@ -760,8 +772,10 @@ ___
 	adox	%rbp, %rbx
 	adcx	%r13, %rax
 	adcx	%rdx, %rbx
-	movq	%xmm0, $out
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	160(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr	# reload parked \$out/\$mod\n"; }
+else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	128(%rsp), %rdx		# pull $n0
 	movq	(%rsp), %r8
@@ -1131,8 +1145,8 @@ $code.=<<___;
 	movq	%xmm8,%rbx
 
 	movq	$n0, 128(%rsp)		# off-load arguments
-	movq	$out, 128+8(%rsp)
-	movq	$mod, 128+16(%rsp)
+	movq	$out, 128+8(%rsp)	#! store ptr
+	movq	$mod, 128+16(%rsp)	#! store ptr
 
 	movq	($ap), %rax
 	 movq	8($ap), %rcx
@@ -1295,8 +1309,8 @@ $code.=<<___;
 	movq	%r14, 48(%rdi)
 	movq	%r15, 56(%rdi)
 
-	movq	128+8(%rsp), $out
-	movq	128+16(%rsp), %rbp
+	movq	128+8(%rsp), $out	#! load ptr
+	movq	128+16(%rsp), %rbp	#! load ptr
 
 	movq	(%rsp), %r8
 	movq	8(%rsp), %r9
@@ -1317,8 +1331,8 @@ $code.=<<___ if ($addx);
 	movq	%xmm8,%rdx
 
 	mov	$n0, 128(%rsp)		# off-load arguments
-	mov	$out, 128+8(%rsp)
-	mov	$mod, 128+16(%rsp)
+	mov	$out, 128+8(%rsp)	#! store ptr
+	mov	$mod, 128+16(%rsp)	#! store ptr
 
 	mulx	($ap), %rbx, %r8	# 0 iteration
 	mov	%rbx, (%rsp)
@@ -1431,8 +1445,8 @@ $code.=<<___ if ($addx);
 	mov	%r15, 64+56(%rsp)
 
 	mov	128(%rsp), %rdx		# pull arguments
-	mov	128+8(%rsp), $out
-	mov	128+16(%rsp), %rbp
+	mov	128+8(%rsp), $out	#! load ptr
+	mov	128+16(%rsp), %rbp	#! load ptr
 
 	mov	(%rsp), %r8
 	mov	8(%rsp), %r9
@@ -1545,8 +1559,14 @@ $code.=<<___;
 .cfi_push	%r15
 
 	mov	$pwr, $pwr
-	subq	\$128+24, %rsp		#! alloca result size=152
 ___
+if ($ENV{SARCASM}) {
+	# Grow the region to 184 so $out/$mod/$tbl can be parked in region slots
+	# (xmm pointer parking loses capabilities under sarcasm).
+	$code.="\tsubq	\$128+56, %rsp		#! alloca result size=184\n";
+} else {
+	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+}
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
 ___
@@ -1554,10 +1574,23 @@ $code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lmul_scatter4_body:
 	leaq	($tbl,$pwr,8), $tbl
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	movq	$out, 152(%rsp)		#! store ptr
+	movq	$mod, 160(%rsp)		#! store ptr
+	movq	$tbl, 168(%rsp)		#! store ptr
+	movq	$n0, 128(%rsp)
+___
+} else {
+$code.=<<___;
 	movq	$out, %xmm0		# off-load arguments
 	movq	$mod, %xmm1
 	movq	$tbl, %xmm2
 	movq	$n0, 128(%rsp)
+___
+}
+$code.=<<___;
 
 	movq	$out, %rbp
 ___
@@ -1571,8 +1604,10 @@ $code.=<<___;
 	movq	($out),%rbx		# pass b[0]
 	call	__rsaz_512_mul
 
-	movq	%xmm0, $out
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out		#! load ptr\n\tmovq	160(%rsp), %rbp		#! load ptr\n"; }
+else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	(%rsp), %r8
 	movq	8(%rsp), %r9
@@ -1593,8 +1628,10 @@ $code.=<<___ if ($addx);
 	movq	($out), %rdx		# pass b[0]
 	call	__rsaz_512_mulx
 
-	movq	%xmm0, $out
-	movq	%xmm1, %rbp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out		#! load ptr\n\tmovq	160(%rsp), %rbp		#! load ptr\n"; }
+else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
+$code.=<<___;
 
 	movq	128(%rsp), %rdx		# pull $n0
 	movq	(%rsp), %r8
@@ -1619,7 +1656,10 @@ $code.=<<___;
 	adcq	104(%rsp), %r13
 	adcq	112(%rsp), %r14
 	adcq	120(%rsp), %r15
-	movq	%xmm2, $inp
+___
+if ($ENV{SARCASM}) { $code.="\tmovq	168(%rsp), $inp		#! load ptr\n"; }
+else { $code.="\tmovq	%xmm2, $inp\n"; }
+$code.=<<___;
 	sbbq	%rcx, %rcx
 
 	call	__rsaz_512_subtract

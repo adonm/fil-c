@@ -166,6 +166,7 @@ my @XX=("%r10","%rsi");
 my @TX=("%rax","%rbx");
 my $YY="%rcx";
 my $TY="%rdx";
+my $idx="%r9";
 
 $code.=<<___;
 	xor	$XX[0],$XX[0]
@@ -180,7 +181,9 @@ $code.=<<___;
 	xor	$TX[1],$TX[1]
 	inc	$XX[0]#b
 	sub	$XX[0],$TX[1]
-	sub	$inp,$out
+	xor	$idx,$idx	# byte index into in/out (replaces the
+				# out-in delta, which would subtract pointers
+				# to different objects)
 	movl	($dat,$XX[0],4),$TX[0]#d
 	test	\$-16,$len
 	jz	.Lloop1
@@ -199,9 +202,9 @@ $code.=<<___;
 	inc	$XX[0]#b
 	movl	($dat,$TX[0],4),$TY#d
 	movl	($dat,$XX[0],4),$TX[0]#d
-	xorb	($inp),$TY#b
-	movb	$TY#b,($out,$inp)
-	lea	1($inp),$inp
+	xorb	($inp,$idx),$TY#b
+	movb	$TY#b,($out,$idx)
+	add	\$1,$idx
 	dec	$TX[1]
 	jnz	.Loop8_warmup
 
@@ -231,9 +234,27 @@ $code.=<<___;
 	ror	\$8,%r8
 	sub	\$8,$len
 
-	xor	($inp),%r8
-	mov	%r8,($out,$inp)
-	lea	8($inp),$inp
+___
+if ($ENV{SARCASM}) {
+	# Sarcasm checks scalar accesses with natural alignment, but the
+	# 8-byte stream load/store here is deliberately unaligned (the
+	# warmup aligns the RC4 state index, not the buffers). The movq
+	# xmm,mem forms are unaligned-permissive (keystream is data,
+	# never a pointer, so no capability is at stake).
+	$code.=<<___;
+	movq	($inp,$idx),%xmm2
+	movq	%r8,%xmm3
+	pxor	%xmm3,%xmm2
+	movq	%xmm2,($out,$idx)
+___
+} else {
+	$code.=<<___;
+	xor	($inp,$idx),%r8
+	mov	%r8,($out,$idx)
+___
+}
+$code.=<<___;
+	add	\$8,$idx
 
 	test	\$-8,$len
 	jnz	.Loop8
@@ -257,9 +278,9 @@ $code.=<<___;
 	inc	$XX[0]#b
 	movl	($dat,$TX[0],4),$TY#d
 	movl	($dat,$XX[0],4),$TX[0]#d
-	xorb	($inp),$TY#b
-	movb	$TY#b,($out,$inp)
-	lea	1($inp),$inp
+	xorb	($inp,$idx),$TY#b
+	movb	$TY#b,($out,$idx)
+	add	\$1,$idx
 	dec	$TX[1]
 	jnz	.Loop16_warmup
 
@@ -276,7 +297,7 @@ sub RC4_loop {
   my $xmm="%xmm".($j&1);
 
     $code.="	add	\$16,$XX[0]#b\n"		if ($i==15);
-    $code.="	movdqu	($inp),%xmm2\n"			if ($i==15);
+    $code.="	movdqu	($inp,$idx),%xmm2\n"		if ($i==15);
     $code.="	add	$TX[0]#b,$YY#b\n"		if ($i<=0);
     $code.="	movl	($dat,$YY,4),$TY#d\n";
     $code.="	pxor	%xmm0,%xmm2\n"			if ($i==0);
@@ -291,8 +312,8 @@ sub RC4_loop {
     $code.="	lea	($dat,$XX[0],4),$XX[1]\n"	if ($i==15);
     $code.="	add	$TX[1]#b,$YY#b\n"		if ($i<15);
     $code.="	pinsrw	\$`($j>>1)&7`,($dat,$TX[0],4),$xmm\n";
-    $code.="	movdqu	%xmm2,($out,$inp)\n"		if ($i==0);
-    $code.="	lea	16($inp),$inp\n"		if ($i==0);
+    $code.="	movdqu	%xmm2,($out,$idx)\n"		if ($i==0);
+    $code.="	add	\$16,$idx\n"		if ($i==0);
     $code.="	movl	($XX[1]),$TX[1]#d\n"		if ($i==15);
 }
 	RC4_loop(-1);
@@ -318,8 +339,8 @@ $code.=<<___;
 	psllq	\$8,%xmm1
 	pxor	%xmm0,%xmm2
 	pxor	%xmm1,%xmm2
-	movdqu	%xmm2,($out,$inp)
-	lea	16($inp),$inp
+	movdqu	%xmm2,($out,$idx)
+	add	\$16,$idx
 
 	cmp	\$0,$len
 	jne	.Lloop1
@@ -335,9 +356,9 @@ $code.=<<___;
 	inc	$XX[0]#b
 	movl	($dat,$TX[0],4),$TY#d
 	movl	($dat,$XX[0],4),$TX[0]#d
-	xorb	($inp),$TY#b
-	movb	$TY#b,($out,$inp)
-	lea	1($inp),$inp
+	xorb	($inp,$idx),$TY#b
+	movb	$TY#b,($out,$idx)
+	add	\$1,$idx
 	dec	$len
 	jnz	.Lloop1
 	jmp	.Lexit

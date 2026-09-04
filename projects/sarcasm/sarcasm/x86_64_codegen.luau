@@ -1317,6 +1317,31 @@ function M.make(ctx)
 				if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
 			end
 		end
+		-- A memory access THROUGH a saved-rsp carrier register that lands inside the
+		-- current {anchored} region scope (the poly1305 frame-anchor shape: the
+		-- pre-alloca `leaq -88(%rsp), %r11` parks entry_rsp - 88; the subq-anchored
+		-- region base is entry_rsp - scopeDepth exactly, so the access addresses
+		-- region offset scopeDepth - carrier depth + disp). The frame rewrite
+		-- proved membership and passed the statement through (st.x86_regionCarrier);
+		-- retarget the operand to the region temp exactly like the direct forms.
+		if mem and not mem.dispSym and mem.base and mem.base.kind == "reg"
+			and not mem.index and node.stmt.x86_regionCarrier then
+			local e = node.stmt.x86_smap and node.stmt.x86_smap[mem.base.name]
+			local d = node.stmt.x86_depth
+			if e and not e.redefined and not e.slot and not e.roff
+				and type(d) == "table" and d.anchored and d.scopeDepth then
+				local r = d.anchored
+				local reloff = d.scopeDepth - e.depth + (mem.dispVal or 0) - r.base
+				if reloff >= 0 and reloff < r.size then
+					local newBase = rt(r.ptrTemp)
+					mem.base = newBase
+					mem.dispVal = reloff
+					node.opTemp[newBase] = r.ptrTemp
+					table.insert(node.useTemps, r.ptrTemp)
+					if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
+				end
+			end
+		end
 		return false
 	end
 

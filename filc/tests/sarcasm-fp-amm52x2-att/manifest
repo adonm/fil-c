@@ -2,5 +2,7 @@ return:
   success
 only-on-platform:
   x86_64
+needsAVX512:
+  true
 output-includes:
-  - "ok"
+  - "amm52x2 att ok"

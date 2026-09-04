@@ -880,6 +880,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						local j = i + 1
 						while j <= #body do
 							local nx = body[j]
+							-- Blank (formatting) lines are not instructions: they
+							-- cannot touch the stack or the control flow, so they
+							-- never break the straight-line window (poly1305's
+							-- avx2 body has blank lines between the annotated sub
+							-- and the andq it feeds).
+							if nx.kind == "blank" then j += 1 continue end
 							if nx.kind ~= "insn" then break end
 							local nb = cgm.baseMnemonic(string.lower(nx.mnemonic))
 							local nops = nx.operands or {}

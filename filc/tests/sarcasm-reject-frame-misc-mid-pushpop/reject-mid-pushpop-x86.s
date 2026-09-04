@@ -1,3 +1,9 @@
+# A mid-function `pushq %rax` / `popq %rax` spill round-trip of a caller-saved
+# register at a statically known depth. Historically rejected ("mid-function
+# push/pop of a non-callee-saved operand"); the spill push is now an ordinary
+# frame-slot store and its matching pop an ordinary slot load, so the shape is
+# accepted (the slot value is dead either way — the reload from the frame
+# returns 5).
 	.file	"mid-pushpop.c"
 	.text
 	.globl	f

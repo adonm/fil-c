@@ -27,10 +27,17 @@ static int alloc_cb_called;
 static int recv_cb_called;
 static int send_cb_called;
 
+/* FIXME: This test originally did `buf->base = "uv"`, handing recvmsg a
+   read-only string literal. That only works because the kernel never writes
+   into the buffer in this scenario (recvmsg returns the queued ICMP error
+   without touching the payload). Fil-C's recvmsg wrapper eagerly validates
+   that the buffer is writable, so use a writable buffer instead. */
+static char recv_buf[2];
+
 static void alloc_cb(uv_handle_t* handle, size_t sz, uv_buf_t* buf) {
   alloc_cb_called++;
-  buf->base = "uv";
-  buf->len = 2;
+  buf->base = recv_buf;
+  buf->len = sizeof(recv_buf);
 }
 
 static void recv_cb(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf,

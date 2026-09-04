@@ -3,5 +3,5 @@
 
 int setfsuid(uid_t uid)
 {
-	return syscall(SYS_setfsuid, uid);
+	return zsys_setfsuid(uid);
 }

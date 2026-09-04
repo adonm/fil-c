@@ -50,13 +50,6 @@ test ! -d projects/pizfix
 ./build_pcre.sh      # Hilariously, pcre + pcre2 would like to depend on libedit, but libedit depends
 ./build_pcre2.sh     # on ncurses, and ncurses depends on pcre2. Luckily, only pcretest wants libedit.
 ./build_jpeg-turbo.sh
-
-if [ "$ARCH" = aarch64 ]; then
-    # Everything through jpeg-turbo has been ported to Fil-C on ARM64.  Exit
-    # early until more of the corpus is ported.
-    exit 0
-fi
-
 ./build_tiff.sh
 ./build_libpng.sh
 ./build_libwebp.sh
@@ -67,6 +60,13 @@ fi
 ./build_openssl.sh
 ./build_nghttp2.sh
 ./build_curl.sh
+
+if [ "$ARCH" = aarch64 ]; then
+    # Everything through curl has been ported to Fil-C on ARM64.  Exit early
+    # until more of the corpus is ported.
+    exit 0
+fi
+
 ./build_openssh.sh
 ./build_mg.sh
 ./build_tcl.sh

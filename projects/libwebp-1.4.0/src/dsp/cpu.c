@@ -22,7 +22,8 @@
 #include <cpu-features.h>
 #endif
 
-#ifdef __FILC__
+// cpuid.h only exists for x86 in Fil-C.
+#if defined(__FILC__) && (defined(__i386__) || defined(__x86_64__))
 #include <cpuid.h>
 #endif
 

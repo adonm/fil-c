@@ -3,5 +3,5 @@
 
 int setfsgid(gid_t gid)
 {
-	return syscall(SYS_setfsgid, gid);
+	return zsys_setfsgid(gid);
 }

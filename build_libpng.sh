@@ -30,6 +30,12 @@ set -x
 
 cd projects/libpng-1.6.43
 extract_source
-CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ ./configure --prefix=$PWD/../../../pizfix
+PNG_NEON_FLAGS=""
+if [ "$ARCH" = aarch64 ]; then
+    # Fil-C cannot pizlate the multi-vector NEON loads that libpng's NEON
+    # intrinsics use.
+    PNG_NEON_FLAGS="--enable-arm-neon=no"
+fi
+CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ ./configure --prefix=$PWD/../../../pizfix $PNG_NEON_FLAGS
 make -j $NCPU
 make -j $NCPU install

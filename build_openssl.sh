@@ -30,8 +30,14 @@ set -x
 
 cd projects/openssl-3.5.7
 extract_source
+OPENSSL_ARGS="zlib"
+if [ "$ARCH" = aarch64 ]; then
+    # The aarch64 assembly is yolo asm that pizlonated C cannot call, and
+    # we have not ported it to Fil-C.  Use no-asm so everything is C.
+    OPENSSL_ARGS="no-asm zlib"
+fi
 CC="$PWD/../../../build/bin/clang -g -O2 -yolo-assembler" ./Configure \
-    zlib --prefix=$PWD/../../../pizfix --libdir=lib
+    $OPENSSL_ARGS --prefix=$PWD/../../../pizfix --libdir=lib
 make -j $NCPU
 
 # Only run the test suite in a glibc build. There are a bunch of failures in the test suite in a musl

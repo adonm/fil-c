@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2023-2025 Epic Games, Inc. All Rights Reserved.
- * Copyright (c) Filip Pizlo. All Rights Reserved.
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions

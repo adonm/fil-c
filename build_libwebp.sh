@@ -30,13 +30,20 @@ set -x
 
 cd projects/libwebp-1.4.0
 extract_source
+WEBP_NEON_FLAGS=""
+if [ "$ARCH" = aarch64 ]; then
+    # Fil-C cannot pizlate the multi-vector NEON loads that libwebp's NEON
+    # intrinsics use.
+    WEBP_NEON_FLAGS="--disable-neon"
+fi
 CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ ./configure \
     --prefix=$PWD/../../../pizfix \
     --enable-libwebpmux     \
     --enable-libwebpdemux   \
     --enable-libwebpdecoder \
     --enable-libwebpextras  \
-    --enable-swap-16bit-csp    
+    --enable-swap-16bit-csp    \
+    $WEBP_NEON_FLAGS
 make -j $NCPU
 make -j $NCPU install
 

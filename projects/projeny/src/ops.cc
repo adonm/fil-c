@@ -53,26 +53,18 @@ std::string normalize_workdir_rel(const std::string& workdir, const std::string&
     std::string p = user_path;
     // "wid/..." style: strip the leading workdir name.
     if (p == wid || starts_with(p, wid + "/")) {
-        p = (p == wid) ? "" : p.substr(wid.size() + 1);
-        std::string wrel = p;
+        std::string wrel = (p == wid) ? "" : p.substr(wid.size() + 1);
         if (wrel.empty())
             die("path '" + user_path + "' refers to the workdir itself");
-        if (wrel.find("..") != std::string::npos) {
-            // Lexical check below handles it; re-resolve against workdir.
-        }
-        std::string abs = join_path(wabs, wrel);
-        (void)abs;
-        // Fall through to lexical validation.
-        p = wrel;
-        // Validate components.
+        // Validate components lexically (reject ".." escapes).
         std::vector<std::string> parts;
         size_t i = 0;
-        while (i <= p.size()) {
-            size_t j = p.find('/', i);
-            std::string comp = (j == std::string::npos) ? p.substr(i)
-                                                       : p.substr(i, j - i);
+        while (i <= wrel.size()) {
+            size_t j = wrel.find('/', i);
+            std::string comp = (j == std::string::npos) ? wrel.substr(i)
+                                                       : wrel.substr(i, j - i);
             if (j == std::string::npos)
-                i = p.size() + 1;
+                i = wrel.size() + 1;
             else
                 i = j + 1;
             if (comp.empty() || comp == ".")
@@ -648,7 +640,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                 die("pending add '" + a + "' does not exist in '" + workdir +
                     "'; resolve pending ops before rebasing");
             make_dirs(dirname_of(join_path(expect, a)));
-            copy_file_bytes(wf, join_path(expect, a));
+            copy_path_preserving(wf, join_path(expect, a));
         }
         for (const auto& rn : st.renamed) {
             if (!path_exists(join_path(workdir, rn.second)))
@@ -656,8 +648,8 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                     "': destination missing in '" + workdir + "'");
             remove_recursive(join_path(expect, rn.first));
             make_dirs(dirname_of(join_path(expect, rn.second)));
-            copy_file_bytes(join_path(workdir, rn.second),
-                            join_path(expect, rn.second));
+            copy_path_preserving(join_path(workdir, rn.second),
+                                 join_path(expect, rn.second));
         }
         for (const auto& r : st.removed)
             remove_recursive(join_path(expect, r));
@@ -754,7 +746,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
         if (!path_exists(wf))
             die("pending add '" + a + "' vanished from '" + workdir + "'");
         make_dirs(dirname_of(join_path(tree, a)));
-        copy_file_bytes(wf, join_path(tree, a));
+        copy_path_preserving(wf, join_path(tree, a));
     }
     for (const auto& rn : st.renamed) {
         std::string wf = join_path(workdir, rn.second);
@@ -763,7 +755,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                 "' vanished from '" + workdir + "'");
         remove_recursive(join_path(tree, rn.first));
         make_dirs(dirname_of(join_path(tree, rn.second)));
-        copy_file_bytes(wf, join_path(tree, rn.second));
+        copy_path_preserving(wf, join_path(tree, rn.second));
     }
     for (const auto& r : st.removed)
         remove_recursive(join_path(tree, r));

@@ -117,6 +117,7 @@ CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd,
 
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
+    int devnull = -1;
     if (!cwd.empty())
         posix_spawn_file_actions_addchdir_np(&fa, cwd.c_str());
     if (use_stdin_data) {
@@ -127,7 +128,7 @@ CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd,
         posix_spawn_file_actions_addopen(&fa, STDIN_FILENO, stdin_file.c_str(),
                                          O_RDONLY, 0);
     } else {
-        int devnull = open("/dev/null", O_RDONLY);
+        devnull = open("/dev/null", O_RDONLY);
         if (devnull >= 0) {
             posix_spawn_file_actions_adddup2(&fa, devnull, STDIN_FILENO);
             posix_spawn_file_actions_addclose(&fa, devnull);
@@ -166,6 +167,8 @@ CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd,
     pid_t pid = -1;
     int sr = posix_spawnp(&pid, c_argv[0], &fa, nullptr, c_argv.data(), use_environ);
     posix_spawn_file_actions_destroy(&fa);
+    if (devnull >= 0)
+        close(devnull);
     if (sr != 0) {
         close(out_pipe[0]);
         close(out_pipe[1]);
@@ -687,6 +690,37 @@ void copy_recursive(const std::string& src, const std::string& dst)
         die("failed to copy '" + src + "' to '" + dst + "'", r.output);
 }
 
+void copy_path_preserving(const std::string& src, const std::string& dst)
+{
+    struct stat st;
+    if (lstat(src.c_str(), &st) != 0)
+        die("cannot stat '" + src + "': " + strerror(errno));
+    if (S_ISLNK(st.st_mode)) {
+        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
+        ssize_t r = readlink(src.c_str(), buf.data(), buf.size());
+        if (r < 0)
+            die("cannot read link '" + src + "': " + strerror(errno));
+        std::string target(buf.data(), (size_t)r);
+        make_dirs(dirname_of(dst));
+        // Never follow: replace whatever sits at dst (file or link).
+        if (path_exists(dst) && !remove_recursive(dst))
+            die("cannot remove '" + dst + "' before recreating symlink");
+        if (symlink(target.c_str(), dst.c_str()) != 0)
+            die("cannot create symlink '" + dst + "': " + strerror(errno));
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        copy_recursive(src, dst);
+        return;
+    }
+    if (S_ISREG(st.st_mode)) {
+        copy_file_bytes(src, dst);
+        return;
+    }
+    die("cannot copy '" + src + "': unsupported file type; only regular files, "
+        "symlinks and directories are supported");
+}
+
 bool contains_nul(const std::string& s)
 {
     return s.find('\0') != std::string::npos;
@@ -750,7 +784,9 @@ std::string unquote_git_path(const std::string& p)
                 case '"': out += '"'; break;
                 case '\\': out += '\\'; break;
                 default:
-                    if (p[i] >= '0' && p[i] <= '7' && i + 2 < p.size() - 1) {
+                    if (p[i] >= '0' && p[i] <= '7' && i + 2 < p.size() - 1 &&
+                        p[i + 1] >= '0' && p[i + 1] <= '7' &&
+                        p[i + 2] >= '0' && p[i + 2] <= '7') {
                         int v = (p[i] - '0') * 64 + (p[i + 1] - '0') * 8 +
                                 (p[i + 2] - '0');
                         out += (char)v;

@@ -483,8 +483,9 @@ std::string canonicalize_git_diff(const std::string& patch, const std::string& w
             return "";
         if (!wid.empty() && starts_with(s, wid + "/"))
             return s.substr(wid.size() + 1);
-        if (starts_with(s, "w/"))
-            return s.substr(2);
+        // Non-absolute input that carries no wid prefix is already a bare
+        // workdir-relative path: keep it verbatim (never strip hardcoded
+        // prefixes; a real filename may legitimately start with "w/").
         return s;
     };
     // Derive a block's canonical sides from its ---/+++ lines (one path
@@ -841,6 +842,10 @@ void check_archive_members_safe(const std::string& archive)
         for (const std::string& line : split_lines(r.output)) {
             if (line.empty())
                 continue;
+            // tar prints diagnostics (e.g. "tar: Removing leading ...")
+            // into the merged output; those are not member names.
+            if (starts_with(line, "tar: "))
+                continue;
             std::string member = line;
             if (!member.empty() && member[0] == '/')
                 die("archive member '" + member + "' is absolute; refusing");
@@ -869,6 +874,17 @@ void check_archive_members_safe(const std::string& archive)
     if (r.code != 0)
         die("cannot list archive '" + archive + "'", r.output);
     for (const std::string& line : split_lines(r.output)) {
+        if (line.empty())
+            continue;
+        // Character/block device nodes must never be unpacked (we run as
+        // whatever user invoked us, possibly root): refuse up front.
+        if (line[0] == 'c' || line[0] == 'b') {
+            std::string member = parse_tar_member_name(line);
+            if (member.empty())
+                member = line;
+            die("archive member '" + member +
+                "' is a device node; refusing");
+        }
         std::string member = parse_tar_member_name(line);
         if (member.empty())
             continue;
@@ -945,6 +961,8 @@ std::string archive_single_top_name(const std::string& archive)
     for (const std::string& line : split_lines(r.output)) {
         if (line.empty())
             continue;
+        if (starts_with(line, "tar: "))
+            continue; // tar diagnostic, not a member name
         if (is_archive_metadata_entry(line))
             continue;
         std::string e = line;

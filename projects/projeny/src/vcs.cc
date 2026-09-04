@@ -143,6 +143,27 @@ void collect_into(const std::string& root, const std::string& rel,
         c.content.assign(buf.data(), (size_t)r);
         if (c.content.find('\0') != std::string::npos)
             die(what + ": '" + rel + "' is a binary file; binary files are not supported");
+        // Fail fast on escaping targets (absolute or any ".." component),
+        // exactly like tar unpack and patch application: refusing here keeps
+        // commit from storing a patch that setup would later have to refuse.
+        if (!c.content.empty() && c.content[0] == '/')
+            die(what + ": '" + rel + "' links to absolute target '" + c.content +
+                "'; refusing (symlink escape)");
+        {
+            size_t i = 0;
+            while (i <= c.content.size()) {
+                size_t j = c.content.find('/', i);
+                std::string comp = (j == std::string::npos)
+                                       ? c.content.substr(i)
+                                       : c.content.substr(i, j - i);
+                if (comp == "..")
+                    die(what + ": '" + rel + "' links to '" + c.content +
+                        "'; refusing (link target escapes the tree)");
+                if (j == std::string::npos)
+                    break;
+                i = j + 1;
+            }
+        }
         out[rel] = c;
         return;
     }
@@ -433,7 +454,6 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
                        const Collected* new_c, bool rename, int similarity)
 {
     std::string out;
-    std::string a_lab = old_c ? diff_label("a", wid, old_rel) : "/dev/null";
     // For deletes the b-side label is /dev/null; for adds the a-side is.
     std::string da = old_c ? diff_label("a", wid, old_rel) : "/dev/null";
     std::string db = new_c ? diff_label("b", wid, new_rel) : "/dev/null";
@@ -446,7 +466,6 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
         da = diff_label("a", wid, new_rel);
     if (!new_c)
         db = diff_label("b", wid, old_rel);
-    (void)a_lab;
     out += "diff --git " + da + " " + db + "\n";
     std::string om = old_c ? mode_of(*old_c) : "";
     std::string nm = new_c ? mode_of(*new_c) : "";
@@ -1089,7 +1108,7 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
             }
             if (!cur)
                 continue;
-            if (l.empty()) {
+            if (t.empty()) {
                 cur->lines.push_back({' ', ""}); // blank context
                 continue;
             }
@@ -1501,7 +1520,41 @@ bool file_contents_equal(const FileLines& a, bool a_link, const FileLines& b,
     return join_content(a.lines, a.ends_nl) == join_content(b.lines, b.ends_nl);
 }
 
-BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
+// Classify a path for patch application. Only symlinks and regular files
+// carry readable file content. Directories, FIFOs, sockets and device nodes
+// must report per-file failure (so merges conflict) rather than dying in
+// read_file_bytes (EISDIR) or hanging forever (opening a FIFO blocks).
+enum class PathKind { Missing, Link, Regular, Other };
+
+PathKind path_kind(const std::string& full)
+{
+    struct stat st;
+    if (lstat(full.c_str(), &st) != 0)
+        return PathKind::Missing;
+    if (S_ISLNK(st.st_mode))
+        return PathKind::Link;
+    if (S_ISREG(st.st_mode))
+        return PathKind::Regular;
+    return PathKind::Other;
+}
+
+// True when every existing ancestor of `full` (strictly below `treedir`) is
+// a directory, so creating `full` cannot fail with ENOTDIR inside make_dirs
+// (which would die instead of reporting per-file failure).
+bool creatable_under(const std::string& treedir, const std::string& full)
+{
+    std::string d = dirname_of(full);
+    while (d.size() > treedir.size() && starts_with(d, treedir + "/")) {
+        struct stat st;
+        if (lstat(d.c_str(), &st) == 0 && !S_ISDIR(st.st_mode))
+            return false;
+        d = dirname_of(d);
+    }
+    return true;
+}
+
+BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
+                      const std::string& wid)
 {
     // Resolve target paths.
     std::string old_full, new_full;
@@ -1532,12 +1585,14 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
         have_new_path = true;
     } else {
         // No ---/+++: mode-only or empty-file block; path from diff sides.
+        // The wid is stripped here with the block's own wid (parse stores
+        // raw sides; the caller threads it through).
         std::string rel;
         if (!blk.git_a.empty() && blk.git_a != "/dev/null") {
             bool miss = false;
-            rel = label_to_rel(blk.git_a, "", &miss);
-            // wid already stripped during parse when sides carried it; for
-            // safety strip again is a no-op here.
+            rel = label_to_rel(blk.git_a, wid, &miss);
+            if (miss)
+                return BlkStatus::Failed;
         }
         if (rel.empty())
             return BlkStatus::Failed;
@@ -1550,8 +1605,15 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
     if (pure_rename) {
         if (blk.is_combined)
             return BlkStatus::Failed;
-        bool old_e = path_exists(old_full);
-        bool new_e = path_exists(new_full);
+        PathKind old_k = path_kind(old_full);
+        PathKind new_k = path_kind(new_full);
+        // Directories/special files at either end are not renameable
+        // content: fail cleanly (merge conflicts) instead of dying while
+        // reading them.
+        if (old_k == PathKind::Other || new_k == PathKind::Other)
+            return BlkStatus::Failed;
+        bool old_e = old_k != PathKind::Missing;
+        bool new_e = new_k != PathKind::Missing;
         if (!old_e && !new_e)
             return BlkStatus::Failed;
         if (!old_e && new_e) {
@@ -1579,6 +1641,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
         }
         // old_e && !new_e: normal rename. No expected content is stored for
         // pure renames, so lineage is the source's current content itself.
+        if (!creatable_under(treedir, new_full))
+            return BlkStatus::Failed;
         make_dirs(dirname_of(new_full));
         move_path(old_full, new_full);
         // Apply mode change if the rename carries one.
@@ -1597,7 +1661,12 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
     if (blk.is_new) {
         // Create. Already-applied when the file exists with expected content.
         // Even then, enforce the expected mode so exec-bit drift is repaired.
-        if (path_exists(new_full)) {
+        // A directory/special file in the way is a clean failure (merge
+        // conflicts), never a die (EISDIR) or a hang (FIFO open).
+        PathKind nk = path_kind(new_full);
+        if (nk == PathKind::Other)
+            return BlkStatus::Failed;
+        if (nk != PathKind::Missing) {
             FileLines exp = new_file_content(blk);
             std::string want_mode = blk.new_mode;
             bool is_link = false;
@@ -1626,23 +1695,25 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
             exp.lines.clear();
             exp.ends_nl = true;
         }
+        if (!creatable_under(treedir, new_full))
+            return BlkStatus::Failed;
         write_target(new_full, exp, blk.new_mode);
         return BlkStatus::Applied;
     }
 
     if (blk.is_deleted) {
-        if (!path_exists(old_full))
+        PathKind ok = path_kind(old_full);
+        if (ok == PathKind::Missing)
             return BlkStatus::Already;
+        if (ok == PathKind::Other)
+            return BlkStatus::Failed; // dir/special in the way: conflict
         bool is_link = false;
         FileLines cur = read_target_lines(old_full, &is_link, nullptr);
         if (blk.hunks.empty()) {
             if (unlink(old_full.c_str()) != 0 && errno != ENOENT)
                 return BlkStatus::Failed;
-            // Also handle symlink/dir? unlink works for links; for dirs the
-            // diff would not list them (only files). Use recursive remove to
-            // be safe when the path oddly became a dir.
-            if (path_exists(old_full) && !remove_recursive(old_full))
-                return BlkStatus::Failed;
+            if (path_exists(old_full))
+                return BlkStatus::Failed; // e.g. became a dir: conflict
             return BlkStatus::Applied;
         }
         FileLines dummy;
@@ -1660,11 +1731,14 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
     // Modify (possibly with rename and/or mode change).
     std::string src_full = have_old_path ? old_full : new_full;
     std::string dst_full = have_new_path ? new_full : old_full;
-    bool src_is_new_path = blk.is_rename && src_full == new_full;
-    (void)src_is_new_path;
-    if (!path_exists(src_full)) {
+    PathKind src_k = path_kind(src_full);
+    if (src_k == PathKind::Other)
+        return BlkStatus::Failed; // dir/special: conflict, not die/hang
+    if (src_k == PathKind::Missing) {
         // Already applied? Check the destination: reverse-match hunks there,
         // enforcing mode/newline even on the Already path.
+        if (path_kind(dst_full) == PathKind::Other)
+            return BlkStatus::Failed;
         if (blk.is_rename && path_exists(dst_full)) {
             bool is_link = false;
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
@@ -1695,6 +1769,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
         if (blk.is_rename) {
             if (path_exists(dst_full))
                 return BlkStatus::Failed;
+            if (!creatable_under(treedir, dst_full))
+                return BlkStatus::Failed;
             make_dirs(dirname_of(dst_full));
             move_path(src_full, dst_full);
             src_full = dst_full;
@@ -1722,6 +1798,12 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
     FileLines res;
     if (!apply_hunks(cur, blk.hunks, &res, blk.new_no_nl_file))
         return BlkStatus::Failed;
+    // A directory/special file at the destination is a clean failure, not a
+    // die inside write_target.
+    if (path_kind(dst_full) == PathKind::Other)
+        return BlkStatus::Failed;
+    if (!creatable_under(treedir, dst_full))
+        return BlkStatus::Failed;
     // Effective output mode: explicit new mode wins; otherwise a symlink
     // stays a symlink and a regular file keeps its executable bit, so
     // applying a content-only change never silently drops +x.
@@ -1747,7 +1829,7 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk)
     return BlkStatus::Applied;
 }
 
-VcsFailure failure_for_block(const PBlock& blk)
+VcsFailure failure_for_block(const PBlock& blk, const std::string& wid)
 {
     VcsFailure f;
     auto uniq_push = [&](std::vector<std::string>& v, const std::string& p) {
@@ -1817,10 +1899,12 @@ VcsFailure failure_for_block(const PBlock& blk)
             f.display = "<unknown file>";
         return f;
     }
-    // No ---/+++: mode-only/empty fallback via diff sides.
+    // No ---/+++: mode-only/empty fallback via diff sides. The wid must be
+    // stripped with the block's own wid (callers thread it through); using
+    // "" here would leak the wid prefix into merge paths.
     if (!blk.git_a.empty() && blk.git_a != "/dev/null") {
         bool miss = false;
-        std::string rel = label_to_rel(blk.git_a, "", &miss);
+        std::string rel = label_to_rel(blk.git_a, wid, &miss);
         if (!miss && !rel.empty()) {
             f.display = rel;
             f.paths.push_back(rel);
@@ -1831,7 +1915,7 @@ VcsFailure failure_for_block(const PBlock& blk)
     }
     if (!blk.git_b.empty() && blk.git_b != "/dev/null") {
         bool miss = false;
-        std::string rel = label_to_rel(blk.git_b, "", &miss);
+        std::string rel = label_to_rel(blk.git_b, wid, &miss);
         if (!miss && !rel.empty()) {
             f.display = rel;
             f.paths.push_back(rel);
@@ -1864,7 +1948,7 @@ bool vcs_apply_whole(const std::string& treedir, const std::string& patch,
         return true;
     std::vector<PBlock> blocks = parse_patch(patch, wid);
     for (auto& b : blocks) {
-        BlkStatus st = apply_block(treedir, b);
+        BlkStatus st = apply_block(treedir, b, wid);
         if (st == BlkStatus::Failed)
             return false;
     }
@@ -1878,9 +1962,9 @@ std::vector<VcsFailure> vcs_apply_per_file(const std::string& workdir,
     std::vector<VcsFailure> failed;
     std::vector<PBlock> blocks = parse_patch(patch, wid);
     for (size_t i = 0; i < blocks.size(); ++i) {
-        BlkStatus st = apply_block(workdir, blocks[i]);
+        BlkStatus st = apply_block(workdir, blocks[i], wid);
         if (st == BlkStatus::Failed)
-            failed.push_back(failure_for_block(blocks[i]));
+            failed.push_back(failure_for_block(blocks[i], wid));
     }
     return failed;
 }
@@ -1926,6 +2010,78 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
     bool base_e = path_exists(base_file);
     bool ours_e = path_exists(ours_file);
     bool theirs_e = path_exists(theirs_file);
+
+    // Directories and special files (FIFOs, sockets, devices) cannot be read
+    // as file content: read_file_bytes would die (EISDIR) or hang forever
+    // (FIFO open blocks). Any side that is neither a symlink nor a regular
+    // file becomes a clean conflict with a placeholder instead.
+    auto side_kind = [](const std::string& f, bool exists) -> int {
+        // 0 missing, 1 symlink, 2 regular, 3 dir/special.
+        if (!exists)
+            return 0;
+        struct stat st;
+        if (lstat(f.c_str(), &st) != 0)
+            return 0;
+        if (S_ISLNK(st.st_mode))
+            return 1;
+        if (S_ISREG(st.st_mode))
+            return 2;
+        return 3;
+    };
+    int bk = side_kind(base_file, base_e);
+    int okind = side_kind(ours_file, ours_e);
+    int tkind = side_kind(theirs_file, theirs_e);
+    if (bk == 3 || okind == 3 || tkind == 3) {
+        // File/directory (or special-file) swaps cannot be line-merged.
+        // Like git's file/directory conflicts: keep the local (theirs) entry
+        // when it exists so no uncommitted user data is silently dropped,
+        // and always report a conflict for manual resolution. Only when
+        // neither side exists (both deleted a former dir) is it clean.
+        auto keep_side = [&](const std::string& src, int k) {
+            make_dirs(dirname_of(dst_path));
+            remove_recursive(dst_path);
+            if (k == 1) {
+                struct stat st;
+                if (lstat(src.c_str(), &st) != 0)
+                    die("cannot stat '" + src + "': " + strerror(errno));
+                std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1
+                                                     : 4096);
+                ssize_t r = readlink(src.c_str(), buf.data(), buf.size());
+                if (r < 0)
+                    die("cannot read link '" + src + "': " + strerror(errno));
+                std::string target(buf.data(), (size_t)r);
+                check_patch_link_target(dst_path, target);
+                if (symlink(target.c_str(), dst_path.c_str()) != 0)
+                    die("cannot create symlink '" + dst_path +
+                        "': " + strerror(errno));
+                return;
+            }
+            if (k == 2) {
+                copy_file_bytes(src, dst_path);
+                struct stat sst;
+                if (lstat(src.c_str(), &sst) == 0 && S_ISREG(sst.st_mode)) {
+                    if (chmod(dst_path.c_str(),
+                              (mode_t)(sst.st_mode & 0777)) != 0)
+                        die("cannot set permissions on '" + dst_path +
+                            "': " + strerror(errno));
+                }
+                return;
+            }
+            // Directories (and FIFO/socket survivors) copy with cp -a, which
+            // recreates them without following or blocking.
+            copy_recursive(src, dst_path);
+        };
+        if (tkind != 0) {
+            keep_side(theirs_file, tkind);
+            return false;
+        }
+        if (okind != 0) {
+            keep_side(ours_file, okind);
+            return false;
+        }
+        remove_recursive(dst_path);
+        return true;
+    }
 
     // Symlink-aware helpers: lstat first so links are compared by target
     // string, never by dereferenced bytes. A link vs file (or differing

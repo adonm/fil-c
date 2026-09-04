@@ -115,6 +115,10 @@ void make_dirs(const std::string& path);        // mkdir -p, dies on failure
 std::vector<std::string> list_dir_names(const std::string& path); // sorted, no . / ..
 void move_path(const std::string& src, const std::string& dst);   // rename(2), dies
 void copy_recursive(const std::string& src, const std::string& dst); // cp -a, dies
+// Copy one path preserving its kind: symlinks are recreated (never
+// followed), directories copy recursively, regular files copy bytes.
+// Anything else (FIFOs, sockets, devices) is a hard error. Dies on failure.
+void copy_path_preserving(const std::string& src, const std::string& dst);
 
 bool contains_nul(const std::string& s);
 

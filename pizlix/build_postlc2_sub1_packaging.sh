@@ -22,7 +22,7 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/emacs-30.1 pizlonated-emacs
 ./package-source.sh projects/sudo-1.9.17p2 pizlonated-sudo
 ./package-source.sh projects/git-2.55.0 pizlonated-git
-./package-source.sh projects/libuv-1.51.0 pizlonated-libuv
+./package-source.sh projects/libuv-1.52.1 pizlonated-libuv
 ./package-source.sh projects/icu-78.3 pizlonated-icu
 ./package-source.sh projects/libxml2-2.15.3 pizlonated-libxml2
 ./package-source.sh projects/libarchive-3.7.4 pizlonated-libarchive

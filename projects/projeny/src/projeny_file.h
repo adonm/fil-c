@@ -55,6 +55,61 @@ struct ProjenyFile {
     void rebuild(const std::string& new_patch);
 };
 
+// Git conflict-marker helpers for .projeny files.
+//
+// A marker line is one of <<<<<<< / ||||||| / ======= / >>>>>>> at column 0,
+// each possibly extended with extra marker characters for nested conflicts
+// (git adds one character per nesting level, e.g. "<<<<<<<<" / "========"),
+// with trailing label text allowed (e.g. "<<<<<<< HEAD"). This can never occur
+// in a well-formed .projeny file: headers are "Key: value" lines, the patch
+// section's structural lines all start with other characters (d/-/+/@@/i/n/
+// o/s/r/B/\), and every hunk-body line carries a ' '/'+'/'-' prefix (or is
+// a blank context line), so marker-shaped content always has a prefix byte.
+// Free-text prose in the middle section is kept unambiguous the same way:
+// tool-written files never contain a column-0 prose line (rebuild() prepends
+// a single space to any non-empty line missing its indent, idempotently),
+// so a column-0 marker-shaped line is always a genuine git conflict marker.
+// Hand-written prose must follow the same rule — indent every non-empty
+// line with a leading space — or the file is refused as conflicted
+// (documented in help).
+bool is_projeny_marker_opener(const std::string& line);
+bool is_projeny_marker_base(const std::string& line);
+bool is_projeny_marker_divider(const std::string& line);
+bool is_projeny_marker_closer(const std::string& line);
+bool is_projeny_marker_line(const std::string& line);
+
+// True when `data` contains any git conflict-marker line at column 0
+// (opener, base, divider, or closer). Partial markers (e.g. a truncation
+// that ate the rest of the block) still count; split_projeny_conflicts()
+// then rejects them as malformed.
+bool projeny_has_conflict_markers(const std::string& data);
+
+// Split a conflicted .projeny file into its two sides by force-resolving
+// every conflict block. Dies when the markers are malformed (unbalanced
+// opener/divider/closer, nested opener, EOF inside a block). Both sides are
+// rejoined with '\n' (CRLF input is normalized to LF; callers warn about
+// that separately). The sides are the raw first/second halves: which one is
+// local vs upstream depends on the git operation (merge keeps ours=local,
+// rebase/stash-pop swap them), so callers must resolve the direction from
+// opener_label/closer_label and the status copy — see setup_conflicted.
+struct ProjenyConflictSplit {
+    bool conflicted = false;
+    std::string ours;
+    std::string theirs;
+    // Branch labels from the first conflict block ("<<<<<<< <opener>" and
+    // ">>>>>>> <closer>", e.g. "HEAD" / "branch", "Updated upstream" /
+    // "Stashed changes"). Empty when the markers carry no labels.
+    std::string opener_label;
+    std::string closer_label;
+};
+ProjenyConflictSplit split_projeny_conflicts(const std::string& data,
+                                             const std::string& what_for_errors);
+
+// Non-dying validation used by `setup` to give git-recovery guidance:
+// returns "" when `data` is a usable .projeny file, else a short reason
+// ("conflict markers", "NUL bytes", "missing headers", ...).
+std::string validate_projeny_bytes(const std::string& data);
+
 // Status file bookkeeping (see projeny_file.cc for the format).
 struct StatusData {
     std::string status; // e.g. "setup"

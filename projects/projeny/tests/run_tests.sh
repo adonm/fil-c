@@ -1,8 +1,11 @@
-#!/bin/sh
+#!/bin/bash
 # projeny test suite: fixture-based shell tests over tiny fake-project
 # tarballs v1/v2. Covers fresh setup, edit+commit roundtrips, setup-again
 # noops, divergent merges (clean + conflicting), add/rm/mv + commit,
 # rebase (clean + conflict), and the hard-error paths.
+#
+# Bash is required (process substitution in the status-copy comparisons
+# below); /bin/sh (dash) cannot run this suite.
 #
 # Usage: ./tests/run_tests.sh ./projeny
 # Exits nonzero on failure; prints ok/FAIL lines plus summary counts.
@@ -2626,6 +2629,1501 @@ else
 fi
 expect_file_contains "semicolon name survives" "$T77/w/semi;colon.c" "punct"
 expect_file_contains "equals name survives" "$T77/w/eq=uals.c" "p2"
+
+T78="$ROOT/t78"
+mkdir -p "$T78/A" "$T78/B"
+printf 'one\ntwo\nthree\n' > "$T78/A/f.c"
+printf 'one\nTWO\nthree\n' > "$T78/B/f.c"
+printf 'new file\n' > "$T78/B/g.c"
+out="$(cd "$T78" && "$PROJENY" diff A B 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "diff exits 0"
+else
+    fail "diff exits 0" "exit=$rc out: $out"
+fi
+if echo "$out" | grep -q "diff --git a/B/f.c b/B/f.c"; then
+    ok "diff labels use second dir basename"
+else
+    fail "diff labels use second dir basename" "out: $out"
+fi
+if echo "$out" | grep -q "new file mode"; then
+    ok "diff shows added file"
+else
+    fail "diff shows added file" "out: $out"
+fi
+out2="$(cd "$T78" && "$PROJENY" diff A A 2>&1)"
+if [ -z "$out2" ]; then
+    ok "diff of identical dirs is empty"
+else
+    fail "diff of identical dirs is empty" "out: $out2"
+fi
+# roundtrip: diff A B, patch a copy of A, get B back byte-for-byte.
+(cd "$T78" && "$PROJENY" diff A B > roundtrip.diff && rm -rf C && cp -r A C && "$PROJENY" patch C roundtrip.diff >/dev/null 2>&1)
+if [ $? -eq 0 ] && [ ! -e "$T78/C/B" ]; then
+    ok "diff+patch roundtrip applies"
+else
+    fail "diff+patch roundtrip applies" "ls: $(ls -R "$T78/C" 2>&1)"
+fi
+if diff -r "$T78/C" "$T78/B" >/dev/null 2>&1; then
+    ok "diff+patch roundtrip is byte-identical"
+else
+    fail "diff+patch roundtrip is byte-identical" "$(diff -r "$T78/C" "$T78/B" 2>&1 | head -5)"
+fi
+# rename detection through the diff command.
+(cd "$T78" && rm -rf R1 R2 && mkdir R1 R2 && printf 'same bytes\n' > R1/old.txt && printf 'same bytes\n' > R2/new.txt && "$PROJENY" diff R1 R2 > rename.diff 2>&1)
+if grep -q "rename from" "$T78/rename.diff"; then
+    ok "diff detects renames"
+else
+    fail "diff detects renames" "$(cat "$T78/rename.diff")"
+fi
+run_in "$T78" expect_fail "diff of missing dir fails" "$PROJENY" diff A "$T78/nope"
+printf 'x\n' > "$T78/plainfile"
+run_in "$T78" expect_fail "diff of non-dir fails" "$PROJENY" diff "$T78/plainfile" B
+run_in "$T78" expect_fail "diff with one arg fails" "$PROJENY" diff A
+run_in "$T78" expect_fail "patch with one arg fails" "$PROJENY" patch A
+
+# ----------------------------------------- 77. minimum-diff devious cases
+T79="$ROOT/t79"
+mkdir -p "$T79/A" "$T79/B"
+python3 -c "open('$T79/A/big.c','w').write('same line\n'*100)"
+python3 -c "open('$T79/B/big.c','w').write('same line\n'*49 + 'CHANGED\n' + 'same line\n'*50)"
+(cd "$T79" && "$PROJENY" diff A B > big.diff 2>&1)
+if [ "$(grep -c '^@@' "$T79/big.diff")" -eq 1 ]; then
+    ok "repeated-line change is a single hunk"
+else
+    fail "repeated-line change is a single hunk" "hunks: $(grep -c '^@@' "$T79/big.diff")"
+fi
+if [ "$(wc -l < "$T79/big.diff")" -lt 20 ]; then
+    ok "repeated-line diff stays small"
+else
+    fail "repeated-line diff stays small" "lines: $(wc -l < "$T79/big.diff")"
+fi
+# alternating-pattern trap: one flipped line among ABA BAB alternation.
+python3 -c "open('$T79/A/alt.c','w').write('aaa\nbbb\n'*30)"
+python3 -c "open('$T79/B/alt.c','w').write('aaa\nbbb\n'*14 + 'aaa\nFLIP\n' + 'aaa\nbbb\n'*15)"
+(cd "$T79" && "$PROJENY" diff A B > alt.diff 2>&1)
+if [ "$(grep -c '^@@' "$T79/alt.diff")" -le 2 ]; then
+    ok "alternating-pattern change stays minimal"
+else
+    fail "alternating-pattern change stays minimal" "hunks: $(grep -c '^@@' "$T79/alt.diff")"
+fi
+(cd "$T79" && rm -rf C && cp -r A C && "$PROJENY" patch C alt.diff >/dev/null 2>&1 && "$PROJENY" patch C big.diff >/dev/null 2>&1)
+if diff -r "$T79/C" "$T79/B" >/dev/null 2>&1; then
+    ok "devious diffs roundtrip byte-identical"
+else
+    fail "devious diffs roundtrip byte-identical" "$(diff -r "$T79/C" "$T79/B" 2>&1 | head -5)"
+fi
+# trailing-whitespace-only change roundtrips exactly.
+mkdir -p "$T79/W1" "$T79/W2"
+printf 'pad   \nend\n' > "$T79/W1/ws.c"
+printf 'pad\nend\n' > "$T79/W2/ws.c"
+(cd "$T79" && "$PROJENY" diff W1 W2 > ws.diff 2>&1 && rm -rf W3 && cp -r W1 W3 && "$PROJENY" patch W3 ws.diff >/dev/null 2>&1)
+if cmp -s "$T79/W3/ws.c" "$T79/W2/ws.c"; then
+    ok "whitespace-only change roundtrips byte-identical"
+else
+    fail "whitespace-only change roundtrips byte-identical"
+fi
+
+# ----------------------------------------- 78. patch devious + conflicts
+T80="$ROOT/t80"
+mkdir -p "$T80/A" "$T80/B"
+printf 'one\ntwo\nthree\n' > "$T80/A/f.c"
+printf 'one\nTWO\nthree\n' > "$T80/B/f.c"
+(cd "$T80" && "$PROJENY" diff A B > f.diff 2>&1)
+mkdir -p "$T80/T"
+printf 'one\ntwo\nthree\n' > "$T80/T/f.c"
+out="$(cd "$T80" && "$PROJENY" patch T f.diff 2>&1)"
+if [ $? -eq 0 ] && echo "$out" | grep -q "patched"; then
+    ok "clean patch exits 0 with message"
+else
+    fail "clean patch exits 0 with message" "out: $out"
+fi
+expect_file_contains "clean patch updates content" "$T80/T/f.c" "TWO"
+out="$(cd "$T80" && "$PROJENY" patch T f.diff 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "re-applying a patch is idempotent"
+else
+    fail "re-applying a patch is idempotent" "out: $out"
+fi
+# shifted hunk offsets (fuzz) still apply.
+python3 - "$T80/f.diff" <<'EOF'
+import re, sys
+s = open(sys.argv[1]).read()
+s2 = re.sub(r"@@ -(\d+),", lambda m: "@@ -%d," % (int(m.group(1)) + 5), s, count=1)
+assert s2 != s
+open(sys.argv[1] + ".shifted", "w").write(s2)
+EOF
+mkdir -p "$T80/T2"
+printf 'one\ntwo\nthree\n' > "$T80/T2/f.c"
+run_in "$T80" expect_ok "patch with shifted offsets applies" "$PROJENY" patch T2 f.diff.shifted
+expect_file_contains "shifted patch updates content" "$T80/T2/f.c" "TWO"
+# conflicting patch: same line changed differently.
+mkdir -p "$T80/T3"
+printf 'one\nCONFLICT\nthree\n' > "$T80/T3/f.c"
+out="$(cd "$T80" && "$PROJENY" patch T3 f.diff 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "conflicting patch still exits 0"
+else
+    fail "conflicting patch still exits 0" "exit=$rc out: $out"
+fi
+if echo "$out" | grep -q "f.c"; then
+    ok "conflicting patch lists the file on console"
+else
+    fail "conflicting patch lists the file on console" "out: $out"
+fi
+expect_file_contains "conflicting patch inserts <<<<<<<" "$T80/T3/f.c" "<<<<<<<"
+expect_file_contains "conflicting patch inserts =======" "$T80/T3/f.c" "======="
+expect_file_contains "conflicting patch inserts >>>>>>>" "$T80/T3/f.c" ">>>>>>>"
+expect_file_contains "conflicting patch keeps current side" "$T80/T3/f.c" "CONFLICT"
+expect_file_contains "conflicting patch keeps patched side" "$T80/T3/f.c" "TWO"
+# mixed: one clean file + one conflicted file in a single patch.
+mkdir -p "$T80/M1" "$T80/M2"
+printf 'keep\nme\n' > "$T80/M1/ok.c"
+printf 'same\nline\n' > "$T80/M1/bad.c"
+printf 'keep\nME\n' > "$T80/M2/ok.c"
+printf 'same\nLINE\n' > "$T80/M2/bad.c"
+(cd "$T80" && "$PROJENY" diff M1 M2 > m.diff 2>&1)
+mkdir -p "$T80/M3"
+printf 'keep\nme\n' > "$T80/M3/ok.c"
+printf 'same\nDIFFERENT\n' > "$T80/M3/bad.c"
+out="$(cd "$T80" && "$PROJENY" patch M3 m.diff 2>&1)"
+expect_file_contains "mixed patch applies the clean file" "$T80/M3/ok.c" "ME"
+expect_file_contains "mixed patch marks the conflicted file" "$T80/M3/bad.c" "<<<<<<<"
+if echo "$out" | grep -q "bad.c" && ! echo "$out" | grep -q "ok.c"; then
+    ok "mixed patch lists only the conflicted file"
+else
+    fail "mixed patch lists only the conflicted file" "out: $out"
+fi
+# new-file conflict: patch adds a file that exists with other bytes.
+mkdir -p "$T80/N1" "$T80/N2"
+printf 'base\n' > "$T80/N1/base.c"
+printf 'base\n' > "$T80/N2/base.c"
+printf 'wanted\n' > "$T80/N2/added.c"
+(cd "$T80" && "$PROJENY" diff N1 N2 > n.diff 2>&1)
+mkdir -p "$T80/N3"
+printf 'base\n' > "$T80/N3/base.c"
+printf 'rival\n' > "$T80/N3/added.c"
+out="$(cd "$T80" && "$PROJENY" patch N3 n.diff 2>&1)"
+expect_file_contains "new-file conflict leaves markers" "$T80/N3/added.c" "<<<<<<<"
+expect_file_contains "new-file conflict keeps current bytes" "$T80/N3/added.c" "rival"
+expect_file_contains "new-file conflict shows wanted bytes" "$T80/N3/added.c" "wanted"
+if echo "$out" | grep -q "added.c"; then
+    ok "new-file conflict is listed"
+else
+    fail "new-file conflict is listed" "out: $out"
+fi
+# delete-vs-modify: patch deletes a file the target changed.
+mkdir -p "$T80/D1" "$T80/D2"
+printf 'gone one\ngone two\n' > "$T80/D1/del.c"
+mkdir -p "$T80/D3"
+printf 'gone one\nCHANGED\n' > "$T80/D3/del.c"
+(cd "$T80" && "$PROJENY" diff D1 D2 > d.diff 2>&1)
+out="$(cd "$T80" && "$PROJENY" patch D3 d.diff 2>&1)"
+if [ -f "$T80/D3/del.c" ]; then
+    ok "delete-vs-modify keeps the file"
+else
+    fail "delete-vs-modify keeps the file" "ls: $(ls "$T80/D3" 2>&1)"
+fi
+if echo "$out" | grep -q "del.c"; then
+    ok "delete-vs-modify is listed"
+else
+    fail "delete-vs-modify is listed" "out: $out"
+fi
+# empty and garbage patch files.
+printf '' > "$T80/empty.diff"
+run_in "$T80" expect_ok "empty patch is a noop" "$PROJENY" patch T3 empty.diff
+printf 'just some text\nno diffs here\n' > "$T80/garbage.diff"
+run_in "$T80" expect_fail "garbage patch file fails" "$PROJENY" patch T3 garbage.diff
+run_in "$T80" expect_fail "missing patch file fails" "$PROJENY" patch T3 "$T80/nope.diff"
+run_in "$T80" expect_fail "patch of missing dir fails" "$PROJENY" patch "$T80/nope" f.diff
+# ----------------------------------------- 79. conflicted .projeny (markers)
+# Helper: splice ours/theirs .projeny files into one git-style conflict.
+make_conflicted() {
+    # $1=ours $2=theirs $3=out [$4=style: merge (default) or diff3]
+    python3 - "$1" "$2" "$3" "${4:-merge}" <<'EOF'
+import sys
+ours, theirs, out = sys.argv[1], sys.argv[2], sys.argv[3]
+style = sys.argv[4] if len(sys.argv) > 4 else "merge"
+a = open(ours).read().split("\n")
+b = open(theirs).read().split("\n")
+n = min(len(a), len(b))
+i = 0
+while i < n and a[i] == b[i]:
+    i += 1
+j0, j1 = len(a), len(b)
+while j0 > i and j1 > i and a[j0 - 1] == b[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+blk = ["<<<<<<< HEAD"] + a[i:j0]
+if style == "diff3":
+    blk += ["||||||| base"] + ["# ancestral placeholder"]
+blk += ["======="] + b[i:j1] + [">>>>>>> branch"]
+open(out, "w").write("\n".join(a[:i] + blk + a[j0:]))
+EOF
+}
+
+T81="$ROOT/t81"
+mkdir -p "$T81/w-1.0"
+printf 'alpha 1\nbeta 1\ngamma 1\ndelta 1\n' > "$T81/w-1.0/a.c"
+(cd "$T81" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    C.\n' > "$T81/w.projeny"
+(cd "$T81" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$T81/w/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("beta 1", "beta LOCAL")
+open(p, "w").write(s)
+EOF
+(cd "$T81" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T81/w.projeny" "$ROOT/t81-local.projeny"
+# upstream twin: same base, beta changed the other way.
+U81="$ROOT/t81up"
+mkdir -p "$U81"
+cp "$T81/w-1.0.tar.gz" "$U81/"
+cp "$ROOT/t81-local.projeny" "$U81/w.projeny"
+(cd "$U81" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$U81/w/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("beta LOCAL", "beta UPSTREAM")
+open(p, "w").write(s)
+EOF
+(cd "$U81" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$U81/w.projeny" "$ROOT/t81-up.projeny"
+# simple case: no uncommitted changes; conflict the .projeny file.
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T81/w.projeny"
+out="$(cd "$T81" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "conflicted setup (simple) exits 0"
+else
+    fail "conflicted setup (simple) exits 0" "out: $out"
+fi
+if cmp -s "$T81/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok ".projeny force-takes upstream"
+else
+    fail ".projeny force-takes upstream" "$(cat "$T81/w.projeny")"
+fi
+if cmp -s <(sed -n '/^--- projeny content ---$/,$p' "$T81/w.projeny.status" | tail -n +2) "$ROOT/t81-up.projeny" 2>/dev/null || cmp -s "$T81/w.projeny" <(sed -n '/^--- projeny content ---$/,$p' "$T81/w.projeny.status" | tail -n +2); then
+    ok "status embeds the upstream copy"
+else
+    fail "status embeds the upstream copy" "$(head -8 "$T81/w.projeny.status")"
+fi
+expect_file_contains "conflicted checkout has workdir markers" "$T81/w/a.c" "<<<<<<<"
+expect_file_contains "conflicted checkout keeps local side" "$T81/w/a.c" "beta LOCAL"
+expect_file_contains "conflicted checkout keeps upstream side" "$T81/w/a.c" "beta UPSTREAM"
+expect_file_contains "conflicted checkout records conflict" "$T81/w.projeny.status" "Conflict: a.c"
+if echo "$out" | grep -q "a.c"; then
+    ok "conflicted setup lists conflicted files"
+else
+    fail "conflicted setup lists conflicted files" "out: $out"
+fi
+# every other command refuses the conflicted file (re-conflict first).
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T81/w.projeny"
+run_in "$T81" expect_fail "commit refuses conflicted .projeny" "$PROJENY" commit w.projeny
+run_in "$T81" expect_fail "add refuses conflicted .projeny" "$PROJENY" add w.projeny w/a.c
+run_in "$T81" expect_fail "rm refuses conflicted .projeny" "$PROJENY" rm w.projeny w/a.c
+run_in "$T81" expect_fail "mv refuses conflicted .projeny" "$PROJENY" mv w.projeny w/a.c w/b.c
+run_in "$T81" expect_fail "resolve refuses conflicted .projeny" "$PROJENY" resolve w.projeny w/a.c
+run_in "$T81" expect_fail "rebase refuses conflicted .projeny" "$PROJENY" rebase w.projeny w-1.0.tar.gz
+# resolve+commit works after fixing through the conflicted setup.
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T81/w.projeny"
+(cd "$T81" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'alpha 1\nbeta FIXED\ngamma 1\ndelta 1\n' > "$T81/w/a.c"
+run_in "$T81" expect_ok "resolve after conflicted setup" "$PROJENY" resolve w.projeny w/a.c
+run_in "$T81" expect_ok "commit after conflicted setup" "$PROJENY" commit w.projeny
+expect_file_contains "commit stores the fix" "$T81/w.projeny" "beta FIXED"
+
+# ----------------------------------------- 80. harder + no-checkout + diff3
+T82="$ROOT/t82"
+mkdir -p "$T82"
+cp "$T81/w-1.0.tar.gz" "$T82/"
+cp "$ROOT/t81-local.projeny" "$T82/w.projeny"
+(cd "$T82" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+# uncommitted edit in a disjoint region (harder case).
+python3 - "$T82/w/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("delta 1", "delta UNCOMMITTED")
+open(p, "w").write(s)
+EOF
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T82/w.projeny" diff3
+expect_file_contains "diff3 fixture has base section" "$T82/w.projeny" "|||||||"
+run_in "$T82" expect_ok "conflicted setup (harder, diff3) exits 0" "$PROJENY" setup w.projeny
+expect_file_contains "harder case keeps uncommitted edit" "$T82/w/a.c" "delta UNCOMMITTED"
+expect_file_contains "harder case still marks the conflict" "$T82/w/a.c" "<<<<<<<"
+if cmp -s "$T82/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "harder case force-takes upstream"
+else
+    fail "harder case force-takes upstream"
+fi
+# no-checkout case: status file but no workdir (the checkout was lost).
+# The status copy still breaks the direction tie, so the merge resolves.
+T83="$ROOT/t83"
+mkdir -p "$T83"
+cp "$T81/w-1.0.tar.gz" "$T83/"
+cp "$ROOT/t81-local.projeny" "$T83/w.projeny"
+(cd "$T83" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+rm -rf "$T83/w"
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T83/w.projeny"
+run_in "$T83" expect_ok "conflicted setup (no checkout) exits 0" "$PROJENY" setup w.projeny
+if cmp -s "$T83/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "no-checkout case force-takes upstream"
+else
+    fail "no-checkout case force-takes upstream"
+fi
+expect_file_contains "no-checkout case marks conflicts" "$T83/w/a.c" "<<<<<<<"
+expect_file_contains "no-checkout case records conflict" "$T83/w.projeny.status" "Conflict: a.c"
+# header-only conflict (prose differs, patch identical) merges cleanly.
+# The checkout is set up from the local-prose side first so the status copy
+# breaks the direction tie (a voteless merge with no status must die).
+T84="$ROOT/t84"
+mkdir -p "$T84"
+cp "$T81/w-1.0.tar.gz" "$T84/"
+python3 - "$ROOT/t81-local.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+open(sys.argv[1] + ".ours", "w").write(s.replace("    C.\n", "    Local prose.\n"))
+open(sys.argv[1] + ".theirs", "w").write(s.replace("    C.\n", "    Upstream prose.\n"))
+PYEOF
+cp "$ROOT/t81-local.projeny.ours" "$T84/w.projeny"
+(cd "$T84" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+make_conflicted "$ROOT/t81-local.projeny.ours" "$ROOT/t81-local.projeny.theirs" "$T84/w.projeny"
+(cd "$T84" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+if [ $? -eq 0 ]; then
+    ok "prose-only conflict sets up"
+else
+    fail "prose-only conflict sets up"
+fi
+expect_file_contains "prose-only conflict takes upstream prose" "$T84/w.projeny" "Upstream prose."
+if grep -q "^Conflict:" "$T84/w.projeny.status"; then
+    fail "prose-only conflict records no conflicts" "$(cat "$T84/w.projeny.status")"
+else
+    ok "prose-only conflict records no conflicts"
+fi
+expect_file_contains "prose-only workdir keeps patch content" "$T84/w/a.c" "beta LOCAL"
+
+# ----------------------------------------- 81. malformed/truncated/binary refuse
+T85="$ROOT/t85"
+mkdir -p "$T85"
+cp "$T81/w-1.0.tar.gz" "$T85/"
+cp "$ROOT/t81-local.projeny" "$T85/w.projeny"
+(cd "$T85" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+cp "$T85/w/a.c" "$ROOT/t85-a-before.c"
+# malformed: opener with no closer.
+python3 -c "open('$T85/w.projeny','w').write(open('$ROOT/t81-local.projeny').read().replace('+beta LOCAL', '<<<<<<< HEAD\\n+beta LOCAL'))"
+run_in "$T85" expect_fail "unclosed markers fail setup" "$PROJENY" setup w.projeny
+if cmp -s "$T85/w/a.c" "$ROOT/t85-a-before.c"; then
+    ok "failed setup leaves workdir untouched"
+else
+    fail "failed setup leaves workdir untouched"
+fi
+# truncated: no markers, headers incomplete.
+python3 -c "open('$T85/w.projeny','w').write('Archive: w-1.0.tar.gz\nOrigname: TRUNC')"
+run_in "$T85" expect_fail "truncated .projeny fails setup" "$PROJENY" setup w.projeny
+if cmp -s "$T85/w/a.c" "$ROOT/t85-a-before.c"; then
+    ok "truncated setup leaves workdir untouched"
+else
+    fail "truncated setup leaves workdir untouched"
+fi
+# Archive pointing at a missing tarball (half-pulled tree, LFS-style).
+python3 -c "open('$T85/w.projeny','w').write(open('$ROOT/t81-local.projeny').read().replace('w-1.0.tar.gz', 'w-9.9.tar.gz'))"
+run_in "$T85" expect_fail "missing tarball fails setup" "$PROJENY" setup w.projeny
+if cmp -s "$T85/w/a.c" "$ROOT/t85-a-before.c"; then
+    ok "missing-tarball setup leaves workdir untouched"
+else
+    fail "missing-tarball setup leaves workdir untouched"
+fi
+# binary garbage (NUL bytes, as a bad merge driver might leave).
+python3 -c "open('$T85/w.projeny','wb').write(b'Archive: x\x00binary\n')"
+run_in "$T85" expect_fail "binary .projeny fails setup" "$PROJENY" setup w.projeny
+if cmp -s "$T85/w/a.c" "$ROOT/t85-a-before.c"; then
+    ok "binary setup leaves workdir untouched"
+else
+    fail "binary setup leaves workdir untouched"
+fi
+# CRLF conflicted file: warns but resolves like LF. The conflict is built
+# exactly like make_conflicted (common prefix/suffix factored out so each
+# side byte-matches its fixture); only the line endings are CRLF. Note the
+# trailing "" split element already terminates the text, so no extra
+# newline is appended (an extra one would leave a phantom blank line in
+# the split sides and break the status-copy comparison).
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T85/w.projeny" <<'PYEOF'
+import sys
+a = open(sys.argv[1]).read().split("\n")
+b = open(sys.argv[2]).read().split("\n")
+n = min(len(a), len(b))
+i = 0
+while i < n and a[i] == b[i]:
+    i += 1
+j0, j1 = len(a), len(b)
+while j0 > i and j1 > i and a[j0 - 1] == b[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+out = a[:i] + ["<<<<<<< HEAD"] + a[i:j0] + ["======="] + b[i:j1] + [">>>>>>> branch"] + a[j0:]
+open(sys.argv[3], "w").write("\r\n".join(out))
+PYEOF
+out="$(cd "$T85" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "CRLF conflicted setup exits 0"
+else
+    fail "CRLF conflicted setup exits 0" "out: $out"
+fi
+if echo "$out" | grep -qi "CRLF"; then
+    ok "CRLF setup warns about line endings"
+else
+    fail "CRLF setup warns about line endings" "out: $out"
+fi
+expect_file_contains "CRLF setup marks conflicts" "$T85/w/a.c" "<<<<<<<"
+# ----------------------------------------- 82. git-merge conflict via setup
+if command -v git >/dev/null 2>&1; then
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_EDITOR=true
+    G86="$ROOT/t86"
+    mkdir -p "$G86/repo"
+    (cd "$G86/repo" && git init -q -b master . && mkdir w-1.0 && printf 'alpha 1\nbeta 1\ngamma 1\ndelta 1\n' > w-1.0/a.c && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0 && printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    G.\n' > w.projeny && "$PROJENY" setup w.projeny >/dev/null 2>&1 && git add w-1.0.tar.gz w.projeny && git commit -qm base)
+    # upstream branch: beta -> UPSTREAM, committed to git.
+    (cd "$G86/repo" && git checkout -qb upstream && python3 - w/a.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("beta 1", "beta UPSTREAM")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qm upstream w.projeny)
+    cp "$G86/repo/w.projeny" "$ROOT/t86-up.projeny"
+    # local branch off base: beta -> LOCAL, committed to git.
+    (cd "$G86/repo" && git checkout -q master && rm -rf w w.projeny.status && "$PROJENY" setup w.projeny >/dev/null 2>&1 && python3 - w/a.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("beta 1", "beta LOCAL")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git checkout -qb local && git commit -qm local w.projeny)
+    # merge upstream into local: git conflicts on w.projeny.
+    (cd "$G86/repo" && git merge -q upstream >/dev/null 2>&1)
+    if [ $? -ne 0 ] && grep -q "<<<<<<<" "$G86/repo/w.projeny"; then
+        ok "git merge conflicts the .projeny file"
+    else
+        fail "git merge conflicts the .projeny file" "$(cat "$G86/repo/w.projeny" 2>&1 | head -20)"
+    fi
+    # harder case: uncommitted disjoint edit before projeny takes over.
+    (cd "$G86/repo" && python3 - w/a.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("delta 1", "delta UNCOMMITTED")
+open(p, "w").write(s)
+PYEOF
+)
+    out="$(cd "$G86/repo" && "$PROJENY" setup w.projeny 2>&1)"
+    if [ $? -eq 0 ]; then
+        ok "setup resolves git conflict markers"
+    else
+        fail "setup resolves git conflict markers" "out: $out"
+    fi
+    if cmp -s "$G86/repo/w.projeny" "$ROOT/t86-up.projeny"; then
+        ok "git conflict takes upstream bytes"
+    else
+        fail "git conflict takes upstream bytes" "$(cat "$G86/repo/w.projeny")"
+    fi
+    expect_file_contains "git setup keeps uncommitted edit" "$G86/repo/w/a.c" "delta UNCOMMITTED"
+    expect_file_contains "git setup marks beta conflict" "$G86/repo/w/a.c" "<<<<<<<"
+    expect_file_contains "git setup records conflict" "$G86/repo/w.projeny.status" "Conflict: a.c"
+    if echo "$out" | grep -q "a.c"; then
+        ok "git setup lists conflicted files"
+    else
+        fail "git setup lists conflicted files" "out: $out"
+    fi
+    # finish the merge by hand: fix, resolve, commit, keep git history sane.
+    (cd "$G86/repo" && printf 'alpha 1\nbeta MERGED\ngamma 1\ndelta UNCOMMITTED\n' > w/a.c && "$PROJENY" resolve w.projeny w/a.c >/dev/null 2>&1 && "$PROJENY" commit w.projeny >/dev/null 2>&1 && git add w.projeny && git -c core.editor=true commit -qm resolved)
+    if [ $? -eq 0 ]; then
+        ok "resolve+commit finishes the git merge"
+    else
+        fail "resolve+commit finishes the git merge"
+    fi
+    # stash-pop flavor: conflicting uncommitted edit reapplied over a move.
+    (cd "$G86/repo" && git checkout -qb spop && python3 - w/a.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("gamma 1", "gamma STASHED")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git stash push -q -- w.projeny && "$PROJENY" setup w.projeny >/dev/null 2>&1 && python3 - w/a.c <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("gamma 1", "gamma OTHER")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qm other w.projeny && git stash pop >/dev/null 2>&1; true)
+    if grep -q "<<<<<<<" "$G86/repo/w.projeny"; then
+        ok "stash pop conflicts the .projeny file"
+    else
+        fail "stash pop conflicts the .projeny file" "$(head -20 "$G86/repo/w.projeny")"
+    fi
+    out="$(cd "$G86/repo" && "$PROJENY" setup w.projeny 2>&1)"
+    if [ $? -eq 0 ] && grep -q "<<<<<<<" "$G86/repo/w/a.c"; then
+        ok "setup resolves stash-pop markers into workdir conflicts"
+    else
+        fail "setup resolves stash-pop markers into workdir conflicts" "out: $out"
+    fi
+    unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_EDITOR
+else
+    ok "git conflict tests (skipped: no git)"
+fi
+
+# ----------------------------------------- 84. rebase-direction conflicted .projeny
+# `git pull --rebase` swaps the sides: <<<<<<< HEAD holds upstream, >>>>>>>
+# names the local commit. setup must still take the upstream side (the old
+# code force-took the second side and kept the local file instead).
+T88="$ROOT/t88"
+mkdir -p "$T88"
+cp "$T81/w-1.0.tar.gz" "$T88/"
+cp "$ROOT/t81-local.projeny" "$T88/w.projeny"
+(cd "$T88" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T88/w.projeny" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+# rebase order: upstream content first (HEAD side), local content second.
+blk = ["<<<<<<< HEAD"] + up[i:j1] + ["======="] + local[i:j0] + [">>>>>>> pick deadbeef local beta work"]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+out="$(cd "$T88" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "conflicted setup (rebase order) exits 0"
+else
+    fail "conflicted setup (rebase order) exits 0" "out: $out"
+fi
+if cmp -s "$T88/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "rebase-order markers still take upstream"
+else
+    fail "rebase-order markers still take upstream" "$(cat "$T88/w.projeny")"
+fi
+if cmp -s <(sed -n '/^--- projeny content ---$/,$p' "$T88/w.projeny.status" | tail -n +2) "$ROOT/t81-up.projeny" 2>/dev/null || cmp -s "$T88/w.projeny" <(sed -n '/^--- projeny content ---$/,$p' "$T88/w.projeny.status" | tail -n +2); then
+    ok "rebase-order status embeds the upstream copy"
+else
+    fail "rebase-order status embeds the upstream copy" "$(head -8 "$T88/w.projeny.status")"
+fi
+expect_file_contains "rebase-order checkout has workdir markers" "$T88/w/a.c" "<<<<<<<"
+expect_file_contains "rebase-order checkout keeps local side" "$T88/w/a.c" "beta LOCAL"
+expect_file_contains "rebase-order checkout keeps upstream side" "$T88/w/a.c" "beta UPSTREAM"
+expect_file_contains "rebase-order checkout records conflict" "$T88/w.projeny.status" "Conflict: a.c"
+if echo "$out" | grep -qi "rebase"; then
+    ok "rebase-order setup says which side it took"
+else
+    fail "rebase-order setup says which side it took" "out: $out"
+fi
+printf 'alpha 1\nbeta FIXED\ngamma 1\ndelta 1\n' > "$T88/w/a.c"
+run_in "$T88" expect_ok "resolve after rebase-order setup" "$PROJENY" resolve w.projeny w/a.c
+run_in "$T88" expect_ok "commit after rebase-order setup" "$PROJENY" commit w.projeny
+expect_file_contains "rebase-order commit stores the fix" "$T88/w.projeny" "beta FIXED"
+
+# ----------------------------------------- 85. stash-direction conflicted .projeny
+# `git stash pop` labels the sides "Updated upstream" (checkout) and
+# "Stashed changes" (local change); setup must take the checkout side.
+T89="$ROOT/t89"
+mkdir -p "$T89"
+cp "$T81/w-1.0.tar.gz" "$T89/"
+cp "$ROOT/t81-local.projeny" "$T89/w.projeny"
+(cd "$T89" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T89/w.projeny" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+blk = ["<<<<<<< Updated upstream"] + up[i:j1] + ["======="] + local[i:j0] + [">>>>>>> Stashed changes"]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+out="$(cd "$T89" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "conflicted setup (stash labels) exits 0"
+else
+    fail "conflicted setup (stash labels) exits 0" "out: $out"
+fi
+if cmp -s "$T89/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "stash labels take the checkout (upstream) side"
+else
+    fail "stash labels take the checkout (upstream) side" "$(cat "$T89/w.projeny")"
+fi
+expect_file_contains "stash-label checkout has workdir markers" "$T89/w/a.c" "<<<<<<<"
+expect_file_contains "stash-label checkout records conflict" "$T89/w.projeny.status" "Conflict: a.c"
+
+# ----------------------------------------- 86. patch path traversal refused
+# Patch member paths must never escape the tree (like tar members): absolute
+# labels and any ".." component — including ones only visible after the
+# a/b + workdir prefix strip (a/w/../../evil with wid w -> ../../evil) —
+# are hard errors, refused before anything is written.
+T90="$ROOT/t90"
+mkdir -p "$T90/w-1.0"
+printf 'hello\n' > "$T90/w-1.0/f.c"
+(cd "$T90" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Traversal.\n' > "$T90/base.projeny"
+cat >> "$T90/base.projeny" <<'EOF'
+
+diff --git a/w/f.c b/w/f.c
+--- a/w/f.c
++++ b/w/f.c
+@@ -1 +1 @@
+-hello
++hello world
+EOF
+make_traversal_projeny() {
+    # $1=out, $2=plusplus-label: copy the benign patch, swap the +++ label.
+    python3 - "$T90/base.projeny" "$1" "$2" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read().replace("+++ b/w/f.c", "+++ " + sys.argv[3])
+open(sys.argv[2], "w").write(s)
+PYEOF
+}
+make_traversal_projeny "$T90/widstrip.projeny" "b/w/../../escape1"
+run_in "$T90" expect_fail "patch wid-strip ../ refused" "$PROJENY" setup widstrip.projeny
+out="$(cd "$T90" && "$PROJENY" setup widstrip.projeny 2>&1 || true)"
+case "$out" in
+*traversal*)
+    ok "wid-strip error names traversal"
+    ;;
+*)
+    fail "wid-strip error names traversal" "out: $out"
+    ;;
+esac
+make_traversal_projeny "$T90/abs.projeny" "b//etc/abs-escape"
+run_in "$T90" expect_fail "patch absolute member refused" "$PROJENY" setup abs.projeny
+make_traversal_projeny "$T90/plain.projeny" "../plain-escape"
+run_in "$T90" expect_fail "patch plain ../ refused" "$PROJENY" setup plain.projeny
+# rename traversal.
+python3 - "$T90/base.projeny" "$T90/rename.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("+++ b/w/f.c", "+++ b/w/g.c")
+s = s.replace("diff --git a/w/f.c b/w/f.c", "diff --git a/w/f.c b/w/g.c\nrename from w/f.c\nrename to w/../../rename-escape")
+open(sys.argv[2], "w").write(s)
+PYEOF
+run_in "$T90" expect_fail "patch rename ../ refused" "$PROJENY" setup rename.projeny
+# direct `projeny patch` traversal (same parser, refused before applying).
+mkdir -p "$T90/dir"
+printf 'hello\n' > "$T90/dir/f.c"
+cat > "$T90/evil.diff" <<'EOF'
+diff --git a/dir/f.c b/dir/f.c
+--- a/dir/f.c
++++ b/dir/../../patched-escape
+@@ -1 +1 @@
+-hello
++bye
+EOF
+run_in "$T90" expect_fail "projeny patch ../ refused" "$PROJENY" patch dir evil.diff
+expect_file_contains "refused patch leaves the tree untouched" "$T90/dir/f.c" "hello"
+if [ -e "$T90/escape1" ] || [ -e "$T90/../escape1" ] || [ -e "$T90/patched-escape" ] || [ -e "$ROOT/escape1" ] || [ -e "/tmp/escape1" ]; then
+    fail "traversal planted no files outside the tree" "$(ls "$T90" 2>&1)"
+else
+    ok "traversal planted no files outside the tree"
+fi
+if [ -d "$T90/w" ]; then
+    fail "refused setup creates no workdir" "$(ls "$T90/w" 2>&1)"
+else
+    ok "refused setup creates no workdir"
+fi
+
+# ----------------------------------------- 87. conflicted setup keeps state
+# Previously recorded (unresolved) status conflicts are unioned into the new
+# list, never silently dropped. A .projeny deleted on one side of the git
+# conflict (and a missing .projeny file) gets recovery guidance, not a bare
+# ENOENT/missing-header error.
+T91="$ROOT/t91"
+mkdir -p "$T91"
+cp "$T81/w-1.0.tar.gz" "$T91/"
+cp "$ROOT/t81-local.projeny" "$T91/w.projeny"
+(cd "$T91" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$T91/w.projeny.status" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("Status: setup\n", "Status: setup\nConflict: stale/old.c\n")
+open(p, "w").write(s)
+PYEOF
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T91/w.projeny"
+run_in "$T91" expect_ok "conflicted setup with stale conflicts exits 0" "$PROJENY" setup w.projeny
+expect_file_contains "new conflict recorded" "$T91/w.projeny.status" "Conflict: a.c"
+expect_file_contains "stale conflict kept (union)" "$T91/w.projeny.status" "Conflict: stale/old.c"
+# deletion on one side: empty first side.
+T92="$ROOT/t92"
+mkdir -p "$T92"
+cp "$T81/w-1.0.tar.gz" "$T92/"
+python3 - "$ROOT/t81-local.projeny" "$T92/w.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+open(sys.argv[2], "w").write("<<<<<<< HEAD\n=======\n" + s + ">>>>>>> branch\n")
+PYEOF
+run_in "$T92" expect_fail "deleted-side conflict fails setup" "$PROJENY" setup w.projeny
+out="$(cd "$T92" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*deleted*checkout*)
+    ok "deleted-side error guides recovery"
+    ;;
+*)
+    fail "deleted-side error guides recovery" "out: $out"
+    ;;
+esac
+# deletion on the other side: empty second side.
+python3 - "$ROOT/t81-local.projeny" "$T92/w.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+open(sys.argv[2], "w").write("<<<<<<< HEAD\n" + s + "=======\n>>>>>>> branch\n")
+PYEOF
+run_in "$T92" expect_fail "other-side deletion fails setup" "$PROJENY" setup w.projeny
+# missing .projeny file: recovery guidance, not bare ENOENT.
+T93="$ROOT/t93"
+mkdir -p "$T93"
+run_in "$T93" expect_fail "missing .projeny fails setup" "$PROJENY" setup gone.projeny
+out="$(cd "$T93" && "$PROJENY" setup gone.projeny 2>&1 || true)"
+case "$out" in
+*checkout*)
+    ok "missing-file error guides recovery"
+    ;;
+*)
+    fail "missing-file error guides recovery" "out: $out"
+    ;;
+esac
+
+# ----------------------------------------- 88. prose/marker ambiguity
+# Tool-written files never contain a column-0 prose line (commit prepends a
+# single space when missing), so column-0 marker-shaped lines are always
+# genuine git conflicts: indented marker-like prose roundtrips, a column-0
+# marker-shaped prose line is refused with an indent hint, and column-0
+# non-marker prose migrates on commit.
+T94="$ROOT/t94"
+mkdir -p "$T94"
+cp "$T81/w-1.0.tar.gz" "$T94/"
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Prose with indented markers:\n     =======\n     <<<<<<< not a conflict\n     >>>>>>> nope\n' > "$T94/w.projeny"
+run_in "$T94" expect_ok "indented marker-like prose sets up" "$PROJENY" setup w.projeny
+python3 - "$T94/w/a.c" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("beta 1", "beta EDIT")
+open(p, "w").write(s)
+PYEOF
+run_in "$T94" expect_ok "indented marker-like prose commits" "$PROJENY" commit w.projeny
+expect_file_contains "indented prose survives commit" "$T94/w.projeny" "======="
+run_in "$T94" expect_ok "indented prose still sets up" "$PROJENY" setup w.projeny
+T95="$ROOT/t95"
+mkdir -p "$T95"
+cp "$T81/w-1.0.tar.gz" "$T95/"
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Prose then a trap:\n=======\n' > "$T95/w.projeny"
+run_in "$T95" expect_fail "column-0 marker prose fails setup" "$PROJENY" setup w.projeny
+out="$(cd "$T95" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*indent*)
+    ok "column-0 prose error hints at indenting"
+    ;;
+*)
+    fail "column-0 prose error hints at indenting" "out: $out"
+    ;;
+esac
+T96="$ROOT/t96"
+mkdir -p "$T96"
+cp "$T81/w-1.0.tar.gz" "$T96/"
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\ncol0 prose line\n' > "$T96/w.projeny"
+run_in "$T96" expect_ok "column-0 non-marker prose sets up" "$PROJENY" setup w.projeny
+run_in "$T96" expect_ok "column-0 non-marker prose commits" "$PROJENY" commit w.projeny
+if grep -q "^ col0 prose line" "$T96/w.projeny"; then
+    ok "commit migrates prose to leading-space indent"
+else
+    fail "commit migrates prose to leading-space indent" "$(cat "$T96/w.projeny")"
+fi
+run_in "$T96" expect_ok "migrated prose still sets up" "$PROJENY" setup w.projeny
+
+# ----------------------------------------- 83. help topics
+T87="$ROOT/t87"
+mkdir -p "$T87"
+for t in setup commit add rm mv resolve rebase status diff patch help; do
+    out="$(cd "$T87" && "$PROJENY" help "$t" 2>&1)"
+    if [ $? -eq 0 ] && [ -n "$out" ]; then
+        ok "help $t exits 0 with text"
+    else
+        fail "help $t exits 0 with text" "out: $out"
+    fi
+done
+for t in "setup:setup" "commit:commit" "patch:patch" "diff:diff" "rebase:rebase" "resolve:resolve" "status:status"; do
+    topic="${t%%:*}"
+    want="${t##*:}"
+    if "$PROJENY" help "$topic" 2>&1 | grep -qi "$want"; then
+        ok "help $topic mentions $want"
+    else
+        fail "help $topic mentions $want"
+    fi
+done
+if "$PROJENY" help setup 2>&1 | grep -q "conflict"; then
+    ok "help setup explains conflicts"
+else
+    fail "help setup explains conflicts"
+fi
+if "$PROJENY" help patch 2>&1 | grep -q "<<<<<<<"; then
+    ok "help patch documents markers"
+else
+    fail "help patch documents markers"
+fi
+run_in "$T87" expect_fail "help bogus fails" "$PROJENY" help bogus
+run_in "$T87" expect_ok "bare help still works" "$PROJENY" help
+
+# ----------------------------------------- 89. rebase order without status
+# Rebase-order markers (upstream first, local second) with no status file:
+# the old code fell through to the merge default and kept the local file.
+# The closer below is a realistic rebase label ("<sha> (<subject>)") whose
+# subject contains "original" — a substring trap for naive matching
+# ("origin" inside "original" would vote the wrong side; token matching
+# must not fire there, while the commit-hash shape must vote rebase).
+T97="$ROOT/t97"
+mkdir -p "$T97"
+cp "$T81/w-1.0.tar.gz" "$T97/"
+cp "$ROOT/t81-local.projeny" "$T97/w.projeny"
+(cd "$T97" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+rm -f "$T97/w.projeny.status"
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T97/w.projeny" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+# rebase order: upstream content first (HEAD side), local content second,
+# with a commit-hash closer whose subject hides an "origin" substring.
+blk = ["<<<<<<< HEAD"] + up[i:j1] + ["======="] + local[i:j0] + [">>>>>>> 99d93bd (original work)"]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+out="$(cd "$T97" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "rebase-order setup without status exits 0"
+else
+    fail "rebase-order setup without status exits 0" "out: $out"
+fi
+if cmp -s "$T97/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "no-status rebase markers still take upstream"
+else
+    fail "no-status rebase markers still take upstream" "$(cat "$T97/w.projeny")"
+fi
+expect_file_contains "no-status rebase checkout has workdir markers" "$T97/w/a.c" "<<<<<<<"
+expect_file_contains "no-status rebase checkout keeps local side" "$T97/w/a.c" "beta LOCAL"
+expect_file_contains "no-status rebase checkout keeps upstream side" "$T97/w/a.c" "beta UPSTREAM"
+expect_file_contains "no-status rebase checkout records conflict" "$T97/w.projeny.status" "Conflict: a.c"
+if echo "$out" | grep -qi "rebase"; then
+    ok "no-status rebase setup says which side it took"
+else
+    fail "no-status rebase setup says which side it took" "out: $out"
+fi
+# Stale status (embeds a lineage matching neither side) must not hijack
+# the direction either: labels still decide.
+T97S="$ROOT/t97s"
+mkdir -p "$T97S"
+cp "$T81/w-1.0.tar.gz" "$T97S/"
+cp "$T97/w.projeny" "$T97S/w.projeny"
+cp "$T97/w.projeny.status" "$T97S/w.projeny.status"
+cp -r "$T97/w" "$T97S/w"
+python3 - "$T97S/w.projeny.status" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("    G.\n", "    Stale lineage.\n")
+open(p, "w").write(s)
+PYEOF
+run_in "$T97S" expect_ok "rebase-order setup with stale status exits 0" "$PROJENY" setup w.projeny
+if cmp -s "$T97S/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "stale-status rebase markers still take upstream"
+else
+    fail "stale-status rebase markers still take upstream" "$(cat "$T97S/w.projeny")"
+fi
+# Merge order with a substring-trap branch name ("original-work" contains
+# "origin" but its tokens are "original"/"work"): the label casts no vote,
+# and the status copy breaks the tie, so the second side is still taken as
+# upstream. (Without the status copy this shape must die as ambiguous.)
+T97M="$ROOT/t97m"
+mkdir -p "$T97M"
+cp "$T81/w-1.0.tar.gz" "$T97M/"
+cp "$ROOT/t81-local.projeny" "$T97M/w.projeny"
+(cd "$T97M" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T97M/w.projeny" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+# merge order: local first, upstream second, closer is a branch name.
+blk = ["<<<<<<< HEAD"] + local[i:j0] + ["======="] + up[i:j1] + [">>>>>>> original-work"]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+run_in "$T97M" expect_ok "substring-trap merge setup exits 0" "$PROJENY" setup w.projeny
+if cmp -s "$T97M/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "substring-trap branch still takes upstream"
+else
+    fail "substring-trap branch still takes upstream" "$(cat "$T97M/w.projeny")"
+fi
+
+# ----------------------------------------- 89b. direction false-positive guards
+# Voteless labels must never pick the swapped side on a normal merge: a
+# 4-char hex closer ("cafe ...", "beef" — below git's 7+ short-SHA length),
+# a stash-mentioning branch ("stash-cleanup" — no "stashed changes" phrase
+# or stash pair), and a ref closer ("origin/master") must not vote swapped.
+# With the status copy present the merge still resolves to the upstream
+# side via the status tiebreak.
+T97X="$ROOT/t97x"
+mkdir -p "$T97X"
+cp "$T81/w-1.0.tar.gz" "$T97X/"
+for closer in "cafe (my feature)" "beef" "stash-cleanup" "origin/master"; do
+    rm -rf "$T97X/w" "$T97X/w.projeny" "$T97X/w.projeny.status"
+    cp "$ROOT/t81-local.projeny" "$T97X/w.projeny"
+    (cd "$T97X" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+    python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T97X/w.projeny" "$closer" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+# merge order: local first, upstream second, closer carries no real signal.
+blk = ["<<<<<<< HEAD"] + local[i:j0] + ["======="] + up[i:j1] + [">>>>>>> " + sys.argv[4]]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+    out="$(cd "$T97X" && "$PROJENY" setup w.projeny 2>&1)"
+    if [ $? -eq 0 ]; then
+        ok "merge with closer '$closer' exits 0"
+    else
+        fail "merge with closer '$closer' exits 0" "out: $out"
+    fi
+    if cmp -s "$T97X/w.projeny" "$ROOT/t81-up.projeny"; then
+        ok "closer '$closer' still takes upstream"
+    else
+        fail "closer '$closer' still takes upstream" "$(cat "$T97X/w.projeny")"
+    fi
+    expect_file_contains "closer '$closer' records conflict" "$T97X/w.projeny.status" "Conflict: a.c"
+done
+# Truly ambiguous with no status and no deciding label: setup must die
+# instead of silently defaulting to the merge side, leaving everything
+# untouched.
+T97Y="$ROOT/t97y"
+mkdir -p "$T97Y"
+cp "$T81/w-1.0.tar.gz" "$T97Y/"
+cp "$ROOT/t81-local.projeny" "$T97Y/w.projeny"
+(cd "$T97Y" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+cp "$T97Y/w/a.c" "$ROOT/t97y-a-before.c"
+rm -f "$T97Y/w.projeny.status"
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T97Y/w.projeny"
+run_in "$T97Y" expect_fail "ambiguous no-status conflict fails setup" "$PROJENY" setup w.projeny
+out="$(cd "$T97Y" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*ambiguous*)
+    ok "ambiguous-direction error says ambiguous"
+    ;;
+*)
+    fail "ambiguous-direction error says ambiguous" "out: $out"
+    ;;
+esac
+if cmp -s "$T97Y/w/a.c" "$ROOT/t97y-a-before.c"; then
+    ok "ambiguous setup leaves workdir untouched"
+else
+    fail "ambiguous setup leaves workdir untouched"
+fi
+
+# ----------------------------------------- 90. real git rebase / pull --rebase
+if command -v git >/dev/null 2>&1; then
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t GIT_EDITOR=true
+    # git rebase: local commit replayed onto upstream conflicts w.projeny.
+    G98="$ROOT/t98"
+    mkdir -p "$G98/repo"
+    (cd "$G98/repo" && git init -q -b master . && mkdir w-1.0 && printf 'alpha 1\nbeta 1\ngamma 1\ndelta 1\n' > w-1.0/a.c && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0 && printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    G.\n' > w.projeny && "$PROJENY" setup w.projeny >/dev/null 2>&1 && git add w-1.0.tar.gz w.projeny && git commit -qm base)
+    (cd "$G98/repo" && git checkout -qb upstream && python3 - w/a.c <<'PYEOF'
+import sys
+p = 'w/a.c'
+s = open(p).read().replace("beta 1", "beta UPSTREAM")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qm upstream w.projeny)
+    cp "$G98/repo/w.projeny" "$ROOT/t98-up.projeny"
+    (cd "$G98/repo" && git checkout -q master && rm -rf w w.projeny.status && "$PROJENY" setup w.projeny >/dev/null 2>&1 && python3 - w/a.c <<'PYEOF'
+import sys
+p = 'w/a.c'
+s = open(p).read().replace("beta 1", "beta LOCAL")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qm "local beta work" w.projeny)
+    (cd "$G98/repo" && git rebase upstream >/dev/null 2>&1)
+    if [ $? -ne 0 ] && grep -q "<<<<<<<" "$G98/repo/w.projeny"; then
+        ok "git rebase conflicts the .projeny file"
+    else
+        fail "git rebase conflicts the .projeny file" "$(head -20 "$G98/repo/w.projeny" 2>&1)"
+    fi
+    out="$(cd "$G98/repo" && "$PROJENY" setup w.projeny 2>&1)"
+    if [ $? -eq 0 ]; then
+        ok "setup resolves real rebase markers"
+    else
+        fail "setup resolves real rebase markers" "out: $out"
+    fi
+    if cmp -s "$G98/repo/w.projeny" "$ROOT/t98-up.projeny"; then
+        ok "real rebase takes upstream bytes"
+    else
+        fail "real rebase takes upstream bytes" "$(cat "$G98/repo/w.projeny")"
+    fi
+    expect_file_contains "real rebase marks beta conflict" "$G98/repo/w/a.c" "<<<<<<<"
+    expect_file_contains "real rebase keeps local side" "$G98/repo/w/a.c" "beta LOCAL"
+    expect_file_contains "real rebase keeps upstream side" "$G98/repo/w/a.c" "beta UPSTREAM"
+    expect_file_contains "real rebase records conflict" "$G98/repo/w.projeny.status" "Conflict: a.c"
+    (cd "$G98/repo" && printf 'alpha 1\nbeta MERGED\ngamma 1\ndelta 1\n' > w/a.c && "$PROJENY" resolve w.projeny w/a.c >/dev/null 2>&1 && "$PROJENY" commit w.projeny >/dev/null 2>&1 && git add w.projeny && git -c core.editor=true rebase --continue >/dev/null 2>&1)
+    if [ $? -eq 0 ]; then
+        ok "resolve+commit finishes the real rebase"
+    else
+        fail "resolve+commit finishes the real rebase"
+    fi
+    # git pull --rebase across a file remote: same marker family.
+    R98="$ROOT/t98r"
+    mkdir -p "$R98"
+    (cd "$R98" && git init -q --bare remote.git && git clone -q remote.git local 2>/dev/null && cd local && mkdir w-1.0 && printf 'alpha 1\nbeta 1\ngamma 1\ndelta 1\n' > w-1.0/a.c && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0 && printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    G.\n' > w.projeny && "$PROJENY" setup w.projeny >/dev/null 2>&1 && git add w-1.0.tar.gz w.projeny && git commit -qm base && git push -q origin master)
+    (cd "$R98" && git clone -q remote.git up 2>/dev/null && cd up && "$PROJENY" setup w.projeny >/dev/null 2>&1 && python3 - w/a.c <<'PYEOF'
+import sys
+p = 'w/a.c'
+s = open(p).read().replace("beta 1", "beta UPSTREAM")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qam upstream && git push -q origin master)
+    cp "$R98/up/w.projeny" "$ROOT/t98r-up.projeny"
+    (cd "$R98/local" && python3 - w/a.c <<'PYEOF'
+import sys
+p = 'w/a.c'
+s = open(p).read().replace("beta 1", "beta LOCAL")
+open(p, "w").write(s)
+PYEOF
+    "$PROJENY" commit w.projeny >/dev/null 2>&1 && git commit -qam "my local work" && git pull --rebase -q origin master >/dev/null 2>&1)
+    if grep -q "<<<<<<<" "$R98/local/w.projeny"; then
+        ok "git pull --rebase conflicts the .projeny file"
+    else
+        fail "git pull --rebase conflicts the .projeny file" "$(head -20 "$R98/local/w.projeny" 2>&1)"
+    fi
+    out="$(cd "$R98/local" && "$PROJENY" setup w.projeny 2>&1)"
+    if [ $? -eq 0 ]; then
+        ok "setup resolves real pull --rebase markers"
+    else
+        fail "setup resolves real pull --rebase markers" "out: $out"
+    fi
+    if cmp -s "$R98/local/w.projeny" "$ROOT/t98r-up.projeny"; then
+        ok "real pull --rebase takes upstream bytes"
+    else
+        fail "real pull --rebase takes upstream bytes" "$(cat "$R98/local/w.projeny")"
+    fi
+    expect_file_contains "real pull --rebase marks beta conflict" "$R98/local/w/a.c" "<<<<<<<"
+    expect_file_contains "real pull --rebase records conflict" "$R98/local/w.projeny.status" "Conflict: a.c"
+    (cd "$R98/local" && printf 'alpha 1\nbeta MERGED\ngamma 1\ndelta 1\n' > w/a.c && "$PROJENY" resolve w.projeny w/a.c >/dev/null 2>&1 && "$PROJENY" commit w.projeny >/dev/null 2>&1 && git add w.projeny && git -c core.editor=true rebase --continue >/dev/null 2>&1)
+    if [ $? -eq 0 ]; then
+        ok "resolve+commit finishes the real pull --rebase"
+    else
+        fail "resolve+commit finishes the real pull --rebase"
+    fi
+    unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_EDITOR
+else
+    ok "real rebase tests (skipped: no git)"
+fi
+
+# ----------------------------------------- 91. patch path traversal extras
+# Wid-strip to the tree root itself ("b/w" with wid w, or "b/w/.") must be
+# refused as traversal (it would otherwise target the tree directory), as
+# must C-quoted rename escapes. Symlink ancestors must not be followed:
+# with "link -> outside" in the target, a failing block for "link/evil"
+# must stay a recorded conflict and plant nothing outside.
+T99="$ROOT/t99"
+mkdir -p "$T99/w-1.0"
+printf 'hello\n' > "$T99/w-1.0/f.c"
+(cd "$T99" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Traversal.\n' > "$T99/base.projeny"
+cat >> "$T99/base.projeny" <<'EOF'
+
+diff --git a/w/f.c b/w/f.c
+--- a/w/f.c
++++ b/w/f.c
+@@ -1 +1 @@
+-hello
++hello world
+EOF
+python3 - "$T99/base.projeny" "$T99/empty.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read().replace("+++ b/w/f.c", "+++ b/w")
+open(sys.argv[2], "w").write(s)
+PYEOF
+run_in "$T99" expect_fail "patch wid-strip-to-empty refused" "$PROJENY" setup empty.projeny
+out="$(cd "$T99" && "$PROJENY" setup empty.projeny 2>&1 || true)"
+case "$out" in
+*traversal*)
+    ok "wid-strip-to-empty error names traversal"
+    ;;
+*)
+    fail "wid-strip-to-empty error names traversal" "out: $out"
+    ;;
+esac
+python3 - "$T99/base.projeny" "$T99/dot.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read().replace("+++ b/w/f.c", "+++ b/w/.")
+open(sys.argv[2], "w").write(s)
+PYEOF
+run_in "$T99" expect_fail "patch wid-strip-to-dot refused" "$PROJENY" setup dot.projeny
+out="$(cd "$T99" && "$PROJENY" setup dot.projeny 2>&1 || true)"
+case "$out" in
+*traversal*)
+    ok "wid-strip-to-dot error names traversal"
+    ;;
+*)
+    fail "wid-strip-to-dot error names traversal" "out: $out"
+    ;;
+esac
+# C-quoted rename escape ("w/../../rename-quoted" quoted git-style).
+python3 - "$T99/base.projeny" "$T99/renameq.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+s = s.replace("+++ b/w/f.c", "+++ b/w/g.c")
+s = s.replace("diff --git a/w/f.c b/w/f.c", "diff --git a/w/f.c b/w/g.c\nrename from w/f.c\nrename to \"w/../../rename-quoted\"")
+open(sys.argv[2], "w").write(s)
+PYEOF
+run_in "$T99" expect_fail "patch quoted rename ../ refused" "$PROJENY" setup renameq.projeny
+out="$(cd "$T99" && "$PROJENY" setup renameq.projeny 2>&1 || true)"
+case "$out" in
+*traversal*)
+    ok "quoted-rename error names traversal"
+    ;;
+*)
+    fail "quoted-rename error names traversal" "out: $out"
+    ;;
+esac
+# Symlink ancestor: `projeny patch` on a dir holding "link -> outside".
+mkdir -p "$T99/sym" "$T99/outside"
+printf 'hello\n' > "$T99/sym/f.c"
+ln -s "$T99/outside" "$T99/sym/link"
+cat > "$T99/symlink.diff" <<'EOF'
+diff --git a/sym/link/evil b/sym/link/evil
+--- a/sym/link/evil
++++ b/sym/link/evil
+@@ -1 +1 @@
+-hello
++bye
+EOF
+out="$(cd "$T99" && "$PROJENY" patch sym symlink.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "symlink-ancestor patch reports a conflict"
+else
+    fail "symlink-ancestor patch reports a conflict" "out: $out"
+fi
+if [ -e "$T99/outside/evil" ] || [ -e "$T99/sym/link/evil" ]; then
+    fail "symlink-ancestor patch plants no files" "$(ls -la "$T99/outside" 2>&1)"
+else
+    ok "symlink-ancestor patch plants no files"
+fi
+expect_file_contains "symlink-ancestor patch leaves the tree untouched" "$T99/sym/f.c" "hello"
+# Same, but the through-link file exists (failing hunk splice path): the
+# outside file must keep its bytes instead of gaining markers.
+printf 'outside bytes\n' > "$T99/outside/base.c"
+cat > "$T99/symlink2.diff" <<'EOF'
+diff --git a/sym/link/base.c b/sym/link/base.c
+--- a/sym/link/base.c
++++ b/sym/link/base.c
+@@ -1 +1 @@
+-something else entirely
++changed
+EOF
+out="$(cd "$T99" && "$PROJENY" patch sym symlink2.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link failing hunk reports a conflict"
+else
+    fail "through-link failing hunk reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link conflict leaves outside bytes alone" "$T99/outside/base.c" "outside bytes"
+if grep -q "<<<<<<<" "$T99/outside/base.c"; then
+    fail "through-link conflict writes no markers outside" "$(cat "$T99/outside/base.c")"
+else
+    ok "through-link conflict writes no markers outside"
+fi
+
+# ----------------------------------------- 91b. through-link non-create ops
+# Delete/modify/chmod/rename patches touching link/evil (link -> outside)
+# must fail as conflicts without touching anything outside the tree. Each
+# patch below matches the outside bytes, so without the ancestor gate the
+# op would apply cleanly straight through the link.
+T99B="$ROOT/t99b"
+mkdir -p "$T99B/sym" "$T99B/outside"
+printf 'hello\n' > "$T99B/sym/f.c"
+ln -s "$T99B/outside" "$T99B/sym/link"
+printf 'doomed\n' > "$T99B/outside/evil"
+printf 'keep me\n' > "$T99B/outside/cm"
+chmod 644 "$T99B/outside/cm"
+printf 'oldbytes\n' > "$T99B/outside/mv"
+# delete with matching hunks: without the gate this unlinks outside/evil.
+cat > "$T99B/del.diff" <<'EOF'
+diff --git a/sym/link/evil b/sym/link/evil
+deleted file mode 100644
+--- a/sym/link/evil
++++ /dev/null
+@@ -1 +0,0 @@
+-doomed
+EOF
+out="$(cd "$T99B" && "$PROJENY" patch sym del.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link delete reports a conflict"
+else
+    fail "through-link delete reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link delete leaves outside bytes alone" "$T99B/outside/evil" "doomed"
+# modify with matching hunks: without the gate this rewrites outside/evil.
+cat > "$T99B/mod.diff" <<'EOF'
+diff --git a/sym/link/evil b/sym/link/evil
+--- a/sym/link/evil
++++ b/sym/link/evil
+@@ -1 +1 @@
+-doomed
++changed
+EOF
+out="$(cd "$T99B" && "$PROJENY" patch sym mod.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link modify reports a conflict"
+else
+    fail "through-link modify reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link modify leaves outside bytes alone" "$T99B/outside/evil" "doomed"
+if grep -q "<<<<<<<" "$T99B/outside/evil"; then
+    fail "through-link modify writes no markers outside" "$(cat "$T99B/outside/evil")"
+else
+    ok "through-link modify writes no markers outside"
+fi
+# chmod-only: without the gate this chmods outside/cm.
+cat > "$T99B/chmod.diff" <<'EOF'
+diff --git a/sym/link/cm b/sym/link/cm
+old mode 100644
+new mode 100755
+--- a/sym/link/cm
++++ b/sym/link/cm
+EOF
+out="$(cd "$T99B" && "$PROJENY" patch sym chmod.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link chmod reports a conflict"
+else
+    fail "through-link chmod reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link chmod leaves outside bytes alone" "$T99B/outside/cm" "keep me"
+if [ -x "$T99B/outside/cm" ]; then
+    fail "through-link chmod leaves outside mode alone" "$(stat -c %a "$T99B/outside/cm" 2>&1)"
+else
+    ok "through-link chmod leaves outside mode alone"
+fi
+# rename with hunks: without the gate this moves outside/mv to outside/mv2.
+cat > "$T99B/mv.diff" <<'EOF'
+diff --git a/sym/link/mv b/sym/link/mv2
+similarity index 90%
+rename from sym/link/mv
+rename to sym/link/mv2
+--- a/sym/link/mv
++++ b/sym/link/mv2
+@@ -1 +1 @@
+-oldbytes
++newbytes
+EOF
+out="$(cd "$T99B" && "$PROJENY" patch sym mv.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link rename reports a conflict"
+else
+    fail "through-link rename reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link rename leaves outside bytes alone" "$T99B/outside/mv" "oldbytes"
+if [ -e "$T99B/outside/mv2" ]; then
+    fail "through-link rename plants no files outside" "$(ls -la "$T99B/outside" 2>&1)"
+else
+    ok "through-link rename plants no files outside"
+fi
+# pure rename: also a conflict, nothing planted outside, link intact.
+cat > "$T99B/mvpure.diff" <<'EOF'
+diff --git a/sym/link/mv b/sym/link/mv2
+similarity index 100%
+rename from sym/link/mv
+rename to sym/link/mv2
+EOF
+out="$(cd "$T99B" && "$PROJENY" patch sym mvpure.diff 2>&1)"
+if echo "$out" | grep -qi "conflict"; then
+    ok "through-link pure rename reports a conflict"
+else
+    fail "through-link pure rename reports a conflict" "out: $out"
+fi
+expect_file_contains "through-link pure rename leaves outside bytes alone" "$T99B/outside/mv" "oldbytes"
+if [ -e "$T99B/outside/mv2" ]; then
+    fail "through-link pure rename plants no files outside" "$(ls -la "$T99B/outside" 2>&1)"
+else
+    ok "through-link pure rename plants no files outside"
+fi
+expect_file_contains "through-link ops leave the tree untouched" "$T99B/sym/f.c" "hello"
+if [ -L "$T99B/sym/link" ]; then
+    ok "through-link ops leave the link itself alone"
+else
+    fail "through-link ops leave the link itself alone" "$(ls -la "$T99B/sym" 2>&1)"
+fi
+
+# ----------------------------------------- 92. interrupted conflicted setup
+# A crash between the conflicted-setup renames leaves a split brain (here:
+# new .projeny + new .status with the markers gone, workdir missing). The
+# setup journal makes it recoverable: rerunning setup must rebuild the
+# conflicted checkout (not take the fresh path and discard the patch).
+T100="$ROOT/t100"
+mkdir -p "$T100"
+cp "$T81/w-1.0.tar.gz" "$T100/"
+cp "$ROOT/t81-local.projeny" "$T100/w.projeny"
+(cd "$T100" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T100/w.projeny"
+python3 - "$T100/w.projeny" "$T100/w.projeny.setup-journal" <<'PYEOF'
+import sys
+raw = open(sys.argv[1]).read()
+journal = "projeny setup journal v1\nupstream: theirs\n--- conflicted .projeny ---\n" + raw
+open(sys.argv[2], "w").write(journal)
+PYEOF
+# Simulate the crash: .projeny + .status already flipped to upstream, the
+# merged workdir never landed.
+cp "$ROOT/t81-up.projeny" "$T100/w.projeny"
+python3 - "$ROOT/t81-up.projeny" "$T100/w.projeny.status" <<'PYEOF'
+import sys
+up = open(sys.argv[1]).read()
+open(sys.argv[2], "w").write("Status: setup\nConflict: a.c\n--- projeny content ---\n" + up)
+PYEOF
+rm -rf "$T100/w"
+out="$(cd "$T100" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "split-brain setup recovers exits 0"
+else
+    fail "split-brain setup recovers exits 0" "out: $out"
+fi
+if cmp -s "$T100/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "recovered setup keeps upstream bytes"
+else
+    fail "recovered setup keeps upstream bytes" "$(cat "$T100/w.projeny")"
+fi
+expect_file_contains "recovered checkout has workdir markers" "$T100/w/a.c" "<<<<<<<"
+expect_file_contains "recovered checkout keeps local side" "$T100/w/a.c" "beta LOCAL"
+expect_file_contains "recovered checkout keeps upstream side" "$T100/w/a.c" "beta UPSTREAM"
+expect_file_contains "recovered checkout records conflict" "$T100/w.projeny.status" "Conflict: a.c"
+if [ -e "$T100/w.projeny.setup-journal" ]; then
+    fail "recovery removes the journal" "$(ls "$T100" 2>&1)"
+else
+    ok "recovery removes the journal"
+fi
+if echo "$out" | grep -qi "recover"; then
+    ok "recovery says it recovered"
+else
+    fail "recovery says it recovered" "out: $out"
+fi
+if echo "$out" | grep -qi "rebase/stash-style"; then
+    fail "merge-order recovery claims no rebase swap" "out: $out"
+else
+    ok "merge-order recovery claims no rebase swap"
+fi
+# Split brain plus drift: clean .projeny matching neither recorded side
+# must fail loudly, never silently pick one.
+T100B="$ROOT/t100b"
+mkdir -p "$T100B"
+cp "$T81/w-1.0.tar.gz" "$T100B/"
+cp "$ROOT/t81-local.projeny" "$T100B/w.projeny"
+(cd "$T100B" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T100B/w.projeny"
+python3 - "$T100B/w.projeny" "$T100B/w.projeny.setup-journal" <<'PYEOF'
+import sys
+raw = open(sys.argv[1]).read()
+journal = "projeny setup journal v1\nupstream: theirs\n--- conflicted .projeny ---\n" + raw
+open(sys.argv[2], "w").write(journal)
+PYEOF
+python3 - "$ROOT/t81-up.projeny" "$T100B/w.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read().replace("beta UPSTREAM", "beta DRIFTED")
+open(sys.argv[2], "w").write(s)
+PYEOF
+run_in "$T100B" expect_fail "drifted split-brain fails setup" "$PROJENY" setup w.projeny
+out="$(cd "$T100B" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*journal*)
+    ok "drifted split-brain error names the journal"
+    ;;
+*)
+    fail "drifted split-brain error names the journal" "out: $out"
+    ;;
+esac
+
+# ----------------------------------------- 93. extended conflict markers
+# Nested-conflict style markers (8+ characters) must be detected like the
+# plain 7-char form: an all-extended block resolves, while a genuinely
+# nested block (outer 8 + inner 7) fails loudly instead of being silently
+# treated as clean.
+T101="$ROOT/t101"
+mkdir -p "$T101"
+cp "$T81/w-1.0.tar.gz" "$T101/"
+cp "$ROOT/t81-local.projeny" "$T101/w.projeny"
+(cd "$T101" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T101/w.projeny" <<'PYEOF'
+import sys
+local = open(sys.argv[1]).read().split("\n")
+up = open(sys.argv[2]).read().split("\n")
+n = min(len(local), len(up))
+i = 0
+while i < n and local[i] == up[i]:
+    i += 1
+j0, j1 = len(local), len(up)
+while j0 > i and j1 > i and local[j0 - 1] == up[j1 - 1]:
+    j0 -= 1
+    j1 -= 1
+# merge order with 8-char markers throughout.
+blk = ["<<<<<<<< HEAD"] + local[i:j0] + ["========"] + up[i:j1] + [">>>>>>>> branch"]
+open(sys.argv[3], "w").write("\n".join(local[:i] + blk + local[j0:]))
+PYEOF
+run_in "$T101" expect_ok "extended-marker setup exits 0" "$PROJENY" setup w.projeny
+if cmp -s "$T101/w.projeny" "$ROOT/t81-up.projeny"; then
+    ok "extended markers still take upstream"
+else
+    fail "extended markers still take upstream" "$(cat "$T101/w.projeny")"
+fi
+expect_file_contains "extended-marker checkout has workdir markers" "$T101/w/a.c" "<<<<<<<"
+expect_file_contains "extended-marker checkout records conflict" "$T101/w.projeny.status" "Conflict: a.c"
+# Nested markers cannot be split: refuse with guidance, never silently.
+T101N="$ROOT/t101n"
+mkdir -p "$T101N"
+cp "$T81/w-1.0.tar.gz" "$T101N/"
+cp "$ROOT/t81-local.projeny" "$T101N/w.projeny"
+(cd "$T101N" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$ROOT/t81-local.projeny" "$T101N/w.projeny" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read()
+trap = "<<<<<<<< outer\nlocal line\n<<<<<<< inner\ninner ours\n=======\ninner theirs\n>>>>>>> inner\n========\nupstream line\n>>>>>>>> outer\n"
+open(sys.argv[2], "w").write(s + trap)
+PYEOF
+run_in "$T101N" expect_fail "nested markers fail setup" "$PROJENY" setup w.projeny
+out="$(cd "$T101N" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*nested*)
+    ok "nested-marker error names nesting"
+    ;;
+*)
+    fail "nested-marker error names nesting" "out: $out"
+    ;;
+esac
 
 # ------------------------------------------------------------- summary
 echo "---"

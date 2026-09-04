@@ -111,6 +111,7 @@ class TempDir {
 };
 
 bool remove_recursive(const std::string& path); // true on success; missing -> true
+void fsync_dir(const std::string& path); // persist dir entries, dies on failure
 void make_dirs(const std::string& path);        // mkdir -p, dies on failure
 std::vector<std::string> list_dir_names(const std::string& path); // sorted, no . / ..
 void move_path(const std::string& src, const std::string& dst);   // rename(2), dies

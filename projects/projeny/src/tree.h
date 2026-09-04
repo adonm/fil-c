@@ -113,6 +113,20 @@ std::vector<VcsFailure> apply_patch_per_file(const std::string& workdir,
                                               const std::string& patch,
                                               const std::string& wid);
 
+// Apply `patch` (WID-label form, wid == `wid`) inside `treedir`, writing
+// git-style conflict markers ("<<<<<<< current" / "=======" /
+// ">>>>>>> patched") inline for blocks that do not apply cleanly and
+// appending their workdir-relative paths to `conflicts`. Returns true when
+// everything applied cleanly. Used by `projeny patch`.
+bool apply_patch_with_conflicts(const std::string& treedir,
+                                const std::string& patch, const std::string& wid,
+                                const std::string& scratch_parent,
+                                std::vector<std::string>* conflicts);
+
+// Workdir-relative paths `patch` touches under `wid` (see vcs_touched_paths).
+std::vector<std::string> patch_touched_paths(const std::string& patch,
+                                             const std::string& wid);
+
 // Three-way merge one file: base (may be missing), ours (fresh setup file,
 // may be missing), theirs (user file, may be missing) -> write merged result
 // with conflict markers into dst_path. Returns true if clean.

@@ -29,7 +29,11 @@
 #include "util.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cerrno>
+#include <cstring>
 #include <iostream>
+#include <unistd.h>
 
 Ctx resolve_ctx(const std::string& projeny_arg)
 {
@@ -231,12 +235,695 @@ void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
     move_path(join_path(tmp.path, cur.origname), workdir);
 }
 
+// Conflicted setup: the .projeny file holds git conflict markers (from
+// `git pull --rebase`, `git stash pop`, `git merge`, ...). This is the ONLY
+// path that handles them; every other command refuses outright.
+//
+// Git swaps the conflict sides depending on the operation:
+//
+//   git merge:        <<<<<<< HEAD holds local (ours), >>>>>>> names the
+//                     merged branch (upstream/theirs).
+//   git pull --rebase / rebase: HEAD is the upstream commit the local
+//                     commits replay onto, so <<<<<<< HEAD holds upstream
+//                     and >>>>>>> names the local commit.
+//   git stash pop:    <<<<<<< Updated upstream holds the checkout,
+//                     >>>>>>> Stashed changes holds the local change.
+//
+// The direction is resolved by conflict_sides_swapped() (labels first,
+// then the status copy, dying loudly on ambiguity instead of defaulting
+// to the merge convention). The upstream side is force-taken for the .projeny file
+// itself and the status copy, and the workdir becomes the local changes
+// plus conflicts: the local-side patch merged onto a fresh upstream-side
+// setup, with a genuine three-way merge per conflicting file. When the
+// checkout additionally holds uncommitted changes versus the status file
+// (harder case), those are applied on top afterwards. Conflicts are
+// recorded in the status file exactly like normal setup conflicts, so
+// `resolve`/`commit` work unchanged.
+//
+// Nothing is written (no .projeny/.status/workdir changes) until every
+// input has parsed and the merged tree is fully computed, so failures here
+// never lose data.
+std::string lower_copy(const std::string& s)
+{
+    std::string o = s;
+    for (char& c : o)
+        c = (char)tolower((unsigned char)c);
+    return o;
+}
+
+// True when `text` is empty or only whitespace: one side of a git
+// delete/modify conflict (git leaves the deleted side blank).
+bool is_blank_text(const std::string& text)
+{
+    return trim(text).empty();
+}
+
+// Resolve which split side holds the upstream content. Returns true when
+// the sides are swapped relative to merge convention, i.e. split.ours
+// (the <<<<<<< side) actually holds upstream. Dies loudly when the
+// direction is ambiguous instead of guessing. Signals, strongest first:
+//
+//  1. branch labels: the full phrases "updated upstream" (the `git stash
+//     pop` opener, holding the checkout/upstream content) and "stashed
+//     changes" (the `git stash pop` closer, holding the local content)
+//     vote for their side. A bare "stash"/"stashed" token only votes when
+//     paired with a "changes"/"wip"/"index" token, so a branch that merely
+//     mentions stash (e.g. "stash-cleanup") does NOT vote: it is just a
+//     branch name, not a stash operation. "upstream"/"origin"/"remote"/
+//     "theirs" vote only as whole '/'-separated ref components (so a real
+//     ref like "origin/master" votes, while "original-work",
+//     "upstream-fix" or "remotely" do not: their components never equal a
+//     keyword). A bare "HEAD" never votes: it is local in merges but
+//     upstream in rebases. Branch names that merely contain a keyword
+//     inside a longer token (e.g. "remotely") do not vote.
+//  2. rebase-style closer: `git rebase`, `git pull --rebase`, `git
+//     cherry-pick` and friends label the closing side with the replayed
+//     commit ("<short-sha> (<subject>)", e.g. "99d93bd (local beta
+//     work)"), while the <<<<<<< HEAD side holds upstream. A closer that
+//     starts with a hex commit hash therefore votes "swapped". This is
+//     what rescues the no-status (and stale-status) rebase case, where
+//     neither the keyword vote nor the status copy below can fire.
+//  3. the status copy: it embeds the .projeny as of the last
+//     setup/commit. When exactly one side equals it byte-for-byte, that
+//     side continues the local lineage.
+//  4. otherwise: die ("ambiguous conflict direction") instead of defaulting
+//     to the merge convention. A short-hex branch name ("cafe", "beef"),
+//     a stash-mentioning branch ("stash-cleanup"), or any other voteless
+//     label pair must never silently pick a side: with no status copy to
+//     break the tie there is no evidence at all, and taking the local side
+//     by default would discard upstream (or vice versa). The same holds
+//     when the status copy matches neither side (or there is none) and the
+//     votes tie: even a one-sided-validity guess is refused, because the
+//     "valid" side may be stale lineage while the other holds the true
+//     upstream (or both may be garbage that deserves a precise error, not
+//     a silent pick).
+bool conflict_sides_swapped(const ProjenyConflictSplit& split,
+                            const StatusData* old, const std::string& where)
+{
+    std::string op = lower_copy(split.opener_label);
+    std::string cl = lower_copy(split.closer_label);
+    // Whole-token match over the lowercased label `l`: split on
+    // non-alphanumeric characters and compare each token against `word`
+    // (same tokenization as the stash matcher below, so "original-work"
+    // never matches "origin" and "remotely" never matches "remote").
+    auto has_token_word = [](const std::string& l, const char* word) {
+        size_t wn = strlen(word);
+        size_t i = 0;
+        while (i < l.size()) {
+            while (i < l.size() && !isalnum((unsigned char)l[i]))
+                ++i;
+            size_t j = i;
+            while (j < l.size() && isalnum((unsigned char)l[j]))
+                ++j;
+            if (j - i == wn && l.compare(i, j - i, word) == 0)
+                return true;
+            i = j;
+        }
+        return false;
+    };
+    auto has_upstream_word = [&](const std::string& l) {
+        // The `git stash pop` opener phrase always marks upstream.
+        if (l.find("updated upstream") != std::string::npos)
+            return true;
+        // Otherwise only whole '/'-separated ref components count, so a
+        // real ref like "origin/master" votes (its first component is
+        // exactly "origin") while hyphen-joined branch names like
+        // "original-work" or "upstream-fix" do not (their single component
+        // never equals a keyword). Tokenizing on every non-alphanumeric
+        // character here would false-positive on those branch names.
+        size_t i = 0;
+        for (;;) {
+            size_t j = l.find('/', i);
+            std::string comp =
+                (j == std::string::npos) ? l.substr(i) : l.substr(i, j - i);
+            comp = trim(comp);
+            if (comp == "upstream" || comp == "origin" ||
+                comp == "remote" || comp == "theirs")
+                return true;
+            if (j == std::string::npos)
+                break;
+            i = j + 1;
+        }
+        return false;
+    };
+    auto has_stash_word = [&](const std::string& l) {
+        // The `git stash pop` closer phrase always marks the local side.
+        if (l.find("stashed changes") != std::string::npos)
+            return true;
+        // Otherwise require a stash token PAIRED with a changes/wip/index
+        // token: a lone "stash" token is usually just a branch name (e.g.
+        // "stash-cleanup", "stash@{0}") and must not hijack a normal merge.
+        bool stash = has_token_word(l, "stashed") || has_token_word(l, "stash");
+        if (!stash)
+            return false;
+        return has_token_word(l, "changes") || has_token_word(l, "wip") ||
+               has_token_word(l, "index");
+    };
+    // True when the closer looks like a rebased/cherry-picked commit label:
+    // "<short-sha> (<subject>)" or a bare "<short-sha>" (e.g. "99d93bd
+    // (local beta work)"). `git rebase`, `git pull --rebase` and `git
+    // cherry-pick` all emit this shape with the local commit on the closing
+    // side, so it votes "swapped" exactly like a "Stashed changes" closer.
+    // A merge closer is a branch name, which only collides when someone
+    // names a branch as 7-40 lowercase hex characters (vanishingly rare:
+    // short branch names like "cafe" or "beef" are only 4 hex chars and
+    // must NOT vote, since git short SHAs are 7+ characters). Matching
+    // runs on the raw (non-lowercased) label and requires lowercase hex,
+    // exactly as git abbreviates SHAs, so an uppercase branch name like
+    // "DEADBEEF" does not vote.
+    auto has_rebase_commit_closer = [](const std::string& l) {
+        auto is_sha_char = [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        };
+        size_t i = 0;
+        while (i < l.size() && (l[i] == ' ' || l[i] == '\t'))
+            ++i;
+        size_t j = i;
+        while (j < l.size() && is_sha_char(l[j]))
+            ++j;
+        size_t n = j - i;
+        // Short SHAs are 7+ hex digits (git's default abbreviation is 7,
+        // growing as needed); cap at 40 (full SHA-1). The hash must stand
+        // alone: EOL, space, tab, or " (<subject>)" may follow, nothing
+        // else glued on (so a branch like "deadbeef2u" does not vote).
+        // Four-char hex branch names ("cafe", "beef") are deliberately
+        // excluded: they are far below git's abbreviation length.
+        if (n < 7 || n > 40)
+            return false;
+        if (j == l.size())
+            return true;
+        char c = l[j];
+        return c == ' ' || c == '\t';
+    };
+    int swap_votes = 0, keep_votes = 0;
+    if (has_upstream_word(op))
+        ++swap_votes; // opener holds upstream content
+    if (has_upstream_word(cl))
+        ++keep_votes; // closer holds upstream content
+    if (has_stash_word(op))
+        ++keep_votes; // opener holds the local (stashed) content
+    if (has_stash_word(cl))
+        ++swap_votes; // closer holds the local (stashed) content
+    if (has_rebase_commit_closer(split.closer_label))
+        ++swap_votes; // closer names the replayed local commit (rebase)
+    if (swap_votes != keep_votes)
+        return swap_votes > keep_votes;
+    if (old != nullptr) {
+        bool ours_is_local = (split.ours == old->embedded);
+        bool theirs_is_local = (split.theirs == old->embedded);
+        if (ours_is_local != theirs_is_local)
+            return theirs_is_local;
+    }
+    die("ambiguous conflict direction in '" + where + "' (labels '" +
+        split.opener_label + "' / '" + split.closer_label +
+        "' vote for neither side, and no status copy breaks the tie); "
+        "projeny cannot tell the upstream side from the local side without "
+        "guessing. Pick a side with 'git checkout --ours/--theirs -- " +
+        where + "' (for 'git pull --rebase' the sides are swapped: "
+        "--theirs is your local commit), or restore the file with 'git "
+        "checkout -- <file>', then run 'projeny setup' again");
+    return false; // unreachable
+}
+
+// Crash-recovery journal for conflicted setup.
+//
+// Writing the resolved .projeny file, the status file, and the workdir
+// cannot be done in one atomic rename: a crash between the renames leaves
+// a split brain (e.g. new .projeny + old .status with the markers gone),
+// and a naive rerun then takes the normal merge path and silently discards
+// the local patch (or takes the fresh-setup path when the workdir is
+// missing and drops it entirely). The journal closes every crash window:
+// it is written BEFORE anything else is touched and removed only after
+// the new tree, the .projeny file, and the status file are all durable,
+// so any interruption is detectable on rerun and the merge is recomputed
+// deterministically from the journaled conflict instead of guessed.
+//
+// Format (LF, strict):
+//   projeny setup journal v1\n
+//   upstream: ours|theirs\n        (which split side holds upstream)
+//   --- conflicted .projeny ---\n
+//   <verbatim conflicted .projeny bytes to EOF>
+//
+// The recorded direction makes recovery unambiguous even when the status
+// file was already overwritten by the crashed run (its embedded copy then
+// equals the upstream side, which the status-copy rule would misread as
+// the local lineage). The recorded raw bytes provide both sides, so the
+// local side is never lost even after the .projeny file itself was
+// overwritten.
+struct ConflictJournal {
+    bool ours_is_upstream = false;
+    std::string raw;
+};
+
+std::string journal_path_for(const Ctx& ctx)
+{
+    return ctx.projeny_arg + ".setup-journal";
+}
+
+std::string serialize_journal(bool ours_is_upstream, const std::string& raw)
+{
+    std::string out = "projeny setup journal v1\n";
+    out += ours_is_upstream ? "upstream: ours\n" : "upstream: theirs\n";
+    out += "--- conflicted .projeny ---\n";
+    out += raw;
+    return out;
+}
+
+ConflictJournal parse_journal(const std::string& data,
+                              const std::string& journal_path)
+{
+    auto corrupt = [&]() -> ConflictJournal {
+        die("setup journal '" + journal_path +
+            "' is corrupt; refusing to guess (the checkout may be a "
+            "half-written conflicted merge). Restore the .projeny file "
+            "with 'git checkout --ours/--theirs -- <file>' (or 'git "
+            "checkout -- <file>'), delete '" + journal_path +
+            "' and the workdir if it is stale, then run 'projeny setup' "
+            "again");
+        return ConflictJournal(); // unreachable
+    };
+    // Header lines are ours (LF); the raw tail is byte-exact (it may hold
+    // CRLF from the conflicted file), so split on the first three '\n'.
+    size_t p1 = data.find('\n');
+    if (p1 == std::string::npos)
+        return corrupt();
+    size_t p2 = data.find('\n', p1 + 1);
+    if (p2 == std::string::npos)
+        return corrupt();
+    size_t p3 = data.find('\n', p2 + 1);
+    if (p3 == std::string::npos)
+        return corrupt();
+    if (data.compare(0, p1, "projeny setup journal v1") != 0)
+        return corrupt();
+    std::string side = data.substr(p1 + 1, p2 - p1 - 1);
+    if (side != "upstream: ours" && side != "upstream: theirs")
+        return corrupt();
+    if (data.compare(p2 + 1, p3 - p2 - 1, "--- conflicted .projeny ---") !=
+        0)
+        return corrupt();
+    ConflictJournal j;
+    j.ours_is_upstream = (side == "upstream: ours");
+    j.raw = data.substr(p3 + 1);
+    return j;
+}
+
+int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
+                           const std::string& upstream_text, bool swapped,
+                           const std::string* journal_to_write,
+                           const StatusData* union_status,
+                           const std::string& status_name,
+                           const ProjenyFile* harder_base);
+
+int setup_conflicted(const Ctx& ctx, const std::string& raw)
+{
+    ProjenyConflictSplit split =
+        split_projeny_conflicts(raw, "'" + ctx.projeny_arg + "'");
+    if (!split.conflicted)
+        die("internal error: expected conflict markers");
+
+    // One side deleted the file (delete/modify conflict): there is no
+    // merged content to compute, so give git recovery guidance instead of
+    // a bare "missing header" error.
+    bool ours_gone = is_blank_text(split.ours);
+    bool theirs_gone = is_blank_text(split.theirs);
+    if (ours_gone || theirs_gone) {
+        std::string which =
+            (ours_gone && theirs_gone)
+                ? "both sides are"
+                : (ours_gone ? "the first (<<<<<<<) side is"
+                             : "the second (>>>>>>>) side is");
+        die("'" + ctx.projeny_arg +
+            "' was deleted on one side of the git conflict (" + which +
+            " empty); projeny cannot merge a deletion automatically. Pick a "
+            "side with 'git checkout --ours/--theirs -- " +
+            ctx.projeny_arg + "' (for 'git pull --rebase' the sides are "
+            "swapped: --theirs is your local commit), or restore the file "
+            "with 'git checkout -- <file>', then run 'projeny setup' again");
+    }
+
+    bool have_status = path_exists(ctx.statusfile);
+    StatusData old;
+    ProjenyFile statuspf;
+    bool status_ok = false;
+    if (have_status) {
+        old = StatusData::parse(ctx.statusfile);
+        if (projeny_has_conflict_markers(old.embedded)) {
+            die("status file '" + ctx.statusfile +
+                "' embeds a conflicted .projeny copy; delete '" +
+                ctx.statusfile + "' (and the workdir if it is stale) and run "
+                "'projeny setup' again");
+        }
+        statuspf = ProjenyFile::parse_bytes(
+            old.embedded, "embedded copy in '" + ctx.statusfile + "'");
+        status_ok = true;
+    }
+
+    // Direction: rebase/stash swap the sides relative to merge convention.
+    // Dies loudly when the labels and the status copy leave the direction
+    // ambiguous rather than guessing a side.
+    bool swapped = conflict_sides_swapped(split, status_ok ? &old : nullptr,
+                                          ctx.projeny_arg);
+    std::string local_text = swapped ? split.theirs : split.ours;
+    std::string upstream_text = swapped ? split.ours : split.theirs;
+    std::string journal = serialize_journal(swapped, raw);
+    return setup_conflicted_merge(
+        ctx, local_text, upstream_text, swapped, &journal,
+        status_ok ? &old : nullptr, status_ok ? statuspf.name : "",
+        status_ok ? &statuspf : nullptr);
+}
+
+// Recover an interrupted conflicted setup using its journal (see
+// ConflictJournal). Every crash window of setup_conflicted_merge converges
+// here with enough state to recompute the same merge deterministically:
+// the journal holds both conflict sides plus the recorded direction, so
+// the local side survives even when the .projeny file was already
+// overwritten, and the harder-case base is rebuilt from the recorded
+// local side (never from a possibly already-overwritten status copy).
+// Anything unrecognizable dies loudly with manual-recovery guidance;
+// recovery never guesses and never silently discards.
+int setup_recover(const Ctx& ctx, const std::string& raw)
+{
+    std::string journal_path = journal_path_for(ctx);
+    std::string journal_raw = read_file_bytes(journal_path);
+    ConflictJournal j = parse_journal(journal_raw, journal_path);
+    ProjenyConflictSplit jsplit = split_projeny_conflicts(
+        j.raw, "journal '" + journal_path + "'");
+    if (!jsplit.conflicted)
+        die("setup journal '" + journal_path +
+            "' does not contain a conflicted .projeny copy; refusing to "
+            "guess (restore the .projeny file with 'git checkout "
+            "--ours/--theirs -- <file>' (or 'git checkout -- <file>'), "
+            "delete '" + journal_path +
+            "' and the workdir if it is stale, then run 'projeny setup' "
+            "again)");
+    bool cur_has_markers = projeny_has_conflict_markers(raw);
+    if (cur_has_markers && raw != j.raw) {
+        // The .projeny file holds a NEWER conflict than the journal (e.g.
+        // another pull arrived mid-recovery): the journal is stale, so run
+        // a fresh conflicted setup, which journals the new conflict.
+        return setup_conflicted(ctx, raw);
+    }
+    std::string journal_upstream =
+        j.ours_is_upstream ? jsplit.ours : jsplit.theirs;
+    std::string journal_local =
+        j.ours_is_upstream ? jsplit.theirs : jsplit.ours;
+    if (!cur_has_markers && raw != journal_upstream) {
+        // Split brain plus drift: the .projeny file is clean but matches
+        // neither recorded side (hand-edited after the crash?). There is
+        // no safe automatic choice — say so instead of discarding.
+        die("'" + ctx.projeny_arg + "' is clean but matches neither side "
+            "recorded in setup journal '" + journal_path +
+            "' (interrupted conflicted setup plus later edits?); projeny "
+            "cannot tell the upstream side from the local side. Restore "
+            "the .projeny file with 'git checkout --ours/--theirs -- " +
+            ctx.projeny_arg + "' (for 'git pull --rebase' the sides are "
+            "swapped: --theirs is your local commit), or write the "
+            "upstream content into it by hand, delete '" + journal_path +
+            "' and the workdir if it is stale, then run 'projeny setup' "
+            "again");
+    }
+    printf("projeny: found setup journal '%s'; recovering the interrupted "
+           "conflicted setup\n",
+           journal_path.c_str());
+    // Union bookkeeping from the current status file when it parses (it
+    // may be the pre-crash copy or the already-overwritten one — both are
+    // well-formed, and the union is idempotent either way). The harder
+    // case is ALWAYS based on the recorded local side: the status copy
+    // may already embed the upstream side (crash after the status write),
+    // which would mis-base the uncommitted diff.
+    StatusData cur_status;
+    const StatusData* union_status = nullptr;
+    std::string status_name;
+    if (path_exists(ctx.statusfile)) {
+        cur_status = StatusData::parse(ctx.statusfile);
+        if (projeny_has_conflict_markers(cur_status.embedded)) {
+            die("status file '" + ctx.statusfile +
+                "' embeds a conflicted .projeny copy; delete '" +
+                ctx.statusfile + "' (and the workdir if it is stale) and "
+                "run 'projeny setup' again");
+        }
+        ProjenyFile statuspf = ProjenyFile::parse_bytes(
+            cur_status.embedded, "embedded copy in '" + ctx.statusfile + "'");
+        status_name = statuspf.name;
+        union_status = &cur_status;
+    }
+    ProjenyFile local_base = ProjenyFile::parse_bytes(
+        journal_local, "local side recorded in '" + journal_path + "'");
+    // `swapped` mirrors conflict_sides_swapped's convention (true when the
+    // <<<<<<< side holds upstream); it only drives the "detected
+    // rebase/stash-style" note, since the sides themselves are fixed above.
+    bool swapped = j.ours_is_upstream;
+    return setup_conflicted_merge(ctx, journal_local, journal_upstream,
+                                  swapped, nullptr, union_status,
+                                  status_name, &local_base);
+}
+
+// Shared conflicted-merge core used by setup_conflicted (fresh conflict)
+// and setup_recover (journal-guided rerun after a crash). All inputs are
+// read-only until the write phase; `union_status` supplies the
+// added/removed/renamed bookkeeping and the stale-conflict union (null
+// when there is no status file), `status_name` is the Name: recorded in
+// that status ("" when none, used only as an extra workdir candidate),
+// and `harder_base` supplies the base for the harder case (uncommitted
+// workdir-vs-status diff re-applied on top; null disables it). When
+// `journal_to_write` is non-null it is written as the crash-recovery
+// journal before anything else is touched; a null pointer means the
+// journal already exists (recovery) and is kept until the end.
+int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
+                           const std::string& upstream_text, bool swapped,
+                           const std::string* journal_to_write,
+                           const StatusData* union_status,
+                           const std::string& status_name,
+                           const ProjenyFile* harder_base)
+{
+    ProjenyFile local = ProjenyFile::parse_bytes(
+        local_text, "local side of '" + ctx.projeny_arg + "'");
+    ProjenyFile cur = ProjenyFile::parse_bytes(
+        upstream_text, "upstream side of '" + ctx.projeny_arg + "'");
+
+    std::string cur_workdir = join_path(ctx.pdir, cur.name);
+    std::string local_workdir = join_path(ctx.pdir, local.name);
+    std::string status_workdir =
+        status_name.empty() ? "" : join_path(ctx.pdir, status_name);
+    std::vector<std::string> candidates;
+    candidates.push_back(cur_workdir);
+    if (local_workdir != cur_workdir)
+        candidates.push_back(local_workdir);
+    if (!status_workdir.empty() && status_workdir != cur_workdir &&
+        status_workdir != local_workdir)
+        candidates.push_back(status_workdir);
+    std::string actual_workdir;
+    int found = 0;
+    for (auto& c : candidates) {
+        if (path_exists(c) && !is_dir(c))
+            die("'" + c + "' exists but is not a directory");
+        if (is_dir(c)) {
+            if (actual_workdir.empty())
+                actual_workdir = c;
+            ++found;
+        }
+    }
+    if (found > 1) {
+        std::string detail;
+        for (auto& c : candidates) {
+            if (is_dir(c))
+                detail += "  " + c + "\n";
+        }
+        die("multiple workdirs exist next to conflicted '" + ctx.projeny_arg +
+                "'; remove or rename all but one and run 'projeny setup' again",
+            detail);
+    }
+    bool have_workdir = found > 0;
+
+    std::string scratch = scratch_parent_for(ctx.pdir);
+    // All trees below are temp-only until the write phase at the end.
+    TempDir tN(scratch, "projeny-cN-");
+    TempDir tO(scratch, "projeny-cO-");
+    TempDir tB(scratch, "projeny-cB-");
+    TempDir tE(scratch, "projeny-cE-");
+    TempDir tS(scratch, "projeny-cS-");
+
+    // Harder case first (reads only): diff the checkout against the base
+    // reconstruction while the workdir is still the original.
+    std::string U_unc;
+    std::string snap;
+    std::string Etree;
+    bool harder = false;
+    if (have_workdir && harder_base != nullptr) {
+        Etree = build_tree_from_patch(
+            tE, join_path(ctx.pdir, harder_base->archive),
+            harder_base->origname, harder_base->name, harder_base->patch,
+            "embedded patch in '" + ctx.statusfile + "'");
+        U_unc = diff_trees(Etree, actual_workdir, harder_base->name);
+        harder = !normalize_patch_text(U_unc).empty();
+        if (harder) {
+            snap = join_path(tS.path, "snap");
+            copy_recursive(actual_workdir, snap);
+        }
+    }
+
+    // Fresh upstream (theirs) and local (ours) trees.
+    std::string Ntree = build_tree_from_patch(
+        tN, join_path(ctx.pdir, cur.archive), cur.origname, cur.name, cur.patch,
+        "upstream side of '" + ctx.projeny_arg + "'");
+    std::string Otree = build_tree_from_patch(
+        tO, join_path(ctx.pdir, local.archive), local.origname, local.name,
+        local.patch, "local side of '" + ctx.projeny_arg + "'");
+
+    // Merge base: the shared base archive when both sides name the same
+    // tarball and top dir (the common git-conflict case). Otherwise there
+    // is no common ancestor, so the base stays an empty dir (missing files):
+    // anything both sides changed differently then conflicts instead of
+    // silently picking a side. No data loss either way.
+    std::string Btree = tB.path;
+    if (local.archive == cur.archive && local.origname == cur.origname) {
+        unpack_single_top(join_path(ctx.pdir, local.archive), tB.path,
+                          local.origname);
+        Btree = join_path(tB.path, local.origname);
+    }
+
+    // Stage 1: merge the committed local patch onto the fresh upstream tree.
+    std::vector<std::string> conflicts;
+    merge_user_diff_onto(Btree, Ntree, Otree, Ntree, cur.name, local.name,
+                         local.patch, &conflicts);
+    // Stage 2 (harder case): apply the uncommitted workdir-vs-base diff
+    // on top of the conflicted checkout.
+    if (harder) {
+        merge_user_diff_onto(Etree, Ntree, snap, Ntree, cur.name,
+                             harder_base->name, U_unc, &conflicts);
+    }
+    sort_unique(&conflicts);
+
+    // Write phase: everything computed, now replace the checkout.
+    //
+    // Order matters for crash recovery (see ConflictJournal above). Each
+    // file write is itself atomic (temp file + fsync + rename inside
+    // write_file_bytes, so a crash never leaves a half-written file), but
+    // the journal, the status file, the .projeny file, and the workdir
+    // cannot all flip in one rename. The order below keeps every crash
+    // window recoverable by just rerunning 'projeny setup', which finds
+    // the journal and recomputes this same merge deterministically:
+    //   1. write the journal (records the conflicted raw bytes plus which
+    //      side is upstream) — before anything else is touched;
+    //   2. write the status file (embedding the upstream text);
+    //   3. write the .projeny file (upstream text);
+    //   4. move the merged tree into place, fsync the parent dir;
+    //   5. remove stale workdirs (other names) — only once the new tree
+    //      and both files are durable, so a crash never loses a checkout
+    //      that is still the only copy of some state;
+    //   6. remove the journal last (the commit point: no journal means
+    //      the merge completed).
+    // A crash before (1) leaves the old checkout untouched (no journal, so
+    // the rerun is just a fresh conflicted setup). Any later crash leaves
+    // the journal behind and the rerun recovers: both conflict sides are
+    // still available (from the journal when the .projeny file was already
+    // overwritten), so the local patch can never be silently discarded.
+    // Previously recorded (still unresolved) status conflicts are unioned
+    // into the new list so a rerun or a stale status never silently drops
+    // them.
+    std::string journal_path = journal_path_for(ctx);
+    if (journal_to_write != nullptr)
+        write_file_bytes(journal_path, *journal_to_write);
+    StatusData sd;
+    sd.status = "setup";
+    sd.conflicts = conflicts;
+    if (union_status != nullptr) {
+        sd.added = union_status->added;
+        sd.removed = union_status->removed;
+        sd.renamed = union_status->renamed;
+        for (const auto& c : union_status->conflicts) {
+            if (std::find(sd.conflicts.begin(), sd.conflicts.end(), c) ==
+                sd.conflicts.end())
+                sd.conflicts.push_back(c);
+        }
+    }
+    sort_unique(&sd.conflicts);
+    sd.embedded = upstream_text;
+    write_status(ctx, sd);
+    write_file_bytes(ctx.projeny_arg, upstream_text);
+    if (path_exists(cur_workdir) && !remove_recursive(cur_workdir))
+        die("cannot remove existing workdir '" + cur_workdir + "'");
+    move_path(Ntree, cur_workdir);
+    tN.release(); // Ntree moved out; don't delete it
+    fsync_dir(ctx.pdir.empty() ? "." : ctx.pdir);
+    for (auto& c : candidates) {
+        if (c != cur_workdir && path_exists(c) && !remove_recursive(c))
+            die("cannot remove existing workdir '" + c + "'");
+    }
+    if (unlink(journal_path.c_str()) != 0 && errno != ENOENT)
+        die("cannot remove journal '" + journal_path + "': " +
+            strerror(errno));
+    if (swapped)
+        printf("projeny: detected rebase/stash-style markers (upstream "
+               "content first); taking that side for the .projeny file\n");
+    if (!have_workdir && union_status == nullptr)
+        printf("projeny: conflicted '%s' had no checkout; checked out upstream "
+               "with local patch merged in\n",
+               ctx.projeny_arg.c_str());
+    else
+        printf("projeny: resolved conflicted '%s' by taking upstream for the "
+               ".projeny file and merging local changes into '%s'\n",
+               ctx.projeny_arg.c_str(), cur_workdir.c_str());
+    if (!sd.conflicts.empty()) {
+        printf("projeny: conflicted checkout has %zu conflict(s):\n",
+               sd.conflicts.size());
+        for (auto& c : sd.conflicts)
+            printf("  %s\n", c.c_str());
+    } else {
+        printf("projeny: conflicted checkout merged cleanly\n");
+    }
+    return 0;
+}
+
 } // namespace
 
 int cmd_setup(const std::string& projeny_arg)
 {
     Ctx ctx = resolve_ctx(projeny_arg);
-    ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
+    std::string raw;
+    if (!try_read_file_bytes(ctx.projeny_arg, &raw)) {
+        die("cannot read '" + ctx.projeny_arg +
+            "' (missing?); if a git merge deleted the .projeny file, restore "
+            "it with 'git checkout --ours/--theirs -- <file>' (for 'git pull "
+            "--rebase' the sides are swapped: --theirs is your local commit) "
+            "or 'git checkout -- <file>', then run 'projeny setup' again");
+    }
+    if (raw.find((char)0) != std::string::npos) {
+        die("file '" + ctx.projeny_arg +
+            "' contains NUL bytes (binary merge garbage?); refusing without "
+            "touching the workdir or status file (restore the .projeny file "
+            "with 'git checkout -- <file>' and run 'projeny setup' again)");
+    }
+    if (raw.find('\r') != std::string::npos) {
+        warn("'" + ctx.projeny_arg +
+             "' has CRLF line endings (check core.autocrlf/.gitattributes); "
+             "proceeding with LF normalization");
+    }
+    // Only setup handles conflict markers; every other command dies in
+    // ProjenyFile::parse_bytes.
+    //
+    // A leftover setup journal means an earlier conflicted setup was
+    // interrupted between its renames (split brain: the .projeny file may
+    // already be overwritten while the status/workdir lag behind). Recover
+    // first — before the markers test below — so the rerun recomputes the
+    // recorded merge instead of taking the normal path and silently
+    // discarding the local patch.
+    if (path_exists(journal_path_for(ctx)))
+        return setup_recover(ctx, raw);
+    if (projeny_has_conflict_markers(raw))
+        return setup_conflicted(ctx, raw);
+    {
+        std::string problem = validate_projeny_bytes(raw);
+        if (!problem.empty()) {
+            die("file '" + ctx.projeny_arg + "' " + problem +
+                "; refusing without touching the workdir or status file (if "
+                "this came from a git merge, restore it with 'git checkout "
+                "--ours/--theirs -- <file>' or 'git checkout -- <file>' and "
+                "run 'projeny setup' again)");
+        }
+    }
+    ProjenyFile cur =
+        ProjenyFile::parse_bytes(raw, "'" + ctx.projeny_arg + "'");
     std::string workdir = join_path(ctx.pdir, cur.name);
 
     if (!path_exists(workdir)) {
@@ -831,6 +1518,178 @@ int cmd_status(const std::string& projeny_arg)
     return 0;
 }
 
+int cmd_diff(const std::string& dir, const std::string& other_dir)
+{
+    if (!is_dir(dir))
+        die("cannot diff: '" + dir + "' is not a directory");
+    if (!is_dir(other_dir))
+        die("cannot diff: '" + other_dir + "' is not a directory");
+    // Labels use the second directory's basename, so `projeny diff A B`
+    // prints a patch that `projeny patch` can apply to a copy of A.
+    std::string wid = basename_of(strip_trailing_slashes(other_dir));
+    if (wid.empty() || wid == "." || wid == "..")
+        die("cannot diff: bad directory name '" + other_dir + "'");
+    std::string patch = diff_trees(dir, other_dir, wid);
+    if (!patch.empty())
+        fwrite(patch.data(), 1, patch.size(), stdout);
+    return 0;
+}
+
+namespace {
+// First path component shared by every file side of every "diff --git"
+// block in `patch` (a/b prefixes stripped, git C-quotes honored), or ""
+// when there is none. A projeny-style patch labels every file
+// "a/<wid>/..." / "b/<wid>/...", so the shared component is the patch's
+// wid; a plain a/b-label patch spanning several top-level directories has
+// no shared component. Single-component sides ("a/f.c", top-level files)
+// never count as wid evidence.
+std::string patch_wid_hint(const std::string& patch)
+{
+    std::string shared;
+    bool any = false;
+    bool ok = true;
+    for (const std::string& raw_line : split_lines(patch)) {
+        std::string line = ltrim(raw_line);
+        if (!starts_with(line, "diff --git "))
+            continue;
+        std::string rest = line.substr(11);
+        std::vector<std::string> sides;
+        while (!rest.empty() && sides.size() < 2) {
+            if (rest[0] == '"') {
+                size_t j = 1;
+                while (j < rest.size()) {
+                    if (rest[j] == '\\') {
+                        j += 2;
+                        continue;
+                    }
+                    if (rest[j] == '"')
+                        break;
+                    ++j;
+                }
+                if (j >= rest.size())
+                    break; // unterminated: give up on this line
+                sides.push_back(rest.substr(0, j + 1));
+                rest = ltrim(rest.substr(j + 1));
+            } else {
+                size_t sp = rest.find(' ');
+                if (sp == std::string::npos) {
+                    sides.push_back(rest);
+                    rest = "";
+                } else {
+                    sides.push_back(rest.substr(0, sp));
+                    rest = ltrim(rest.substr(sp + 1));
+                }
+            }
+        }
+        if (sides.size() != 2) {
+            ok = false;
+            break;
+        }
+        for (auto& side : sides) {
+            std::string u = unquote_git_path(side);
+            if (u == "/dev/null")
+                continue;
+            if (starts_with(u, "a/") || starts_with(u, "b/"))
+                u = u.substr(2);
+            size_t slash = u.find('/');
+            if (slash == std::string::npos || slash == 0) {
+                ok = false;
+                break;
+            }
+            std::string comp = u.substr(0, slash);
+            if (!any) {
+                shared = comp;
+                any = true;
+            } else if (comp != shared) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok)
+            break;
+    }
+    if (!ok || !any)
+        return "";
+    return shared;
+}
+} // namespace
+
+int cmd_patch(const std::string& dir, const std::string& patch_file)
+{
+    if (!is_dir(dir))
+        die("cannot patch: '" + dir + "' is not a directory");
+    std::string patch = read_file_bytes(patch_file);
+    std::string wid = basename_of(strip_trailing_slashes(dir));
+    if (wid.empty() || wid == "." || wid == "..")
+        die("cannot patch: bad directory name '" + dir + "'");
+    if (!normalize_patch_text(patch).empty()) {
+        // Refuse garbage input early: a non-empty patch file must hold at
+        // least one diff block, otherwise a typo'd path would "succeed".
+        bool any = false;
+        for (const std::string& line : split_lines(patch)) {
+            std::string t = ltrim(line);
+            if (starts_with(t, "diff --git ") || starts_with(t, "diff --cc ") ||
+                starts_with(t, "diff --combined ")) {
+                any = true;
+                break;
+            }
+        }
+        if (!any)
+            die("patch file '" + patch_file + "' contains no diff blocks");
+    }
+    // The patch's wid need not match the target directory's basename
+    // (`projeny diff A B` labels with B's name; the patch may then be
+    // applied to a copy of A under any name). Score each candidate wid by
+    // how many touched paths already exist in the target: the right wid
+    // resolves to real files, a wrong one to missing subdir-prefixed
+    // paths (trial application would "succeed" there by creating junk, so
+    // existence scoring is used instead). Ties prefer the patch-derived
+    // wid (authoritative when consistent), then the basename, then none.
+    std::vector<std::string> candidates;
+    {
+        std::string hint = patch_wid_hint(patch);
+        if (!hint.empty())
+            candidates.push_back(hint);
+        if (std::find(candidates.begin(), candidates.end(), wid) ==
+            candidates.end())
+            candidates.push_back(wid);
+        if (std::find(candidates.begin(), candidates.end(), "") ==
+            candidates.end())
+            candidates.push_back("");
+    }
+    std::string use_wid = candidates[0];
+    if (!normalize_patch_text(patch).empty()) {
+        size_t best = 0;
+        bool have = false;
+        for (auto& cand : candidates) {
+            size_t hits = 0;
+            for (auto& rel : patch_touched_paths(patch, cand)) {
+                if (path_exists(join_path(dir, rel)))
+                    ++hits;
+            }
+            if (!have || hits > best) {
+                best = hits;
+                use_wid = cand;
+                have = true;
+            }
+        }
+    }
+    std::vector<std::string> conflicts;
+    bool clean = apply_patch_with_conflicts(dir, patch, use_wid,
+                                            system_scratch_parent(),
+                                            &conflicts);
+    sort_unique(&conflicts);
+    if (clean) {
+        printf("projeny: patched '%s'\n", dir.c_str());
+        return 0;
+    }
+    printf("projeny: patched '%s' with %zu conflict(s):\n", dir.c_str(),
+           conflicts.size());
+    for (auto& c : conflicts)
+        printf("  %s\n", c.c_str());
+    return 0;
+}
+
 int cmd_help(const std::string& arg0)
 {
     printf("usage: %s <command> [args]\n", arg0.c_str());
@@ -845,19 +1704,187 @@ int cmd_help(const std::string& arg0)
            "  resolve <f.projeny> <path>       clear a conflict marker entry\n"
            "  rebase <f.projeny> <tarball>     point the project at a new tarball\n"
            "  status <f.projeny>               show setup/conflict/pending state\n"
-           "  help                             show this message\n"
+           "  diff <dir> <other-dir>           print the diff between two trees\n"
+           "  patch <dir> <patch-file>         apply a patch file to a tree\n"
+           "  help [command]                   show this message or command help\n"
            "\n"
            "Paths into the work tree may be CWD-relative, absolute, or\n"
            "workdir-relative (\"<Name>/...\"). They are stored relative to\n"
            "the workdir.\n"
            "\n"
-           "resolve also accepts the stored wid-relative form (\"src/a.c\")\n"
-           "directly: as-given, \"<Name>\"-stripped, or workdir-relative -\n"
-           "whichever matches the conflict entry. Leftover conflict markers\n"
-           "print a warning to stderr but still resolve.\n"
-           "\n"
-           "rebase preserves pending add/rm/mv ops and warns on stderr when\n"
-           "the new tarball reuses the current Archive basename with\n"
-           "different content.\n");
+           "Run `%s help <command>` for a detailed explanation of one command.\n",
+           arg0.c_str());
     return 0;
+}
+
+int cmd_help_topic(const std::string& arg0, const std::string& topic)
+{
+    const char* t = arg0.c_str();
+    if (topic == "setup") {
+        printf("%s setup <f.projeny>\n"
+               "\n"
+               "Unpack the release tarball named by the Archive: header and\n"
+               "apply the patch, creating the workdir named by Name: (plus a\n"
+               "<f>.projeny.status bookkeeping file, never tracked by git).\n"
+               "The tarball must unpack to exactly one top-level directory\n"
+               "named by Origname: (hard error otherwise); it is renamed to\n"
+               "Name:.\n"
+               "\n"
+               "When the workdir already exists, the status file is required:\n"
+               "projeny reconstructs the expected tree from the status copy,\n"
+               "diffs it against the workdir to find your uncommitted\n"
+               "changes, and merges them onto a fresh setup of the CURRENT\n"
+               ".projeny file (which may name a different Archive:). Merge\n"
+               "failures leave conflict markers in the workdir and record\n"
+               "the files in the status file; fix them, then `resolve` each\n"
+               "file and `commit`.\n"
+               "\n"
+               "setup is also the ONLY command that tolerates git conflict\n"
+               "markers (<<<<<<<, =======, >>>>>>>, |||||||) in the .projeny\n"
+               "file itself (from `git pull --rebase`, `stash pop`, `merge`,\n"
+               "...). It force-takes the upstream side for the\n"
+               ".projeny file and status copy, and merges the local\n"
+               "patch into the workdir with conflicts marked,\n"
+               "additionally re-applying any uncommitted workdir-vs-status\n"
+               "changes on top. Which side is upstream is auto-detected\n"
+               "(merge keeps ours=local; rebase and stash pop swap the\n"
+               "sides, so <<<<<<< HEAD holds upstream there). Every other\n"
+               "command refuses a conflicted\n"
+               ".projeny file outright. A truncated or binary-garbled\n"
+               ".projeny file is refused without touching the workdir or\n"
+               "status file.\n",
+               t);
+        return 0;
+    }
+    if (topic == "commit") {
+        printf("%s commit <f.projeny>\n"
+               "\n"
+               "Fold the workdir changes into the patch: diff the workdir\n"
+               "against the base archive and store the new patch in both the\n"
+               ".projeny file and the status copy. Pending add/rm/mv\n"
+               "operations are validated and folded in.\n"
+               "\n"
+               "Requires the .projeny file to match the status copy exactly\n"
+               "(else hard error: run `setup` to merge first) and refuses\n"
+               "while conflicts are pending (resolve them first).\n",
+               t);
+        return 0;
+    }
+    if (topic == "add") {
+        printf("%s add <f.projeny> <path>\n"
+               "\n"
+               "Mark a file in the workdir as added-but-not-committed (stored\n"
+               "in the status file; folded into the patch by the next\n"
+               "`commit`). The path may be CWD-relative, absolute, or\n"
+               "workdir-relative (<Name>/...); it is stored relative to the\n"
+               "workdir. The file must exist. If a later `setup` also adds\n"
+               "the same file, that is a merge conflict.\n",
+               t);
+        return 0;
+    }
+    if (topic == "rm") {
+        printf("%s rm <f.projeny> <path>\n"
+               "\n"
+               "Delete a file from the workdir and mark it as\n"
+               "removed-but-not-committed (folded into the patch by the next\n"
+               "`commit`). Path forms are the same as for `add`.\n",
+               t);
+        return 0;
+    }
+    if (topic == "mv") {
+        printf("%s mv <f.projeny> <src> <dst>\n"
+               "\n"
+               "Rename a file inside the workdir and record the rename as\n"
+               "pending (folded into the patch by the next `commit`, which\n"
+               "renders it as a rename diff when the content is similar\n"
+               "enough). Moving a pending-added file keeps it added under\n"
+               "the new name. Path forms are the same as for `add`.\n",
+               t);
+        return 0;
+    }
+    if (topic == "resolve") {
+        printf("%s resolve <f.projeny> <path>\n"
+               "\n"
+               "Drop a file from the status conflict list after you fixed\n"
+               "its conflict markers by hand. Accepts the stored\n"
+               "workdir-relative form (src/a.c), the on-disk <Name>/.../\n"
+               "form, a CWD-relative path, or an absolute path. If the file\n"
+               "still contains conflict-marker lines, projeny warns on\n"
+               "stderr but still resolves (committing markers would bake\n"
+               "them into the patch).\n",
+               t);
+        return 0;
+    }
+    if (topic == "rebase") {
+        printf("%s rebase <f.projeny> <new-tarball>\n"
+               "\n"
+               "Point the project at a new tarball: apply the current patch\n"
+               "onto the new base, rewrite the Archive:/Origname: headers,\n"
+               "regenerate the patch, and move the result into the workdir.\n"
+               "The tree must be clean (no uncommitted changes) and have no\n"
+               "pending conflicts; when never set up, runs `setup` first.\n"
+               "Conflicts leave markers and are recorded in the status file.\n"
+               "Pending add/rm/mv operations are preserved. When the new\n"
+               "tarball reuses the current Archive basename with different\n"
+               "bytes, projeny warns on stderr and uses the new file.\n",
+               t);
+        return 0;
+    }
+    if (topic == "status") {
+        printf("%s status <f.projeny>\n"
+               "\n"
+               "Show the setup state from the status file: the Status: line\n"
+               "plus pending Conflict:/Added:/Removed:/Renamed: entries.\n"
+               "Exits nonzero when never set up (no status file).\n",
+               t);
+        return 0;
+    }
+    if (topic == "diff") {
+        printf("%s diff <dir> <other-dir>\n"
+               "\n"
+               "Print the unified diff between two on-disk trees to stdout\n"
+               "(git-compatible: `diff --git a/... b/...`, ---/+++, @@\n"
+               "hunks, new/deleted/rename entries; accepted by `git apply`\n"
+               "and `patch -p1` as well as `projeny patch`). The diff is\n"
+               "minimal: an internal Myers line diff with rename detection.\n"
+               "Labels use the second directory's basename, so\n"
+               "`projeny diff A B > p` plus `projeny patch C p` reproduces\n"
+               "B from a copy C of A. Both arguments must be directories.\n"
+               "Binary files are refused with a clear error.\n",
+               t);
+        return 0;
+    }
+    if (topic == "patch") {
+        printf("%s patch <dir> <patch-file>\n"
+               "\n"
+               "Apply a unified-diff patch file to a directory with -p1\n"
+               "semantics and fuzz (git-style diffs: a/b prefixes,\n"
+               "/dev/null sides, new/deleted/mode/rename lines). The\n"
+               "patch's workdir label (if any) is detected automatically,\n"
+               "so patches from `projeny diff` apply under any directory\n"
+               "name. Blocks that already applied are skipped, so\n"
+               "re-applying is safe.\n"
+               "Blocks that do not apply become conflicts: conflict markers\n"
+               "(<<<<<<< current / ======= / >>>>>>> patched) are written\n"
+               "inline (matching hunks still apply; new files pit current\n"
+               "against desired bytes; deletions and renames are left for\n"
+               "you) and the conflicted files are listed on stdout. The\n"
+               "command exits 0 even with conflicts; fix the markers by\n"
+               "hand afterwards. A patch file with no diff blocks, a\n"
+               "missing directory, or binary content is a hard error.\n",
+               t);
+        return 0;
+    }
+    if (topic == "help") {
+        printf("%s help [command]\n"
+               "\n"
+               "With no arguments, list all commands. With a command name\n"
+               "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
+               "patch, help), print a detailed explanation of that command.\n",
+               t);
+        return 0;
+    }
+    fprintf(stderr, "projeny: error: unknown help topic '%s'\n",
+            topic.c_str());
+    return 1;
 }

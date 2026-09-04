@@ -785,8 +785,45 @@ std::string no_cr(const std::string& l)
     return l;
 }
 
+// Reject patch member paths that would escape the tree, exactly like tar
+// unpack validation (tree.cc check_archive_members_safe): absolute paths and
+// any ".." component die outright. Called after a/b + wid stripping, so an
+// attacker label like "a/<wid>/../../etc/evil" (which strips to
+// "../../etc/evil") dies here before anything is written: join_path()
+// concatenates blindly, so a ".." rel would resolve outside treedir at the
+// OS level. Runs at parse time, i.e. before any block is applied, so a
+// malicious patch is refused without touching the tree.
+void check_patch_member_path(const std::string& orig_label,
+                             const std::string& rel)
+{
+    // An empty rel (or ".") means the label stripped down to the workdir
+    // root itself (e.g. "a/<wid>" or "a/<wid>/." with wid <wid>):
+    // join_path(treedir, rel) would then target the tree directory, not a
+    // member. Refuse it exactly like an escape — there is no legitimate
+    // file patch against the root.
+    if (rel.empty() || rel == ".")
+        die("patch member path '" + orig_label +
+            "' resolves to the tree root; refusing (path traversal)");
+    if (rel[0] == '/')
+        die("patch member path '" + orig_label +
+            "' is absolute; refusing (path traversal)");
+    size_t i = 0;
+    while (i <= rel.size()) {
+        size_t j = rel.find('/', i);
+        std::string comp =
+            (j == std::string::npos) ? rel.substr(i) : rel.substr(i, j - i);
+        if (comp == "..")
+            die("patch member path '" + orig_label +
+                "' contains '..'; refusing (path traversal)");
+        if (j == std::string::npos)
+            break;
+        i = j + 1;
+    }
+}
+
 // Map a ---/+++/diff--git label to workdir-relative form. Sets *missing for
 // /dev/null. Strips one a/ or b/ component, then the wid component.
+// Dies on absolute or ".."-carrying results (see check_patch_member_path).
 std::string label_to_rel(const std::string& lab, const std::string& wid,
                          bool* missing)
 {
@@ -806,6 +843,7 @@ std::string label_to_rel(const std::string& lab, const std::string& wid,
         else if (u.compare(0, wid.size() + 1, wid + "/") == 0)
             u = u.substr(wid.size() + 1);
     }
+    check_patch_member_path(lab, u);
     return u;
 }
 
@@ -953,9 +991,12 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 blk.has_old = blk.has_new = true;
             } else if (!rest.empty() && rest != "/dev/null") {
                 // Fall back to the raw token so diagnostics still name it.
+                // Still traversal-checked: a combined-diff path must never
+                // escape the tree either.
                 std::string r = rest;
                 if (r.compare(0, 2, "a/") == 0 || r.compare(0, 2, "b/") == 0)
                     r = r.substr(2);
+                check_patch_member_path(rest, r);
                 blk.old_rel = blk.new_rel = r;
                 blk.has_old = blk.has_new = true;
             }
@@ -1032,6 +1073,9 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 blk.is_deleted = true;
         }
         // Normalize rename paths (bare workdir-relative, maybe wid-prefixed).
+        // Rename from/to lines carry one path each (git may even emit
+        // absolute paths there), so validate exactly like patch labels:
+        // absolute or ".."-carrying results are traversal attempts.
         auto norm_rename = [&](const std::string& p) -> std::string {
             std::string u = p;
             if (u.compare(0, 2, "a/") == 0 || u.compare(0, 2, "b/") == 0)
@@ -1042,6 +1086,7 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 else if (u.compare(0, wid.size() + 1, wid + "/") == 0)
                     u = u.substr(wid.size() + 1);
             }
+            check_patch_member_path(p, u);
             return u;
         };
         if (blk.is_rename) {
@@ -1538,10 +1583,16 @@ PathKind path_kind(const std::string& full)
     return PathKind::Other;
 }
 
-// True when every existing ancestor of `full` (strictly below `treedir`) is
-// a directory, so creating `full` cannot fail with ENOTDIR inside make_dirs
-// (which would die instead of reporting per-file failure).
-bool creatable_under(const std::string& treedir, const std::string& full)
+// True when no existing ancestor of `full` strictly below `treedir` is
+// anything but a real directory: an lstat (never stat, so nothing is
+// followed) walk from the parent chain up to `treedir`. A planted symlink
+// ancestor (e.g. "link -> /tmp" inside the target tree with a patch
+// touching "link/evil") fails this check, as does a file/special node in
+// an ancestor slot. Callers touching treedir/<rel> for reads, unlinks,
+// moves, chmods, or conflict-marker writes must check this first and
+// report per-file failure/conflict on false instead of following the link
+// outside the tree. Missing ancestors are fine (they will be created).
+bool ancestors_are_dirs(const std::string& treedir, const std::string& full)
 {
     std::string d = dirname_of(full);
     while (d.size() > treedir.size() && starts_with(d, treedir + "/")) {
@@ -1550,6 +1601,55 @@ bool creatable_under(const std::string& treedir, const std::string& full)
             return false;
         d = dirname_of(d);
     }
+    return true;
+}
+
+// True when every existing ancestor of `full` (strictly below `treedir`) is
+// a directory, so creating `full` cannot fail with ENOTDIR inside make_dirs
+// (which would die instead of reporting per-file failure). Also confines
+// `full` to `treedir` lexically: even if a ".." rel ever slipped past the
+// parse-time check_patch_member_path, the normalized target outside the
+// tree is refused here (callers turn it into a per-file failure/conflict,
+// never an escape).
+//
+// Note the lstat (not stat): a symlink ancestor is NOT a directory, so it
+// is rejected. This matters because make_dirs() and write_file_bytes()
+// both follow symlinks: with an attacker- or user-planted "link -> /tmp"
+// inside the target tree, creating "treedir/link/evil" without this check
+// would plant "evil" in /tmp. Every creation path under a patch-controlled
+// rel must pass through here (directly or via confined_for_write below)
+// and fail as a per-file conflict instead of following the link.
+//
+// Reads, unlinks, moves, and chmods need the same protection even though
+// they do not create anything (lstat/read/unlink/chmod all follow
+// through-link ancestors): they gate on ancestors_are_dirs above (same
+// walk) before touching anything.
+bool creatable_under(const std::string& treedir, const std::string& full)
+{
+    std::string nfull = normalize_lexical(full);
+    std::string ntree = normalize_lexical(treedir);
+    if (nfull != ntree && !starts_with(nfull, ntree + "/"))
+        return false;
+    return ancestors_are_dirs(treedir, full);
+}
+
+// True when `full` may be (over)written as a regular file under `treedir`:
+// confined under `treedir` with no symlink ancestors (see
+// creatable_under), and not itself a symlink (a regular write would
+// follow it to wherever it points). Conflict-marker writers use this:
+// they run after a block already failed, on user-controlled trees (e.g.
+// `projeny patch <dir>`), where a planted "link -> /tmp" plus a failing
+// block for "link/evil" would otherwise escape the tree through
+// make_dirs()/write_file_bytes(), which both follow symlinks. A false
+// return means "leave the file for the user"; the conflict itself is
+// already recorded by the caller.
+bool confined_for_write(const std::string& treedir, const std::string& full)
+{
+    if (!creatable_under(treedir, full))
+        return false;
+    struct stat st;
+    if (lstat(full.c_str(), &st) == 0 && S_ISLNK(st.st_mode))
+        return false;
     return true;
 }
 
@@ -1605,6 +1705,13 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     if (pure_rename) {
         if (blk.is_combined)
             return BlkStatus::Failed;
+        // Through-link safety: path_kind/read_target_lines below follow
+        // ancestors, and move_path/chmod would mutate through them. A
+        // "link -> /tmp" ancestor on either end fails as a conflict
+        // without touching anything outside the tree.
+        if (!ancestors_are_dirs(treedir, old_full) ||
+            !ancestors_are_dirs(treedir, new_full))
+            return BlkStatus::Failed;
         PathKind old_k = path_kind(old_full);
         PathKind new_k = path_kind(new_full);
         // Directories/special files at either end are not renameable
@@ -1618,7 +1725,11 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             return BlkStatus::Failed;
         if (!old_e && new_e) {
             // Already renamed: enforce carried mode, then report idempotent.
+            // Gate the chmod like any other: through a symlink (ancestor
+            // or the file itself) it would touch outside the tree.
             if (!blk.new_mode.empty() && blk.new_mode != "120000") {
+                if (!confined_for_write(treedir, new_full))
+                    return BlkStatus::Failed;
                 mode_t m = is_exec_mode(blk.new_mode) ? 0755 : 0644;
                 if (chmod(new_full.c_str(), m) != 0)
                     die("cannot set permissions on '" + new_full +
@@ -1634,6 +1745,10 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             FileLines ol = read_target_lines(old_full, &link_old, nullptr);
             FileLines nl = read_target_lines(new_full, &link_new, nullptr);
             if (file_contents_equal(ol, link_old, nl, link_new)) {
+                // Same gate as above: never chmod through a link.
+                if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+                    !confined_for_write(treedir, new_full))
+                    return BlkStatus::Failed;
                 enforce_already_mode(new_full, blk);
                 return BlkStatus::Already;
             }
@@ -1642,6 +1757,12 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         // old_e && !new_e: normal rename. No expected content is stored for
         // pure renames, so lineage is the source's current content itself.
         if (!creatable_under(treedir, new_full))
+            return BlkStatus::Failed;
+        // The post-move chmod would follow the file itself when the source
+        // is a symlink, so refuse that combination before moving (moving
+        // first and failing after would leave the tree half-mutated).
+        if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+            !confined_for_write(treedir, old_full))
             return BlkStatus::Failed;
         make_dirs(dirname_of(new_full));
         move_path(old_full, new_full);
@@ -1663,6 +1784,11 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         // Even then, enforce the expected mode so exec-bit drift is repaired.
         // A directory/special file in the way is a clean failure (merge
         // conflicts), never a die (EISDIR) or a hang (FIFO open).
+        // Through-link safety first: the existence probe and the content
+        // read below follow ancestors, so a "link -> /tmp" ancestor fails
+        // here as a conflict without reading anything outside the tree.
+        if (!ancestors_are_dirs(treedir, new_full))
+            return BlkStatus::Failed;
         PathKind nk = path_kind(new_full);
         if (nk == PathKind::Other)
             return BlkStatus::Failed;
@@ -1681,6 +1807,10 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             if (same_link &&
                 join_content(cur.lines, cur.ends_nl) ==
                     join_content(exp.lines, exp.ends_nl)) {
+                // Never chmod through a link on the Already path either.
+                if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+                    !confined_for_write(treedir, new_full))
+                    return BlkStatus::Failed;
                 enforce_already_mode(new_full, blk);
                 return BlkStatus::Already;
             }
@@ -1702,6 +1832,15 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     }
 
     if (blk.is_deleted) {
+        // Through-link safety: the probe, the content read, and the
+        // unlink/remove_recursive below all follow ancestors. A "link ->
+        // /tmp" ancestor fails here as a conflict without touching
+        // anything outside the tree (unlinking through it would delete
+        // outside files). Unlinking the link itself remains allowed: the
+        // gate only inspects ancestors, and remove_recursive unlinks a
+        // symlink target itself rather than following it.
+        if (!ancestors_are_dirs(treedir, old_full))
+            return BlkStatus::Failed;
         PathKind ok = path_kind(old_full);
         if (ok == PathKind::Missing)
             return BlkStatus::Already;
@@ -1731,6 +1870,14 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     // Modify (possibly with rename and/or mode change).
     std::string src_full = have_old_path ? old_full : new_full;
     std::string dst_full = have_new_path ? new_full : old_full;
+    // Through-link safety for every read/mutation below (path_kind,
+    // read_target_lines, move_path, chmod, write_target, and the
+    // Already-path enforce helpers all follow ancestors): a "link -> /tmp"
+    // ancestor on either end fails as a conflict without touching anything
+    // outside the tree.
+    if (!ancestors_are_dirs(treedir, src_full) ||
+        !ancestors_are_dirs(treedir, dst_full))
+        return BlkStatus::Failed;
     PathKind src_k = path_kind(src_full);
     if (src_k == PathKind::Other)
         return BlkStatus::Failed; // dir/special: conflict, not die/hang
@@ -1744,10 +1891,14 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
             if (!blk.hunks.empty() &&
                 hunks_match_all(cur.lines, blk.hunks, true)) {
+                if (!confined_for_write(treedir, dst_full))
+                    return BlkStatus::Failed;
                 ensure_already_state(dst_full, cur, blk, is_link);
                 return BlkStatus::Already;
             }
             if (blk.hunks.empty()) {
+                if (!confined_for_write(treedir, dst_full))
+                    return BlkStatus::Failed;
                 ensure_already_state(dst_full, cur, blk, is_link);
                 return BlkStatus::Already;
             }
@@ -1756,6 +1907,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
             if (!blk.hunks.empty() &&
                 hunks_match_all(cur.lines, blk.hunks, true)) {
+                if (!confined_for_write(treedir, dst_full))
+                    return BlkStatus::Failed;
                 ensure_already_state(dst_full, cur, blk, is_link);
                 return BlkStatus::Already;
             }
@@ -1765,7 +1918,13 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     bool is_link = false;
     FileLines cur = read_target_lines(src_full, &is_link, nullptr);
     if (blk.hunks.empty()) {
-        // Mode-only change (no content hunks).
+        // Mode-only change (no content hunks). The chmod below follows the
+        // file itself when it is a symlink, so refuse that combination
+        // before moving (moving first and failing after would leave the
+        // tree half-mutated).
+        if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+            !confined_for_write(treedir, src_full))
+            return BlkStatus::Failed;
         if (blk.is_rename) {
             if (path_exists(dst_full))
                 return BlkStatus::Failed;
@@ -1791,6 +1950,9 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         // For renames the content lives at dst when src is gone; here src
         // exists, so the content is at src. Enforce there (and on dst when
         // both exist with equal content? src is the live copy).
+        // Gate the rewrite/chmod like any other: never write through a link.
+        if (!confined_for_write(treedir, src_full))
+            return BlkStatus::Failed;
         ensure_already_state(src_full, cur, blk, is_link);
         (void)dst;
         return BlkStatus::Already;
@@ -1817,6 +1979,17 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
                 (sst.st_mode & 0111))
                 eff_mode = "100755";
         }
+    }
+    // A regular write follows the destination itself when it is a symlink:
+    // replacing or overwriting through it would touch wherever it points.
+    // Symlink outputs (eff_mode 120000) replace the link itself via
+    // unlink+symlink and stay allowed; anything else fails as a conflict.
+    // (Through-link ancestors were already gated above.)
+    if (eff_mode != "120000") {
+        struct stat dst_st;
+        if (lstat(dst_full.c_str(), &dst_st) == 0 &&
+            S_ISLNK(dst_st.st_mode))
+            return BlkStatus::Failed;
     }
     if (blk.is_rename) {
         // Write to the new path, remove the old.
@@ -1969,6 +2142,261 @@ std::vector<VcsFailure> vcs_apply_per_file(const std::string& workdir,
     return failed;
 }
 
+// Write a conflict-marker file: "<<<<<<< current" + current lines +
+// "=======" + patched lines + ">>>>>>> patched", always newline-terminated
+// (markers are line-based, so a missing trailing newline is normalized).
+// Returns false (writing nothing) when the destination is not confined
+// for writing (see confined_for_write): the caller has already recorded
+// the conflict, so the file is left for the user instead of following a
+// symlink out of the tree.
+static bool write_patch_conflict(const std::string& treedir,
+                                 const std::string& full,
+                                 const std::vector<std::string>& current,
+                                 const std::vector<std::string>& patched)
+{
+    if (!confined_for_write(treedir, full))
+        return false;
+    std::vector<std::string> out;
+    out.push_back("<<<<<<< current");
+    for (auto& l : current)
+        out.push_back(l);
+    out.push_back("=======");
+    for (auto& l : patched)
+        out.push_back(l);
+    out.push_back(">>>>>>> patched");
+    make_dirs(dirname_of(full));
+    write_file_bytes(full, join_content(out, true));
+    return true;
+}
+
+// Best-effort desired content for a failed block: hunks applied to empty,
+// falling back to the added lines when they do not apply there either.
+static std::vector<std::string> desired_from_hunks(const PBlock& blk)
+{
+    FileLines empty;
+    empty.lines.clear();
+    empty.ends_nl = true;
+    FileLines res;
+    if (!blk.hunks.empty() &&
+        apply_hunks(empty, blk.hunks, &res, blk.new_no_nl_file))
+        return res.lines;
+    std::vector<std::string> out;
+    for (auto& h : blk.hunks) {
+        for (auto& ln : h.lines) {
+            if (ln.op == '+')
+                out.push_back(ln.text);
+        }
+    }
+    return out;
+}
+
+// Turn one failed block into conflict markers inside `treedir`. The block's
+// path(s) are already recorded by the caller; this only writes file content:
+// modify blocks keep the hunks that match and embed per-hunk markers for the
+// ones that do not, new-file blocks pit current bytes against desired bytes,
+// deleted-file and rename blocks are left on disk untouched (the user
+// resolves them by hand). Every write goes through confined_for_write, so a
+// symlink ancestor planted in the target tree (e.g. "link -> /tmp" with a
+// failing block for "link/evil" under `projeny patch`) fails as a recorded
+// conflict instead of escaping the tree.
+static void write_conflict_for_block(const std::string& treedir,
+                                     const PBlock& blk)
+{
+    if (blk.is_combined || blk.is_rename)
+        return;
+    if (blk.is_new) {
+        if (blk.new_rel.empty())
+            return;
+        std::string full = join_path(treedir, blk.new_rel);
+        // Do not even read through a symlink ancestor: the bytes would come
+        // from outside the tree (the write below is already gated, but the
+        // read must not follow either).
+        if (!ancestors_are_dirs(treedir, full))
+            return;
+        if (path_kind(full) != PathKind::Regular)
+            return; // missing (uncomputable), dir/special: leave it
+        bool is_link = false;
+        FileLines cur = read_target_lines(full, &is_link, nullptr);
+        if (is_link)
+            return; // symlinks get no inline markers; leave for the user
+        write_patch_conflict(treedir, full, cur.lines,
+                             desired_from_hunks(blk));
+        return;
+    }
+    if (blk.is_deleted)
+        return; // keep the file on disk; the user deletes it by hand
+    // Modify. Only single-path content blocks get inline hunk markers;
+    // anything rename-shaped is left alone.
+    if (!blk.has_old || !blk.has_new || blk.old_rel != blk.new_rel ||
+        blk.old_rel.empty() || blk.hunks.empty())
+        return;
+    std::string full = join_path(treedir, blk.old_rel);
+    // Same no-through-link-read rule as above (writes below are gated by
+    // confined_for_write already).
+    if (!ancestors_are_dirs(treedir, full))
+        return;
+    PathKind k = path_kind(full);
+    if (k == PathKind::Other)
+        return; // dir/special in the way: leave it
+    if (k == PathKind::Missing) {
+        write_patch_conflict(treedir, full, std::vector<std::string>(),
+                             desired_from_hunks(blk));
+        return;
+    }
+    bool is_link = false;
+    FileLines cur = read_target_lines(full, &is_link, nullptr);
+    if (is_link)
+        return;
+    if (cur.lines.empty() && cur.ends_nl) {
+        // Empty file: nothing to match against; pit emptiness vs desired.
+        write_patch_conflict(treedir, full, cur.lines,
+                             desired_from_hunks(blk));
+        return;
+    }
+    std::vector<std::string> out = cur.lines;
+    long offset = 0;
+    for (const PHunk& h : blk.hunks) {
+        long exp = hunk_expected(h, false) + offset;
+        if (exp < 0)
+            exp = 0;
+        if (exp > (long)out.size())
+            exp = (long)out.size();
+        long pos = find_hunk_pos(out, h, exp, false);
+        if (pos >= 0) {
+            // Splice this hunk in (same splice as apply_hunks, one hunk).
+            std::vector<std::string> next;
+            next.reserve(out.size() + 8);
+            for (long i = 0; i < pos; ++i)
+                next.push_back(out[(size_t)i]);
+            long fp = pos;
+            for (auto& ln : h.lines) {
+                if (ln.op == ' ') {
+                    if (fp < (long)out.size())
+                        next.push_back(out[(size_t)fp]);
+                    else
+                        next.push_back(ln.text);
+                    ++fp;
+                } else if (ln.op == '-') {
+                    ++fp;
+                } else if (ln.op == '+') {
+                    next.push_back(ln.text);
+                }
+            }
+            for (size_t i = (size_t)fp; i < out.size(); ++i)
+                next.push_back(out[i]);
+            long rem = 0, add = 0;
+            hunk_body_counts(h, &rem, &add, false);
+            offset += (add - rem);
+            out.swap(next);
+            continue;
+        }
+        // Failed hunk: embed markers at the expected position. The current
+        // side is the actual file slice the hunk would have replaced; the
+        // patched side is what the hunk wanted (context + additions).
+        long rem = 0, add = 0;
+        hunk_body_counts(h, &rem, &add, false);
+        long old_span = 0;
+        for (auto& ln : h.lines) {
+            if (ln.op == ' ' || ln.op == '-')
+                ++old_span;
+        }
+        long e = exp;
+        if (e > (long)out.size())
+            e = (long)out.size();
+        long slice_end = e + old_span;
+        if (slice_end > (long)out.size())
+            slice_end = (long)out.size();
+        std::vector<std::string> current_side(out.begin() + (size_t)e,
+                                              out.begin() + (size_t)slice_end);
+        std::vector<std::string> patched_side;
+        for (auto& ln : h.lines) {
+            if (ln.op == '+' || ln.op == ' ')
+                patched_side.push_back(ln.text);
+        }
+        std::vector<std::string> marker;
+        marker.push_back("<<<<<<< current");
+        for (auto& l : current_side)
+            marker.push_back(l);
+        marker.push_back("=======");
+        for (auto& l : patched_side)
+            marker.push_back(l);
+        marker.push_back(">>>>>>> patched");
+        // The marker block replaces the hunk region (no duplication).
+        out.erase(out.begin() + (size_t)e,
+                  out.begin() + (size_t)slice_end);
+        out.insert(out.begin() + (size_t)e, marker.begin(), marker.end());
+        offset += (long)marker.size() - (slice_end - e);
+    }
+    // Confined write (see confined_for_write): a symlink ancestor in the
+    // target tree turns this into "leave the file for the user" (the
+    // conflict is already recorded) instead of an escape.
+    if (!confined_for_write(treedir, full))
+        return;
+    make_dirs(dirname_of(full));
+    write_file_bytes(full, join_content(out, true));
+}
+
+bool vcs_apply_with_conflicts(const std::string& treedir,
+                              const std::string& patch, const std::string& wid,
+                              std::vector<std::string>* conflicts)
+{
+    if (patch.empty())
+        return true;
+    if (patch.find((char)0) != std::string::npos)
+        die("patch contains NUL bytes; binary patches are not supported");
+    std::vector<PBlock> blocks = parse_patch(patch, wid);
+    if (blocks.empty())
+        return true;
+    bool all_clean = true;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const PBlock& blk = blocks[i];
+        BlkStatus st = apply_block(treedir, blk, wid);
+        if (st != BlkStatus::Failed)
+            continue;
+        all_clean = false;
+        VcsFailure f = failure_for_block(blk, wid);
+        for (auto& p : f.paths) {
+            if (p.empty())
+                continue;
+            if (std::find(conflicts->begin(), conflicts->end(), p) ==
+                conflicts->end())
+                conflicts->push_back(p);
+        }
+        if (f.paths.empty()) {
+            // Opaque block (e.g. combined diff) with no parseable path:
+            // still report the display name so the console list is complete.
+            std::string d = f.display.empty() ? "<unknown file>" : f.display;
+            if (std::find(conflicts->begin(), conflicts->end(), d) ==
+                conflicts->end())
+                conflicts->push_back(d);
+        }
+        write_conflict_for_block(treedir, blk);
+    }
+    return all_clean;
+}
+
+std::vector<std::string> vcs_touched_paths(const std::string& patch,
+                                           const std::string& wid)
+{
+    std::vector<std::string> out;
+    if (patch.empty())
+        return out;
+    if (patch.find((char)0) != std::string::npos)
+        die("patch contains NUL bytes; binary patches are not supported");
+    for (auto& b : parse_patch(patch, wid)) {
+        VcsFailure f = failure_for_block(b, wid);
+        for (auto& rel : f.paths) {
+            if (!rel.empty() &&
+                std::find(out.begin(), out.end(), rel) == out.end())
+                out.push_back(rel);
+        }
+        if (f.paths.empty() && !f.display.empty() &&
+            std::find(out.begin(), out.end(), f.display) == out.end())
+            out.push_back(f.display);
+    }
+    return out;
+}
+
 namespace {
 
 struct Change {
@@ -2007,6 +2435,15 @@ std::vector<Change> changes_from(const std::vector<std::string>& base,
 bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_file,
                         const std::string& theirs_file, const std::string& dst_path)
 {
+    // Symlink-ancestor safety (no check needed here, by construction):
+    // every caller passes a dst inside a tool-created temp tree (setup and
+    // rebase merges), never a user-controlled dir. Symlinks inside such a
+    // tree can only come from tarballs and patches, both of which reject
+    // absolute and ".."-carrying link targets up front, so every link
+    // resolves inside the tree: writing through one cannot escape it.
+    // (Direct patch application to user dirs goes through apply_block and
+    // the conflict writers instead, which do check — see creatable_under
+    // and confined_for_write.)
     bool base_e = path_exists(base_file);
     bool ours_e = path_exists(ours_file);
     bool theirs_e = path_exists(theirs_file);

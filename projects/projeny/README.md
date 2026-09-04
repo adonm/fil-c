@@ -30,7 +30,9 @@ projeny mv <f.projeny> <src> <dst>       rename a file, mark as renamed
 projeny resolve <f.projeny> <path>       clear a conflict entry
 projeny rebase <f.projeny> <tarball>     point the project at a new tarball
 projeny status <f.projeny>               show setup/conflict/pending state
-projeny help                             show help
+projeny diff <dir> <other-dir>           print the diff between two trees
+projeny patch <dir> <patch-file>         apply a patch file to a tree
+projeny help [command]                   show help (per-command with a name)
 ```
 
 Paths into the work tree may be CWD-relative, absolute, or workdir-relative
@@ -75,6 +77,44 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   warns to stderr and proceeds with the new file — it never silently keeps
   the old bytes.
 
+- `diff <dir> <other-dir>`: prints the minimal unified diff between
+  two on-disk trees to stdout (labels use the second directory's
+  basename, so the output feeds `projeny patch`, `git apply`, and
+  `patch -p1`). Both arguments must be directories.
+- `patch <dir> <patch-file>`: applies a patch file to a directory with
+  fuzz; already-applied blocks are skipped. Unapplyable blocks become
+  conflicts: markers (`<<<<<<< current` / `=======` / `>>>>>>> patched`)
+  go inline and the conflicted files are listed on stdout (exit stays 0).
+- `help [command]`: with a command name, prints a detailed explanation
+  of that command.
+
+## Recovering a git-conflicted `.projeny` file
+
+When a `git pull --rebase`, `stash pop`, or `merge` leaves conflict
+markers (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`) in a `.projeny`
+file, every command except `setup` refuses to run. Marker-shaped lines
+can never occur in a well-formed `.projeny` file (headers are
+`Key: value`, patch structure lines start with other characters, and
+every hunk-body line carries a prefix byte, while free-text prose always
+carries its leading-space indent), so detection is exact —
+hand-written prose must indent every non-empty line with a leading space.
+
+`setup` force-takes the upstream side for the `.projeny` file
+and status copy, merges the local-side patch into the workdir
+with conflicts marked (three-way against the shared base archive when
+both sides name the same tarball), and re-applies any uncommitted
+workdir-vs-status changes on top. Which side is upstream is auto-detected:
+`git merge` keeps ours=local, while `git pull --rebase`/`rebase` and
+`stash pop` swap the sides (`<<<<<<< HEAD` holds upstream there) —
+projeny reads the branch labels (`upstream`/`origin`/`remote`/`theirs`,
+`stashed`), the status-file copy, and one-sided validity, defaulting to
+merge convention. A truncated or binary-garbled
+`.projeny` file is refused without touching the workdir or status file
+(restore it with `git checkout -- <file>` and run `setup` again).
+A delete/modify conflict (one side deleted the `.projeny` file) cannot be
+merged automatically: pick a side with
+`git checkout --ours/--theirs -- <file>` and run `setup` again.
+
 ## `.projeny` format
 
 ```
@@ -90,7 +130,17 @@ diff --git a/lua/makefile b/lua/makefile
 
 Headers (`Archive:`, `Origname:`, `Name:` — all required; extra headers are
 preserved verbatim) end at the first blank line. Everything up to the first
-`diff --git` line is free text. Patch labels use the workdir name
+`diff --git` line is free text. Every non-empty free-text line starts with
+a space or tab (projeny prepends a single space on write when one is
+missing, idempotently — already-indented prose roundtrips byte-for-byte —
+so hand-written prose migrates on the next commit/rebase). Because of that
+rule, marker-shaped lines (`<<<<<<<`, `=======`, `>>>>>>>`, `|||||||`)
+at column 0 can never appear in a well-formed file (headers are
+`Key: value`, patch structure lines start with other characters, and
+hunk-body lines carry a prefix byte), so git conflict markers in a
+`.projeny` file are always detected exactly — free-text prose must therefore
+use the leading-space indent (a column-0 marker-shaped prose line is refused
+as a conflict, with a hint to indent it). Patch labels use the workdir name
 (`a/<Name>/...`, `b/<Name>/...`); rename entries use bare workdir-relative
 paths. The patch may be empty (plain tarball, no changes). Paths with spaces,
 tabs, quotes, backslashes, `->`, or other special bytes are stored git
@@ -186,7 +236,11 @@ offsets (fuzz), symlinks (preserve/retarget/dotdot-escape rejection),
 long single-line files, tabs, quote/tab filenames, extra-header
 preservation, no-change commits, and CLI error paths — plus optional
 `git apply --check` / `patch -p1 --dry-run` compatibility spot-checks that
-verify stored patches with those tools when they are installed (the suite
-itself needs no `git`: it passes with `git` absent from `PATH`). It prints
+verify stored patches with those tools when they are installed, plus
+`diff`/`patch` roundtrips and minimum-diff cases, `patch` conflict
+markers with console lists, git-conflicted `.projeny` recovery via
+`setup` (simple, harder, and no-checkout cases, with real `git` merges
+when `git` is installed and hand-made markers otherwise), malformed /
+truncated `.projeny` refusal, and per-command `help <cmd>` texts. It prints
 `ok`/`FAIL` lines with a `passed/failed` summary and exits nonzero on
 any failure.

@@ -26,6 +26,8 @@
 
 #include "util.h"
 
+#include <cstring>
+
 const char* kStatusDelim = "--- projeny content ---";
 
 namespace {
@@ -38,6 +40,49 @@ std::string strip_one_space(const std::string& v)
         return v.substr(1);
     return v;
 }
+// Normalize free-text prose so tool-written files never contain a
+// column-0 line: every non-empty line is made to start with a space or tab
+// (a single space is prepended when missing). Git conflict markers always
+// sit at column 0 unprefixed, so after this normalization any column-0
+// marker-shaped line in a tool-written file can only be a genuine git
+// conflict — detection is exact, with no false positives from prose.
+// Idempotent: already-indented lines are kept verbatim, so existing
+// indented prose roundtrips byte-for-byte; hand-written prose migrates on
+// the next commit/rebase. Empty lines stay empty.
+std::string normalize_prose_indent(const std::string& middle)
+{
+    if (middle.empty())
+        return middle;
+    bool ends_nl = middle.back() == '\n';
+    std::vector<std::string> lines;
+    size_t i = 0;
+    while (i < middle.size()) {
+        size_t j = middle.find('\n', i);
+        if (j == std::string::npos) {
+            lines.push_back(middle.substr(i));
+            break;
+        }
+        lines.push_back(middle.substr(i, j - i));
+        i = j + 1;
+    }
+    // A trailing '\n' terminates the last line rather than starting an
+    // empty one (matches split_lines).
+    if (ends_nl && !lines.empty() && lines.back().empty())
+        lines.pop_back();
+    for (auto& l : lines) {
+        if (!l.empty() && l[0] != ' ' && l[0] != '\t')
+            l = " " + l;
+    }
+    std::string out;
+    for (auto& l : lines) {
+        out += l;
+        out += '\n';
+    }
+    if (!ends_nl && !out.empty())
+        out.pop_back();
+    return out;
+}
+
 // A header line is "Key: value" where Key holds no spaces/tabs/colon and the
 // line is not indented (indented lines start the free-text section, per the
 // spec example which shows 4-space-indented text after the blank line).
@@ -55,6 +100,230 @@ bool is_header_line(const std::string& line)
     }
     return true;
 }
+}
+
+static bool is_marker_prefix(const std::string& line, const char* mark)
+{
+    size_t n = strlen(mark);
+    if (line.compare(0, n, mark) != 0)
+        return false;
+    // Extended (nested-conflict) markers run longer than 7: git adds one
+    // character per nesting level (e.g. "<<<<<<<<" / "========" for the
+    // outer block of a nested conflict). Accept a run of 7 or more marker
+    // characters, then require EOL or a label separator exactly as for the
+    // plain 7-char form; anything else (e.g. "<<<<<<<<?") is not a marker.
+    size_t i = n;
+    while (i < line.size() && line[i] == mark[0])
+        ++i;
+    return line.size() == i || line[i] == ' ' || line[i] == '\t';
+}
+
+bool is_projeny_marker_opener(const std::string& line)
+{
+    return is_marker_prefix(line, "<<<<<<<");
+}
+
+bool is_projeny_marker_base(const std::string& line)
+{
+    return is_marker_prefix(line, "|||||||");
+}
+
+bool is_projeny_marker_divider(const std::string& line)
+{
+    return is_marker_prefix(line, "=======");
+}
+
+bool is_projeny_marker_closer(const std::string& line)
+{
+    return is_marker_prefix(line, ">>>>>>>");
+}
+
+bool is_projeny_marker_line(const std::string& line)
+{
+    return is_projeny_marker_opener(line) || is_projeny_marker_base(line) ||
+           is_projeny_marker_divider(line) || is_projeny_marker_closer(line);
+}
+
+bool projeny_has_conflict_markers(const std::string& data)
+{
+    // Any marker line at column 0 means the file went through a conflicted
+    // merge (git never emits partial markers on success, and a truncation
+    // that eats the rest of a block must not look clean). split() then
+    // validates the block structure and dies on malformed markers.
+    // (split_lines strips one trailing '\r' per line, so CRLF checkouts
+    // are detected too.)
+    for (const std::string& line : split_lines(data)) {
+        if (is_projeny_marker_line(line))
+            return true;
+    }
+    return false;
+}
+
+ProjenyConflictSplit split_projeny_conflicts(const std::string& data,
+                                             const std::string& what_for_errors)
+{
+    ProjenyConflictSplit out;
+    if (!projeny_has_conflict_markers(data))
+        return out;
+    std::vector<std::string> lines = split_lines(data);
+    std::vector<std::string> ours, theirs;
+    enum State { Normal, InOurs, InBase, InTheirs };
+    State st = Normal;
+    bool saw_opener = false, saw_closer = false;
+    auto marker_label = [](const std::string& l) -> std::string {
+        // l starts with a run of 7+ marker characters plus EOL/space/tab
+        // (see is_marker_prefix); the label is whatever follows the run,
+        // trimmed. (Skipping the whole run matters for extended markers:
+        // the label of "<<<<<<<< my branch" is "my branch", not "< my
+        // branch".)
+        size_t i = 0;
+        char m = l.empty() ? '\x00' : l[0];
+        while (i < l.size() && l[i] == m)
+            ++i;
+        return trim(l.substr(i));
+    };
+    for (size_t k = 0; k < lines.size(); ++k) {
+        const std::string& l = lines[k];
+        switch (st) {
+        case Normal:
+            if (is_projeny_marker_opener(l)) {
+                st = InOurs;
+                if (!saw_opener) {
+                    out.opener_label = marker_label(l);
+                    saw_opener = true;
+                }
+            } else if (is_projeny_marker_line(l)) {
+                die("file " + what_for_errors +
+                    " has malformed git conflict markers (stray '" + l +
+                    "' outside a conflict block); if this line is free-text "
+                    "prose rather than a git conflict, indent it with a "
+                    "leading space (prose must not contain column-0 marker "
+                    "lines). Otherwise resolve the .projeny file with 'git "
+                    "checkout --ours/--theirs' (or edit it by hand) and run "
+                    "'projeny setup' again");
+            } else {
+                ours.push_back(l);
+                theirs.push_back(l);
+            }
+            break;
+        case InOurs:
+            if (is_projeny_marker_opener(l)) {
+                die("file " + what_for_errors +
+                    " has malformed git conflict markers (nested '<<<<<<<'); "
+                    "resolve the .projeny file with "
+                    "'git checkout --ours/--theirs' (or edit it by hand) and "
+                    "run 'projeny setup' again");
+            } else if (is_projeny_marker_base(l))
+                st = InBase;
+            else if (is_projeny_marker_divider(l))
+                st = InTheirs;
+            else if (is_projeny_marker_closer(l)) {
+                die("file " + what_for_errors +
+                    " has malformed git conflict markers (unexpected "
+                    "'>>>>>>>'); resolve the .projeny file with "
+                    "'git checkout --ours/--theirs' (or edit it by hand) and "
+                    "run 'projeny setup' again");
+            } else
+                ours.push_back(l);
+            break;
+        case InBase:
+            if (is_projeny_marker_opener(l) || is_projeny_marker_base(l) ||
+                is_projeny_marker_closer(l)) {
+                die("file " + what_for_errors +
+                    " has malformed git conflict markers inside the base "
+                    "('|||||||') section; resolve the .projeny file with "
+                    "'git checkout --ours/--theirs' (or edit it by hand) and "
+                    "run 'projeny setup' again");
+            } else if (is_projeny_marker_divider(l))
+                st = InTheirs;
+            break; // base lines belong to neither side
+        case InTheirs:
+            if (is_projeny_marker_opener(l) || is_projeny_marker_base(l) ||
+                is_projeny_marker_divider(l)) {
+                die("file " + what_for_errors +
+                    " has malformed git conflict markers inside the upstream "
+                    "section; resolve the .projeny file with "
+                    "'git checkout --ours/--theirs' (or edit it by hand) and "
+                    "run 'projeny setup' again");
+            } else if (is_projeny_marker_closer(l)) {
+                st = Normal;
+                if (!saw_closer) {
+                    // Label after the ">>>>>>>" run; captured for direction
+                    // detection (rebase/stash swap the sides). The label
+                    // skips the whole marker run (see marker_label), so an
+                    // extended closer like ">>>>>>>> branch" still yields
+                    // "branch".
+                    size_t ci = 0;
+                    while (ci < l.size() && l[ci] == '>')
+                        ++ci;
+                    out.closer_label = trim(l.substr(ci));
+                    saw_closer = true;
+                }
+            } else
+                theirs.push_back(l);
+            break;
+        }
+    }
+    if (st != Normal) {
+        die("file " + what_for_errors +
+            " has malformed git conflict markers (block never closed with "
+            "'>>>>>>>'); if these lines are free-text prose rather than a "
+            "git conflict, indent them with a leading space (prose must not "
+            "contain column-0 marker lines). Otherwise resolve the .projeny "
+            "file with 'git checkout --ours/--theirs' (or edit it by hand) "
+            "and run 'projeny setup' again");
+    }
+    // Rejoin with '\n', preserving the trailing-newline state. (CRLF input
+    // was stripped per line by split_lines, so this normalizes to LF.)
+    bool ends_nl = !data.empty() && data.back() == '\n';
+    out.ours = join_lines(ours);
+    out.theirs = join_lines(theirs);
+    if (!ends_nl) {
+        if (!out.ours.empty() && out.ours.back() == '\n')
+            out.ours.pop_back();
+        if (!out.theirs.empty() && out.theirs.back() == '\n')
+            out.theirs.pop_back();
+    }
+    out.conflicted = true;
+    return out;
+}
+
+std::string validate_projeny_bytes(const std::string& data)
+{
+    if (contains_nul(data))
+        return "contains NUL bytes (binary merge garbage?)";
+    if (projeny_has_conflict_markers(data))
+        return "contains git conflict markers";
+    // Header sanity without dying: required Archive:/Origname:/Name:.
+    bool archive = false, origname = false, name = false;
+    for (const std::string& line : split_lines(data)) {
+        if (line.empty())
+            break;
+        if (line[0] == ' ' || line[0] == '\t')
+            break;
+        size_t colon = line.find(':');
+        if (colon == std::string::npos || colon == 0)
+            break;
+        bool key_ok = true;
+        for (size_t i = 0; i < colon; ++i) {
+            if (line[i] == ' ' || line[i] == '\t') {
+                key_ok = false;
+                break;
+            }
+        }
+        if (!key_ok)
+            break;
+        std::string key = line.substr(0, colon);
+        if (key == "Archive")
+            archive = true;
+        else if (key == "Origname")
+            origname = true;
+        else if (key == "Name")
+            name = true;
+    }
+    if (!archive || !origname || !name)
+        return "is missing a required header (need Archive:, Origname:, Name:)";
+    return "";
 }
 
 std::string ProjenyFile::header_value(const std::string& key) const
@@ -81,6 +350,11 @@ ProjenyFile ProjenyFile::parse_bytes(const std::string& data,
     pf.raw = data;
     if (contains_nul(data))
         die("file " + what_for_errors + " contains NUL bytes");
+    if (projeny_has_conflict_markers(data)) {
+        die("file " + what_for_errors +
+            " contains git conflict markers; refusing (only 'projeny setup' "
+            "can resolve a conflicted .projeny file)");
+    }
     // Raw lines (split on '\n', interior '\r' preserved) with byte offsets,
     // so middle/patch extraction below is byte-exact (CRLF content inside
     // hunk bodies survives). Structural tests strip one trailing '\r'.
@@ -181,6 +455,21 @@ ProjenyFile ProjenyFile::parse_bytes(const std::string& data,
 
 void ProjenyFile::rebuild(const std::string& new_patch)
 {
+    // Normalize prose first: every non-empty middle line is made to start
+    // with a space/tab, so tool-written files never contain a column-0
+    // line and column-0 marker-shaped lines stay unambiguously git
+    // conflicts (see normalize_prose_indent).
+    middle = normalize_prose_indent(middle);
+    // Enforce the invariant on write: prose must never contain a column-0
+    // marker line. (Unreachable after the normalization above, but kept as
+    // a guard so no future writer can silently reintroduce the ambiguity:
+    // such prose would false-positive as a git conflict on the next read.)
+    for (const std::string& l : split_lines(middle)) {
+        if (is_projeny_marker_line(l))
+            die("cannot write .projeny file: free-text prose contains a "
+                "column-0 marker line ('" + l + "'); indent the prose line "
+                "with a leading space");
+    }
     // raw = head + "\n" + middle + patch, where middle already ends in '\n'
     // when non-empty (join_lines). The patch body is replaced verbatim, so
     // trailing whitespace inside the new patch is preserved byte-for-byte.

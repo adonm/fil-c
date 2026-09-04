@@ -1024,6 +1024,23 @@ std::vector<VcsFailure> apply_patch_per_file(const std::string& workdir,
     // workdir-relative paths, never indices into another parser's blocks.
     return vcs_apply_per_file(workdir, patch, wid);
 }
+
+bool apply_patch_with_conflicts(const std::string& treedir,
+                                const std::string& patch, const std::string& wid,
+                                const std::string& scratch_parent,
+                                std::vector<std::string>* conflicts)
+{
+    (void)scratch_parent; // no temp files needed; kept for call compatibility
+    if (normalize_patch_text(patch).empty())
+        return true;
+    return vcs_apply_with_conflicts(treedir, patch, wid, conflicts);
+}
+
+std::vector<std::string> patch_touched_paths(const std::string& patch,
+                                             const std::string& wid)
+{
+    return vcs_touched_paths(patch, wid);
+}
 bool merge_one_file(const std::string& base_file, const std::string& ours_file,
                     const std::string& theirs_file, const std::string& dst_path)
 {

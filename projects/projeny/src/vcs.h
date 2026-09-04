@@ -63,6 +63,24 @@ std::vector<VcsFailure> vcs_apply_per_file(const std::string& workdir,
                                             const std::string& patch,
                                             const std::string& wid);
 
+// Apply `patch` (wid-label form, wid == `wid`) inside `treedir`, writing
+// git-style conflict markers inline for blocks that do not apply cleanly.
+// Clean blocks (including already-applied ones) are applied as usual; each
+// failed block keeps the successfully applied hunks (modify blocks) or the
+// current file (add/delete/rename blocks) and records its workdir-relative
+// path(s) in `conflicts` (callers sort/unique the list). Markers use
+// "<<<<<<< current" / "=======" / ">>>>>>> patched" labels. Returns true
+// when everything applied cleanly. Dies on binary patches.
+bool vcs_apply_with_conflicts(const std::string& treedir,
+                              const std::string& patch, const std::string& wid,
+                              std::vector<std::string>* conflicts);
+
+// All workdir-relative paths `patch` touches under `wid` (both sides of
+// renames; display fallback when a block has no parseable path). Used to
+// pick the right wid for `projeny patch` without trial application.
+std::vector<std::string> vcs_touched_paths(const std::string& patch,
+                                           const std::string& wid);
+
 // Three-way merge one file: base (may be missing), ours (fresh setup file,
 // may be missing), theirs (user file, may be missing) -> write merged result
 // with conflict markers into dst_path. Returns true if clean.

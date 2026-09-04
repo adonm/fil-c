@@ -34,7 +34,8 @@ int usage(const char* arg0, bool err)
 {
     FILE* f = err ? stderr : stdout;
     fprintf(f,
-            "usage: %s <setup|commit|add|rm|mv|resolve|rebase|status|help> "
+            "usage: %s "
+            "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|help> "
             "[args]\n"
             "  setup <f.projeny>\n"
             "  commit <f.projeny>\n"
@@ -44,7 +45,9 @@ int usage(const char* arg0, bool err)
             "  resolve <f.projeny> <path>\n"
             "  rebase <f.projeny> <new-tarball>\n"
             "  status <f.projeny>\n"
-            "  help\n",
+            "  diff <dir> <other-dir>\n"
+            "  patch <dir> <patch-file>\n"
+            "  help [command]\n",
             arg0);
     return err ? 1 : 0;
 }
@@ -61,9 +64,11 @@ int main(int argc, char** argv)
 
     const std::string& cmd = args[0];
     if (cmd == "help" || cmd == "--help" || cmd == "-h") {
-        if (args.size() != 1)
-            return usage(arg0.c_str(), true);
-        return cmd_help(arg0);
+        if (args.size() == 1)
+            return cmd_help(arg0);
+        if (args.size() == 2)
+            return cmd_help_topic(arg0, args[1]);
+        return usage(arg0.c_str(), true);
     }
     if (cmd == "setup") {
         if (args.size() != 2)
@@ -104,6 +109,16 @@ int main(int argc, char** argv)
         if (args.size() != 2)
             return usage(arg0.c_str(), true);
         return cmd_status(args[1]);
+    }
+    if (cmd == "diff") {
+        if (args.size() != 3)
+            return usage(arg0.c_str(), true);
+        return cmd_diff(args[1], args[2]);
+    }
+    if (cmd == "patch") {
+        if (args.size() != 3)
+            return usage(arg0.c_str(), true);
+        return cmd_patch(args[1], args[2]);
     }
     fprintf(stderr, "projeny: error: unknown command '%s'\n", cmd.c_str());
     return usage(arg0.c_str(), true);

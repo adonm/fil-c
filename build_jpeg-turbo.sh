@@ -31,13 +31,7 @@ cd projects/libjpeg-turbo-3.0.1
 rm -rf build
 mkdir -v build
 cd build
-JPEG_SIMD_FLAGS=""
-if [ "$ARCH" = aarch64 ]; then
-    # Fil-C cannot pizlate the multi-vector NEON loads that libjpeg-turbo's
-    # NEON SIMD intrinsics use.
-    JPEG_SIMD_FLAGS="-DWITH_SIMD=0"
-fi
-CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -G"Unix Makefiles" .. -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DCMAKE_ASM_NASM_COMPILER="" $JPEG_SIMD_FLAGS
+CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ cmake -G"Unix Makefiles" .. -DCMAKE_INSTALL_PREFIX=$PWD/../../../pizfix -DCMAKE_ASM_NASM_COMPILER=""
 make -j $NCPU
 make -j $NCPU install
 

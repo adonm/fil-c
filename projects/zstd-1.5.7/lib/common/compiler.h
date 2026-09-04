@@ -215,7 +215,7 @@
 #  if defined(__SSE2__) || defined(_M_X64) || (defined (_M_IX86) && defined(_M_IX86_FP) && (_M_IX86_FP >= 2))
 #    define ZSTD_ARCH_X86_SSE2
 #  endif
-#  if (defined(__ARM_NEON) || defined(_M_ARM64)) && !defined(__FILC__)
+#  if defined(__ARM_NEON) || defined(_M_ARM64)
 #    define ZSTD_ARCH_ARM_NEON
 #  endif
 #

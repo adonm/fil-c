@@ -23,6 +23,7 @@
 #include <llvm/IR/TypedPointerType.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/IR/IntrinsicsX86.h>
+#include <llvm/IR/IntrinsicsAArch64.h>
 #include <llvm/Transforms/Utils/BasicBlockUtils.h>
 #include <llvm/Transforms/Utils/LowerAtomic.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
@@ -4478,6 +4479,91 @@ class Pizlonator {
         IAD.Ptr = II->getArgOperand(0);
         IAD.Alignment = 1;
         break;
+      // AArch64 NEON multi-vector loads and stores (the vld2/vld3/vld4,
+      // vld1xN, vldNr, vldNlane and corresponding store intrinsics, for
+      // N = 2, 3, 4).  All of these access a contiguous run of memory that
+      // begins at the pointer argument.  For the whole-vector forms
+      // (vld1xN/vldN/vst1xN/vstN), the length of that run is N times the
+      // size of one vector; de-interleaving changes which lanes end up in
+      // which register, but not which bytes of memory are accessed.  For
+      // the replicate (vldNr) and lane (vldNlane/vstNlane) forms, only one
+      // element per register is transferred, so the length of the run is
+      // N times the element size.  So, in all cases, we can be totally
+      // precise with a single range check that covers exactly the bytes
+      // that are accessed.  We use the element size as the required
+      // alignment, since that is what the hardware requires for these
+      // instructions and it matches how we check an equivalent plain
+      // load/store of one element.
+      case Intrinsic::aarch64_neon_ld1x2:
+      case Intrinsic::aarch64_neon_ld1x3:
+      case Intrinsic::aarch64_neon_ld1x4:
+      case Intrinsic::aarch64_neon_ld2:
+      case Intrinsic::aarch64_neon_ld3:
+      case Intrinsic::aarch64_neon_ld4: {
+        // Loads of whole vectors.  The result is a literal struct of N
+        // vectors, all of the same type.
+        StructType* ST = cast<StructType>(II->getType());
+        VectorType* VecTy = cast<VectorType>(ST->getElementType(0));
+        IAD.AK = AccessKind::Read;
+        IAD.Ptr = II->getArgOperand(II->arg_size() - 1);
+        IAD.T = ArrayType::get(VecTy, ST->getNumElements());
+        IAD.Alignment = DL.getTypeAllocSize(VecTy->getElementType());
+        assert(!hasPtrs(IAD.T));
+        break;
+      }
+      case Intrinsic::aarch64_neon_ld2r:
+      case Intrinsic::aarch64_neon_ld3r:
+      case Intrinsic::aarch64_neon_ld4r:
+      case Intrinsic::aarch64_neon_ld2lane:
+      case Intrinsic::aarch64_neon_ld3lane:
+      case Intrinsic::aarch64_neon_ld4lane: {
+        // Replicate and lane loads.  These load only one element of each of
+        // the N result vectors.  For the lane loads, the lane index is the
+        // second-to-last argument.
+        assert(II->getIntrinsicID() == Intrinsic::aarch64_neon_ld2r ||
+               II->getIntrinsicID() == Intrinsic::aarch64_neon_ld3r ||
+               II->getIntrinsicID() == Intrinsic::aarch64_neon_ld4r ||
+               II->getArgOperand(II->arg_size() - 2)->getType() == Int64Ty);
+        StructType* ST = cast<StructType>(II->getType());
+        VectorType* VecTy = cast<VectorType>(ST->getElementType(0));
+        IAD.AK = AccessKind::Read;
+        IAD.Ptr = II->getArgOperand(II->arg_size() - 1);
+        IAD.T = ArrayType::get(VecTy->getElementType(), ST->getNumElements());
+        IAD.Alignment = DL.getTypeAllocSize(VecTy->getElementType());
+        assert(!hasPtrs(IAD.T));
+        break;
+      }
+      case Intrinsic::aarch64_neon_st1x2:
+      case Intrinsic::aarch64_neon_st1x3:
+      case Intrinsic::aarch64_neon_st1x4:
+      case Intrinsic::aarch64_neon_st2:
+      case Intrinsic::aarch64_neon_st3:
+      case Intrinsic::aarch64_neon_st4: {
+        // Stores of whole vectors.  The arguments are N vectors followed by
+        // the pointer.
+        VectorType* VecTy = cast<VectorType>(II->getArgOperand(0)->getType());
+        IAD.AK = AccessKind::Write;
+        IAD.Ptr = II->getArgOperand(II->arg_size() - 1);
+        IAD.T = ArrayType::get(VecTy, II->arg_size() - 1);
+        IAD.Alignment = DL.getTypeAllocSize(VecTy->getElementType());
+        assert(!hasPtrs(IAD.T));
+        break;
+      }
+      case Intrinsic::aarch64_neon_st2lane:
+      case Intrinsic::aarch64_neon_st3lane:
+      case Intrinsic::aarch64_neon_st4lane: {
+        // Lane stores.  These store only one element of each of the N
+        // vectors; the arguments are N vectors, then the lane index, then
+        // the pointer.
+        assert(II->getArgOperand(II->arg_size() - 2)->getType() == Int64Ty);
+        VectorType* VecTy = cast<VectorType>(II->getArgOperand(0)->getType());
+        IAD.AK = AccessKind::Write;
+        IAD.Ptr = II->getArgOperand(II->arg_size() - 1);
+        IAD.T = ArrayType::get(VecTy->getElementType(), II->arg_size() - 2);
+        IAD.Alignment = DL.getTypeAllocSize(VecTy->getElementType());
+        assert(!hasPtrs(IAD.T));
+        break;
+      }
       default:
         break;
       }

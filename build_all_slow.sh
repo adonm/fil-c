@@ -32,12 +32,6 @@ set -x
 test ! -d projects/pizfix
 
 ./build_ffi.sh
-
-if [ "$ARCH" = aarch64 ]; then
-    # Only libffi has been ported to Fil-C on ARM64 so far.
-    exit 0
-fi
-
 ./build_pkgconf.sh
 ./build_dash.sh
 ./build_wg14_signals.sh
@@ -47,6 +41,13 @@ fi
 ./build_bzip2.sh
 ./build_bzip3.sh
 ./build_xz.sh
+
+if [ "$ARCH" = aarch64 ]; then
+    # Everything through xz has been ported to Fil-C on ARM64.  Exit early
+    # until more of the corpus is ported.
+    exit 0
+fi
+
 ./build_zstd.sh
 ./build_lz4.sh
 ./build_xxhash.sh

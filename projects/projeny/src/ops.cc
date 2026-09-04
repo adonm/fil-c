@@ -1,4 +1,27 @@
-// projeny - original work, MIT-licensed. See ops.h.
+/*
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 #include "ops.h"
 
 #include "projeny_file.h"
@@ -101,14 +124,13 @@ std::string build_tree_from_patch(TempDir& tmp, const std::string& archive,
     if (normalize_patch_text(patch_wid).empty())
         return tree;
     if (!apply_patch_whole(tree, patch_wid, wid, scratch)) {
-        // Retry per-file to produce a precise error.
-        std::vector<FileDiff> blocks = split_file_diffs(patch_wid);
-        std::vector<size_t> bad = apply_patch_per_file(tree, blocks, wid);
+        // Retry per-file to produce a precise error. Failures carry
+        // workdir-relative paths from the single patch parser (no second
+        // parser, so block counts cannot diverge into OOB/wrong names).
+        std::vector<VcsFailure> bad = apply_patch_per_file(tree, patch_wid, wid);
         std::string detail;
-        for (size_t bi : bad) {
-            std::string nm = !blocks[bi].b_path.empty() ? blocks[bi].b_path
-                                                        : blocks[bi].a_path;
-            detail += "  " + nm + "\n";
+        for (const auto& f : bad) {
+            detail += "  " + f.display + "\n";
         }
         die("cannot apply " + what + ": patch does not apply cleanly", detail);
     }
@@ -120,47 +142,41 @@ std::string build_tree_from_patch(TempDir& tmp, const std::string& archive,
 // user workdir holding the THEIRS content; it may differ from N (in setup,
 // N is a fresh temp tree while the user workdir has the local edits).
 // Records conflicts into `conflicts` (workdir-relative paths). Applies
-// file-by-file; files that apply cleanly via git apply are applied
-// directly, the rest go through merge_one_file.
+// file-by-file; files that apply cleanly via the internal applier are
+// applied directly, the rest go through merge_one_file.
 void merge_user_diff_onto(const std::string& base_tree, const std::string& fresh_tree,
                           const std::string& user_tree, const std::string& workdir,
                           const std::string& wid, const std::string& uwid,
-                          const std::vector<FileDiff>& ublocks,
+                          const std::string& upatch,
                           std::vector<std::string>* conflicts)
 {
-    std::vector<size_t> bad = apply_patch_per_file(workdir, ublocks, wid);
+    // Parse U with its own wid (uwid): U was diffed with the old wid, which
+    // may differ from the fresh tree's wid. Failures already carry
+    // workdir-relative paths, so no second parser and no wid stripping here.
+    (void)wid;
+    std::vector<VcsFailure> bad = apply_patch_per_file(workdir, upatch, uwid);
     if (bad.empty())
         return;
     // For each failed block, do a 3-way merge of base/ours(=fresh)/theirs.
-    // A block may touch renames; merge at the granularity of the block's
-    // new-side path when it's a simple add/modify/delete, else fall back to
-    // whole-block conflict markers on every touched file.
     std::string scratch = scratch_parent_for(workdir);
-    for (size_t bi : bad) {
-        const FileDiff& b = ublocks[bi];
-        // Determine touched new-side files. U-blocks carry the OLD wid
-        // (`uwid`), which may differ from the fresh tree's wid — strip
-        // either prefix.
-        auto strip = [&](const std::string& p) -> std::string {
-            if (p == wid || p == uwid)
-                return "";
-            if (!wid.empty() && starts_with(p, wid + "/"))
-                return p.substr(wid.size() + 1);
-            if (!uwid.empty() && uwid != wid && starts_with(p, uwid + "/"))
-                return p.substr(uwid.size() + 1);
-            return p;
-        };
-        std::vector<std::string> touched;
-        if (!b.b_path.empty())
-            touched.push_back(strip(b.b_path));
-        else if (!b.a_path.empty())
-            touched.push_back(strip(b.a_path));
-        if (touched.empty() || touched[0].empty()) {
-            // Rename blocks: collect both sides.
-            if (!b.a_path.empty())
-                touched.push_back(strip(b.a_path));
-            if (!b.b_path.empty() && b.b_path != b.a_path)
-                touched.push_back(strip(b.b_path));
+    for (const auto& f : bad) {
+        std::vector<std::string> touched = f.paths;
+        // Opaque blocks (e.g. combined diffs) carry no parseable path but
+        // still name the file in display; fall back to deriving rels from
+        // display when it looks like a plain path.
+        if (touched.empty() && !f.display.empty() &&
+            f.display.find('\n') == std::string::npos &&
+            f.display.find(" -> ") == std::string::npos &&
+            f.display.compare(0, 5, "diff ") != 0 &&
+            f.display != "<unknown file>" && f.display != "<combined diff>" &&
+            f.display != "<rename>") {
+            touched.push_back(f.display);
+        }
+        if (touched.empty()) {
+            std::string d = f.display.empty() ? "<unknown file>" : f.display;
+            die("cannot merge local changes: unsupported patch block '" + d +
+                    "' cannot be merged; resolve manually",
+                "  " + d + "\n");
         }
         for (const std::string& rel : touched) {
             if (rel.empty())
@@ -180,7 +196,7 @@ void merge_user_diff_onto(const std::string& base_tree, const std::string& fresh
             bool had_theirs = path_exists(tf);
             if (had_theirs) {
                 snapshot = join_path(one.path, "theirs");
-                copy_file_bytes(tf, snapshot);
+                copy_recursive(tf, snapshot);
             }
             bool clean = merge_one_file(bf, of, had_theirs ? snapshot : tf, dst);
             if (!clean)
@@ -210,14 +226,11 @@ void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
     unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
     if (!apply_patch_whole(join_path(tmp.path, cur.origname), cur.patch,
                            cur.name, scratch_parent_for(ctx.pdir))) {
-        std::vector<FileDiff> blocks = split_file_diffs(cur.patch);
-        std::vector<size_t> bad =
-            apply_patch_per_file(join_path(tmp.path, cur.origname), blocks, cur.name);
+        std::vector<VcsFailure> bad = apply_patch_per_file(
+            join_path(tmp.path, cur.origname), cur.patch, cur.name);
         std::string detail;
-        for (size_t bi : bad) {
-            std::string nm = !blocks[bi].b_path.empty() ? blocks[bi].b_path
-                                                        : blocks[bi].a_path;
-            detail += "  " + nm + "\n";
+        for (const auto& f : bad) {
+            detail += "  " + f.display + "\n";
         }
         die("patch in '" + ctx.projeny_arg + "' does not apply to archive '" +
                 cur.archive + "'",
@@ -305,10 +318,9 @@ int cmd_setup(const std::string& projeny_arg)
     std::string Ntree = build_tree_from_patch(
         tN, join_path(ctx.pdir, cur.archive), cur.origname, cur.name, cur.patch,
         "patch in '" + ctx.projeny_arg + "'");
-    std::vector<FileDiff> ublocks = split_file_diffs(U);
     std::vector<std::string> conflicts;
     merge_user_diff_onto(Etree, Ntree, actual_workdir, Ntree, cur.name,
-                         oldpf.name, ublocks, &conflicts);
+                         oldpf.name, U, &conflicts);
     // Move merged N into place: remove workdir (at old or new name), move N,
     // and if the name changed, the old dir is gone.
     if (path_exists(old_workdir) && old_workdir != workdir) {
@@ -691,8 +703,8 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     if (!normalize_patch_text(cur.patch).empty() &&
         !apply_patch_whole(tree, cur.patch, cur.name,
                            scratch_parent_for(ctx.pdir))) {
-        std::vector<FileDiff> blocks = split_file_diffs(cur.patch);
-        std::vector<size_t> bad = apply_patch_per_file(tree, blocks, cur.name);
+        std::vector<VcsFailure> bad =
+            apply_patch_per_file(tree, cur.patch, cur.name);
         // 3-way merge each failed file: base = OLD tree file, ours = new
         // tree file (patched except failed parts), theirs = old tree file.
         TempDir tO(scratch_parent_for(ctx.pdir), "projeny-rebase-old-");
@@ -701,20 +713,22 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
         // Apply the old patch to the old tree to get the "theirs" content?
         // The old tree unpacked is the base; workdir == base+patch (clean
         // check above), so theirs-file == workdir file.
-        for (size_t bi : bad) {
-            const FileDiff& b = blocks[bi];
-            auto strip = [&](const std::string& p) -> std::string {
-                if (p == cur.name)
-                    return "";
-                if (starts_with(p, cur.name + "/"))
-                    return p.substr(cur.name.size() + 1);
-                return p;
-            };
-            std::vector<std::string> touched;
-            if (!b.a_path.empty())
-                touched.push_back(strip(b.a_path));
-            if (!b.b_path.empty() && b.b_path != b.a_path)
-                touched.push_back(strip(b.b_path));
+        for (const auto& f : bad) {
+            std::vector<std::string> touched = f.paths;
+            if (touched.empty() && !f.display.empty() &&
+                f.display.find('\n') == std::string::npos &&
+                f.display.find(" -> ") == std::string::npos &&
+                f.display.compare(0, 5, "diff ") != 0 &&
+                f.display != "<unknown file>" && f.display != "<combined diff>" &&
+                f.display != "<rename>") {
+                touched.push_back(f.display);
+            }
+            if (touched.empty()) {
+                std::string d = f.display.empty() ? "<unknown file>" : f.display;
+                die("cannot rebase: unsupported patch block '" + d +
+                        "' cannot be merged; resolve manually",
+                    "  " + d + "\n");
+            }
             sort_unique(&touched);
             for (const std::string& rel : touched) {
                 if (rel.empty())

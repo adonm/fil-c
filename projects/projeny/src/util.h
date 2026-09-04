@@ -1,5 +1,28 @@
+/*
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 // projeny - project tarball+patch manager.
-// Original work for the Fil-C project, MIT-licensed. Contains no GPL code.
 // Uses only the C++ standard library and POSIX. No third-party dependencies.
 #pragma once
 
@@ -21,21 +44,6 @@ struct CmdResult {
 CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd = "",
                   const std::string& stdin_data = "", const std::string& stdin_file = "",
                   const std::vector<std::string>& extra_env = std::vector<std::string>());
-
-// Minimal environment overrides so git never touches the user's config or
-// any enclosing repository (projeny works on plain directories).
-std::vector<std::string> git_env();
-
-// Convenience wrapper that runs `git <args ...>`.
-inline CmdResult run_git(const std::vector<std::string>& args, const std::string& cwd = "",
-                         const std::string& stdin_data = "", const std::string& stdin_file = "")
-{
-    std::vector<std::string> argv;
-    argv.reserve(args.size() + 1);
-    argv.push_back("git");
-    argv.insert(argv.end(), args.begin(), args.end());
-    return run_cmd(argv, cwd, stdin_data, stdin_file, git_env());
-}
 
 // Print "projeny: error: <msg>" (plus optional detail) and exit(1).
 // Also removes any registered temp dirs first.

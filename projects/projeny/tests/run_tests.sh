@@ -7,7 +7,28 @@
 # Usage: ./tests/run_tests.sh ./projeny
 # Exits nonzero on failure; prints ok/FAIL lines plus summary counts.
 #
-# Original work for the Fil-C project, MIT-licensed.
+# Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 set -u
 
 PROJENY="${1:-./projeny}"
@@ -162,7 +183,10 @@ check_deps() {
         echo "FAIL - projeny binary '$PROJENY' missing/not executable" >&2
         exit 1
     fi
-    for t in tar git; do
+    # projeny itself needs only tar at runtime (diff/patch/merge are
+    # internal); git/patch below are used solely for optional compatibility
+    # spot-checks, which skip themselves when the helper is absent.
+    for t in tar; do
         if ! command -v $t >/dev/null 2>&1; then
             echo "FAIL - required helper '$t' missing" >&2
             exit 1
@@ -707,7 +731,8 @@ fi
 # The stored patch must pass git's own consistency check (diff --git agrees
 # with ---/+++). Extract the patch, relabel wid prefixes (as projeny does for
 # -p1 application with cwd=tree), and check against the pristine base.
-if command -v python3 >/dev/null 2>&1; then
+# Skipped when git or python3 is unavailable (projeny itself needs neither).
+if command -v python3 >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
     (cd "$T23" && sed -n '/^diff --git /,$p' w.projeny > patch-extract.diff && mkdir -p check-base && tar -xzf w-1.0.tar.gz -C check-base && python3 - patch-extract.diff check-relabeled.diff <<'PYEOF'
 import sys
 s = open(sys.argv[1]).read()
@@ -721,8 +746,8 @@ PYEOF
         fail "space/arrow stored patch passes git apply --check"
     fi
     rm -rf "$T23/check-base" "$T23/patch-extract.diff" "$T23/check-relabeled.diff"
-else
-    ok "space/arrow stored patch passes git apply --check (skipped: no python3)"
+elif command -v python3 >/dev/null 2>&1; then
+    ok "space/arrow stored patch passes git apply --check (skipped: no git)"
 fi
 rm -rf "$T23/w" "$T23/w.projeny.status"
 run_in "$T23" expect_ok "fresh setup after space/arrow commit" "$PROJENY" setup w.projeny
@@ -736,6 +761,1178 @@ if cmp -s "$T23/w/my file.c" "$ROOT/t23-expect-space.c"; then
 else
     fail "space-name file identical after fresh setup" "ls: $(ls "$T23/w" 2>&1)"
 fi
+
+
+# ----------------------------------------- 24. empty files roundtrip
+T24="$ROOT/t24"
+mkdir -p "$T24/w-1.0"
+printf 'normal\n' > "$T24/w-1.0/n.c"
+: > "$T24/w-1.0/empty.c"
+(cd "$T24" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Empty files.\n' > "$T24/w.projeny"
+run_in "$T24" expect_ok "setup with empty base file" "$PROJENY" setup w.projeny
+if [ ! -f "$T24/w/empty.c" ]; then
+    fail "empty base file unpacked"
+else
+    if [ -s "$T24/w/empty.c" ]; then
+        fail "empty base file is really empty"
+    else
+        ok "empty base file is really empty"
+    fi
+fi
+: > "$T24/w/newempty.c"
+run_in "$T24" expect_ok "add empty file" "$PROJENY" add w.projeny w/newempty.c
+run_in "$T24" expect_ok "commit empty file" "$PROJENY" commit w.projeny
+expect_file_contains "empty commit stores new-file entry" "$T24/w.projeny" "new file mode"
+rm -rf "$T24/w" "$T24/w.projeny.status"
+run_in "$T24" expect_ok "setup after empty commit" "$PROJENY" setup w.projeny
+if [ -f "$T24/w/newempty.c" ] && [ ! -s "$T24/w/newempty.c" ]; then
+    ok "empty added file survives re-setup"
+else
+    fail "empty added file survives re-setup" "ls: $(ls -l "$T24/w" 2>&1)"
+fi
+run_in "$T24" expect_ok "rm empty file" "$PROJENY" rm w.projeny w/empty.c
+run_in "$T24" expect_ok "commit empty rm" "$PROJENY" commit w.projeny
+rm -rf "$T24/w" "$T24/w.projeny.status"
+run_in "$T24" expect_ok "setup after empty rm" "$PROJENY" setup w.projeny
+if [ ! -e "$T24/w/empty.c" ]; then
+    ok "deleted empty file stays deleted"
+else
+    fail "deleted empty file stays deleted"
+fi
+
+# ----------------------------------------- 25. missing trailing newline
+T25="$ROOT/t25"
+mkdir -p "$T25/w-1.0"
+printf 'aaa\nbbb' > "$T25/w-1.0/nonl.c"
+printf 'x\n' > "$T25/w-1.0/nl.c"
+(cd "$T25" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    No-newline files.\n' > "$T25/w.projeny"
+run_in "$T25" expect_ok "no-newline setup" "$PROJENY" setup w.projeny
+printf 'aaa\nBBB' > "$T25/w/nonl.c"
+run_in "$T25" expect_ok "no-newline commit" "$PROJENY" commit w.projeny
+expect_file_contains "no-newline commit stores marker" "$T25/w.projeny" "No newline at end of file"
+cp "$T25/w/nonl.c" "$ROOT/t25-expect-nonl.c"
+rm -rf "$T25/w" "$T25/w.projeny.status"
+run_in "$T25" expect_ok "setup after no-newline commit" "$PROJENY" setup w.projeny
+if cmp -s "$T25/w/nonl.c" "$ROOT/t25-expect-nonl.c"; then
+    ok "no-newline file byte-identical after re-setup"
+else
+    fail "no-newline file byte-identical after re-setup" "got: $(xxd "$T25/w/nonl.c" 2>&1)"
+fi
+printf 'brand new no newline' > "$T25/w/added-no-nl.c"
+run_in "$T25" expect_ok "add no-newline file" "$PROJENY" add w.projeny w/added-no-nl.c
+run_in "$T25" expect_ok "commit no-newline add" "$PROJENY" commit w.projeny
+cp "$T25/w/added-no-nl.c" "$ROOT/t25-expect-added.c"
+rm -rf "$T25/w" "$T25/w.projeny.status"
+run_in "$T25" expect_ok "setup after no-newline add" "$PROJENY" setup w.projeny
+if cmp -s "$T25/w/added-no-nl.c" "$ROOT/t25-expect-added.c"; then
+    ok "added no-newline file byte-identical after re-setup"
+else
+    fail "added no-newline file byte-identical after re-setup"
+fi
+
+# ----------------------------------------- 26. CRLF line endings roundtrip
+T26="$ROOT/t26"
+mkdir -p "$T26/w-1.0"
+printf 'line1\r\nline2\r\nline3\r\n' > "$T26/w-1.0/crlf.c"
+printf 'plain\n' > "$T26/w-1.0/n.c"
+(cd "$T26" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    CRLF files.\n' > "$T26/w.projeny"
+run_in "$T26" expect_ok "crlf setup" "$PROJENY" setup w.projeny
+printf 'line1\r\nLINE2\r\nline3\r\n' > "$T26/w/crlf.c"
+run_in "$T26" expect_ok "crlf commit" "$PROJENY" commit w.projeny
+if grep -q "$(printf '\r')" "$T26/w.projeny"; then
+    ok "crlf commit preserves CR bytes in patch"
+else
+    fail "crlf commit preserves CR bytes in patch"
+fi
+cp "$T26/w/crlf.c" "$ROOT/t26-expect-crlf.c"
+rm -rf "$T26/w" "$T26/w.projeny.status"
+run_in "$T26" expect_ok "setup after crlf commit" "$PROJENY" setup w.projeny
+if cmp -s "$T26/w/crlf.c" "$ROOT/t26-expect-crlf.c"; then
+    ok "crlf file byte-identical after re-setup"
+else
+    fail "crlf file byte-identical after re-setup" "got: $(xxd "$T26/w/crlf.c" 2>&1)"
+fi
+
+# ----------------------------------------- 27. large file, distant edits
+T27="$ROOT/t27"
+mkdir -p "$T27/w-1.0"
+seq 1 5000 > "$T27/w-1.0/big.txt"
+(cd "$T27" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Large file.\n' > "$T27/w.projeny"
+run_in "$T27" expect_ok "large setup" "$PROJENY" setup w.projeny
+python3 - "$T27/w/big.txt" <<'EOF'
+import sys
+p = sys.argv[1]
+ls = open(p).read().split("\n")
+ls[99] = "CHANGED-100"
+ls[4899] = "CHANGED-4900"
+open(p, "w").write("\n".join(ls))
+EOF
+run_in "$T27" expect_ok "large commit" "$PROJENY" commit w.projeny
+n_hunks="$(awk '/^diff --git /{f=1} f&&/^@@ /{c++} END{print c+0}' "$T27/w.projeny")"
+if [ "$n_hunks" -ge 2 ]; then
+    ok "large distant edits produce separate hunks ($n_hunks)"
+else
+    fail "large distant edits produce separate hunks" "found $n_hunks"
+fi
+cp "$T27/w/big.txt" "$ROOT/t27-expect-big.txt"
+rm -rf "$T27/w" "$T27/w.projeny.status"
+run_in "$T27" expect_ok "setup after large commit" "$PROJENY" setup w.projeny
+if cmp -s "$T27/w/big.txt" "$ROOT/t27-expect-big.txt"; then
+    ok "large file byte-identical after re-setup"
+else
+    fail "large file byte-identical after re-setup"
+fi
+
+# ----------------------------------------- 28. close edits share one hunk
+T28="$ROOT/t28"
+mkdir -p "$T28/w-1.0"
+seq 1 30 > "$T28/w-1.0/n.txt"
+(cd "$T28" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Hunk merging.\n' > "$T28/w.projeny"
+(cd "$T28" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$T28/w/n.txt" <<'EOF'
+import sys
+p = sys.argv[1]
+ls = open(p).read().split("\n")
+ls[9] = "C10"
+ls[13] = "C14"
+open(p, "w").write("\n".join(ls))
+EOF
+run_in "$T28" expect_ok "close-edit commit" "$PROJENY" commit w.projeny
+n_hunks="$(awk '/^diff --git /{f=1} f&&/^@@ /{c++} END{print c+0}' "$T28/w.projeny")"
+if [ "$n_hunks" -eq 1 ]; then
+    ok "close edits merge into one hunk"
+else
+    fail "close edits merge into one hunk" "found $n_hunks"
+fi
+cp "$T28/w/n.txt" "$ROOT/t28-expect-n.txt"
+rm -rf "$T28/w" "$T28/w.projeny.status"
+run_in "$T28" expect_ok "setup after close-edit commit" "$PROJENY" setup w.projeny
+if cmp -s "$T28/w/n.txt" "$ROOT/t28-expect-n.txt"; then
+    ok "close-edit file identical after re-setup"
+else
+    fail "close-edit file identical after re-setup"
+fi
+
+# ----------------------------------------- 29. binary files are refused
+T29="$ROOT/t29"
+make_tarballs "$T29" fake
+write_projeny "$T29" fake 1.0 fake
+(cd "$T29" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 -c "open('$T29/fake/src/bin.dat','wb').write(b'ab\x00cd\n')"
+out="$(cd "$T29" && "$PROJENY" commit fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "commit with binary file fails"
+else
+    fail "commit with binary file fails" "exited 0"
+fi
+case "$out" in
+*inary*)
+    ok "binary failure message is clear"
+    ;;
+*)
+    fail "binary failure message is clear" "out: $out"
+    ;;
+esac
+rm -f "$T29/fake/src/bin.dat"
+run_in "$T29" expect_ok "commit works after removing binary" "$PROJENY" commit fake.projeny
+
+# ----------------------------------------- 30. executable bit roundtrips
+T30="$ROOT/t30"
+mkdir -p "$T30/w-1.0"
+printf 'echo hi\n' > "$T30/w-1.0/run.sh"
+printf 'code\n' > "$T30/w-1.0/f.c"
+(cd "$T30" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Modes.\n' > "$T30/w.projeny"
+run_in "$T30" expect_ok "mode setup" "$PROJENY" setup w.projeny
+chmod 755 "$T30/w/run.sh"
+printf 'echo HI\n' > "$T30/w/run.sh"
+chmod 755 "$T30/w/run.sh"
+run_in "$T30" expect_ok "mode+content commit" "$PROJENY" commit w.projeny
+expect_file_contains "mode commit stores new mode" "$T30/w.projeny" "new mode 100755"
+rm -rf "$T30/w" "$T30/w.projeny.status"
+run_in "$T30" expect_ok "setup after mode commit" "$PROJENY" setup w.projeny
+if [ -x "$T30/w/run.sh" ]; then
+    ok "executable bit survives re-setup"
+else
+    fail "executable bit survives re-setup" "$(ls -l "$T30/w/run.sh" 2>&1)"
+fi
+expect_file_contains "mode commit keeps content" "$T30/w/run.sh" "echo HI"
+# Content-only change on an executable file must not drop +x.
+chmod 755 "$T30/w/run.sh"
+printf 'echo YO\n' > "$T30/w/run.sh"
+chmod 755 "$T30/w/run.sh"
+run_in "$T30" expect_ok "second content commit" "$PROJENY" commit w.projeny
+rm -rf "$T30/w" "$T30/w.projeny.status"
+run_in "$T30" expect_ok "setup after second commit" "$PROJENY" setup w.projeny
+if [ -x "$T30/w/run.sh" ]; then
+    ok "content-only change keeps +x after re-setup"
+else
+    fail "content-only change keeps +x after re-setup" "$(ls -l "$T30/w/run.sh" 2>&1)"
+fi
+
+# ----------------------------------------- 31. patch compatibility
+# (a) wid-stripped (plain a/b-label) patches still set up via projeny
+# (no git needed); (b) stored patches pass git apply / patch -p1 checks
+# when those helpers exist (projeny itself needs neither).
+T31="$ROOT/t31"
+make_tarballs "$T31" fake
+write_projeny "$T31" fake 1.0 fake
+(cd "$T31" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T31/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 4242;")
+open(p, "w").write(s)
+EOF
+(cd "$T31" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+mkdir -p "$T31/s-top-tmp"
+(cd "$T31" && tar -xzf fake-1.0.tar.gz && mv fake-1.0 s-top && tar -czf s.tar.gz s-top && rm -rf s-top)
+cat > "$T31/s.projeny" <<'EOF'
+Archive: s.tar.gz
+Origname: s-top
+Name: s
+
+    Stripped-label fixture.
+
+EOF
+(sed -n '/^diff --git /,$p' "$T31/fake.projeny" | sed 's|a/fake/|a/|g; s|b/fake/|b/|g' >> "$T31/s.projeny")
+run_in "$T31" expect_ok "setup with plain a/b-label patch" "$PROJENY" setup s.projeny
+expect_file_contains "plain-label setup applies content" "$T31/s/src/a.c" "beta = 4242"
+# Hand-written p0-style patch (no a/ b/ prefixes at all).
+cat > "$T31/h.projeny" <<'EOF'
+Archive: s.tar.gz
+Origname: s-top
+Name: h
+
+    Hand-written fixture.
+
+diff --git a/h/README b/h/README
+--- README
++++ README
+@@ -1,1 +1,1 @@
+-hello v1
++hello HAND
+EOF
+run_in "$T31" expect_ok "setup with hand-written p0 patch" "$PROJENY" setup h.projeny
+expect_file_contains "p0 patch applies content" "$T31/h/README" "hello HAND"
+if command -v git >/dev/null 2>&1; then
+    (cd "$T31" && sed -n '/^diff --git /,$p' fake.projeny > compat-git.diff && sed -i 's|a/fake/|a/|g; s|b/fake/|b/|g' compat-git.diff && rm -rf compat-base && mkdir compat-base && tar -xzf fake-1.0.tar.gz -C compat-base)
+    if (cd "$T31/compat-base/fake-1.0" && git apply -p1 --whitespace=nowarn --check ../../compat-git.diff 2>/dev/null); then
+        ok "stored patch passes git apply --check"
+    else
+        fail "stored patch passes git apply --check"
+    fi
+    rm -rf "$T31/compat-base" "$T31/compat-git.diff"
+else
+    ok "stored patch passes git apply --check (skipped: no git)"
+fi
+if command -v patch >/dev/null 2>&1; then
+    (cd "$T31" && sed -n '/^diff --git /,$p' fake.projeny > compat-patch.diff && sed -i 's|a/fake/|a/|g; s|b/fake/|b/|g' compat-patch.diff && rm -rf compat-pbase && mkdir compat-pbase && tar -xzf fake-1.0.tar.gz -C compat-pbase)
+    if (cd "$T31/compat-pbase/fake-1.0" && patch -p1 --dry-run < ../../compat-patch.diff >/dev/null 2>&1); then
+        ok "stored patch passes patch -p1 --dry-run"
+    else
+        fail "stored patch passes patch -p1 --dry-run"
+    fi
+    rm -rf "$T31/compat-pbase" "$T31/compat-patch.diff"
+else
+    ok "stored patch passes patch -p1 --dry-run (skipped: no patch)"
+fi
+
+# ----------------------------------------- 32. applier tolerates bad hunk offsets
+T32="$ROOT/t32"
+make_tarballs "$T32" fake
+write_projeny "$T32" fake 1.0 fake
+(cd "$T32" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T32/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int gamma = 1;", "int gamma = 7777;")
+open(p, "w").write(s)
+EOF
+(cd "$T32" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+python3 - "$T32/fake.projeny" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+def bump(m):
+    return "@@ -%d,%s +%s,%s @@" % (int(m.group(1)) + 6, m.group(2), m.group(3), m.group(4))
+s2 = re.sub(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@", bump, s, count=1)
+assert s2 != s
+open(p, "w").write(s2)
+PYEOF
+cp "$T32/fake/src/a.c" "$ROOT/t32-expect-a.c" 2>/dev/null || true
+rm -rf "$T32/fake" "$T32/fake.projeny.status"
+run_in "$T32" expect_ok "setup applies patch with shifted hunk offsets" "$PROJENY" setup fake.projeny
+expect_file_contains "shifted-offset setup yields right content" "$T32/fake/src/a.c" "gamma = 7777"
+
+# ----------------------------------------- 33. rename with modification
+T33="$ROOT/t33"
+mkdir -p "$T33/w-1.0"
+seq 1 10 > "$T33/w-1.0/nums.txt"
+(cd "$T33" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Rename+edit.\n' > "$T33/w.projeny"
+(cd "$T33" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+run_in "$T33" expect_ok "mv for rename+edit" "$PROJENY" mv w.projeny w/nums.txt w/digits.txt
+python3 - "$T33/w/digits.txt" <<'EOF'
+import sys
+p = sys.argv[1]
+ls = open(p).read().split("\n")
+ls[4] = "FIVE"
+open(p, "w").write("\n".join(ls))
+EOF
+run_in "$T33" expect_ok "commit rename+edit" "$PROJENY" commit w.projeny
+expect_file_contains "rename+edit stores rename" "$T33/w.projeny" "rename from"
+expect_file_contains "rename+edit stores content hunk" "$T33/w.projeny" "FIVE"
+rm -rf "$T33/w" "$T33/w.projeny.status"
+run_in "$T33" expect_ok "setup after rename+edit" "$PROJENY" setup w.projeny
+if [ -f "$T33/w/digits.txt" ] && [ ! -e "$T33/w/nums.txt" ]; then
+    ok "rename+edit paths correct after re-setup"
+else
+    fail "rename+edit paths correct after re-setup" "ls: $(ls "$T33/w" 2>&1)"
+fi
+expect_file_contains "rename+edit content correct" "$T33/w/digits.txt" "FIVE"
+
+# ----------------------------------------- 34. manual delete+add of same content
+T34="$ROOT/t34"
+mkdir -p "$T34/w-1.0"
+printf 'identical bytes\n' > "$T34/w-1.0/oldname.txt"
+(cd "$T34" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Manual rename.\n' > "$T34/w.projeny"
+(cd "$T34" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+run_in "$T34" expect_ok "rm old for manual rename" "$PROJENY" rm w.projeny w/oldname.txt
+printf 'identical bytes\n' > "$T34/w/newname.txt"
+run_in "$T34" expect_ok "add new for manual rename" "$PROJENY" add w.projeny w/newname.txt
+run_in "$T34" expect_ok "commit manual rename" "$PROJENY" commit w.projeny
+expect_file_contains "manual rename detected as rename" "$T34/w.projeny" "rename from"
+rm -rf "$T34/w" "$T34/w.projeny.status"
+run_in "$T34" expect_ok "setup after manual rename" "$PROJENY" setup w.projeny
+if [ -f "$T34/w/newname.txt" ] && [ ! -e "$T34/w/oldname.txt" ]; then
+    ok "manual rename survives re-setup"
+else
+    fail "manual rename survives re-setup" "ls: $(ls "$T34/w" 2>&1)"
+fi
+
+# ----------------------------------------- 35. CLI error paths and help
+T35="$ROOT/t35"
+make_tarballs "$T35" fake
+write_projeny "$T35" fake 1.0 fake
+(cd "$T35" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T35" expect_fail "add missing file fails" "$PROJENY" add fake.projeny fake/src/nope.c
+run_in "$T35" expect_fail "mv onto existing fails" "$PROJENY" mv fake.projeny fake/src/a.c fake/src/b.c
+run_in "$T35" expect_fail "mv same src/dst fails" "$PROJENY" mv fake.projeny fake/src/a.c fake/src/a.c
+run_in "$T35" expect_fail "resolve non-conflict fails" "$PROJENY" resolve fake.projeny fake/src/a.c
+run_in "$T35" expect_fail "status of missing setup fails" "$PROJENY" status "$T35/never.projeny"
+run_in "$T35" expect_ok "help exits 0" "$PROJENY" help
+run_in "$T35" expect_fail "unknown command fails" "$PROJENY" frobnicate fake.projeny
+run_in "$T35" expect_fail "setup with missing tarball fails" "$PROJENY" setup "$T35/never.projeny"
+run_in "$T35" expect_ok "commit with no changes succeeds" "$PROJENY" commit fake.projeny
+if grep -q "^diff --git " "$T35/fake.projeny"; then
+    fail "no-change commit stores empty patch"
+else
+    ok "no-change commit stores empty patch"
+fi
+run_in "$T35" expect_ok "status shows setup" "$PROJENY" status fake.projeny
+
+# ----------------------------------------- 36. symlinks roundtrip
+T36="$ROOT/t36"
+mkdir -p "$T36/w-1.0"
+printf 'target content\n' > "$T36/w-1.0/real.txt"
+ln -s real.txt "$T36/w-1.0/link"
+(cd "$T36" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Symlinks.\n' > "$T36/w.projeny"
+run_in "$T36" expect_ok "symlink setup" "$PROJENY" setup w.projeny
+if [ -L "$T36/w/link" ] && [ "$(readlink "$T36/w/link")" = "real.txt" ]; then
+    ok "symlink unpacked with target intact"
+else
+    fail "symlink unpacked with target intact" "ls: $(ls -l "$T36/w" 2>&1)"
+fi
+printf 'other\n' > "$T36/w/other.txt"
+run_in "$T36" expect_ok "add symlink neighbor" "$PROJENY" add w.projeny w/other.txt
+ln -sf other.txt "$T36/w/link"
+run_in "$T36" expect_ok "commit retargeted symlink" "$PROJENY" commit w.projeny
+expect_file_contains "symlink retarget stored" "$T36/w.projeny" "other.txt"
+rm -rf "$T36/w" "$T36/w.projeny.status"
+run_in "$T36" expect_ok "setup after symlink commit" "$PROJENY" setup w.projeny
+if [ -L "$T36/w/link" ] && [ "$(readlink "$T36/w/link")" = "other.txt" ]; then
+    ok "retargeted symlink survives re-setup"
+else
+    fail "retargeted symlink survives re-setup" "ls: $(ls -l "$T36/w" 2>&1)"
+fi
+# Dot-dot link targets are rejected at unpack.
+T36B="$ROOT/t36b"
+mkdir -p "$T36B/e-1.0"
+printf 'x\n' > "$T36B/e-1.0/f.c"
+ln -s sub/../f.c "$T36B/e-1.0/esc"
+(cd "$T36B" && tar -czf e-1.0.tar.gz e-1.0)
+printf 'Archive: e-1.0.tar.gz\nOrigname: e-1.0\nName: e\n\n    Escape.\n' > "$T36B/e.projeny"
+run_in "$T36B" expect_fail "dotdot symlink target hard-errors" "$PROJENY" setup e.projeny
+
+# ----------------------------------------- 37. adjacent hunks stay exact
+T37="$ROOT/t37"
+mkdir -p "$T37/w-1.0"
+seq 1 40 > "$T37/w-1.0/n.txt"
+(cd "$T37" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Adjacent.\n' > "$T37/w.projeny"
+(cd "$T37" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 - "$T37/w/n.txt" <<'EOF'
+import sys
+p = sys.argv[1]
+ls = open(p).read().split("\n")
+ls[9] = "C10"
+ls[19] = "C20"
+open(p, "w").write("\n".join(ls))
+EOF
+run_in "$T37" expect_ok "distant-edit commit" "$PROJENY" commit w.projeny
+n_hunks="$(awk '/^diff --git /{f=1} f&&/^@@ /{c++} END{print c+0}' "$T37/w.projeny")"
+if [ "$n_hunks" -eq 2 ]; then
+    ok "edits 10 lines apart give two hunks"
+else
+    fail "edits 10 lines apart give two hunks" "found $n_hunks"
+fi
+cp "$T37/w/n.txt" "$ROOT/t37-expect-n.txt"
+rm -rf "$T37/w" "$T37/w.projeny.status"
+run_in "$T37" expect_ok "setup after distant edits" "$PROJENY" setup w.projeny
+if cmp -s "$T37/w/n.txt" "$ROOT/t37-expect-n.txt"; then
+    ok "distant-edit file identical after re-setup"
+else
+    fail "distant-edit file identical after re-setup"
+fi
+
+# ----------------------------------------- 38. new executable file keeps +x
+T38="$ROOT/t38"
+mkdir -p "$T38/w-1.0"
+printf 'base\n' > "$T38/w-1.0/b.c"
+(cd "$T38" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    New exec.\n' > "$T38/w.projeny"
+(cd "$T38" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf '#!/bin/sh\necho new\n' > "$T38/w/tool.sh"
+chmod 755 "$T38/w/tool.sh"
+run_in "$T38" expect_ok "add executable file" "$PROJENY" add w.projeny w/tool.sh
+run_in "$T38" expect_ok "commit executable file" "$PROJENY" commit w.projeny
+expect_file_contains "new exec stores mode" "$T38/w.projeny" "new file mode 100755"
+rm -rf "$T38/w" "$T38/w.projeny.status"
+run_in "$T38" expect_ok "setup after new-exec commit" "$PROJENY" setup w.projeny
+if [ -x "$T38/w/tool.sh" ]; then
+    ok "new executable file keeps +x after re-setup"
+else
+    fail "new executable file keeps +x after re-setup" "$(ls -l "$T38/w/tool.sh" 2>&1)"
+fi
+expect_file_contains "new exec content correct" "$T38/w/tool.sh" "echo new"
+
+# ----------------------------------------- 39. extra headers survive commit
+T39="$ROOT/t39"
+make_tarballs "$T39" fake
+write_projeny "$T39" fake 1.0 fake
+python3 - "$T39/fake.projeny" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("Name: fake\n", "Name: fake\nX-Custom: yes\n")
+open(p, "w").write(s)
+EOF
+(cd "$T39" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T39/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int alpha = 1;", "int alpha = 31337;")
+open(p, "w").write(s)
+EOF
+run_in "$T39" expect_ok "commit with extra header" "$PROJENY" commit fake.projeny
+expect_file_contains "extra header preserved" "$T39/fake.projeny" "X-Custom: yes"
+expect_file_contains "extra-header commit stores diff" "$T39/fake.projeny" "31337"
+
+# ----------------------------------------- 40. quoting in filenames roundtrip
+T40="$ROOT/t40"
+mkdir -p "$T40/w-1.0"
+printf 'base\n' > "$T40/w-1.0/base.c"
+(cd "$T40" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Quoting.\n' > "$T40/w.projeny"
+(cd "$T40" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'quoted\n' > "$T40/w/say \"hi\".c"
+printf 'tabbed\n' > "$T40/w/with	tab.c"
+cp "$T40/w/say \"hi\".c" "$ROOT/t40-expect-quote.c"
+cp "$T40/w/with	tab.c" "$ROOT/t40-expect-tab.c"
+run_in "$T40" expect_ok "add quoted-name file" "$PROJENY" add w.projeny 'w/say "hi".c'
+run_in "$T40" expect_ok "add tab-name file" "$PROJENY" add w.projeny 'w/with	tab.c'
+run_in "$T40" expect_ok "commit quoted names" "$PROJENY" commit w.projeny
+rm -rf "$T40/w" "$T40/w.projeny.status"
+run_in "$T40" expect_ok "setup after quoted commit" "$PROJENY" setup w.projeny
+if cmp -s "$T40/w/say \"hi\".c" "$ROOT/t40-expect-quote.c"; then
+    ok "quoted-name file identical after re-setup"
+else
+    fail "quoted-name file identical after re-setup" "ls: $(ls "$T40/w" 2>&1)"
+fi
+if cmp -s "$T40/w/with	tab.c" "$ROOT/t40-expect-tab.c"; then
+    ok "tab-name file identical after re-setup"
+else
+    fail "tab-name file identical after re-setup" "ls: $(ls "$T40/w" 2>&1)"
+fi
+
+# ----------------------------------------- 41. long single-line file
+T41="$ROOT/t41"
+mkdir -p "$T41/w-1.0"
+python3 -c "open('$T41/w-1.0/long.txt','w').write('A'*100000 + '\n')"
+(cd "$T41" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Long line.\n' > "$T41/w.projeny"
+(cd "$T41" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T41/w/long.txt','w').write('B'*100000 + '\n')"
+run_in "$T41" expect_ok "long-line commit" "$PROJENY" commit w.projeny
+cp "$T41/w/long.txt" "$ROOT/t41-expect-long.txt"
+rm -rf "$T41/w" "$T41/w.projeny.status"
+run_in "$T41" expect_ok "setup after long-line commit" "$PROJENY" setup w.projeny
+if cmp -s "$T41/w/long.txt" "$ROOT/t41-expect-long.txt"; then
+    ok "long single-line file identical after re-setup"
+else
+    fail "long single-line file identical after re-setup"
+fi
+
+# ----------------------------------------- 42. tabs and trailing tabs roundtrip
+T42="$ROOT/t42"
+mkdir -p "$T42/w-1.0"
+printf 'a\n' > "$T42/w-1.0/t.c"
+(cd "$T42" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Tabs.\n' > "$T42/w.projeny"
+(cd "$T42" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf '\tindented\nmid\tdle\ntrailing\t\n' > "$T42/w/tabs.c"
+run_in "$T42" expect_ok "add tab-content file" "$PROJENY" add w.projeny w/tabs.c
+run_in "$T42" expect_ok "commit tab-content file" "$PROJENY" commit w.projeny
+cp "$T42/w/tabs.c" "$ROOT/t42-expect-tabs.c"
+rm -rf "$T42/w" "$T42/w.projeny.status"
+run_in "$T42" expect_ok "setup after tab commit" "$PROJENY" setup w.projeny
+if cmp -s "$T42/w/tabs.c" "$ROOT/t42-expect-tabs.c"; then
+    ok "tab-content file byte-identical after re-setup"
+else
+    fail "tab-content file byte-identical after re-setup" "got: $(cat -A "$T42/w/tabs.c" 2>&1)"
+fi
+
+# ----------------------------------------- 43. dual-parser unification
+
+# Combined, p0 and mode-only patches must not diverge into OOB/wrong names:
+
+# a combined diff is a precise per-file failure (not silent success).
+
+T43="$ROOT/t43"
+
+mkdir -p "$T43/w-1.0"
+
+printf 'hello\n' > "$T43/w-1.0/f.c"
+
+(cd "$T43" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Dual parser.\n' > "$T43/w.projeny"
+
+cat >> "$T43/w.projeny" <<'EOF'
+diff --git a/w/f.c b/w/f.c
+--- a/w/f.c
++++ b/w/f.c
+@@ -1,1 +1,1 @@
+-hello
++hello patched
+diff --cc f.c
+index 1111111,2222222..0000000
+--- a/f.c
++++ b/f.c
+@@@ -1,1 -1,1 +1,1 @@@
+-hello
+ -hello2
+++hello patched
+EOF
+
+out="$(cd "$T43" && "$PROJENY" setup w.projeny 2>&1)"
+
+rc=$?
+
+if [ $rc -ne 0 ]; then
+
+    ok "combined block fails cleanly (no OOB/silent success)"
+
+else
+
+    fail "combined block fails cleanly (no OOB/silent success)" "exited 0"
+
+fi
+
+case "$out" in
+
+*f.c*)
+
+    ok "combined failure names the file precisely"
+
+    ;;
+
+*)
+
+    fail "combined failure names the file precisely" "out: $out"
+
+    ;;
+
+esac
+
+# p0 hand-written form (no a/b prefixes on ---/+++) still applies.
+
+T43B="$ROOT/t43b"
+
+mkdir -p "$T43B/w-1.0"
+
+printf 'hello v1\n' > "$T43B/w-1.0/README"
+
+(cd "$T43B" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+cat > "$T43B/h.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: h
+
+    Hand-written p0.
+
+diff --git a/h/README b/h/README
+--- README
++++ README
+@@ -1,1 +1,1 @@
+-hello v1
++hello HAND
+EOF
+
+run_in "$T43B" expect_ok "p0 patch setup succeeds" "$PROJENY" setup h.projeny
+
+expect_file_contains "p0 patch applies content" "$T43B/h/README" "hello HAND"
+
+# Mode-only patch (no ---/+++/hunks) applies and sets the bit.
+
+T43C="$ROOT/t43c"
+
+mkdir -p "$T43C/w-1.0"
+
+printf 'code\n' > "$T43C/w-1.0/f.c"
+
+(cd "$T43C" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Mode only.\n' > "$T43C/w.projeny"
+
+cat >> "$T43C/w.projeny" <<'EOF'
+
+diff --git a/w/f.c b/w/f.c
+
+old mode 100644
+
+new mode 100755
+
+EOF
+
+run_in "$T43C" expect_ok "mode-only patch setup succeeds" "$PROJENY" setup w.projeny
+
+if [ -x "$T43C/w/f.c" ]; then
+
+    ok "mode-only patch sets +x"
+
+else
+
+    fail "mode-only patch sets +x" "$(ls -l "$T43C/w/f.c" 2>&1)"
+
+fi
+
+# ----------------------------------------- 44. pure-rename lineage
+
+# Same-content destination is idempotent success; different content fails
+
+# without overwriting.
+
+T44="$ROOT/t44"
+
+mkdir -p "$T44/w-1.0"
+
+printf 'same\n' > "$T44/w-1.0/old.txt"
+
+printf 'same\n' > "$T44/w-1.0/new.txt"
+
+(cd "$T44" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Rename.\n' > "$T44/w.projeny"
+
+cat >> "$T44/w.projeny" <<'EOF'
+
+diff --git a/w/old.txt b/w/new.txt
+
+similarity index 100%
+
+rename from old.txt
+
+rename to new.txt
+
+EOF
+
+run_in "$T44" expect_ok "pure-rename same-content dest succeeds" "$PROJENY" setup w.projeny
+
+if [ -f "$T44/w/new.txt" ]; then
+
+    ok "pure-rename same-content keeps dest"
+
+else
+
+    fail "pure-rename same-content keeps dest" "ls: $(ls "$T44/w" 2>&1)"
+
+fi
+
+if grep -q "same" "$T44/w/new.txt"; then
+
+    ok "pure-rename same-content dest bytes intact"
+
+else
+
+    fail "pure-rename same-content dest bytes intact"
+
+fi
+
+T44B="$ROOT/t44b"
+
+mkdir -p "$T44B/w-1.0"
+
+printf 'same\n' > "$T44B/w-1.0/old.txt"
+
+printf 'DIFFERENT\n' > "$T44B/w-1.0/new.txt"
+
+(cd "$T44B" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Rename.\n' > "$T44B/w.projeny"
+
+cat >> "$T44B/w.projeny" <<'EOF'
+
+diff --git a/w/old.txt b/w/new.txt
+
+similarity index 100%
+
+rename from old.txt
+
+rename to new.txt
+
+EOF
+
+run_in "$T44B" expect_fail "pure-rename different-content dest fails" "$PROJENY" setup w.projeny
+
+# ----------------------------------------- 45. Already enforces mode/newline
+
+# New-file Already with correct content but wrong +x must repair the bit on
+
+# rebase onto a base that already contains the file.
+
+T45="$ROOT/t45"
+
+mkdir -p "$T45/w-1.0"
+
+printf 'hello\n' > "$T45/w-1.0/f.c"
+
+(cd "$T45" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Already mode.\n' > "$T45/w.projeny"
+
+(cd "$T45" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+
+printf 'hello new\n' > "$T45/w/newfile.c"
+
+chmod 755 "$T45/w/newfile.c"
+
+(cd "$T45" && "$PROJENY" add w.projeny w/newfile.c >/dev/null 2>&1)
+
+(cd "$T45" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+
+mkdir -p "$T45/w-2.0"
+
+printf 'hello\n' > "$T45/w-2.0/f.c"
+
+printf 'hello new\n' > "$T45/w-2.0/newfile.c"
+
+chmod 644 "$T45/w-2.0/newfile.c"
+
+(cd "$T45" && tar -czf w-2.0.tar.gz w-2.0 && rm -rf w-2.0)
+
+run_in "$T45" expect_ok "rebase onto drifted new-file mode" "$PROJENY" rebase w.projeny w-2.0.tar.gz
+
+if [ -x "$T45/w/newfile.c" ]; then
+
+    ok "Already new-file repairs +x"
+
+else
+
+    fail "Already new-file repairs +x" "$(ls -l "$T45/w/newfile.c" 2>&1)"
+
+fi
+
+# Modify Already with correct lines but wrong +x and missing newline must
+
+# repair both on rebase.
+
+T45B="$ROOT/t45b"
+
+mkdir -p "$T45B/w-1.0"
+
+printf 'line1\nline2\nline3\n' > "$T45B/w-1.0/f.c"
+
+(cd "$T45B" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Already mod.\n' > "$T45B/w.projeny"
+
+(cd "$T45B" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+
+printf 'line1\nLINE2\nline3\n' > "$T45B/w/f.c"
+
+chmod 755 "$T45B/w/f.c"
+
+(cd "$T45B" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+
+mkdir -p "$T45B/w-2.0"
+
+printf 'line1\nLINE2\nline3' > "$T45B/w-2.0/f.c"
+
+chmod 755 "$T45B/w-2.0/f.c"
+
+(cd "$T45B" && tar -czf w-2.0.tar.gz w-2.0 && rm -rf w-2.0)
+
+run_in "$T45B" expect_ok "rebase onto drifted newline" "$PROJENY" rebase w.projeny w-2.0.tar.gz
+
+printf 'line1\nLINE2\nline3\n' > "$ROOT/t45b-expect.c"
+
+if cmp -s "$T45B/w/f.c" "$ROOT/t45b-expect.c"; then
+
+    ok "Already modify repairs trailing newline"
+
+else
+
+    fail "Already modify repairs trailing newline" "got: $(xxd "$T45B/w/f.c" 2>&1)"
+
+fi
+
+# Independent fixture for the +x drift (same patch shape, fresh base).
+
+T45C="$ROOT/t45c"
+
+mkdir -p "$T45C/w-1.0"
+
+printf 'line1\nline2\nline3\n' > "$T45C/w-1.0/f.c"
+
+(cd "$T45C" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Already mod.\n' > "$T45C/w.projeny"
+
+(cd "$T45C" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+
+printf 'line1\nLINE2\nline3\n' > "$T45C/w/f.c"
+
+chmod 755 "$T45C/w/f.c"
+
+(cd "$T45C" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+
+mkdir -p "$T45C/w-2.0"
+
+printf 'line1\nLINE2\nline3\n' > "$T45C/w-2.0/f.c"
+
+chmod 644 "$T45C/w-2.0/f.c"
+
+(cd "$T45C" && tar -czf w-2.0.tar.gz w-2.0 && rm -rf w-2.0)
+
+run_in "$T45C" expect_ok "rebase onto drifted mode bit" "$PROJENY" rebase w.projeny w-2.0.tar.gz
+
+if [ -x "$T45C/w/f.c" ]; then
+
+    ok "Already modify repairs +x"
+
+else
+
+    fail "Already modify repairs +x" "$(ls -l "$T45C/w/f.c" 2>&1)"
+
+fi
+
+# ----------------------------------------- 46. patch symlink escape
+
+# Patch symlinks with absolute or .. targets must hard-error like tar.
+
+T46="$ROOT/t46"
+
+mkdir -p "$T46/w-1.0"
+
+printf 'hello\n' > "$T46/w-1.0/f.c"
+
+(cd "$T46" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Link escape.\n' > "$T46/w.projeny"
+
+cat >> "$T46/w.projeny" <<'EOF'
+
+diff --git a/w/evil b/w/evil
+
+new file mode 120000
+
+--- /dev/null
+
++++ b/w/evil
+
+@@ -0,0 +1,1 @@
+
++/etc/passwd
+
+\ No newline at end of file
+
+EOF
+
+run_in "$T46" expect_fail "patch absolute symlink target hard-errors" "$PROJENY" setup w.projeny
+
+T46B="$ROOT/t46b"
+
+mkdir -p "$T46B/w-1.0"
+
+printf 'hello\n' > "$T46B/w-1.0/f.c"
+
+(cd "$T46B" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Link escape.\n' > "$T46B/w.projeny"
+
+cat >> "$T46B/w.projeny" <<'EOF'
+
+diff --git a/w/evil b/w/evil
+
+new file mode 120000
+
+--- /dev/null
+
++++ b/w/evil
+
+@@ -0,0 +1,1 @@
+
++../escape
+
+\ No newline at end of file
+
+EOF
+
+run_in "$T46B" expect_fail "patch dotdot symlink target hard-errors" "$PROJENY" setup w.projeny
+
+# ----------------------------------------- 47. opaque combined merge/rebase
+
+# Opaque blocks (diff --cc with no parseable per-file path would silently
+# drop the failed block: touched stays empty, no conflict, success). A
+# failure must never be a no-op: merge and rebase with a combined diff must
+# fail visibly, not succeed silently.
+
+T47="$ROOT/t47"
+mkdir -p "$T47/w-1.0"
+printf 'hello\n' > "$T47/w-1.0/f.c"
+(cd "$T47" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T47/w.projeny"
+(cd "$T47" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'hello local\n' > "$T47/w/f.c"
+cat > "$T47/up.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Upstream with combined.
+diff --cc f.c
+index 1111111,2222222..0000000
+--- a/f.c
++++ b/f.c
+@@@ -1,1 -1,1 +1,1 @@@
+-hello
+ -hello2
+++hello upstream
+EOF
+cp "$T47/up.projeny" "$T47/w.projeny"
+run_in "$T47" expect_fail "merge with combined diff fails (not silent)" "$PROJENY" setup w.projeny
+out="$(cd "$T47" && "$PROJENY" setup w.projeny 2>&1 || true)"
+case "$out" in
+*f.c*|*combined*|*unsupported*|*cannot*|*does*apply*)
+    ok "merge opaque failure is visible (names block)"
+    ;;
+*)
+    fail "merge opaque failure is visible (names block)" "out: $out"
+    ;;
+esac
+
+T48="$ROOT/t48"
+mkdir -p "$T48/w-1.0"
+printf 'hello\n' > "$T48/w-1.0/f.c"
+(cd "$T48" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T48/w.projeny"
+cat >> "$T48/w.projeny" <<'EOF'
+diff --cc f.c
+index 1111111,2222222..0000000
+--- a/f.c
++++ b/f.c
+@@@ -1,1 -1,1 +1,1 @@@
+-hello
+ -hello2
+++hello upstream
+EOF
+mkdir -p "$T48/w-2.0"
+printf 'hello v2\n' > "$T48/w-2.0/f.c"
+(cd "$T48" && tar -czf w-2.0.tar.gz w-2.0 && rm -rf w-2.0)
+run_in "$T48" expect_fail "rebase with combined diff fails (not silent)" "$PROJENY" rebase w.projeny w-2.0.tar.gz
+
+# ----------------------------------------- 48. symlink merge: link vs link
+
+# Links must be compared by target string, never by dereferenced bytes.
+# Same bytes via different targets is a mismatch and must conflict.
+
+T49="$ROOT/t49"
+mkdir -p "$T49/w-1.0"
+printf 'same content\n' > "$T49/w-1.0/a.txt"
+printf 'same content\n' > "$T49/w-1.0/b.txt"
+printf 'same content\n' > "$T49/w-1.0/c.txt"
+printf 'base\n' > "$T49/w-1.0/f.c"
+ln -s a.txt "$T49/w-1.0/lnk"
+(cd "$T49" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T49/w.projeny"
+(cd "$T49" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+ln -sf c.txt "$T49/w/lnk"
+(cd "$T49" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T49/w.projeny" "$ROOT/t49-upstream.projeny"
+cat > "$T49/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Base.
+EOF
+rm -rf "$T49/w" "$T49/w.projeny.status"
+(cd "$T49" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+ln -sf b.txt "$T49/w/lnk"
+cp "$ROOT/t49-upstream.projeny" "$T49/w.projeny"
+run_in "$T49" expect_ok "symlink-vs-symlink divergent merge exits 0 (with conflict)" "$PROJENY" setup w.projeny
+expect_file_contains "symlink target mismatch conflicts" "$T49/w.projeny.status" "Conflict: lnk"
+expect_file_contains "symlink conflict leaves markers" "$T49/w/lnk" "<<<<<<<"
+if [ -L "$T49/w/lnk" ]; then
+    fail "symlink conflict is regular markers file, not link" "$(ls -l "$T49/w/lnk" 2>&1)"
+else
+    ok "symlink conflict is regular markers file, not link"
+fi
+
+# ----------------------------------------- 49. symlink merge: link vs file
+
+# Link vs regular file is always a mismatch, even when dereferenced bytes
+# are identical.
+
+T50="$ROOT/t50"
+mkdir -p "$T50/w-1.0"
+printf 'hello\n' > "$T50/w-1.0/f.c"
+printf 'hello\n' > "$T50/w-1.0/other.txt"
+(cd "$T50" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T50/w.projeny"
+(cd "$T50" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'hello upstream\n' > "$T50/w/f.c"
+(cd "$T50" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T50/w.projeny" "$ROOT/t50-upstream.projeny"
+cat > "$T50/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Base.
+EOF
+rm -rf "$T50/w" "$T50/w.projeny.status"
+(cd "$T50" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+rm "$T50/w/f.c"
+ln -s other.txt "$T50/w/f.c"
+cp "$ROOT/t50-upstream.projeny" "$T50/w.projeny"
+run_in "$T50" expect_ok "symlink-vs-file divergent merge exits 0 (with conflict)" "$PROJENY" setup w.projeny
+expect_file_contains "symlink-vs-file records conflict" "$T50/w.projeny.status" "Conflict: f.c"
+expect_file_contains "symlink-vs-file leaves markers" "$T50/w/f.c" "<<<<<<<"
+
+# ----------------------------------------- 50. symlink merge: escape rejected
+
+# Any link placed via merge is validated like patch/tar links: absolute and
+# .. targets are rejected, never created.
+
+T51="$ROOT/t51"
+mkdir -p "$T51/w-1.0"
+printf 'hello\n' > "$T51/w-1.0/f.c"
+printf 'other\n' > "$T51/w-1.0/g.c"
+(cd "$T51" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T51/w.projeny"
+(cd "$T51" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'other upstream\n' > "$T51/w/g.c"
+(cd "$T51" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T51/w.projeny" "$ROOT/t51-upstream.projeny"
+cat > "$T51/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Base.
+EOF
+rm -rf "$T51/w" "$T51/w.projeny.status"
+(cd "$T51" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+rm "$T51/w/f.c"
+ln -s /etc/passwd "$T51/w/f.c"
+cp "$ROOT/t51-upstream.projeny" "$T51/w.projeny"
+out="$(cd "$T51" && "$PROJENY" setup w.projeny 2>&1)"; rc=$?
+if [ $rc -ne 0 ]; then
+    ok "malicious absolute link via merge rejected (dies)"
+else
+    if [ -L "$T51/w/f.c" ] && [ "$(readlink "$T51/w/f.c")" = "/etc/passwd" ]; then
+        fail "malicious absolute link via merge rejected (not created)" "link was created"
+    else
+        ok "malicious absolute link via merge rejected (conflict, not created)"
+    fi
+fi
+if [ -L "$T51/w/f.c" ] && [ "$(readlink "$T51/w/f.c" 2>/dev/null)" = "/etc/passwd" ] && [ $rc -eq 0 ]; then
+    fail "absolute link not planted on success path" "$(ls -l "$T51/w/f.c" 2>&1)"
+else
+    ok "absolute link not planted"
+fi
+case "$out" in
+*escape*|*refus*|*cannot*|*Conflict*|*conflict*)
+    ok "malicious merge failure is visible"
+    ;;
+*)
+    if [ $rc -ne 0 ]; then
+        ok "malicious merge failure is visible"
+    else
+        fail "malicious merge failure is visible" "out: $out"
+    fi
+    ;;
+esac
+
+T52="$ROOT/t52"
+mkdir -p "$T52/w-1.0"
+printf 'hello\n' > "$T52/w-1.0/f.c"
+printf 'other\n' > "$T52/w-1.0/g.c"
+(cd "$T52" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Base.\n' > "$T52/w.projeny"
+(cd "$T52" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'other upstream\n' > "$T52/w/g.c"
+(cd "$T52" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T52/w.projeny" "$ROOT/t52-upstream.projeny"
+cat > "$T52/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Base.
+EOF
+rm -rf "$T52/w" "$T52/w.projeny.status"
+(cd "$T52" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+rm "$T52/w/f.c"
+ln -s ../escape "$T52/w/f.c"
+cp "$ROOT/t52-upstream.projeny" "$T52/w.projeny"
+out="$(cd "$T52" && "$PROJENY" setup w.projeny 2>&1)"; rc=$?
+if [ $rc -ne 0 ]; then
+    ok "malicious dotdot link via merge rejected (dies)"
+else
+    if [ -L "$T52/w/f.c" ] && [ "$(readlink "$T52/w/f.c")" = "../escape" ]; then
+        fail "malicious dotdot link via merge rejected (not created)" "link was created"
+    else
+        ok "malicious dotdot link via merge rejected (conflict, not created)"
+    fi
+fi
+if [ -L "$T52/w/f.c" ] && [ "$(readlink "$T52/w/f.c" 2>/dev/null)" = "../escape" ] && [ $rc -eq 0 ]; then
+    fail "dotdot link not planted on success path" "$(ls -l "$T52/w/f.c" 2>&1)"
+else
+    ok "dotdot link not planted"
+fi
+
 
 # ------------------------------------------------------------- summary
 echo "---"

@@ -1,4 +1,27 @@
-// projeny - original work, MIT-licensed. See util.h.
+/*
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 #include "util.h"
 
 #include <algorithm>
@@ -213,28 +236,6 @@ CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd,
         out.code = 127;
     out.output = output;
     return out;
-}
-
-std::vector<std::string> git_env()
-{
-    // Isolate git from the ambient repo/config so projeny works with plain
-    // directories anywhere (including inside a git checkout) and behaves the
-    // same for every user.
-    //
-    // NOTE: GIT_CEILING_DIRECTORIES alone is NOT enough: `git apply` run
-    // inside a repository "Skipped patch" (rc=0, no changes!) for files it
-    // considers outside the index. Pointing GIT_DIR at a nonexistent path
-    // forces no-repo (plain-directory) mode for diff/apply/merge-file, which
-    // is what projeny always wants.
-    return {
-        "GIT_CONFIG_GLOBAL=/dev/null",
-        "GIT_CONFIG_SYSTEM=/dev/null",
-        "GIT_CEILING_DIRECTORIES=/",
-        "GIT_PAGER=cat",
-        "PAGER=cat",
-        "GIT_DIR=/dev/null/no-such-projeny-repo",
-        "GIT_WORK_TREE=",
-    };
 }
 
 std::string read_file_bytes(const std::string& path)

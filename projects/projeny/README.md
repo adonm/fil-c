@@ -1,8 +1,9 @@
 # projeny — project tarball+patch manager
 
-Original work for the Fil-C project, MIT-licensed. Contains no GPL code and
-has zero third-party dependencies (C++ standard library + POSIX only; at
-runtime it shells out to `tar`, `git`, and `cp` — see Runtime dependencies).
+BSD 2-clause licensed (see LICENSE.txt). Has zero third-party dependencies
+(C++ standard library + POSIX only; at runtime it shells out to `tar` and
+`cp` — see Runtime dependencies; diff, patch application, and three-way
+merge are implemented internally with git-compatible unified diffs).
 
 `projeny` replaces the old workflow where `projects/` held full copies of
 external release tarballs plus Fil-C commits on top (huge git checkins).
@@ -117,7 +118,7 @@ delimiter.
 
 ## Runtime dependencies
 
-Exactly three external programs (no shell, no `system()`/`popen()` anywhere
+Exactly two external programs (no shell, no `system()`/`popen()` anywhere
 — every helper runs via direct `posix_spawnp` with an argv list):
 
 - `tar` to unpack (`-xf ... --no-same-owner --no-same-permissions`, so the
@@ -126,12 +127,17 @@ Exactly three external programs (no shell, no `system()`/`popen()` anywhere
   symlink/hardlink-escape audit). Before unpacking, projeny hard-errors on
   absolute member paths, `..` components, and symlink/hardlink members
   whose target is absolute or contains `..`.
-- `git` (`diff --no-index --find-renames` for diffing, `apply -p1` for
-  patching, `merge-file -p` for three-way merges). Projeny isolates git
-  from your config and any enclosing repository, and refuses binary files.
 - `cp -a` for whole-tree copies (moving trees across filesystems when
   `rename(2)` returns `EXDEV` — scratch dirs live in the system temp dir,
   never inside the workdir — and snapshotting files for three-way merges).
+
+Diffing, patch application, and three-way merging are implemented internally
+in C++ (no `git` invocation anywhere): diffs are git-compatible unified
+diffs (`diff --git a/... b/...`, `---`/`+++`, `@@` hunks, new/deleted file
+entries) accepted by `git apply` and `patch -p1`, and the applier accepts
+git-style diffs (including `a/`/`b/` prefixes, `/dev/null` sides, and
+`new file mode` lines) with fuzz. Binary files are refused with a clear
+error.
 
 ## Build and test
 
@@ -170,6 +176,17 @@ ops preserved, bare wid-relative `resolve`, marker-warning `resolve`,
 trailing-whitespace commit→setup roundtrips, pax-metadata tarballs,
 newline-less `.projeny` setup→commit, `" -> "` filenames in the status
 file, tar-escape rejection, and every hard-error path (missing status,
-multi-top-level tarball, commit-after-edit, dirty rebase). It prints
+multi-top-level tarball, commit-after-edit, dirty rebase). It further covers
+diff/patch edge cases — empty files, missing trailing newlines, CRLF line
+endings, large files with distant/adjacent hunks, binary refusal,
+executable-bit preservation (including content-only changes on `+x` files),
+new executable files, rename-with-modification, manual delete+add rename
+detection, plain `a/`/`b/` and hand-written `p0` patch forms, shifted hunk
+offsets (fuzz), symlinks (preserve/retarget/dotdot-escape rejection),
+long single-line files, tabs, quote/tab filenames, extra-header
+preservation, no-change commits, and CLI error paths — plus optional
+`git apply --check` / `patch -p1 --dry-run` compatibility spot-checks that
+verify stored patches with those tools when they are installed (the suite
+itself needs no `git`: it passes with `git` absent from `PATH`). It prints
 `ok`/`FAIL` lines with a `passed/failed` summary and exits nonzero on
 any failure.

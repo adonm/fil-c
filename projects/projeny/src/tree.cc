@@ -1,7 +1,31 @@
-// projeny - original work, MIT-licensed. See tree.h.
+/*
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 #include "tree.h"
 
 #include "util.h"
+#include "vcs.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -20,11 +44,22 @@ std::string normalize_patch_text(const std::string& patch)
     if (patch.empty())
         return "";
     require_text_patch(patch, "patch");
-    std::vector<std::string> lines = split_lines(patch);
+    // Raw split on '\n' only: interior '\r' bytes (CRLF file content inside
+    // hunk bodies) are preserved byte-for-byte. Only the blank-context-line
+    // form is normalized (" " -> ""); every other line keeps its bytes
+    // exactly (trailing spaces/tabs/\r are significant file content).
+    std::vector<std::string> lines;
+    size_t i = 0;
+    while (i < patch.size()) {
+        size_t j = patch.find('\n', i);
+        if (j == std::string::npos) {
+            lines.push_back(patch.substr(i));
+            break;
+        }
+        lines.push_back(patch.substr(i, j - i));
+        i = j + 1;
+    }
     for (auto& l : lines) {
-        // Content-aware: only the blank-context-line form is normalized
-        // (" " -> ""). Every other line keeps its trailing spaces/tabs
-        // byte-for-byte; those are significant file content.
         if (l == " ")
             l = "";
     }
@@ -947,306 +982,33 @@ std::string diff_workdir_vs_base(const std::string& archive,
 std::string diff_trees(const std::string& base_tree, const std::string& workdir,
                        const std::string& wid)
 {
-    std::string a = absolutize(strip_trailing_slashes(base_tree));
-    std::string b = absolutize(strip_trailing_slashes(workdir));
-    std::string ap = "a/" + wid + "/";
-    std::string bp = "b/" + wid + "/";
-    std::vector<std::string> args = {"diff",         "--no-index",
-                                     "--no-color",   "--no-ext-diff",
-                                     "--no-textconv", "--binary",
-                                     "--find-renames", "--src-prefix=" + ap,
-                                     "--dst-prefix=" + bp, "--", a, b};
-    CmdResult r = run_git(args);
-    if (r.code != 0 && r.code != 1)
-        die("git diff failed", r.output);
-    if (contains_nul(r.output))
-        die("git diff produced binary output; binary files are not supported");
-    // `git diff --no-index DIR DIR` has no pathspec support, so crashed-run
-    // scratch dirs (any ".projeny-tmp*" left behind inside a workdir before
-    // the outside-workdir fix) are filtered out of the produced patch
-    // instead: drop whole FileDiff blocks whose paths live under one.
-    std::string canon = canonicalize_git_diff(r.output, wid, a, b);
-    auto under_scratch = [&](const std::string& p) -> bool {
-        // `p` is a wid-prefixed repo path like "wid/sub/f".
-        std::string rel = p;
-        if (!wid.empty()) {
-            if (rel == wid)
-                return false;
-            if (starts_with(rel, wid + "/"))
-                rel = rel.substr(wid.size() + 1);
-            else
-                return false;
-        }
-        if (rel == ".projeny-tmp" || starts_with(rel, ".projeny-tmp/"))
-            return true;
-        if (starts_with(rel, ".projeny-tmp"))
-            return true; // ".projeny-tmpXXXXXX" mkdtemp dirs
-        if (rel.find("/.projeny-tmp") != std::string::npos)
-            return true;
-        return false;
-    };
-    std::vector<FileDiff> blocks = split_file_diffs(canon);
-    bool any_dropped = false;
-    std::string out;
-    for (const auto& blk : blocks) {
-        bool touched_scratch = under_scratch(blk.a_path) || under_scratch(blk.b_path);
-        if (!touched_scratch) {
-            // New-file blocks carried as rename-from/to lines: also check
-            // the raw text for the scratch marker as a backstop.
-            if (blk.text.find(".projeny-tmp") != std::string::npos) {
-                bool both_empty = blk.a_path.empty() && blk.b_path.empty();
-                if (both_empty)
-                    touched_scratch = true;
-            }
-        }
-        if (touched_scratch) {
-            any_dropped = true;
-            continue;
-        }
-        out += blk.text;
-    }
-    if (any_dropped)
-        warn("ignoring stale '.projeny-tmp*' scratch entries inside the workdir");
-    if (!blocks.empty() && out.empty() && !canon.empty() && !any_dropped)
-        return canon;
-    return out;
+    // Internal unified diff with git-compatible output (diff --git labels,
+    // ---/+++, @@ hunks, new/deleted/rename entries). No git invocation.
+    return vcs_diff_trees(base_tree, workdir, wid);
 }
 
 bool apply_patch_whole(const std::string& treedir, const std::string& patch,
                        const std::string& wid, const std::string& scratch_parent)
 {
+    (void)scratch_parent; // no temp files needed; kept for call compatibility
     if (normalize_patch_text(patch).empty())
         return true;
-    // Stored labels are canonical "a/<wid>/..." / "b/<wid>/..."; strip the
-    // wid component for -p1 application with cwd=treedir (rename lines are
-    // bare workdir-relative and need no rewriting). Note wid is the PATCH's
-    // workdir name, which differs from basename(treedir) for "origname"
-    // unpack trees.
-    std::string relabeled = recount_patch(relabel_wid_patch(patch, wid, false));
-    std::string input =
-        write_temp_input(scratch_parent, "projeny-apply-", relabeled);
-    CmdResult r = run_git({"apply", "-p1", "--whitespace=nowarn", input}, treedir);
-    unlink(input.c_str());
-    return r.code == 0;
+    return vcs_apply_whole(treedir, patch, wid);
 }
 
-namespace {
-// Workdir-relative target paths touched by a block (after wid-strip).
-std::vector<std::string> block_targets(const FileDiff& fd, const std::string& wid)
+std::vector<VcsFailure> apply_patch_per_file(const std::string& workdir,
+                                              const std::string& patch,
+                                              const std::string& wid)
 {
-    std::vector<std::string> out;
-    auto strip = [&](const std::string& p) -> std::string {
-        if (p.empty())
-            return "";
-        std::string s = p;
-        if (starts_with(s, wid + "/"))
-            s = s.substr(wid.size() + 1);
-        else if (s == wid)
-            s = "";
-        return s;
-    };
-    // a_path/b_path still carry the WID prefix (e.g. "wid/sub/f").
-    if (!fd.a_path.empty())
-        out.push_back(strip(fd.a_path));
-    if (!fd.b_path.empty() && fd.b_path != fd.a_path)
-        out.push_back(strip(fd.b_path));
-    return out;
+    // Internal per-file application with -p1 semantics. Blocks already
+    // applied are detected (reverse-match) and skipped; they are not
+    // reported as failures. Single-parser source of truth: failures carry
+    // workdir-relative paths, never indices into another parser's blocks.
+    return vcs_apply_per_file(workdir, patch, wid);
 }
-
-std::string include_arg(const std::string& rel_target)
-{
-    // git apply --include matches the post -p<n> path; our rewritten labels
-    // are "a/<rel>"; after -p1 the path is <rel>.
-    return rel_target;
-}
-}
-
-std::vector<size_t> apply_patch_per_file(const std::string& workdir,
-                                         const std::vector<FileDiff>& blocks,
-                                         const std::string& wid)
-{
-    std::vector<size_t> failed;
-    if (blocks.empty())
-        return failed;
-    // Scratch lives OUTSIDE the workdir (system temp dir): a crash between
-    // temp creation and cleanup must never leave ".projeny-tmp*" entries
-    // inside the workdir to pollute the next diff. TempDir removes the tree
-    // on all paths (RAII) and die() removes registered temp dirs too.
-    TempDir tmp(system_scratch_parent(), "projeny-apply-");
-    // Write the whole stripped patch once; apply each file with --include.
-    // Stripped labels are "a/<rel>"; with cwd=workdir and -p1 the post-strip
-    // path is <rel>, which is what --include matches.
-    std::string whole;
-    for (auto& b : blocks)
-        whole += b.text;
-    std::string rewritten =
-        recount_patch(relabel_wid_patch(whole, wid, false /*strip wid, -p1*/));
-    std::string input = write_temp_input(tmp.path, "patch-", rewritten);
-    // Re-split so per-file text matches the rewritten patch exactly.
-    std::vector<FileDiff> rw = split_file_diffs(rewritten);
-
-    for (size_t i = 0; i < blocks.size(); ++i) {
-        const FileDiff& orig = blocks[i];
-        std::vector<std::string> targets = block_targets(orig, wid);
-        // Map to rewritten block (same order).
-        std::string incl, incl2;
-        if (i < rw.size()) {
-            const FileDiff& r = rw[i];
-            // After -p1 ("a/" stripped), path is relative to workdir.
-            auto rel1 = [&](const std::string& p) -> std::string {
-                if (starts_with(p, "a/"))
-                    return p.substr(2);
-                if (starts_with(p, "b/"))
-                    return p.substr(2);
-                return p;
-            };
-            std::string t =
-                !r.b_path.empty() ? rel1(r.b_path) : rel1(r.a_path);
-            // Rename blocks: git matches --include against old or new name.
-            std::string t2 =
-                !r.a_path.empty() ? rel1(r.a_path) : t;
-            incl = t;
-            if (t2 != t && !t2.empty() && !t.empty())
-                incl2 = t2;
-        }
-        (void)include_arg;
-        if (incl.empty()) {
-            failed.push_back(i);
-            continue;
-        }
-        // Skip if already applied: `git apply -R --check` succeeds.
-        // --include matches the post -p1 path; the patch file itself is the
-        // last argv element.
-        std::vector<std::string> rev_args = {"apply",       "-p1",
-                                             "--whitespace=nowarn", "-R",
-                                             "--check",     "--include=" + incl};
-        if (!incl2.empty())
-            rev_args.push_back("--include=" + incl2);
-        rev_args.push_back(input);
-        CmdResult rev = run_git(rev_args, workdir);
-        if (rev.code == 0)
-            continue; // already in place
-        std::vector<std::string> chk_args = {"apply",       "-p1",
-                                             "--whitespace=nowarn", "--check",
-                                             "--include=" + incl};
-        if (!incl2.empty())
-            chk_args.push_back("--include=" + incl2);
-        chk_args.push_back(input);
-        CmdResult chk = run_git(chk_args, workdir);
-        if (chk.code != 0) {
-            // New-file block whose content already exists verbatim: not a
-            // conflict, just skip.
-            bool new_file = starts_with(orig.text, "diff --git ") &&
-                            orig.text.find("new file") != std::string::npos;
-            if (new_file && !targets.empty()) {
-                bool all_exist = true;
-                for (auto& t : targets) {
-                    if (!path_exists(join_path(workdir, t)))
-                        all_exist = false;
-                }
-                if (all_exist) {
-                    // Compare: does the workdir file match the +++ side?
-                    // Cheap check: try applying with --3way? No: just treat
-                    // as conflict; merge_one_file below handles it.
-                }
-            }
-            failed.push_back(i);
-            continue;
-        }
-        CmdResult ap;
-        {
-            std::vector<std::string> ap_args = {"apply", "-p1",
-                                                "--whitespace=nowarn",
-                                                "--include=" + incl};
-            if (!incl2.empty())
-                ap_args.push_back("--include=" + incl2);
-            ap_args.push_back(input);
-            ap = run_git(ap_args, workdir);
-        }
-        if (ap.code != 0)
-            failed.push_back(i);
-    }
-    unlink(input.c_str());
-    return failed;
-}
-
 bool merge_one_file(const std::string& base_file, const std::string& ours_file,
                     const std::string& theirs_file, const std::string& dst_path)
 {
-    bool base_e = path_exists(base_file);
-    bool ours_e = path_exists(ours_file);
-    bool theirs_e = path_exists(theirs_file);
-
-    auto place = [&](const std::string& src) {
-        if (src.empty() || !path_exists(src)) {
-            unlink(dst_path.c_str());
-            return;
-        }
-        make_dirs(dirname_of(dst_path));
-        copy_file_bytes(src, dst_path);
-    };
-
-    if (!base_e) {
-        // File is new on at least one side.
-        if (ours_e && theirs_e) {
-            std::string o = read_file_bytes(ours_file);
-            std::string t = read_file_bytes(theirs_file);
-            if (o == t) {
-                place(ours_file);
-                return true;
-            }
-            // Both added differently: conflict markers.
-            make_dirs(dirname_of(dst_path));
-            std::string out = "<<<<<<< projeny (new setup)\n" + o;
-            if (!out.empty() && out.back() != '\n')
-                out += "\n";
-            out += "=======\n" + t;
-            if (!out.empty() && out.back() != '\n')
-                out += "\n";
-            out += ">>>>>>> projeny (local changes)\n";
-            write_file_bytes(dst_path, out);
-            return false;
-        }
-        place(ours_e ? ours_file : theirs_file);
-        return true;
-    }
-    if (!ours_e && !theirs_e) {
-        unlink(dst_path.c_str());
-        return true;
-    }
-    if (!ours_e || !theirs_e) {
-        // Deleted on one side, modified on the other.
-        std::string kept = ours_e ? ours_file : theirs_file;
-        std::string k = read_file_bytes(kept);
-        std::string b = read_file_bytes(base_file);
-        if (k == b) {
-            unlink(dst_path.c_str()); // deletion wins cleanly
-            return true;
-        }
-        // Real delete/modify conflict: keep the modified side with markers.
-        make_dirs(dirname_of(dst_path));
-        std::string out;
-        if (!ours_e) {
-            out = "<<<<<<< projeny (new setup: file deleted)\n=======\n" + k;
-            if (!out.empty() && out.back() != '\n')
-                out += "\n";
-            out += ">>>>>>> projeny (local changes)\n";
-        } else {
-            out = "<<<<<<< projeny (new setup)\n" + k;
-            if (!out.empty() && out.back() != '\n')
-                out += "\n";
-            out += "=======\n>>>>>>> projeny (local changes: file deleted)\n";
-        }
-        write_file_bytes(dst_path, out);
-        return false;
-    }
-    CmdResult r =
-        run_cmd({"git", "merge-file", "-p", "-L", "projeny (new setup)", "-L",
-                 "projeny (base)", "-L", "projeny (local changes)", ours_file,
-                 base_file, theirs_file},
-                "", "", "", git_env());
-    // git merge-file -p writes merged content to stdout; exit 0 = clean.
-    make_dirs(dirname_of(dst_path));
-    write_file_bytes(dst_path, r.output);
-    return r.code == 0;
+    // Internal three-way merge (no git merge-file invocation).
+    return vcs_merge_one_file(base_file, ours_file, theirs_file, dst_path);
 }

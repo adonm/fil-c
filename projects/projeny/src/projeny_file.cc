@@ -1,4 +1,27 @@
-// projeny - original work, MIT-licensed. See projeny_file.h.
+/*
+ * Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
 #include "projeny_file.h"
 
 #include "util.h"
@@ -58,48 +81,86 @@ ProjenyFile ProjenyFile::parse_bytes(const std::string& data,
     pf.raw = data;
     if (contains_nul(data))
         die("file " + what_for_errors + " contains NUL bytes");
-    std::vector<std::string> lines = split_lines(data);
+    // Raw lines (split on '\n', interior '\r' preserved) with byte offsets,
+    // so middle/patch extraction below is byte-exact (CRLF content inside
+    // hunk bodies survives). Structural tests strip one trailing '\r'.
+    std::vector<std::string> lines;
+    std::vector<size_t> starts;
+    {
+        size_t pos = 0;
+        starts.push_back(0);
+        while (pos < data.size()) {
+            size_t nl = data.find('\n', pos);
+            if (nl == std::string::npos) {
+                lines.push_back(data.substr(pos));
+                pos = data.size();
+            } else {
+                lines.push_back(data.substr(pos, nl - pos));
+                pos = nl + 1;
+                if (pos < data.size())
+                    starts.push_back(pos);
+                else {
+                    // Trailing newline: no further line (matches split_lines:
+                    // a trailing '\n' does not produce a final empty element).
+                }
+            }
+        }
+        if (data.empty()) {
+            lines.clear();
+            starts.clear();
+        }
+    }
+    auto no_cr = [](const std::string& l) -> std::string {
+        if (!l.empty() && l.back() == '\r')
+            return l.substr(0, l.size() - 1);
+        return l;
+    };
+    auto line_start = [&](size_t k) -> size_t {
+        return k < starts.size() ? starts[k] : data.size();
+    };
 
     // Headers: leading Key: lines; terminated by the first blank line or the
     // first non-header line. Extra/unknown headers are preserved verbatim.
     size_t i = 0;
     std::vector<std::string> head_lines;
     while (i < lines.size()) {
-        if (lines[i].empty()) {
+        std::string t = no_cr(lines[i]);
+        if (t.empty()) {
             ++i; // consume the blank-line terminator
             break;
         }
-        if (!is_header_line(lines[i]))
+        if (!is_header_line(t))
             break; // no headers at all; whole file is free text
-        head_lines.push_back(lines[i]);
+        head_lines.push_back(t);
         ++i;
         // A blank line ends the header block.
-        if (i < lines.size() && lines[i].empty()) {
+        if (i < lines.size() && no_cr(lines[i]).empty()) {
             ++i;
             break;
         }
     }
     pf.head = join_lines(head_lines);
 
-    // The patch starts at the first "diff --git " line; tolerate leading
-    // whitespace before it. Everything between the headers and the patch is
-    // free text (it may itself contain blank lines).
+    // The patch starts at the first "diff --git "/"diff --cc "/"diff
+    // --combined " line; tolerate leading whitespace before it. Everything
+    // between the headers and the patch is free text (it may itself contain
+    // blank lines). Combined diffs are recognized as patch (not free text)
+    // so the applier can reject them with a precise error instead of
+    // silently ignoring them.
     size_t diff_at = lines.size();
     for (size_t k = i; k < lines.size(); ++k) {
-        if (starts_with(ltrim(lines[k]), "diff --git ")) {
+        std::string t = ltrim(no_cr(lines[k]));
+        if (starts_with(t, "diff --git ") || starts_with(t, "diff --cc ") ||
+            starts_with(t, "diff --combined ")) {
             diff_at = k;
             break;
         }
     }
-    std::vector<std::string> mid(lines.begin() + i,
-                                 lines.begin() + (diff_at < lines.size() ? diff_at
-                                                                        : lines.size()));
-    pf.middle = join_lines(mid);
-    if (diff_at < lines.size())
-        pf.patch =
-            join_lines(std::vector<std::string>(lines.begin() + diff_at, lines.end()));
-    else
-        pf.patch = "";
+    size_t mid_start = line_start(i);
+    size_t patch_start =
+        diff_at < lines.size() ? line_start(diff_at) : data.size();
+    pf.middle = data.substr(mid_start, patch_start - mid_start);
+    pf.patch = data.substr(patch_start);
 
     pf.archive = pf.header_value("Archive");
     pf.origname = pf.header_value("Origname");
@@ -210,19 +271,24 @@ StatusData StatusData::parse_bytes(const std::string& data,
     }
     if (!saw_status)
         die("file " + what_for_errors + " is missing the Status: line");
-    // The embedded .projeny copy is byte-exact: everything after the
-    // delimiter line, up to (but excluding) ONE status-file terminating
-    // newline, belongs to the copy. split_lines consumed one '\n' per line,
-    // so re-joining adds exactly one '\n' per line back; only strip the final
-    // newline when the ORIGINAL data did not end with one (i.e. the .projeny
-    // file itself had no trailing newline). Binary-safe: no other bytes are
-    // added, removed, or normalized.
-    size_t rest_begin = (i < lines.size()) ? i : lines.size();
-    std::vector<std::string> rest(lines.begin() + rest_begin, lines.end());
-    sd.embedded = join_lines(rest);
-    if (!data.empty() && data.back() != '\n' && !sd.embedded.empty() &&
-        sd.embedded.back() == '\n')
-        sd.embedded.pop_back();
+    // The embedded .projeny copy is byte-exact: the raw bytes after the
+    // delimiter line through EOF belong to the copy verbatim (no re-join,
+    // so interior CR bytes from CRLF patch content and the trailing-newline
+    // state both survive exactly).
+    size_t emb_off = data.size();
+    {
+        size_t pos = 0;
+        for (size_t k = 0; k < i; ++k) {
+            size_t nl = data.find('\n', pos);
+            if (nl == std::string::npos) {
+                pos = data.size();
+                break;
+            }
+            pos = nl + 1;
+        }
+        emb_off = pos;
+    }
+    sd.embedded = data.substr(emb_off);
     return sd;
 }
 

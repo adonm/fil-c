@@ -109,6 +109,6 @@ filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/BLAKE3-1.8.5 pizlonated-blake3
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip
-./package-source.sh projects/dash-0.5.12 pizlonated-dash
+filc/projeny package projects/dash projects/dash/pizlonated-dash.tar.gz
 ./package-source.sh projects/zsh-5.9.2 pizlonated-zsh
 

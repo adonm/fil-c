@@ -442,7 +442,7 @@ cd ..
 rm -rf pizlonated-libxcrypt
 hash -r
 
-tar -xf $FILCSRC/projects/dash-0.5.12/pizlonated-dash.tar.gz
+tar -xf $FILCSRC/projects/dash/pizlonated-dash.tar.gz
 cd pizlonated-dash
 CC="/opt/fil/bin/filcc" CXX="/opt/fil/bin/fil++" ./configure --prefix=/opt/fil
 make -j `nproc`

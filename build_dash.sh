@@ -28,8 +28,12 @@
 set -e
 set -x
 
-cd projects/dash-0.5.12
-extract_source
+cd projects
+rm -rf dash/extracted-source
+../filc/projeny extract dash.projeny dash/extracted-source
+cd dash/extracted-source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
 make -j $NCPU install
+cd ..
+rm -rf extracted-source

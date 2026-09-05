@@ -237,7 +237,7 @@ cd pizlonated-libxml2
             --with-history          \
             --with-icu              \
             PYTHON=/usr/bin/python3 \
-            --docdir=/usr/share/doc/libxml2-2.15.3
+            --docdir=/usr/share/doc/libxml2-2.15.4
 make
 make install
 rm -vf /usr/lib/libxml2.la

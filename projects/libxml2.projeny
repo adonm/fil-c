@@ -1,0 +1,21 @@
+Archive: libxml2-2.15.4.tar.xz
+Origname: libxml2-2.15.4
+Name: libxml2
+
+    libxml2 2.15.4 with the Fil-C port. Mark xmlCatalogEntry.children
+    _Atomic: the field is written under xmlCatalogMutex but read without
+    the lock by concurrent catalog resolution traversals, and under Fil-C
+    a pointer is a capability, so a torn racy load would be a safety
+    violation.
+diff --git a/libxml2/catalog.c b/libxml2/catalog.c
+--- a/libxml2/catalog.c
++++ b/libxml2/catalog.c
+@@ -110,7 +110,7 @@
+ struct _xmlCatalogEntry {
+     struct _xmlCatalogEntry *next;
+     struct _xmlCatalogEntry *parent;
+-    struct _xmlCatalogEntry *children;
++    struct _xmlCatalogEntry *_Atomic children;
+     xmlCatalogEntryType type;
+     xmlChar *name;
+     xmlChar *value;

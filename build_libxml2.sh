@@ -28,9 +28,13 @@
 set -e
 set -x
 
-cd projects/libxml2-2.15.3
-extract_source
+cd projects
+rm -rf libxml2/extracted-source
+../filc/projeny extract libxml2.projeny libxml2/extracted-source
+cd libxml2/extracted-source
 CC=$PWD/../../../build/bin/clang PATH=$PWD/../../../pizfix/bin:$PATH ./configure --prefix=$PWD/../../../pizfix --disable-maintainer-mode --with-icu
 make -j $NCPU
 make check -j $NCPU
 make install -j $NCPU
+cd ..
+rm -rf extracted-source

@@ -1,0 +1,76 @@
+Archive: pkgconf-3.0.6.tar.xz
+Origname: pkgconf-3.0.6
+Name: pkgconf
+
+    pkgconf 3.0.6 with the Fil-C port (pizlonated symbol prefix).
+diff --git a/pkgconf/Makefile.in b/pkgconf/Makefile.in
+--- a/pkgconf/Makefile.in
++++ b/pkgconf/Makefile.in
+@@ -1256,7 +1256,7 @@
+ 		libpkgconf/variable.c		\
+ 		libpkgconf/version.c
+
+-libpkgconf_la_LDFLAGS = -no-undefined -version-info 8:0:0 -export-symbols-regex '^pkgconf_'
++libpkgconf_la_LDFLAGS = -no-undefined -version-info 8:0:0 -export-symbols-regex '^pizlonated_pkgconf_'
+ dist_man_MANS = \
+ 	man/bomtool.1		\
+ 	man/pkgconf.1		\
+diff --git a/pkgconf/configure b/pkgconf/configure
+--- a/pkgconf/configure
++++ b/pkgconf/configure
+@@ -7738,7 +7738,7 @@
+ symcode='[BCDEGRST]'
+
+ # Regexp to match symbols that can be accessed directly from C.
+-sympat='\([_A-Za-z][_A-Za-z0-9]*\)'
++sympat='\(pizlonated_[_A-Za-z][_A-Za-z0-9]*\)'
+
+ # Define system-specific variables.
+ case $host_os in
+@@ -7804,14 +7804,14 @@
+ # so use this general approach.
+ lt_cv_sys_global_symbol_to_cdecl="$SED -n"\
+ $lt_cdecl_hook\
+-" -e 's/^T .* \([a-zA-Z_][a-zA-Z0-9_]*\)$/extern int \1();/p'"\
+-" -e 's/^$symcode$symcode* .* \([a-zA-Z_][a-zA-Z0-9_]*\)$/extern char \1;/p'"
++" -e 's/^T .* pizlonated_\([a-zA-Z_][a-zA-Z0-9_]*\)$/extern int \1();/p'"\
++" -e 's/^$symcode$symcode* .* pizlonated_\([a-zA-Z_][a-zA-Z0-9_]*\)$/extern char \1;/p'"
+
+ # Transform an extracted symbol line into symbol name and symbol address
+ lt_cv_sys_global_symbol_to_c_name_address="$SED -n"\
+ $lt_c_name_hook\
+ " -e 's/^: \(.*\) .*$/  {\"\1\", (void *) 0},/p'"\
+-" -e 's/^$symcode$symcode* .* \([a-zA-Z_][a-zA-Z0-9_]*\)$/  {\"\1\", (void *) \&\1},/p'"
++" -e 's/^$symcode$symcode* .* pizlonated_\([a-zA-Z_][a-zA-Z0-9_]*\)$/  {\"\1\", (void *) \&\1},/p'"
+
+ # Transform an extracted symbol line into symbol name with lib prefix and
+ # symbol address.
+@@ -7819,7 +7819,7 @@
+ $lt_c_name_lib_hook\
+ " -e 's/^: \(.*\) .*$/  {\"\1\", (void *) 0},/p'"\
+ " -e 's/^$symcode$symcode* .* \(lib[a-zA-Z_][a-zA-Z0-9_]*\)$/  {\"\1\", (void *) \&\1},/p'"\
+-" -e 's/^$symcode$symcode* .* \([a-zA-Z_][a-zA-Z0-9_]*\)$/  {\"lib\1\", (void *) \&\1},/p'"
++" -e 's/^$symcode$symcode* .* \pizlonated_([a-zA-Z_][a-zA-Z0-9_]*\)$/  {\"lib\1\", (void *) \&\1},/p'"
+
+ # Handle CRLF in mingw tool chain
+ opt_cr=
+@@ -7897,8 +7897,8 @@
+       fi
+
+       # Make sure that we snagged all the symbols we need.
+-      if $GREP ' nm_test_var$' "$nlist" >/dev/null; then
+-	if $GREP ' nm_test_func$' "$nlist" >/dev/null; then
++      if $GREP ' pizlonated_nm_test_var$' "$nlist" >/dev/null; then
++	if $GREP ' pizlonated_nm_test_func$' "$nlist" >/dev/null; then
+ 	  cat <<_LT_EOF > conftest.$ac_ext
+ /* Keep this code in sync between libtool.m4, ltmain, lt_system.h, and tests.  */
+ #if defined _WIN32 || defined __CYGWIN__ || defined _WIN32_WCE
+@@ -7931,7 +7931,7 @@
+ {
+   { "@PROGRAM@", (void *) 0 },
+ _LT_EOF
+-	  $SED "s/^$symcode$symcode* .* \(.*\)$/  {\"\1\", (void *) \&\1},/" < "$nlist" | $GREP -v main >> conftest.$ac_ext
++	  $SED "s/^$symcode$symcode* .* pizlonated_\(.*\)$/  {\"\1\", (void *) \&\1},/" < "$nlist" | $GREP -v main >> conftest.$ac_ext
+ 	  cat <<\_LT_EOF >> conftest.$ac_ext
+   {0, (void *) 0}
+ };

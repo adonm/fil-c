@@ -1,5 +1,0 @@
-Tool: pccritic
-ToolArgs: --help
-ExpectedStdout: usage: pccritic
-MatchStdout: Partial
-ExpectedExitCode: 0

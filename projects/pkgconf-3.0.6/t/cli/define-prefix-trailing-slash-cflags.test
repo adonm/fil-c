@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --define-prefix --cflags %TEST_FIXTURES_DIR%/lib-relocatable/trailing-prefix/lib/pkgconfig/trailing.pc
-ExpectedStdout: -I%TEST_FIXTURES_DIR%/lib-relocatable/trailing-prefix/include
-ExpectedExitCode: 0

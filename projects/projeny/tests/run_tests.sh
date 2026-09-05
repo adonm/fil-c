@@ -5502,6 +5502,33 @@ case "$out" in
 esac
 run_in "$T125" expect_fail "commit with disappeared file fails" "$PROJENY" commit w.projeny
 
+# ----------------------------------------- 126. pkgconf real-project roundtrip
+# Exercises setup/extract/package against the real converted project
+# (projects/pkgconf.projeny + projects/pkgconf-3.0.6.tar.xz) when present:
+# the Fil-C patch must apply and extract/package must carry identical
+# tracked payloads. Skips cleanly when run outside a checkout.
+TPKGCONF="$ROOT/t126-pkgconf"
+mkdir -p "$TPKGCONF"
+_SUITE_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$_SUITE_DIR/../../pkgconf.projeny" ] && [ -f "$_SUITE_DIR/../../pkgconf-3.0.6.tar.xz" ]; then
+    cp "$_SUITE_DIR/../../pkgconf.projeny" "$_SUITE_DIR/../../pkgconf-3.0.6.tar.xz" "$TPKGCONF/"
+    run_in "$TPKGCONF" expect_ok "pkgconf setup exits 0" "$PROJENY" setup pkgconf.projeny
+    expect_file_contains "pkgconf setup applies configure patch" "$TPKGCONF/pkgconf/configure" "pizlonated_"
+    expect_file_contains "pkgconf setup applies Makefile.in patch" "$TPKGCONF/pkgconf/Makefile.in" "pizlonated_pkgconf_"
+    run_in "$TPKGCONF" expect_ok "pkgconf extract exits 0" "$PROJENY" extract pkgconf.projeny extracted
+    expect_file_contains "pkgconf extract carries patch" "$TPKGCONF/extracted/configure" "pizlonated_"
+    run_in "$TPKGCONF" expect_ok "pkgconf package exits 0" "$PROJENY" package pkgconf.projeny pkgconf-out.tar.xz
+    mkdir -p "$TPKGCONF/unpack" && tar -xf "$TPKGCONF/pkgconf-out.tar.xz" -C "$TPKGCONF/unpack"
+    if diff -r "$TPKGCONF/unpack/pkgconf-out" "$TPKGCONF/extracted" >/dev/null 2>&1; then
+        ok "pkgconf extract equals package payload"
+    else
+        fail "pkgconf extract equals package payload" "$(diff -r "$TPKGCONF/unpack/pkgconf-out" "$TPKGCONF/extracted" 2>&1 | head -10)"
+    fi
+    expect_file_contains "pkgconf package carries patch" "$TPKGCONF/unpack/pkgconf-out/configure" "pizlonated_"
+else
+    ok "pkgconf roundtrip skipped (no real project files)"
+fi
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

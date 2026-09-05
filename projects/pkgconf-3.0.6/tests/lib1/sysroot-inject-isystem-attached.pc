@@ -1,6 +1,0 @@
-prefix=/usr
-Cflags: -isystem/opt/x
-
-Name: sysroot-inject-isystem-attached
-Description: test fixture
-Version: 1.0.0

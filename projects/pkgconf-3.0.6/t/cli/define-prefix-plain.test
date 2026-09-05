@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --define-prefix --variable=includedir %TEST_FIXTURES_DIR%/lib-relocatable/plain-prefix/lib/pkgconfig/plain.pc
-ExpectedStdout: %TEST_FIXTURES_DIR%/lib-relocatable/plain-prefix/include
-ExpectedExitCode: 0

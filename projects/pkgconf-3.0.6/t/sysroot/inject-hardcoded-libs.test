@@ -1,5 +1,0 @@
-Environment: PKG_CONFIG_SYSROOT_DIR=/sysroot
-PackageSearchPath: lib1
-Query: sysroot-inject-hardcoded
-WantedFlags: libs
-ExpectedStdout: -L/sysroot/opt/lib -lx

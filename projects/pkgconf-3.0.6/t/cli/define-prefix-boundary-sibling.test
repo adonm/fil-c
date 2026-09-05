@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --define-prefix --variable=siblingdir %TEST_FIXTURES_DIR%/lib-relocatable/abs-boundary/lib/pkgconfig/boundary.pc
-ExpectedStdout: /nonexistent/hardcodedX
-ExpectedExitCode: 0

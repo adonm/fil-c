@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --define-prefix --variable=includedir %TEST_FIXTURES_DIR%/lib-relocatable/abs-boundary/lib/pkgconfig/boundary.pc
-ExpectedStdout: %TEST_FIXTURES_DIR%/lib-relocatable/abs-boundary/include
-ExpectedExitCode: 0

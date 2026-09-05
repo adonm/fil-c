@@ -28,9 +28,13 @@
 set -e
 set -x
 
-cd projects/pkgconf-3.0.6
-extract_source
+cd projects
+rm -rf pkgconf/extracted-source
+../filc/projeny extract pkgconf.projeny pkgconf/extracted-source
+cd pkgconf/extracted-source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
 make -j $NCPU install
 ln -fs pkgconf $PWD/../../../pizfix/bin/pkg-config
+cd ..
+rm -rf extracted-source

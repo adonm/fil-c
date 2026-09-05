@@ -1,5 +1,0 @@
-Environment: PKG_CONFIG_SYSROOT_DIR=/sysroot
-PackageSearchPath: lib1
-Query: sysroot-inject-isystem-literal
-WantedFlags: cflags
-ExpectedStdout: -isystem /sysroot/opt/x

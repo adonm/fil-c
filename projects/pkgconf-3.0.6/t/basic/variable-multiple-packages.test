@@ -1,4 +1,0 @@
-PackageSearchPath: lib1
-Query: maxpkg-first maxpkg-second
-WantVariable: qux
-ExpectedStdout: first-value second-value

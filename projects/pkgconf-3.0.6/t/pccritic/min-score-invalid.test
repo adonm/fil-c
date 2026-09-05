@@ -1,3 +1,0 @@
-Tool: pccritic
-ToolArgs: --min-score invalid polluted
-ExpectedExitCode: 1

@@ -1,4 +1,0 @@
-Tool: pkgconf
-ToolArgs: --libs bar
-Environment: PKG_CONFIG_MAXIMUM_TRAVERSE_DEPTH=-2
-ExpectedExitCode: 1

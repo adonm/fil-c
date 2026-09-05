@@ -1,7 +1,0 @@
-x=$${x}
-
-Name: self-referential-fragment
-Description: test fixture
-Version: 1.0.0
-
-Cflags: ${x}

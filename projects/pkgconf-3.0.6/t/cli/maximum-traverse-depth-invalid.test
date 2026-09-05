@@ -1,3 +1,0 @@
-Tool: pkgconf
-ToolArgs: --maximum-traverse-depth=invalid --libs bar
-ExpectedExitCode: 1

@@ -66,7 +66,7 @@ cd ../..
 
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/xz-5.8.3 pizlonated-xz
-./package-source.sh projects/pkgconf-3.0.6 pizlonated-pkgconf
+filc/projeny package projects/pkgconf projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl

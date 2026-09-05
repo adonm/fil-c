@@ -123,6 +123,20 @@ void copy_path_preserving(const std::string& src, const std::string& dst);
 
 bool contains_nul(const std::string& s);
 
+// Standard MIME base64 (A-Za-z0-9+/ with = padding) for binary patch
+// payloads. encode splits nothing (callers wrap at 76 columns); decode
+// rejects any character outside the alphabet/padding (whitespace included:
+// callers concatenate lines first). Returns false on invalid input.
+std::string base64_encode(const std::string& data);
+bool base64_decode(const std::string& s, std::string* out);
+
+// Copy the atime/mtime from `src` onto `dst` (best-effort for symlinks,
+// which use AT_SYMLINK_NOFOLLOW and ignore failures; dies for regular
+// files). Used so staged copies (package/extract) and clean merges keep
+// the source timestamps instead of stamping "now", which would trigger
+// spurious rebuilds (e.g. libffi's doc step).
+void preserve_file_times(const std::string& src, const std::string& dst);
+
 // Status-file path escaping: workdir-relative paths are stored one-per-line,
 // so backslash, newline and carriage return are backslash-escaped; unescape()
 // reverses it. '>' is also escaped, so the "Renamed: <src> -> <dst>" split

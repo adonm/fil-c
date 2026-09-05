@@ -733,6 +733,7 @@ void copy_path_preserving(const std::string& src, const std::string& dst)
             die("cannot remove '" + dst + "' before recreating symlink");
         if (symlink(target.c_str(), dst.c_str()) != 0)
             die("cannot create symlink '" + dst + "': " + strerror(errno));
+        preserve_file_times(src, dst);
         return;
     }
     if (S_ISDIR(st.st_mode)) {
@@ -750,6 +751,10 @@ void copy_path_preserving(const std::string& src, const std::string& dst)
         // package/extract payloads.
         if (chmod(dst.c_str(), (mode_t)(st.st_mode & 0777)) != 0)
             die("cannot set permissions on '" + dst + "': " + strerror(errno));
+        // Keep the source timestamps so staged copies (package/extract) and
+        // pending-op replays don't stamp "now" onto unmodified files (which
+        // would trigger spurious rebuilds, e.g. libffi's doc step).
+        preserve_file_times(src, dst);
         return;
     }
     die("cannot copy '" + src + "': unsupported file type; only regular files, "
@@ -758,7 +763,98 @@ void copy_path_preserving(const std::string& src, const std::string& dst)
 
 bool contains_nul(const std::string& s)
 {
-    return s.find('\0') != std::string::npos;
+    return s.find(char(0)) != std::string::npos;
+}
+
+std::string base64_encode(const std::string& data)
+{
+    static const char* tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((data.size() + 2) / 3) * 4);
+    for (size_t i = 0; i < data.size(); i += 3) {
+        unsigned v = (unsigned char)data[i] << 16;
+        size_t n = 1;
+        if (i + 1 < data.size()) {
+            v |= (unsigned char)data[i + 1] << 8;
+            n = 2;
+        }
+        if (i + 2 < data.size()) {
+            v |= (unsigned char)data[i + 2];
+            n = 3;
+        }
+        out += tab[(v >> 18) & 63];
+        out += tab[(v >> 12) & 63];
+        out += (n >= 2) ? tab[(v >> 6) & 63] : '=';
+        out += (n >= 3) ? tab[v & 63] : '=';
+    }
+    return out;
+}
+
+bool base64_decode(const std::string& s, std::string* out)
+{
+    static signed char rev[256];
+    static bool init = false;
+    if (!init) {
+        for (int i = 0; i < 256; ++i)
+            rev[i] = -1;
+        const char* tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for (int i = 0; tab[i]; ++i)
+            rev[(unsigned char)tab[i]] = (signed char)i;
+        init = true;
+    }
+    out->clear();
+    if (s.empty())
+        return true;
+    if (s.size() % 4 != 0)
+        return false;
+    for (size_t i = 0; i < s.size(); i += 4) {
+        int vals[4];
+        int pad = 0;
+        for (int k = 0; k < 4; ++k) {
+            unsigned char c = (unsigned char)s[i + (size_t)k];
+            if (c == '=') {
+                vals[k] = 0;
+                ++pad;
+            } else {
+                if (rev[c] < 0)
+                    return false;
+                vals[k] = rev[c];
+                if (pad > 0)
+                    return false; // padding must be trailing
+            }
+        }
+        if (pad > 2)
+            return false;
+        unsigned v = (unsigned)vals[0] << 18 | (unsigned)vals[1] << 12 |
+                     (unsigned)vals[2] << 6 | (unsigned)vals[3];
+        out->push_back((char)((v >> 16) & 0xff));
+        if (pad < 2)
+            out->push_back((char)((v >> 8) & 0xff));
+        if (pad < 1)
+            out->push_back((char)(v & 0xff));
+    }
+    return true;
+}
+
+void preserve_file_times(const std::string& src, const std::string& dst)
+{
+    struct stat sst;
+    if (lstat(src.c_str(), &sst) != 0)
+        die("cannot stat '" + src + "': " + strerror(errno));
+    struct timespec ts[2];
+#if defined(__APPLE__)
+    ts[0] = sst.st_atimespec;
+    ts[1] = sst.st_mtimespec;
+#else
+    ts[0] = sst.st_atim;
+    ts[1] = sst.st_mtim;
+#endif
+    int flags = S_ISLNK(sst.st_mode) ? AT_SYMLINK_NOFOLLOW : 0;
+    if (utimensat(AT_FDCWD, dst.c_str(), ts, flags) != 0) {
+        if (S_ISLNK(sst.st_mode))
+            return; // best-effort for links (timestamps rarely matter)
+        die("cannot set timestamps on '" + dst + "': " + strerror(errno));
+    }
 }
 
 std::string escape_status_path(const std::string& p)

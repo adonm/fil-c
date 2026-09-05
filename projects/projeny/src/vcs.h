@@ -26,10 +26,15 @@
 //
 // diff output is unified with `diff --git a/<wid>/... b/<wid>/...` labels,
 // `---`/`+++`, `@@` hunks, new/deleted file entries and rename entries, so
-// `git apply` and `patch -p1` accept it. The applier accepts git-style diffs
-// (a/b prefixes, /dev/null sides, new/deleted/old/new mode lines, rename
-// from/to, `\ No newline at end of file`) with fuzz and -p1 semantics.
-// Binary content is refused with a clear error.
+// `git apply` and `patch -p1` accept text hunks. Binary (NUL-bearing) files
+// are carried as base64 `GIT binary patch` literal sections (projeny-internal
+// encoding, documented in vcs.cc); the applier accepts them plus git-style
+// diffs (a/b prefixes, /dev/null sides, new/deleted/old/new mode lines,
+// rename from/to, `\ No newline at end of file`) with fuzz and -p1 semantics.
+// A git `Binary files ... differ` stanza without a payload, or a foreign
+// `GIT binary patch` section our base64 decoder rejects, parses as a binary
+// block with no payload: it applies as a per-file failure (merge conflict),
+// never as a hard error and never silently.
 #pragma once
 
 #include <cstddef>
@@ -38,13 +43,42 @@
 
 // Compute the user diff between two on-disk trees. Labels are
 // a/<wid>/... and b/<wid>/... where wid is the workdir basename.
-// Includes rename detection. Dies on binary files.
+// Includes rename detection. Binary files are emitted as base64 binary
+// blocks (add/delete/modify/rename-with-content); pure renames and
+// mode-only changes of binaries carry no payload.
 std::string vcs_diff_trees(const std::string& base_tree, const std::string& workdir,
                            const std::string& wid);
 
+// Drop pure-deletion blocks whose deleted path is not in `keep` (workdir-
+// relative). Used by setup to restore files that vanished without an
+// explicit `projeny rm` (or rename source): only deletions listed in `keep`
+// (pending removals plus pending rename sources) survive; every other
+// deletion block (text or binary) is removed so a fresh setup restores the
+// file. Rename, modify, add, and mode-only blocks are always kept.
+std::string vcs_drop_deletes_not_in(const std::string& patch,
+                                    const std::string& wid,
+                                    const std::vector<std::string>& keep);
+
+// Workdir-relative new paths of binary-add blocks in `patch` (binary blocks
+// with a payload that create a file). Used by commit to tell previously
+// committed binary adds (tracked: keep them on every recommits) apart from
+// truly untracked binaries (leave them out).
+std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
+                                              const std::string& wid);
+
+// Drop binary-add blocks whose new path is not in `keep` (workdir-relative).
+// Used by commit so untracked binaries (build junk, package tarballs written
+// into the workdir) stay out of the patch like git leaves untracked files
+// out, while explicitly `add`ed binaries and pending rename destinations
+// (listed in `keep`) are carried. Text adds are never dropped.
+std::string vcs_drop_binary_adds_not_in(const std::string& patch,
+                                        const std::string& wid,
+                                        const std::vector<std::string>& keep);
+
 // Apply `patch` (wid-label form, wid == `wid`) inside `treedir`.
 // Returns true on full success; the tree may be partially patched on failure.
-// Blocks already applied are skipped. Dies on binary patches.
+// Blocks already applied are skipped. Binary blocks compare and write raw
+// bytes; unparseable binary blocks fail instead of dying.
 bool vcs_apply_whole(const std::string& treedir, const std::string& patch,
                      const std::string& wid);
 
@@ -67,10 +101,11 @@ std::vector<VcsFailure> vcs_apply_per_file(const std::string& workdir,
 // git-style conflict markers inline for blocks that do not apply cleanly.
 // Clean blocks (including already-applied ones) are applied as usual; each
 // failed block keeps the successfully applied hunks (modify blocks) or the
-// current file (add/delete/rename blocks) and records its workdir-relative
+// current file (add/delete/rename blocks, including binary blocks, which
+// never get inline markers) and records its workdir-relative
 // path(s) in `conflicts` (callers sort/unique the list). Markers use
 // "<<<<<<< current" / "=======" / ">>>>>>> patched" labels. Returns true
-// when everything applied cleanly. Dies on binary patches.
+// when everything applied cleanly.
 bool vcs_apply_with_conflicts(const std::string& treedir,
                               const std::string& patch, const std::string& wid,
                               std::vector<std::string>* conflicts);
@@ -84,6 +119,8 @@ std::vector<std::string> vcs_touched_paths(const std::string& patch,
 // Three-way merge one file: base (may be missing), ours (fresh setup file,
 // may be missing), theirs (user file, may be missing) -> write merged result
 // with conflict markers into dst_path. Returns true if clean.
-// Dies on binary files.
+// Binary (NUL-bearing) sides merge byte-wise: agreement or a one-sided change
+// wins cleanly, divergent binary changes keep the theirs bytes and report a
+// conflict (markers would corrupt binary content).
 bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_file,
                         const std::string& theirs_file, const std::string& dst_path);

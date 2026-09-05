@@ -3,7 +3,8 @@
 BSD 2-clause licensed (see LICENSE.txt). Has zero third-party dependencies
 (C++ standard library + POSIX only; at runtime it shells out to `tar` and
 `cp` — see Runtime dependencies; diff, patch application, and three-way
-merge are implemented internally with git-compatible unified diffs).
+merge are implemented internally with git-compatible unified diffs, plus
+base64 `GIT binary patch` blocks for NUL-bearing files).
 
 `projeny` replaces the old workflow where `projects/` held full copies of
 external release tarballs plus Fil-C commits on top (huge git checkins).
@@ -201,17 +202,31 @@ Exactly two external programs (no shell, no `system()`/`popen()` anywhere
   never inside the workdir — and snapshotting files for three-way merges).
 
 Diffing, patch application, and three-way merging are implemented internally
-in C++ (no `git` invocation anywhere): diffs are git-compatible unified
-diffs (`diff --git a/... b/...`, `---`/`+++`, `@@` hunks, new/deleted file
-entries) accepted by `git apply` and `patch -p1`, and the applier accepts
-git-style diffs (including `a/`/`b/` prefixes, `/dev/null` sides, and
-`new file mode` lines) with fuzz. NUL-bearing (binary) files are invisible
-to diffs — unified diffs cannot carry binary bytes — so untracked binaries
-(like a package tarball written into the workdir) are left out of patches
-and packages, while anything a patch would have to represent (a pending
-add/rename of a binary, or a tracked binary that changed or vanished)
-fails loudly instead of being silently dropped. `setup` carries untracked
-binaries across workdir replacement instead of deleting them.
+in C++ (no `git` invocation anywhere): text files travel as git-compatible
+unified diffs (`diff --git a/... b/...`, `---`/`+++`, `@@` hunks,
+new/deleted file entries) accepted by `git apply` and `patch -p1`, and the
+applier accepts git-style diffs (including `a/`/`b/` prefixes, `/dev/null`
+sides, and `new file mode` lines) with fuzz. NUL-bearing (binary) files
+travel as base64 `GIT binary patch` literal blocks (a projeny-internal
+encoding: the `literal` sizes are raw byte counts and the bodies are plain
+base64, not git's base85+deflate, so binary blocks roundtrip through
+`projeny patch` but are not `git apply`-compatible): binary
+add/delete/modify, renames, mode changes, and text/binary transitions all
+commit, merge (byte-wise three-way: agreement or a one-sided change wins,
+divergent changes keep the local bytes and conflict), and package/extract
+like text.
+Untracked binaries that were never committed and never `add`ed (like a
+package tarball written into the workdir, or build junk) stay out of patches
+until explicitly added, the way git leaves untracked files out of commits;
+`setup` carries them across workdir replacement instead of deleting them.
+Files that vanish from the workdir without an explicit `projeny rm` (or
+rename) are treated as accidental loss: the next `setup` restores them to
+fresh-setup state (tarball plus patch) instead of deleting them from the new
+tree — only pending removals and pending rename sources are re-applied as
+deletions. Timestamps from the tarball are preserved end to end: files the
+patch never touches keep their archive mtimes through `setup`, `package`,
+and `extract` (so builds like libffi's skip up-to-date steps, e.g. `doc`),
+while files rewritten by patch application get fresh timestamps.
 
 ## Build and test
 
@@ -252,7 +267,9 @@ newline-less `.projeny` setup→commit, `" -> "` filenames in the status
 file, tar-escape rejection, and every hard-error path (missing status,
 multi-top-level tarball, commit-after-edit, dirty rebase). It further covers
 diff/patch edge cases — empty files, missing trailing newlines, CRLF line
-endings, large files with distant/adjacent hunks, binary refusal,
+endings, large files with distant/adjacent hunks, binary add/delete/modify
+(including renames, mode changes, text/binary transitions, clean and
+conflicting merges, and diff/patch roundtrips),
 executable-bit preservation (including content-only changes on `+x` files),
 new executable files, rename-with-modification, manual delete+add rename
 detection, plain `a/`/`b/` and hand-written `p0` patch forms, shifted hunk
@@ -262,9 +279,11 @@ preservation, no-change commits, and CLI error paths — plus optional
 `git apply --check` / `patch -p1 --dry-run` compatibility spot-checks that
 verify stored patches with those tools when they are installed, plus
 `diff`/`patch` roundtrips and minimum-diff cases, `patch` conflict
-markers with console lists, untracked-binary tolerance (binaries ride
-along across setups but never enter patches) with explicit-binary
-refusal, git-conflicted `.projeny` recovery via
+markers with console lists, setup-restores-accidentally-deleted-files
+(text and binary; explicit `rm` stays deleted), tarball-mtime preservation
+through setup/extract/package (patched files go newer), untracked-binary
+tolerance (binaries ride along across setups and stay out of patches until
+explicitly added), git-conflicted `.projeny` recovery via
 `setup` (simple, harder, and no-checkout cases, with real `git` merges
 when `git` is installed and hand-made markers otherwise), malformed /
 truncated `.projeny` refusal, per-command `help <cmd>` texts, and

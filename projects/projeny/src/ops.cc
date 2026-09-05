@@ -221,127 +221,56 @@ bool is_binary_file(const std::string& path)
     return read_file_bytes(path).find(char(0)) != std::string::npos;
 }
 
-// Die naming the first NUL-bearing regular file at or under `rel`
-// (workdir-relative), if any. Used to refuse explicit binary intent
-// (`add`/`rm`/`mv` targets, pending commit ops): a patch could never
-// carry those bytes.
-void refuse_binary_at(const std::string& workdir, const std::string& rel,
-                      const std::string& what)
-{
-    std::string full = join_path(workdir, rel);
-    if (is_binary_file(full))
-        die("cannot " + what + " '" + rel +
-            "': it is a binary file; binary files are not supported");
-    struct stat st;
-    if (lstat(full.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
-        return;
-    std::vector<std::string> stack;
-    stack.push_back(rel);
-    while (!stack.empty()) {
-        std::string d = stack.back();
-        stack.pop_back();
-        for (const std::string& name : list_dir_names(join_path(workdir, d))) {
-            std::string r = d + "/" + name;
-            std::string f = join_path(workdir, r);
-            if (is_binary_file(f))
-                die("cannot " + what + " '" + rel + "': '" + r +
-                    "' is a binary file; binary files are not supported");
-            struct stat lst;
-            if (lstat(f.c_str(), &lst) == 0 && S_ISDIR(lst.st_mode))
-                stack.push_back(r);
-        }
-    }
-}
-
 // Binary-file policy for workdir replacement (setup/rebase) and commit.
 //
-// Diffs never see NUL-bearing files (collection skips them), so without
-// help here a tracked-binary edit would be silently reverted by setup (or
-// silently dropped by commit), while an untracked binary (like a package
-// tarball written into the workdir, or build junk) would be silently
-// deleted along with the old tree. Instead, comparing `workdir` against
-// `other_tree` (the incoming tree for setup/rebase, the unpacked base for
-// commit):
-//   - a workdir binary that differs from other_tree (content or exec bit)
-//     is a tracked-binary change diffs cannot represent: die;
-//   - an other_tree binary missing from the workdir is a tracked-binary
-//     deletion: die;
+// Diffs carry NUL-bearing files as base64 binary blocks, so tracked-binary
+// edits, deletions, and explicitly added binaries all roundtrip through the
+// patch like text. The only files diffs must still ignore are untracked
+// binaries that were never committed and never `add`ed (like a package
+// tarball written into the workdir, or build junk): commit filters those
+// back out of the patch (see cmd_commit), while setup/rebase carry them
+// across the workdir replacement here so they survive on disk.
+//
+// Comparing `workdir` against `other_tree` (the incoming tree for
+// setup/rebase; unused for commit, which passes carry=false and diffs
+// everything):
 //   - a workdir binary missing from other_tree is untracked: with carry it
 //     is copied over (setup/rebase preserve it on disk); commit passes
-//     carry=false and simply leaves it out of the patch, like git leaves
-//     untracked files out of commits.
+//     carry=false and leaves it to the patch filter instead.
+//   - every other binary state (tracked edits, tracked deletions, explicit
+//     adds) is represented in the diff itself and needs no help here: setup
+//     merges user diffs onto the fresh tree (accidental deletions are
+//     filtered back out so they restore instead of deleting), and commit
+//     folds them into the patch.
 void reconcile_binaries(const std::string& workdir,
                         const std::string& other_tree, bool carry)
 {
+    if (!carry)
+        return; // commit: the diff plus its untracked-binary filter decide
     if (!is_dir(workdir) || !is_dir(other_tree))
         return; // fresh setup: nothing to compare or preserve yet
-    auto same_bytes = [](const std::string& a, const std::string& b) {
-        return read_file_bytes(a) == read_file_bytes(b);
-    };
-    auto same_exec = [](const std::string& a, const std::string& b) {
-        struct stat sa, sb;
-        if (lstat(a.c_str(), &sa) != 0 || lstat(b.c_str(), &sb) != 0)
-            return false;
-        return ((sa.st_mode & 0111) != 0) == ((sb.st_mode & 0111) != 0);
-    };
-    // Forward: workdir binaries vs the other tree.
-    {
-        std::vector<std::string> stack;
-        stack.push_back("");
-        while (!stack.empty()) {
-            std::string d = stack.back();
-            stack.pop_back();
-            std::string abs = d.empty() ? workdir : join_path(workdir, d);
-            for (const std::string& name : list_dir_names(abs)) {
-                std::string rel = d.empty() ? name : d + "/" + name;
-                std::string full = join_path(workdir, rel);
-                struct stat lst;
-                if (lstat(full.c_str(), &lst) != 0)
-                    die("cannot stat '" + full + "': " + strerror(errno));
-                if (S_ISDIR(lst.st_mode)) {
-                    stack.push_back(rel);
-                    continue;
-                }
-                if (!S_ISREG(lst.st_mode) || !is_binary_file(full))
-                    continue;
-                std::string o = join_path(other_tree, rel);
-                if (path_exists(o)) {
-                    if (!same_bytes(full, o) || !same_exec(full, o))
-                        die("cannot proceed with '" + rel +
-                            "': it is a binary file with uncommitted changes; "
-                            "binary files are not supported");
-                } else if (carry) {
-                    make_dirs(dirname_of(o));
-                    copy_path_preserving(full, o);
-                }
+    std::vector<std::string> stack;
+    stack.push_back("");
+    while (!stack.empty()) {
+        std::string d = stack.back();
+        stack.pop_back();
+        std::string abs = d.empty() ? workdir : join_path(workdir, d);
+        for (const std::string& name : list_dir_names(abs)) {
+            std::string rel = d.empty() ? name : d + "/" + name;
+            std::string full = join_path(workdir, rel);
+            struct stat lst;
+            if (lstat(full.c_str(), &lst) != 0)
+                die("cannot stat '" + full + "': " + strerror(errno));
+            if (S_ISDIR(lst.st_mode)) {
+                stack.push_back(rel);
+                continue;
             }
-        }
-    }
-    // Reverse: other_tree binaries missing from the workdir are deletions.
-    {
-        std::vector<std::string> stack;
-        stack.push_back("");
-        while (!stack.empty()) {
-            std::string d = stack.back();
-            stack.pop_back();
-            std::string abs =
-                d.empty() ? other_tree : join_path(other_tree, d);
-            for (const std::string& name : list_dir_names(abs)) {
-                std::string rel = d.empty() ? name : d + "/" + name;
-                std::string full = join_path(other_tree, rel);
-                struct stat lst;
-                if (lstat(full.c_str(), &lst) != 0)
-                    die("cannot stat '" + full + "': " + strerror(errno));
-                if (S_ISDIR(lst.st_mode)) {
-                    stack.push_back(rel);
-                    continue;
-                }
-                if (!S_ISREG(lst.st_mode) || !is_binary_file(full))
-                    continue;
-                if (!path_exists(join_path(workdir, rel)))
-                    die("cannot proceed with '" + rel +
-                        "': it is a deleted binary file; binary files are "
-                        "not supported");
+            if (!S_ISREG(lst.st_mode) || !is_binary_file(full))
+                continue;
+            std::string o = join_path(other_tree, rel);
+            if (!path_exists(o)) {
+                make_dirs(dirname_of(o));
+                copy_path_preserving(full, o);
             }
         }
     }
@@ -354,9 +283,8 @@ void write_status(const Ctx& ctx, const StatusData& sd)
 
 // Fresh setup: unpack the current archive, apply the current patch, and move
 // the result into place. Unpacks before touching the workdir (a bad patch
-// dies leaving the checkout intact), and reconciles binaries before the
-// replacement so untracked binaries survive and tracked-binary changes fail
-// loudly instead of being silently reverted.
+// dies leaving the checkout intact), and carries untracked binaries across
+// the replacement so build junk and package tarballs survive.
 void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
 {
     std::string workdir = join_path(ctx.pdir, cur.name);
@@ -903,6 +831,18 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
             harder_base->origname, harder_base->name, harder_base->patch,
             "embedded patch in '" + ctx.statusfile + "'");
         U_unc = diff_trees(Etree, actual_workdir, harder_base->name);
+        // Same accidental-deletion rule as normal setup: files that vanished
+        // without an explicit rm/rename are restored, not deleted.
+        {
+            std::vector<std::string> keep;
+            if (union_status != nullptr) {
+                for (const auto& r : union_status->removed)
+                    keep.push_back(r);
+                for (const auto& rn : union_status->renamed)
+                    keep.push_back(rn.first);
+            }
+            U_unc = vcs_drop_deletes_not_in(U_unc, harder_base->name, keep);
+        }
         harder = !normalize_patch_text(U_unc).empty();
         if (harder) {
             snap = join_path(tS.path, "snap");
@@ -1126,6 +1066,20 @@ int cmd_setup(const std::string& projeny_arg)
         actual_wid = oldpf.name;
     }
     std::string U = diff_trees(Etree, actual_workdir, oldpf.name);
+    // Files that vanished from the workdir without an explicit `projeny rm`
+    // (or rename source) are accidental loss — a deleted build artifact, a
+    // make bug removing a file, a stray `rm` — not intended deletions. Drop
+    // those delete blocks so setup restores the files to fresh-setup state
+    // (tarball + patch) instead of deleting them from the new tree. Only
+    // pending removals and pending rename sources survive as deletions.
+    {
+        std::vector<std::string> keep;
+        for (const auto& r : old.removed)
+            keep.push_back(r);
+        for (const auto& rn : old.renamed)
+            keep.push_back(rn.first);
+        U = vcs_drop_deletes_not_in(U, oldpf.name, keep);
+    }
 
     if (normalize_patch_text(U) == normalize_patch_text(oldpf.patch)) {
         // No local changes: plain fresh setup from CURRENT .projeny. Keep
@@ -1165,8 +1119,8 @@ int cmd_setup(const std::string& projeny_arg)
     merge_user_diff_onto(Etree, Ntree, actual_workdir, Ntree, cur.name,
                          oldpf.name, U, &conflicts);
     // Move merged N into place: remove workdir (at old or new name), move N,
-    // and if the name changed, the old dir is gone. Binaries reconcile first
-    // (untracked ones ride along; tracked changes fail loudly).
+    // and if the name changed, the old dir is gone. Untracked binaries ride
+    // along via reconcile first.
     reconcile_binaries(actual_workdir, Ntree, true);
     if (path_exists(old_workdir) && old_workdir != workdir) {
         if (!remove_recursive(old_workdir))
@@ -1251,20 +1205,33 @@ int cmd_commit(const std::string& projeny_arg)
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-commit-");
     unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
     std::string base = join_path(tmp.path, cur.origname);
-    // Explicit binary intent is refused (a patch could never carry it), and
-    // tracked-binary changes/deletions fail loudly instead of being silently
-    // dropped from the patch. Untracked binaries are simply left out of the
-    // patch, like git leaves untracked files out of commits.
-    for (const auto& a : st.added)
-        refuse_binary_at(workdir, a, "commit with pending add");
-    for (const auto& rn : st.renamed)
-        refuse_binary_at(workdir, rn.second, "commit with pending rename");
+    // Binary files travel in the patch as base64 blocks (add/delete/modify),
+    // so tracked-binary changes and explicitly added binaries commit like
+    // text. Untracked binaries (never committed, never `add`ed — like a
+    // package tarball written into the workdir) are filtered back out of the
+    // patch, the way git leaves untracked files out of commits.
     reconcile_binaries(workdir, base, false);
     // diff_trees already returns canonical "a/<wid>/..." labels, so no
     // second canonicalization pass is needed (the old code double-wrapped
     // absolute paths and produced garbage labels). normalize_patch_text
     // already ends the patch with exactly one newline.
-    std::string new_patch = normalize_patch_text(diff_trees(base, workdir, cur.name));
+    std::string raw_patch = diff_trees(base, workdir, cur.name);
+    {
+        std::vector<std::string> keep;
+        for (const auto& a : st.added)
+            keep.push_back(a);
+        for (const auto& rn : st.renamed)
+            keep.push_back(rn.second);
+        // Previously committed binary adds are tracked too: the diff is
+        // regenerated from scratch on every commit, so without them a
+        // recommits would silently drop every committed binary addition.
+        for (const auto& p : vcs_binary_add_paths(cur.patch, cur.name)) {
+            if (std::find(keep.begin(), keep.end(), p) == keep.end())
+                keep.push_back(p);
+        }
+        raw_patch = vcs_drop_binary_adds_not_in(raw_patch, cur.name, keep);
+    }
+    std::string new_patch = normalize_patch_text(raw_patch);
 
     cur.rebuild(new_patch);
     write_file_bytes(ctx.projeny_arg, cur.raw);
@@ -1287,7 +1254,6 @@ int cmd_add(const std::string& projeny_arg, const std::string& path)
     std::string rel = normalize_workdir_rel(workdir, cur.name, path);
     if (!path_exists(join_path(workdir, rel)))
         die("path '" + path + "' does not exist in workdir '" + workdir + "'");
-    refuse_binary_at(workdir, rel, "add");
     // Adding a file that's already tracked by the base patch is allowed but
     // pointless; just record it idempotently.
     for (auto& a : st.added) {
@@ -1315,7 +1281,6 @@ int cmd_rm(const std::string& projeny_arg, const std::string& path)
     std::string workdir = join_path(ctx.pdir, cur.name);
     std::string rel = normalize_workdir_rel(workdir, cur.name, path);
     std::string full = join_path(workdir, rel);
-    refuse_binary_at(workdir, rel, "rm");
     // rm deletes the file from the workdir immediately AND records the
     // pending removal, so the deletion shows in the next commit's diff.
     if (path_exists(full) && !remove_recursive(full))
@@ -1356,7 +1321,6 @@ int cmd_mv(const std::string& projeny_arg, const std::string& src,
         die("source '" + src + "' does not exist in workdir '" + workdir + "'");
     if (path_exists(dfull))
         die("destination '" + dst + "' already exists in workdir '" + workdir + "'");
-    refuse_binary_at(workdir, srel, "mv");
     make_dirs(dirname_of(dfull));
     move_path(sfull, dfull);
     // Maintain pending-op bookkeeping: moving a pending-added file keeps it
@@ -2234,6 +2198,13 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "(like `projeny package`) stop instead of building from a\n"
                "conflicted tree.\n"
                "\n"
+               "Files that vanished from the workdir without an explicit\n"
+               "`projeny rm` (or rename) are treated as accidental loss, not\n"
+               "as intended deletions: setup restores them to fresh-setup\n"
+               "state (tarball plus patch), whether text or binary. Only\n"
+               "deletions recorded with `projeny rm` (pending removals and\n"
+               "pending rename sources) are re-applied to the new tree.\n"
+               "\n"
                "setup is also the ONLY command that tolerates git conflict\n"
                "markers (<<<<<<<, =======, >>>>>>>, |||||||) in the .projeny\n"
                "file itself (from `git pull --rebase`, `stash pop`, `merge`,\n"
@@ -2259,12 +2230,13 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                ".projeny file and the status copy. Pending add/rm/mv\n"
                "operations are validated and folded in.\n"
                "\n"
-               "NUL-bearing (binary) files are invisible to the diff:\n"
-               "untracked ones are simply left out of the patch, but\n"
-               "anything the patch would have to represent — a pending\n"
-               "add/rename of a binary, or a tracked binary that changed\n"
-               "or vanished — fails loudly instead of being silently\n"
-               "dropped.\n"
+               "NUL-bearing (binary) files travel in the patch as base64\n"
+               "`GIT binary patch` blocks: tracked binaries that changed or\n"
+               "vanished, and explicitly `add`ed (or rename-destination)\n"
+               "binaries, commit like text. Untracked binaries that were\n"
+               "never committed and never `add`ed (build junk, a package\n"
+               "tarball written into the workdir) are left out of the patch,\n"
+               "the way git leaves untracked files out of commits.\n"
                "\n"
                "Requires the .projeny file to match the status copy exactly\n"
                "(else hard error: run `setup` to merge first) and refuses\n"
@@ -2346,16 +2318,16 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "\n"
                "Print the unified diff between two on-disk trees to stdout\n"
                "(git-compatible: `diff --git a/... b/...`, ---/+++, @@\n"
-               "hunks, new/deleted/rename entries; accepted by `git apply`\n"
-               "and `patch -p1` as well as `projeny patch`). The diff is\n"
-               "minimal: an internal Myers line diff with rename detection.\n"
-               "NUL-bearing (binary) files are invisible to the diff;\n"
+               "hunks, new/deleted/rename entries; text hunks are accepted\n"
+               "by `git apply` and `patch -p1` as well as `projeny patch`).\n"
+               "The diff is minimal: an internal Myers line diff with rename\n"
+               "detection. NUL-bearing (binary) files travel as base64\n"
+               "`GIT binary patch` blocks (projeny-internal encoding);\n"
                "everything else roundtrips exactly, including trailing\n"
                "blank lines.\n"
                "Labels use the second directory's basename, so\n"
                "`projeny diff A B > p` plus `projeny patch C p` reproduces\n"
-               "B from a copy C of A. Both arguments must be directories.\n"
-               "Binary files are refused with a clear error.\n",
+               "B from a copy C of A. Both arguments must be directories.\n",
                t);
         return 0;
     }
@@ -2371,12 +2343,13 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "re-applying is safe.\n"
                "Blocks that do not apply become conflicts: conflict markers\n"
                "(<<<<<<< current / ======= / >>>>>>> patched) are written\n"
-               "inline (matching hunks still apply; new files pit current\n"
-               "against desired bytes; deletions and renames are left for\n"
-               "you) and the conflicted files are listed on stdout. The\n"
+               "inline for text (matching hunks still apply; new files pit\n"
+               "current against desired bytes; deletions, renames, and\n"
+               "binary blocks are left for you) and the conflicted files\n"
+               "are listed on stdout. The\n"
                "command exits 0 even with conflicts; fix the markers by\n"
-               "hand afterwards. A patch file with no diff blocks, a\n"
-               "missing directory, or binary content is a hard error.\n",
+               "hand afterwards. A patch file with no diff blocks or a\n"
+               "missing directory is a hard error.\n",
                t);
         return 0;
     }

@@ -113,10 +113,6 @@ struct Collected {
     bool is_symlink = false;
     bool is_exec = false; // regular files only
     bool is_binary = false; // regular files only: content holds NUL bytes.
-        // Always false: collect_into() leaves NUL-bearing files out of the
-        // maps entirely, so diffs never see binary bytes (see below). The
-        // flag exists so the refusal sites in vcs_diff_trees stay explicit
-        // about the invariant instead of silently assuming it.
     std::string content;  // regular: raw bytes; symlink: link target
 };
 
@@ -176,18 +172,10 @@ void collect_into(const std::string& root, const std::string& rel,
     }
     if (S_ISREG(st.st_mode)) {
         std::string data = read_file_bytes(full);
-        if (data.find(char(0)) != std::string::npos)
-            return; // NUL-bearing files are invisible to diffs: leaving them
-                    // out keeps every diff binary-free (unified diffs cannot
-                    // carry binary bytes). Callers in ops.cc enforce the rest
-                    // of the policy explicitly: setup carries untracked
-                    // binaries across workdir replacement and refuses to
-                    // silently revert tracked-binary edits/deletions, while
-                    // commit refuses any binary it would have to represent.
         Collected c;
         c.is_symlink = false;
         c.is_exec = (st.st_mode & 0111) != 0;
-        c.is_binary = false;
+        c.is_binary = data.find(char(0)) != std::string::npos;
         c.content = data;
         out[rel] = c;
         return;
@@ -496,6 +484,49 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
         out += "rename from " + quote_git_path(old_rel) + "\n";
         out += "rename to " + quote_git_path(new_rel) + "\n";
     }
+    // Binary (NUL-bearing) content travels as base64 `GIT binary patch`
+    // literals, never as text hunks (unified diffs cannot carry NUL bytes).
+    // Format (projeny-internal; git's own base85+deflate is not decoded):
+    //   GIT binary patch
+    //   literal <new-size>
+    //   <base64 of the new bytes, 76 columns, zero lines when empty>
+    //   <blank line>
+    //   literal <old-size>
+    //   <base64 of the old bytes, 76 columns, zero lines when empty>
+    //   <blank line>
+    // The new literal comes first (like git), so forward application writes
+    // it and reverse detection compares against the old one. Base64 output
+    // never contains spaces, so no content line collides with a `literal `,
+    // `diff --git `, or marker line. Pure renames and mode-only changes of
+    // binaries carry no payload (like git).
+    {
+        bool ob = old_c && !old_c->is_symlink && old_c->is_binary;
+        bool nb = new_c && !new_c->is_symlink && new_c->is_binary;
+        if (ob || nb) {
+            bool same_bytes = old_c && new_c &&
+                              old_c->is_symlink == new_c->is_symlink &&
+                              old_c->content == new_c->content;
+            if (same_bytes) {
+                // Pure rename or mode-only change of a binary: the mode and
+                // rename lines above already describe it (no ---/+++/payload,
+                // like git).
+                return out;
+            }
+            std::string old_bytes = old_c ? old_c->content : "";
+            std::string new_bytes = new_c ? new_c->content : "";
+            auto emit_literal = [&](const std::string& bytes) {
+                out += "literal " + std::to_string(bytes.size()) + "\n";
+                std::string b64 = base64_encode(bytes);
+                for (size_t i = 0; i < b64.size(); i += 76)
+                    out += b64.substr(i, 76) + "\n";
+                out += "\n";
+            };
+            out += "GIT binary patch\n";
+            emit_literal(new_bytes);
+            emit_literal(old_bytes);
+            return out;
+        }
+    }
     if (!old_c || !new_c) {
         // Add/delete of an empty file carries no ---/+++/hunks (like git).
         FileLines fl = new_c ? entry_lines(*new_c) : entry_lines(*old_c);
@@ -664,11 +695,7 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
         const Collected& nw = common_work[rel];
         if (ob.is_symlink == nw.is_symlink && ob.content == nw.content &&
             mode_of(ob) == mode_of(nw))
-            continue; // unchanged (untouched binaries pass through silently)
-        if ((!ob.is_symlink && ob.is_binary) ||
-            (!nw.is_symlink && nw.is_binary))
-            die("cannot diff trees: '" + rel +
-                "' is a binary file; binary files are not supported");
+            continue; // unchanged
         if (ob.is_symlink != nw.is_symlink) {
             // Typechange: emit as delete+add hunks in one block (mode lines
             // record the transition; hunks carry old->new content).
@@ -688,8 +715,6 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
         for (size_t j = 0; j < added.size(); ++j) {
             if (deleted[i].c.is_symlink != added[j].c.is_symlink)
                 continue;
-            if (deleted[i].c.is_binary || added[j].c.is_binary)
-                continue; // renames of binaries fall through to the refusal below
             if (deleted[i].c.content == added[j].c.content) {
                 renames.push_back({i, j, 100});
             }
@@ -746,9 +771,6 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
     for (size_t i = 0; i < deleted.size(); ++i) {
         if (used_d[i])
             continue;
-        if (!deleted[i].c.is_symlink && deleted[i].c.is_binary)
-            die("cannot diff trees: '" + deleted[i].rel +
-                "' is a binary file; binary files are not supported");
         jobs.push_back(
             {deleted[i].rel, emit_block(wid, deleted[i].rel, "", &deleted[i].c,
                                         nullptr, false, 0)});
@@ -756,9 +778,6 @@ std::string vcs_diff_trees(const std::string& base_tree, const std::string& work
     for (size_t j = 0; j < added.size(); ++j) {
         if (used_a[j])
             continue;
-        if (!added[j].c.is_symlink && added[j].c.is_binary)
-            die("cannot diff trees: '" + added[j].rel +
-                "' is a binary file; binary files are not supported");
         jobs.push_back({added[j].rel, emit_block(wid, "", added[j].rel, nullptr,
                                                  &added[j].c, false, 0)});
     }
@@ -796,8 +815,17 @@ struct PBlock {
     std::string old_mode, new_mode; // "" if absent
     bool is_new = false, is_deleted = false;
     bool is_binary = false;
+    // Binary payload (projeny base64 `GIT binary patch` literals): the first
+    // literal is the new bytes, the second the old bytes. binary_has_payload
+    // is false for `Binary files ... differ` stanzas and foreign (git
+    // base85/deflate) sections our decoder rejects: those blocks fail
+    // cleanly at apply time (merge conflict), never die and never apply.
+    bool binary_has_payload = false;
+    std::string bin_old;
+    std::string bin_new;
     bool is_combined = false; // "diff --cc"/"diff --combined" (unsupported)
     std::string header_line;  // raw first line of the block (for diagnostics)
+    std::string raw;          // raw block text including trailing newline
     std::vector<PHunk> hunks;
     bool old_no_nl_file = false, new_no_nl_file = false;
     std::string git_a, git_b; // raw sides from diff --git (for fallback)
@@ -972,12 +1000,14 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
     if (patch.empty())
         return out;
     if (patch.find('\0') != std::string::npos)
-        die("patch contains NUL bytes; binary patches are not supported");
+        die("patch contains NUL bytes; refusing (a well-formed patch is text: binary content travels base64-encoded)");
     std::vector<std::string> lines = split_raw(patch);
-    // Drop a single trailing empty element from the final newline.
-    if (!lines.empty() && lines.back().empty() && !patch.empty() &&
-        patch.back() == '\n')
-        lines.pop_back();
+    // NOTE: no trailing-empty pop here. split_raw never yields a spurious
+    // final element (a trailing '\n' produces no extra entry), so a trailing
+    // "" is always a real blank line — typically trailing context of the
+    // last hunk or a binary literal terminator — and dropping it would
+    // corrupt raw roundtrips (the setup/commit filters rejoin blocks
+    // byte-exact) and miscount the last hunk.
     std::vector<size_t> starts;
     std::vector<bool> is_cc;
     for (size_t i = 0; i < lines.size(); ++i) {
@@ -1065,6 +1095,7 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                     v = v.substr(1);
                 blk.rename_to = unquote_git_path(v);
             } else if (t.compare(0, 12, "Binary files") == 0 ||
+
                        t.compare(0, 16, "GIT binary patch") == 0) {
                 blk.is_binary = true;
             } else if (t.compare(0, 4, "--- ") == 0) {
@@ -1082,8 +1113,9 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 have_plus = true;
             }
         }
-        if (blk.is_binary)
-            die("patch contains binary content; binary files are not supported");
+        // Binary payload parsing happens after the ---/+++/rename fallback
+        // below (it needs no paths): see the GIT binary patch decode after
+        // the hunk loop.
         if (have_minus) {
             bool miss = false;
             blk.old_rel = label_to_rel(minus_body, wid, &miss);
@@ -1210,6 +1242,72 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 blk.old_no_nl_file = true;
             if (h.new_no_nl)
                 blk.new_no_nl_file = true;
+        }
+        // Raw block text (for the setup/commit filters that drop blocks).
+        {
+            std::string raw;
+            for (size_t k = starts[s]; k < e; ++k) {
+                raw += lines[k];
+                raw += '\n';
+            }
+            blk.raw = raw;
+        }
+        // Decode our base64 `GIT binary patch` literals (new first, then
+        // old, each terminated by a blank line). Anything else claiming to
+        // be binary (a bare `Binary files ... differ` stanza, or a foreign
+        // base85/deflate section) keeps is_binary with no payload: it fails
+        // cleanly at apply time instead of dying here.
+        if (blk.is_binary) {
+            size_t g = starts.size(); // line index of "GIT binary patch"
+            for (size_t k = starts[s] + 1; k < e; ++k) {
+                if (no_cr(lines[k]) == "GIT binary patch") {
+                    g = k;
+                    break;
+                }
+            }
+            if (g < e) {
+                std::vector<std::string> payloads;
+                bool ok = true;
+                size_t k = g + 1;
+                for (int li = 0; li < 2 && ok; ++li) {
+                    if (k >= e || no_cr(lines[k]).compare(0, 8, "literal ") != 0) {
+                        ok = false;
+                        break;
+                    }
+                    long want = strtol(no_cr(lines[k]).substr(8).c_str(),
+                                       nullptr, 10);
+                    if (want < 0) {
+                        ok = false;
+                        break;
+                    }
+                    ++k;
+                    std::string b64;
+                    while (k < e && !no_cr(lines[k]).empty() &&
+                           no_cr(lines[k]).compare(0, 8, "literal ") != 0 &&
+                           no_cr(lines[k]).compare(0, 6, "delta ") != 0) {
+                        // Base64 lines carry no '\r' from our encoder, but
+                        // tolerate CRLF patches by stripping one trailing CR.
+                        b64 += no_cr(lines[k]);
+                        ++k;
+                    }
+                    std::string bytes;
+                    if (!base64_decode(b64, &bytes) ||
+                        (long)bytes.size() != want) {
+                        ok = false;
+                        break;
+                    }
+                    payloads.push_back(bytes);
+                    // Consume the blank terminator when present (tolerate a
+                    // missing one at the end of the block).
+                    if (k < e && no_cr(lines[k]).empty())
+                        ++k;
+                }
+                if (ok && payloads.size() == 2) {
+                    blk.bin_new = payloads[0];
+                    blk.bin_old = payloads[1];
+                    blk.binary_has_payload = true;
+                }
+            }
         }
         out.push_back(blk);
     }
@@ -1446,6 +1544,98 @@ void check_patch_link_target(const std::string& member, const std::string& targe
     }
 }
 
+// Binary-safe content probe: lstat first so symlinks compare by target
+// string and regular files by raw bytes (NULs included). Directories and
+// special files report Other (callers fail those cleanly); missing paths
+// report Missing. Never dies on binary bytes.
+enum class RawKind { Missing, Link, Regular, Other };
+
+struct RawContent {
+    RawKind kind = RawKind::Missing;
+    std::string bytes; // link target for links, raw bytes for regular files
+};
+
+RawContent read_raw_content(const std::string& full)
+{
+    RawContent rc;
+    struct stat st;
+    if (lstat(full.c_str(), &st) != 0)
+        return rc;
+    if (S_ISLNK(st.st_mode)) {
+        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
+        ssize_t r = readlink(full.c_str(), buf.data(), buf.size());
+        if (r < 0)
+            die("cannot read link '" + full + "': " + strerror(errno));
+        rc.kind = RawKind::Link;
+        rc.bytes.assign(buf.data(), (size_t)r);
+        return rc;
+    }
+    if (S_ISREG(st.st_mode)) {
+        rc.kind = RawKind::Regular;
+        rc.bytes = read_file_bytes(full);
+        return rc;
+    }
+    rc.kind = RawKind::Other;
+    return rc;
+}
+
+// Write raw bytes as a regular file (binary-safe) or a symlink when
+// mode == "120000" (target = bytes, validated like every other link the
+// patch creates). Regular writes set an explicit 0755/0644 when mode names
+// one, else leave the fresh 0666&~umask bits for the caller to restore.
+void write_raw_target(const std::string& full, const std::string& bytes,
+                      const std::string& mode /* "" if keep */)
+{
+    if (mode == "120000") {
+        check_patch_link_target(full, bytes);
+        make_dirs(dirname_of(full));
+        unlink(full.c_str());
+        if (symlink(bytes.c_str(), full.c_str()) != 0)
+            die("cannot create symlink '" + full + "': " + strerror(errno));
+        return;
+    }
+    make_dirs(dirname_of(full));
+    write_file_bytes(full, bytes);
+    if (!mode.empty()) {
+        mode_t m = is_exec_mode(mode) ? 0755 : 0644;
+        if (chmod(full.c_str(), m) != 0)
+            die("cannot set permissions on '" + full + "': " + strerror(errno));
+    }
+}
+
+// True when `full` exists as a NUL-bearing regular file. Text patch paths
+// probe this before read_target_lines (which dies on binary bytes): a text
+// block meeting a binary file is a content mismatch, reported as a clean
+// per-file failure (merge conflict) rather than a hard error. Symlinks,
+// missing paths, and non-regular files are never "binary" here.
+bool path_is_binary_file(const std::string& full)
+{
+    struct stat lst;
+    if (lstat(full.c_str(), &lst) != 0 || !S_ISREG(lst.st_mode))
+        return false;
+    int fd = open(full.c_str(), O_RDONLY);
+    if (fd < 0)
+        return false;
+    char buf[65536];
+    bool found = false;
+    for (;;) {
+        ssize_t r = read(fd, buf, sizeof(buf));
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (r == 0)
+            break;
+        if (memchr(buf, 0, (size_t)r) != nullptr) {
+            found = true;
+            break;
+        }
+    }
+    close(fd);
+    return found;
+}
+
 void write_target(const std::string& full, const FileLines& fl,
                   const std::string& mode /* "" if keep */)
 {
@@ -1590,14 +1780,6 @@ void ensure_already_state(const std::string& path, FileLines& cur,
 {
     enforce_already_newline(path, cur, blk, is_link);
     enforce_already_mode(path, blk);
-}
-
-bool file_contents_equal(const FileLines& a, bool a_link, const FileLines& b,
-                         bool b_link)
-{
-    if (a_link != b_link)
-        return false;
-    return join_content(a.lines, a.ends_nl) == join_content(b.lines, b.ends_nl);
 }
 
 // Classify a path for patch application. Only symlinks and regular files
@@ -1775,11 +1957,14 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         if (old_e && new_e) {
             // Destination in the way: succeed idempotently only when it
             // holds the same content (same bytes and symlink-ness) as the
-            // source; otherwise fail without overwriting.
-            bool link_old = false, link_new = false;
-            FileLines ol = read_target_lines(old_full, &link_old, nullptr);
-            FileLines nl = read_target_lines(new_full, &link_new, nullptr);
-            if (file_contents_equal(ol, link_old, nl, link_new)) {
+            // source; otherwise fail without overwriting. Binary-safe: raw
+            // bytes compare (pure renames of binaries carry no payload, so
+            // the bytes themselves are the lineage).
+            RawContent ro = read_raw_content(old_full);
+            RawContent rn = read_raw_content(new_full);
+            bool same = ro.kind == rn.kind && ro.kind != RawKind::Other &&
+                        ro.kind != RawKind::Missing && ro.bytes == rn.bytes;
+            if (same) {
                 // Same gate as above: never chmod through a link.
                 if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
                     !confined_for_write(treedir, new_full))
@@ -1815,6 +2000,37 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         return BlkStatus::Failed;
 
     if (blk.is_new) {
+        // Through-link safety first (see below).
+        if (!ancestors_are_dirs(treedir, new_full))
+            return BlkStatus::Failed;
+        if (blk.is_binary) {
+            // Binary create: the payload's new bytes are the expected
+            // content. Without a payload (foreign stanza) there is nothing
+            // verifiable to create: fail cleanly (merge conflict).
+            if (!blk.binary_has_payload)
+                return BlkStatus::Failed;
+            PathKind nk = path_kind(new_full);
+            if (nk == PathKind::Other)
+                return BlkStatus::Failed;
+            if (nk != PathKind::Missing) {
+                RawContent cur = read_raw_content(new_full);
+                bool same_link =
+                    (cur.kind == RawKind::Link) == (blk.new_mode == "120000");
+                if (same_link && cur.kind != RawKind::Other &&
+                    cur.bytes == blk.bin_new) {
+                    if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+                        !confined_for_write(treedir, new_full))
+                        return BlkStatus::Failed;
+                    enforce_already_mode(new_full, blk);
+                    return BlkStatus::Already;
+                }
+                return BlkStatus::Failed;
+            }
+            if (!creatable_under(treedir, new_full))
+                return BlkStatus::Failed;
+            write_raw_target(new_full, blk.bin_new, blk.new_mode);
+            return BlkStatus::Applied;
+        }
         // Create. Already-applied when the file exists with expected content.
         // Even then, enforce the expected mode so exec-bit drift is repaired.
         // A directory/special file in the way is a clean failure (merge
@@ -1828,6 +2044,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         if (nk == PathKind::Other)
             return BlkStatus::Failed;
         if (nk != PathKind::Missing) {
+            if (!blk.is_binary && path_is_binary_file(new_full))
+                return BlkStatus::Failed; // text create vs binary file
             FileLines exp = new_file_content(blk);
             std::string want_mode = blk.new_mode;
             bool is_link = false;
@@ -1876,11 +2094,35 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         // symlink target itself rather than following it.
         if (!ancestors_are_dirs(treedir, old_full))
             return BlkStatus::Failed;
+        if (blk.is_binary) {
+            // Binary delete: the payload's old bytes must match the file, so
+            // deleting a file the user changed becomes a conflict instead of
+            // data loss. Without a payload there is nothing to verify
+            // against: fail cleanly unless the file is already gone.
+            PathKind ok = path_kind(old_full);
+            if (ok == PathKind::Missing)
+                return BlkStatus::Already;
+            if (ok == PathKind::Other)
+                return BlkStatus::Failed;
+            if (!blk.binary_has_payload)
+                return BlkStatus::Failed;
+            RawContent cur = read_raw_content(old_full);
+            bool same_link =
+                (cur.kind == RawKind::Link) == (blk.old_mode == "120000");
+            if (!same_link || cur.kind == RawKind::Other ||
+                cur.bytes != blk.bin_old)
+                return BlkStatus::Failed;
+            if (!remove_recursive(old_full))
+                return BlkStatus::Failed;
+            return BlkStatus::Applied;
+        }
         PathKind ok = path_kind(old_full);
         if (ok == PathKind::Missing)
             return BlkStatus::Already;
         if (ok == PathKind::Other)
             return BlkStatus::Failed; // dir/special in the way: conflict
+        if (!blk.is_binary && path_is_binary_file(old_full))
+            return BlkStatus::Failed; // text delete vs binary file
         bool is_link = false;
         FileLines cur = read_target_lines(old_full, &is_link, nullptr);
         if (blk.hunks.empty()) {
@@ -1913,6 +2155,121 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     if (!ancestors_are_dirs(treedir, src_full) ||
         !ancestors_are_dirs(treedir, dst_full))
         return BlkStatus::Failed;
+    if (blk.is_binary) {
+        // Binary modify (possibly with rename and/or mode change, possibly a
+        // symlink<->file typechange): the payload's old bytes must match the
+        // source. Without a payload there is nothing to verify: fail cleanly.
+        if (!blk.binary_has_payload)
+            return BlkStatus::Failed;
+        PathKind src_k = path_kind(src_full);
+        if (src_k == PathKind::Other)
+            return BlkStatus::Failed;
+        if (src_k == PathKind::Missing) {
+            // Already applied? The destination holds the new bytes.
+            if (path_kind(dst_full) == PathKind::Other)
+                return BlkStatus::Failed;
+            if (path_exists(dst_full)) {
+                RawContent dc = read_raw_content(dst_full);
+                bool same_link =
+                    (dc.kind == RawKind::Link) == (blk.new_mode == "120000");
+                if (same_link && dc.kind != RawKind::Other &&
+                    dc.bytes == blk.bin_new) {
+                    if (!blk.new_mode.empty() && blk.new_mode != "120000" &&
+                        !confined_for_write(treedir, dst_full))
+                        return BlkStatus::Failed;
+                    enforce_already_mode(dst_full, blk);
+                    return BlkStatus::Already;
+                }
+            }
+            return BlkStatus::Failed;
+        }
+        RawContent sc = read_raw_content(src_full);
+        if (sc.kind == RawKind::Other)
+            return BlkStatus::Failed;
+        bool same_link_old =
+            (sc.kind == RawKind::Link) == (blk.old_mode == "120000");
+        // Old-side kind is only known when the patch carries mode lines; a
+        // bare binary modify (no mode lines) accepts either kind as long as
+        // the bytes match.
+        bool old_mode_known = !blk.old_mode.empty() || !blk.new_mode.empty();
+        if (sc.bytes != blk.bin_old ||
+            (old_mode_known && !blk.old_mode.empty() && !same_link_old))
+            {
+            // Maybe already applied (source already holds the new bytes).
+            bool same_link_new =
+                (sc.kind == RawKind::Link) == (blk.new_mode == "120000");
+            bool new_mode_known = !blk.new_mode.empty();
+            if (sc.bytes == blk.bin_new &&
+                (!new_mode_known || same_link_new)) {
+                std::string dst =
+                    blk.is_rename && src_full != dst_full ? dst_full : src_full;
+                if (!confined_for_write(treedir, dst) &&
+                    (!blk.new_mode.empty() && blk.new_mode != "120000"))
+                    return BlkStatus::Failed;
+                enforce_already_mode(dst, blk);
+                return BlkStatus::Already;
+            }
+            return BlkStatus::Failed;
+        }
+        if (path_kind(dst_full) == PathKind::Other)
+            return BlkStatus::Failed;
+        if (!creatable_under(treedir, dst_full))
+            return BlkStatus::Failed;
+        std::string eff_mode = blk.new_mode;
+        mode_t src_full_mode = 0;
+        bool have_src_full_mode = false;
+        if (eff_mode.empty()) {
+            if (sc.kind == RawKind::Link) {
+                eff_mode = "120000";
+            } else {
+                struct stat sst;
+                if (stat(src_full.c_str(), &sst) == 0 &&
+                    S_ISREG(sst.st_mode)) {
+                    src_full_mode = (mode_t)(sst.st_mode & 07777);
+                    have_src_full_mode = true;
+                    if (sst.st_mode & 0111)
+                        eff_mode = "100755";
+                }
+            }
+        }
+        if (eff_mode != "120000") {
+            struct stat dst_st;
+            if (lstat(dst_full.c_str(), &dst_st) == 0 &&
+                S_ISLNK(dst_st.st_mode))
+                return BlkStatus::Failed;
+        }
+        if (blk.is_rename || src_full != dst_full) {
+            if (blk.is_rename && src_full != dst_full &&
+                path_exists(dst_full)) {
+                // Rename onto an existing path: idempotent only when it
+                // already holds the new bytes of the expected kind (checked
+                // above for src; check dst too when both exist).
+                RawContent dc = read_raw_content(dst_full);
+                if (dc.kind == RawKind::Other || dc.kind == RawKind::Missing ||
+                    ((dc.kind == RawKind::Link) != (eff_mode == "120000")) ||
+                    dc.bytes != blk.bin_new)
+                    return BlkStatus::Failed;
+                remove_recursive(src_full);
+            } else {
+                write_raw_target(dst_full, blk.bin_new, eff_mode);
+                if (src_full != dst_full)
+                    remove_recursive(src_full);
+            }
+        } else {
+            write_raw_target(dst_full, blk.bin_new, eff_mode);
+        }
+        if (have_src_full_mode) {
+            struct stat dst_st;
+            if (lstat(dst_full.c_str(), &dst_st) == 0 &&
+                S_ISREG(dst_st.st_mode) &&
+                (mode_t)(dst_st.st_mode & 07777) != src_full_mode) {
+                if (chmod(dst_full.c_str(), src_full_mode) != 0)
+                    die("cannot set permissions on '" + dst_full +
+                        "': " + strerror(errno));
+            }
+        }
+        return BlkStatus::Applied;
+    }
     PathKind src_k = path_kind(src_full);
     if (src_k == PathKind::Other)
         return BlkStatus::Failed; // dir/special: conflict, not die/hang
@@ -1922,6 +2279,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         if (path_kind(dst_full) == PathKind::Other)
             return BlkStatus::Failed;
         if (blk.is_rename && path_exists(dst_full)) {
+            if (!blk.is_binary && path_is_binary_file(dst_full))
+                return BlkStatus::Failed; // text block vs binary file
             bool is_link = false;
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
             if (!blk.hunks.empty() &&
@@ -1938,6 +2297,8 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
                 return BlkStatus::Already;
             }
         } else if (!blk.is_rename && path_exists(dst_full)) {
+            if (!blk.is_binary && path_is_binary_file(dst_full))
+                return BlkStatus::Failed; // text block vs binary file
             bool is_link = false;
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
             if (!blk.hunks.empty() &&
@@ -1950,10 +2311,10 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         }
         return BlkStatus::Failed;
     }
-    bool is_link = false;
-    FileLines cur = read_target_lines(src_full, &is_link, nullptr);
     if (blk.hunks.empty()) {
-        // Mode-only change (no content hunks). The chmod below follows the
+        // Mode-only change (no content hunks): no content read is needed, so
+        // binaries (mode-only binary changes carry no payload) apply without
+        // ever touching NUL bytes. The chmod below follows the
         // file itself when it is a symlink, so refuse that combination
         // before moving (moving first and failing after would leave the
         // tree half-mutated).
@@ -1977,6 +2338,10 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         }
         return BlkStatus::Applied;
     }
+    if (!blk.is_binary && path_is_binary_file(src_full))
+        return BlkStatus::Failed; // text modify vs binary file
+    bool is_link = false;
+    FileLines cur = read_target_lines(src_full, &is_link, nullptr);
     // Already applied? Reverse-match first (like `apply -R --check`),
     // enforcing effective mode and trailing-newline state even when the
     // content already matches so retry/re-setup repairs drift.
@@ -2164,7 +2529,7 @@ bool vcs_apply_whole(const std::string& treedir, const std::string& patch,
     if (patch.empty())
         return true;
     if (patch.find('\0') != std::string::npos)
-        die("patch contains NUL bytes; binary patches are not supported");
+        die("patch contains NUL bytes; refusing (a well-formed patch is text: binary content travels base64-encoded)");
     // Empty modulo whitespace/comments counts as empty.
     bool any = false;
     for (auto& b : parse_patch(patch, wid)) {
@@ -2259,10 +2624,15 @@ static void write_conflict_for_block(const std::string& treedir,
 {
     if (blk.is_combined || blk.is_rename)
         return;
+    if (blk.is_binary)
+        return; // binary content cannot carry inline markers: the file is
+                // left on disk as-is and the conflict is recorded already.
     if (blk.is_new) {
         if (blk.new_rel.empty())
             return;
         std::string full = join_path(treedir, blk.new_rel);
+        if (path_is_binary_file(full))
+            return; // text conflict vs binary file: leave it
         // Do not even read through a symlink ancestor: the bytes would come
         // from outside the tree (the write below is already gated, but the
         // read must not follow either).
@@ -2286,6 +2656,8 @@ static void write_conflict_for_block(const std::string& treedir,
         blk.old_rel.empty() || blk.hunks.empty())
         return;
     std::string full = join_path(treedir, blk.old_rel);
+    if (path_is_binary_file(full))
+        return; // text conflict vs binary file: leave it
     // Same no-through-link-read rule as above (writes below are gated by
     // confined_for_write already).
     if (!ancestors_are_dirs(treedir, full))
@@ -2398,7 +2770,7 @@ bool vcs_apply_with_conflicts(const std::string& treedir,
     if (patch.empty())
         return true;
     if (patch.find((char)0) != std::string::npos)
-        die("patch contains NUL bytes; binary patches are not supported");
+        die("patch contains NUL bytes; refusing (a well-formed patch is text: binary content travels base64-encoded)");
     std::vector<PBlock> blocks = parse_patch(patch, wid);
     if (blocks.empty())
         return true;
@@ -2437,7 +2809,7 @@ std::vector<std::string> vcs_touched_paths(const std::string& patch,
     if (patch.empty())
         return out;
     if (patch.find((char)0) != std::string::npos)
-        die("patch contains NUL bytes; binary patches are not supported");
+        die("patch contains NUL bytes; refusing (a well-formed patch is text: binary content travels base64-encoded)");
     for (auto& b : parse_patch(patch, wid)) {
         VcsFailure f = failure_for_block(b, wid);
         for (auto& rel : f.paths) {
@@ -2448,6 +2820,127 @@ std::vector<std::string> vcs_touched_paths(const std::string& patch,
         if (f.paths.empty() && !f.display.empty() &&
             std::find(out.begin(), out.end(), f.display) == out.end())
             out.push_back(f.display);
+    }
+    return out;
+}
+
+std::string vcs_drop_deletes_not_in(const std::string& patch,
+                                    const std::string& wid,
+                                    const std::vector<std::string>& keep)
+{
+    if (patch.empty())
+        return patch;
+    std::vector<PBlock> blocks = parse_patch(patch, wid);
+    // All touched paths in the patch (for file/dir swap detection below).
+    std::vector<std::string> touched;
+    for (auto& b : blocks) {
+        VcsFailure f = failure_for_block(b, wid);
+        for (auto& rel : f.paths) {
+            if (!rel.empty() &&
+                std::find(touched.begin(), touched.end(), rel) == touched.end())
+                touched.push_back(rel);
+        }
+    }
+    auto is_prefix_path = [](const std::string& pre, const std::string& full) {
+        return full.size() > pre.size() &&
+               full.compare(0, pre.size(), pre) == 0 &&
+               full[pre.size()] == '/';
+    };
+    // `keep` may hold directories (projeny rm/add take dirs): a patch block
+    // names files, so a deleted file under a pending-removed (or
+    // rename-source) dir is kept via under_path semantics, as
+    // is_tracked_path does.
+    auto is_kept = [&keep, &is_prefix_path](const std::string& rel) {
+        for (auto& k : keep) {
+            if (k.empty())
+                continue;
+            if (rel == k || is_prefix_path(k, rel))
+                return true;
+        }
+        return false;
+    };
+    std::string out;
+    for (auto& b : blocks) {
+        bool pure_delete = b.is_deleted && !b.is_rename && !b.is_new &&
+                           !b.is_combined;
+        if (pure_delete) {
+            // Deleted path: old_rel for ---/+++-style blocks; for blocks
+            // without ---/+++ (mode-only/empty fallbacks) the display path
+            // doubles as the deleted side.
+            std::string rel = b.old_rel;
+            if (rel.empty())
+                rel = failure_for_block(b, wid).display;
+            if (!is_kept(rel)) {
+                // Accidental loss: drop it so setup restores the file —
+                // unless it participates in a file/dir swap visible in this
+                // same patch (a tracked file replaced by a directory, or a
+                // tracked directory replaced by a file). Swaps show as a
+                // delete plus an add with a strict prefix relationship in
+                // either direction; dropping the delete there would strand
+                // the add behind an ENOTDIR failure instead of merging.
+                bool swap = false;
+                for (auto& t : touched) {
+                    if (t != rel &&
+                        (is_prefix_path(rel, t) || is_prefix_path(t, rel))) {
+                        swap = true;
+                        break;
+                    }
+                }
+                if (!swap)
+                    continue;
+            }
+        }
+        out += b.raw;
+    }
+    return out;
+}
+
+std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
+                                              const std::string& wid)
+{
+    std::vector<std::string> out;
+    if (patch.empty())
+        return out;
+    for (auto& b : parse_patch(patch, wid)) {
+        if (b.is_binary && b.binary_has_payload && b.is_new && !b.is_rename &&
+            !b.new_rel.empty() &&
+            std::find(out.begin(), out.end(), b.new_rel) == out.end())
+            out.push_back(b.new_rel);
+    }
+    return out;
+}
+
+std::string vcs_drop_binary_adds_not_in(const std::string& patch,
+                                        const std::string& wid,
+                                        const std::vector<std::string>& keep)
+{
+    if (patch.empty())
+        return patch;
+    std::vector<PBlock> blocks = parse_patch(patch, wid);
+    // `keep` may hold directories (projeny add takes dirs): a binary add
+    // under a pending-added (or rename-destination) dir is kept via
+    // under_path semantics, as is_tracked_path does.
+    auto is_prefix_path = [](const std::string& pre, const std::string& full) {
+        return full.size() > pre.size() &&
+               full.compare(0, pre.size(), pre) == 0 &&
+               full[pre.size()] == '/';
+    };
+    auto is_kept_binary = [&keep, &is_prefix_path](const std::string& rel) {
+        for (auto& k : keep) {
+            if (k.empty())
+                continue;
+            if (rel == k || is_prefix_path(k, rel))
+                return true;
+        }
+        return false;
+    };
+    std::string out;
+    for (auto& b : blocks) {
+        if (b.is_binary && b.binary_has_payload && b.is_new && !b.is_rename) {
+            if (!is_kept_binary(b.new_rel))
+                continue; // untracked binary: leave it out of the patch
+        }
+        out += b.raw;
     }
     return out;
 }
@@ -2604,7 +3097,8 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
     // clean merge never introduces spurious mode changes (which the next
     // commit would otherwise report as uncommitted work). Symlink targets
     // are validated exactly like patch/tar links so a malicious merge
-    // cannot plant an escaping link.
+    // cannot plant an escaping link. Timestamps come along too, so clean
+    // merges of unmodified files don't stamp "now" and trigger rebuilds.
     auto place = [&](const std::string& src) {
         if (src.empty() || !path_exists(src)) {
             unlink(dst_path.c_str());
@@ -2619,6 +3113,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
             if (symlink(target.c_str(), dst_path.c_str()) != 0)
                 die("cannot create symlink '" + dst_path +
                     "': " + strerror(errno));
+            preserve_file_times(src, dst_path);
             return;
         }
         copy_file_bytes(src, dst_path);
@@ -2627,6 +3122,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 die("cannot set permissions on '" + dst_path +
                     "': " + strerror(errno));
         }
+        preserve_file_times(src, dst_path);
     };
     auto exec_flag = [](const std::string& f) -> int {
         struct stat st;
@@ -2724,6 +3220,119 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
         out += ">>>>>>> projeny (local changes)\n";
         return out;
     };
+
+    // Binary (NUL-bearing) sides merge byte-wise, never line-wise: markers
+    // would corrupt binary content. Agreement wins; a change on exactly one
+    // side wins; divergent changes keep the theirs (local) bytes so no
+    // uncommitted user data is silently dropped, and report a conflict for
+    // manual resolution. Symlink-mixed cases (a link on any side while a
+    // regular side carries NULs) also keep theirs and conflict: links
+    // compare by target string and never line-merge against binary bytes.
+    {
+        auto has_nul = [](const std::string& f, int k) -> bool {
+            if (k != 2)
+                return false;
+            std::string data = read_file_bytes(f);
+            return data.find(char(0)) != std::string::npos;
+        };
+        bool any_binary =
+            has_nul(base_file, bk) || has_nul(ours_file, okind) ||
+            has_nul(theirs_file, tkind);
+        if (any_binary) {
+            bool any_link = (bk == 1 || okind == 1 || tkind == 1);
+            int ew = merged_exec_want();
+            mode_t tm = merged_mode_template();
+            auto keep_theirs_conflict = [&]() -> bool {
+                if (tkind != 0) {
+                    place(theirs_file);
+                } else if (okind != 0) {
+                    place(ours_file);
+                } else {
+                    remove_recursive(dst_path);
+                }
+                return false;
+            };
+            if (any_link)
+                return keep_theirs_conflict();
+            auto read_opt = [](const std::string& f, int k,
+                               std::string* out) -> bool {
+                if (k == 0) {
+                    out->clear();
+                    return false;
+                }
+                *out = read_file_bytes(f);
+                return true;
+            };
+            std::string b, o, t;
+            bool be = read_opt(base_file, bk, &b);
+            bool oe = read_opt(ours_file, okind, &o);
+            bool te = read_opt(theirs_file, tkind, &t);
+            bool clean = false;
+            std::string winner;
+            bool delete_winner = false;
+            if (oe && te && o == t) {
+                winner = ours_file;
+                clean = true;
+            } else if (be && oe && b == o) {
+                // Base == ours: take theirs (may be a deletion).
+                if (!te) {
+                    delete_winner = true;
+                } else {
+                    winner = theirs_file;
+                }
+                clean = true;
+            } else if (be && te && b == t) {
+                // Base == theirs: take ours (may be a deletion).
+                if (!oe) {
+                    delete_winner = true;
+                } else {
+                    winner = ours_file;
+                }
+                clean = true;
+            } else if (!be && !oe && !te) {
+                return true; // nothing anywhere (defensive)
+            } else if (!be) {
+                // Added on one or both sides without a base.
+                if (oe && !te) {
+                    winner = ours_file;
+                    clean = true;
+                } else if (!oe && te) {
+                    winner = theirs_file;
+                    clean = true;
+                } else if (oe && te) {
+                    return keep_theirs_conflict();
+                }
+            } else if (!oe && !te) {
+                // Deleted on both sides.
+                remove_recursive(dst_path);
+                return true;
+            } else if (!oe || !te) {
+                // Deleted on one side, changed on the other.
+                const std::string& kept = oe ? o : t;
+                if (kept == b) {
+                    remove_recursive(dst_path);
+                    return true;
+                }
+                return keep_theirs_conflict();
+            } else {
+                return keep_theirs_conflict();
+            }
+            if (clean) {
+                if (delete_winner) {
+                    remove_recursive(dst_path);
+                    return true;
+                }
+                // place() preserves the winner's bytes, mode, and
+                // timestamps, so clean binary merges never look modified.
+                place(winner);
+                // A fresh binary blob takes the merged exec vote (a chmod on
+                // exactly one side still wins for binaries).
+                restore_merged_exec(dst_path, ew, tm);
+                return true;
+            }
+            return keep_theirs_conflict();
+        }
+    }
 
     if (!base_e) {
         // File is new on at least one side. Compare symlink-ness first:

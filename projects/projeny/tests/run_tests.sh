@@ -920,10 +920,11 @@ else
     fail "close-edit file identical after re-setup"
 fi
 
-# ----------------------------------------- 29. binary files are refused
+# ----------------------------------------- 29. binary files are tracked
 
-# Untouched/untracked binaries are invisible to diffs (left out of patches),
-# but explicitly adding one fails: a patch could never carry its bytes.
+# Untracked binaries stay out of patches until explicitly added (like git
+# leaves untracked files out); once added they commit as base64 binary
+# blocks and roundtrip byte-identical through a fresh setup.
 T29="$ROOT/t29"
 make_tarballs "$T29" fake
 write_projeny "$T29" fake 1.0 fake
@@ -935,18 +936,19 @@ if grep -q "bin.dat" "$T29/fake.projeny"; then
 else
     ok "untracked binary stays out of the patch"
 fi
-run_in "$T29" expect_fail "add of binary fails" "$PROJENY" add fake.projeny fake/src/bin.dat
-out="$(cd "$T29" && "$PROJENY" add fake.projeny fake/src/bin.dat 2>&1 || true)"
-case "$out" in
-*inary*)
-    ok "binary add failure message is clear"
-    ;;
-*)
-    fail "binary add failure message is clear" "out: $out"
-    ;;
-esac
-rm -f "$T29/fake/src/bin.dat"
-run_in "$T29" expect_ok "commit works after removing binary" "$PROJENY" commit fake.projeny
+run_in "$T29" expect_ok "add of binary succeeds" "$PROJENY" add fake.projeny fake/src/bin.dat
+run_in "$T29" expect_ok "commit of added binary succeeds" "$PROJENY" commit fake.projeny
+expect_file_contains "added binary is stored as a binary block" "$T29/fake.projeny" "GIT binary patch"
+expect_file_contains "added binary names the file" "$T29/fake.projeny" "bin.dat"
+python3 -c "open('$ROOT/t29-expect.bin','wb').write(open('$T29/fake/src/bin.dat','rb').read())"
+rm -rf "$T29/fake" "$T29/fake.projeny.status"
+run_in "$T29" expect_ok "setup after binary commit" "$PROJENY" setup fake.projeny
+if cmp -s "$T29/fake/src/bin.dat" "$ROOT/t29-expect.bin"; then
+    ok "binary add byte-identical after re-setup"
+else
+    fail "binary add byte-identical after re-setup"
+fi
+run_in "$T29" expect_ok "commit works with binary present" "$PROJENY" commit fake.projeny
 
 # ----------------------------------------- 30. executable bit roundtrips
 T30="$ROOT/t30"
@@ -2245,10 +2247,11 @@ if cmp -s "$T64/w/m.txt" "$ROOT/t64-expect-m.txt"; then
 else
     fail "mixed-endings file byte-identical after re-setup" "got: $(xxd "$T64/w/m.txt" 2>&1)"
 fi
-# ----------------------------------------- 63. binary base is inert until touched
-# A NUL-bearing file inside the base tarball sets up fine, and commits that
-# leave it alone succeed; any commit that must represent it (modify, or even
-# a pure delete) refuses with a clear message.
+# ----------------------------------------- 63. tracked binaries commit like text
+# A NUL-bearing file inside the base tarball sets up fine; commits that
+# leave it alone succeed, and commits that modify or delete it store base64
+# binary blocks and roundtrip byte-identical. Explicit `rm` of a binary
+# works and commits as a binary delete.
 T65="$ROOT/t65"
 mkdir -p "$T65/b-1.0"
 python3 -c "open('$T65/b-1.0/b.dat','wb').write(b'a\x00b\n')"
@@ -2259,30 +2262,31 @@ run_in "$T65" expect_ok "setup with binary base file" "$PROJENY" setup b.projeny
 printf 'ok changed\n' > "$T65/b/f.c"
 run_in "$T65" expect_ok "commit leaving binary untouched succeeds" "$PROJENY" commit b.projeny
 python3 -c "open('$T65/b/b.dat','wb').write(b'a\x00B\n')"
-out="$(cd "$T65" && "$PROJENY" commit b.projeny 2>&1)"
-rc=$?
-if [ $rc -ne 0 ]; then
-    ok "commit touching binary base fails"
+run_in "$T65" expect_ok "commit touching binary base succeeds" "$PROJENY" commit b.projeny
+expect_file_contains "binary modify stored as binary block" "$T65/b.projeny" "GIT binary patch"
+python3 -c "open('$ROOT/t65-expect.bin','wb').write(open('$T65/b/b.dat','rb').read())"
+rm -rf "$T65/b" "$T65/b.projeny.status"
+run_in "$T65" expect_ok "setup after binary modify" "$PROJENY" setup b.projeny
+if cmp -s "$T65/b/b.dat" "$ROOT/t65-expect.bin"; then
+    ok "binary modify byte-identical after re-setup"
 else
-    fail "commit touching binary base fails" "exited 0"
+    fail "binary modify byte-identical after re-setup"
 fi
-case "$out" in
-*inary*)
-    ok "binary-base failure message is clear"
-    ;;
-*)
-    fail "binary-base failure message is clear" "out: $out"
-    ;;
-esac
-run_in "$T65" expect_fail "rm of binary base file fails" "$PROJENY" rm b.projeny b/b.dat
-if [ -f "$T65/b/b.dat" ]; then
-    ok "refused rm keeps the binary"
+run_in "$T65" expect_ok "rm of binary base file succeeds" "$PROJENY" rm b.projeny b/b.dat
+if [ ! -f "$T65/b/b.dat" ]; then
+    ok "rm deletes the binary"
 else
-    fail "refused rm keeps the binary"
+    fail "rm deletes the binary"
 fi
-run_in "$T65" expect_fail "commit with edited binary still refused" "$PROJENY" commit b.projeny
-python3 -c "open('$T65/b/b.dat','wb').write(b'a\x00b\n')"
-run_in "$T65" expect_ok "commit works after restoring binary" "$PROJENY" commit b.projeny
+run_in "$T65" expect_ok "commit of binary delete succeeds" "$PROJENY" commit b.projeny
+expect_file_contains "binary delete names the file" "$T65/b.projeny" "b.dat"
+rm -rf "$T65/b" "$T65/b.projeny.status"
+run_in "$T65" expect_ok "setup after binary delete" "$PROJENY" setup b.projeny
+if [ ! -f "$T65/b/b.dat" ]; then
+    ok "binary delete survives re-setup"
+else
+    fail "binary delete survives re-setup" "$(ls "$T65/b")"
+fi
 
 # ----------------------------------------- 64. delete + recreate same path
 T66="$ROOT/t66"
@@ -4399,10 +4403,11 @@ else
     fail "modified file keeps appended blank line" "$(xxd "$TNL/w/s.txt" | tail -2)"
 fi
 
-# ----------------------------------------- 98. binaries ride along, never in patches
+# ----------------------------------------- 98. binaries ride along, tracked ones commit
 # Untracked binaries (like a package tarball written into the workdir) must
 # survive setup/package/extract/commit: preserved on disk, left out of
-# patches and archives. Tracked-binary edits still fail loudly.
+# patches and archives until explicitly added. Tracked binaries and
+# explicitly added ones commit as base64 binary blocks.
 TBIN="$ROOT/tbin"
 make_tarballs "$TBIN" pkg
 write_projeny "$TBIN" pkg 1.0 pkg
@@ -4447,15 +4452,20 @@ if [ -f "$TBIN/pkg/blob.bin" ] && [ -f "$TBIN/pkg/NOTE.txt" ]; then
 else
     fail "post-commit setup preserves untracked files" "$(ls "$TBIN/pkg")"
 fi
-# Explicit binary intent fails: adding an untracked binary is refused.
-run_in "$TBIN" expect_fail "add of binary fails" "$PROJENY" add pkg.projeny pkg/blob.bin
-if [ -f "$TBIN/pkg/blob.bin" ]; then
-    ok "refused add leaves the file alone"
+# Explicit binary intent is tracked: adding an untracked binary commits it.
+run_in "$TBIN" expect_ok "add of binary succeeds" "$PROJENY" add pkg.projeny pkg/blob.bin
+run_in "$TBIN" expect_ok "commit of added binary succeeds" "$PROJENY" commit pkg.projeny
+expect_file_contains "added binary stored" "$TBIN/pkg.projeny" "blob.bin"
+python3 -c "open('$ROOT/tbin-expect.bin','wb').write(open('$TBIN/pkg/blob.bin','rb').read())"
+rm -rf "$TBIN/pkg" "$TBIN/pkg.projeny.status"
+run_in "$TBIN" expect_ok "setup after binary add commit" "$PROJENY" setup pkg.projeny
+if cmp -s "$TBIN/pkg/blob.bin" "$ROOT/tbin-expect.bin"; then
+    ok "added binary byte-identical after re-setup"
 else
-    fail "refused add leaves the file alone"
+    fail "added binary byte-identical after re-setup"
 fi
-# Tracked binaries: edits fail commit and setup loudly (never silently
-# reverted or dropped), and rm refuses upfront.
+# Tracked binaries: edits commit as binary blocks and merge cleanly through
+# setup; explicit rm deletes and commits as a binary delete.
 TBIN2="$ROOT/tbin2"
 mkdir -p "$TBIN2/b-1.0"
 python3 -c "open('$TBIN2/b-1.0/b.dat','wb').write(b'a\x00b\n')"
@@ -4464,15 +4474,27 @@ printf 'ok\n' > "$TBIN2/b-1.0/f.c"
 printf 'Archive: b-1.0.tar.gz\nOrigname: b-1.0\nName: b\n\n    Tracked binary.\n' > "$TBIN2/b.projeny"
 (cd "$TBIN2" && "$PROJENY" setup b.projeny >/dev/null 2>&1)
 python3 -c "open('$TBIN2/b/b.dat','wb').write(b'a\x00CHANGED\n')"
-run_in "$TBIN2" expect_fail "commit of edited tracked binary fails" "$PROJENY" commit b.projeny
-run_in "$TBIN2" expect_fail "setup refuses to revert tracked binary edit" "$PROJENY" setup b.projeny
-python3 -c "open('$TBIN2/b/b.dat','wb').write(b'a\x00b\n')"
-run_in "$TBIN2" expect_ok "setup works after restoring binary" "$PROJENY" setup b.projeny
-run_in "$TBIN2" expect_fail "rm of tracked binary fails" "$PROJENY" rm b.projeny b/b.dat
-if [ -f "$TBIN2/b/b.dat" ]; then
-    ok "refused rm leaves the file alone"
+run_in "$TBIN2" expect_ok "commit of edited tracked binary succeeds" "$PROJENY" commit b.projeny
+run_in "$TBIN2" expect_ok "setup keeps committed binary edit" "$PROJENY" setup b.projeny
+python3 -c "import sys; sys.exit(0 if open('$TBIN2/b/b.dat','rb').read()==b'a\x00CHANGED\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "committed binary edit survives setup"
 else
-    fail "refused rm leaves the file alone"
+    fail "committed binary edit survives setup"
+fi
+run_in "$TBIN2" expect_ok "rm of tracked binary succeeds" "$PROJENY" rm b.projeny b/b.dat
+if [ ! -f "$TBIN2/b/b.dat" ]; then
+    ok "rm deletes the tracked binary"
+else
+    fail "rm deletes the tracked binary"
+fi
+run_in "$TBIN2" expect_ok "commit of tracked binary delete succeeds" "$PROJENY" commit b.projeny
+rm -rf "$TBIN2/b" "$TBIN2/b.projeny.status"
+run_in "$TBIN2" expect_ok "setup after tracked binary delete" "$PROJENY" setup b.projeny
+if [ ! -f "$TBIN2/b/b.dat" ]; then
+    ok "tracked binary delete survives re-setup"
+else
+    fail "tracked binary delete survives re-setup"
 fi
 
 # ----------------------------------------- 99. package/extract keep +x
@@ -4745,6 +4767,482 @@ if [ -x "$TADD/d/newtool.sh" ]; then
     ok "add-add conflict keeps +x"
 else
     fail "add-add conflict keeps +x" "$(ls -l "$TADD/d/newtool.sh" 2>&1)"
+fi
+
+# ----------------------------------------- 104. setup restores deleted text files
+# A file deleted without `projeny rm` (stray rm, build artifact cleanup) is
+# accidental loss: the next setup restores it to fresh-setup state instead
+# of treating the deletion as an intended change.
+T104="$ROOT/t104"
+make_tarballs "$T104" fake
+write_projeny "$T104" fake 1.0 fake
+(cd "$T104" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+cp "$T104/fake/src/a.c" "$ROOT/t104-expect-a.c"
+rm "$T104/fake/src/a.c"
+run_in "$T104" expect_ok "setup restores deleted text file" "$PROJENY" setup fake.projeny
+if cmp -s "$T104/fake/src/a.c" "$ROOT/t104-expect-a.c"; then
+    ok "deleted text file byte-identical after setup"
+else
+    fail "deleted text file byte-identical after setup"
+fi
+run_in "$T104" expect_ok "second setup is a noop" "$PROJENY" setup fake.projeny
+
+# ----------------------------------------- 105. setup restores deleted binaries
+# The libffi case: doc/libffi.info (NUL-bearing) is deleted by a make bug;
+# the next setup must restore it byte-identical without any "binary files
+# are not supported" error, and a second setup must keep working.
+T105="$ROOT/t105"
+mkdir -p "$T105/w-1.0/doc"
+python3 -c "open('$T105/w-1.0/doc/libffi.info','wb').write(b'This is libffi.info \x00 binary \x00 tail\n' * 100)"
+python3 -c "open('$T105/w-1.0/doc/libffi.pdf','wb').write(bytes(range(256)) * 100)"
+printf 'ok\n' > "$T105/w-1.0/f.c"
+(cd "$T105" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Libffi-like.\n' > "$T105/w.projeny"
+(cd "$T105" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$ROOT/t105-expect.info','wb').write(open('$T105/w/doc/libffi.info','rb').read())"
+python3 -c "open('$ROOT/t105-expect.pdf','wb').write(open('$T105/w/doc/libffi.pdf','rb').read())"
+rm "$T105/w/doc/libffi.info"
+out="$(cd "$T105" && "$PROJENY" setup w.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup after binary delete exits 0"
+else
+    fail "setup after binary delete exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*inary*)
+    fail "no binary error on restore" "out: $out"
+    ;;
+*)
+    ok "no binary error on restore"
+    ;;
+esac
+if cmp -s "$T105/w/doc/libffi.info" "$ROOT/t105-expect.info"; then
+    ok "deleted binary byte-identical after setup"
+else
+    fail "deleted binary byte-identical after setup"
+fi
+rm "$T105/w/doc/libffi.info" "$T105/w/doc/libffi.pdf"
+run_in "$T105" expect_ok "setup restores two deleted binaries" "$PROJENY" setup w.projeny
+if cmp -s "$T105/w/doc/libffi.info" "$ROOT/t105-expect.info" && cmp -s "$T105/w/doc/libffi.pdf" "$ROOT/t105-expect.pdf"; then
+    ok "both binaries byte-identical after second setup"
+else
+    fail "both binaries byte-identical after second setup"
+fi
+
+# ----------------------------------------- 106. explicit rm survives setup
+# Deletions recorded with `projeny rm` are intent: setup must re-apply them
+# to the new tree (not restore the file), and the pending removal stays
+# listed until committed.
+T106="$ROOT/t106"
+make_tarballs "$T106" fake
+write_projeny "$T106" fake 1.0 fake
+(cd "$T106" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T106" expect_ok "rm a tracked file" "$PROJENY" rm fake.projeny fake/README
+run_in "$T106" expect_ok "setup keeps explicit removal" "$PROJENY" setup fake.projeny
+if [ ! -f "$T106/fake/README" ]; then
+    ok "explicitly removed file stays deleted across setup"
+else
+    fail "explicitly removed file stays deleted across setup"
+fi
+expect_file_contains "pending removal kept across setup" "$T106/fake.projeny.status" "Removed: README"
+run_in "$T106" expect_ok "commit records explicit removal" "$PROJENY" commit fake.projeny
+rm -rf "$T106/fake" "$T106/fake.projeny.status"
+run_in "$T106" expect_ok "setup after removal commit" "$PROJENY" setup fake.projeny
+if [ ! -f "$T106/fake/README" ]; then
+    ok "committed removal survives re-setup"
+else
+    fail "committed removal survives re-setup"
+fi
+
+# ----------------------------------------- 107. setup merges edits and restores deletes
+# One setup must do both: keep an uncommitted text edit and restore an
+# accidentally deleted (binary and text) file.
+T107="$ROOT/t107"
+mkdir -p "$T107/w-1.0"
+python3 -c "open('$T107/w-1.0/b.dat','wb').write(b'v\x00one\n')"
+printf 'line one\nline two\nline three\nline four\n' > "$T107/w-1.0/f.c"
+printf 'keep me\n' > "$T107/w-1.0/g.c"
+(cd "$T107" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Mixed.\n' > "$T107/w.projeny"
+(cd "$T107" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$ROOT/t107-expect.dat','wb').write(open('$T107/w/b.dat','rb').read())"
+printf 'line ONE\nline two\nline three\nline four\n' > "$T107/w/f.c"
+rm "$T107/w/g.c" "$T107/w/b.dat"
+run_in "$T107" expect_ok "setup merges edit and restores deletes" "$PROJENY" setup w.projeny
+expect_file_contains "uncommitted edit preserved" "$T107/w/f.c" "line ONE"
+if cmp -s "$T107/w/b.dat" "$ROOT/t107-expect.dat"; then
+    ok "deleted binary restored alongside edit"
+else
+    fail "deleted binary restored alongside edit"
+fi
+expect_file_contains "deleted text file restored alongside edit" "$T107/w/g.c" "keep me"
+
+# ----------------------------------------- 108. setup restores deleted patched files patched
+# When the patch itself modifies a file, deleting that file must restore the
+# PATCHED content (tarball + patch), not the raw tarball bytes.
+T108="$ROOT/t108"
+make_tarballs "$T108" fake
+write_projeny "$T108" fake 1.0 fake
+(cd "$T108" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'patched beta\n' >> "$T108/fake/src/a.c"
+(cd "$T108" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T108/fake/src/a.c" "$ROOT/t108-expect-a.c"
+rm "$T108/fake/src/a.c"
+run_in "$T108" expect_ok "setup restores deleted patched file" "$PROJENY" setup fake.projeny
+if cmp -s "$T108/fake/src/a.c" "$ROOT/t108-expect-a.c"; then
+    ok "restored file carries the patch content"
+else
+    fail "restored file carries the patch content"
+fi
+
+# ----------------------------------------- 109. binary rename roundtrips
+# `projeny mv` of a binary records a rename; commit stores it without a
+# payload and fresh setup reproduces the bytes at the new path.
+T109="$ROOT/t109"
+mkdir -p "$T109/w-1.0"
+python3 -c "open('$T109/w-1.0/b.dat','wb').write(b'm\x00ove me\n' * 50)"
+printf 'ok\n' > "$T109/w-1.0/f.c"
+(cd "$T109" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Mv.\n' > "$T109/w.projeny"
+(cd "$T109" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$ROOT/t109-expect.bin','wb').write(open('$T109/w/b.dat','rb').read())"
+run_in "$T109" expect_ok "mv a binary" "$PROJENY" mv w.projeny w/b.dat w/sub/moved.dat
+run_in "$T109" expect_ok "commit binary rename" "$PROJENY" commit w.projeny
+expect_file_contains "rename recorded in patch" "$T109/w.projeny" "rename from"
+rm -rf "$T109/w" "$T109/w.projeny.status"
+run_in "$T109" expect_ok "setup after binary rename" "$PROJENY" setup w.projeny
+if [ ! -f "$T109/w/b.dat" ] && cmp -s "$T109/w/sub/moved.dat" "$ROOT/t109-expect.bin"; then
+    ok "binary rename byte-identical at new path"
+else
+    fail "binary rename byte-identical at new path" "$(ls -R "$T109/w" 2>&1)"
+fi
+
+# ----------------------------------------- 110. binary mode changes roundtrip
+# Chmod +x on a binary commits as a mode-only change and survives setup.
+T110="$ROOT/t110"
+mkdir -p "$T110/w-1.0"
+python3 -c "open('$T110/w-1.0/tool.bin','wb').write(b't\x00ool\n')"
+(cd "$T110" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    X.\n' > "$T110/w.projeny"
+(cd "$T110" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+chmod 755 "$T110/w/tool.bin"
+run_in "$T110" expect_ok "commit binary chmod" "$PROJENY" commit w.projeny
+rm -rf "$T110/w" "$T110/w.projeny.status"
+run_in "$T110" expect_ok "setup after binary chmod" "$PROJENY" setup w.projeny
+if [ -x "$T110/w/tool.bin" ]; then
+    ok "binary +x survives re-setup"
+else
+    fail "binary +x survives re-setup" "$(ls -l "$T110/w/tool.bin" 2>&1)"
+fi
+python3 -c "import sys; sys.exit(0 if open('$T110/w/tool.bin','rb').read()==b't\x00ool\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "binary bytes untouched by mode commit"
+else
+    fail "binary bytes untouched by mode commit"
+fi
+
+# ----------------------------------------- 111. binary edits merge cleanly with text edits
+# Upstream patch changes a text file while the workdir edits a binary:
+# setup must apply both with no conflict.
+T111="$ROOT/t111"
+mkdir -p "$T111/w-1.0"
+python3 -c "open('$T111/w-1.0/b.dat','wb').write(b'b\x00ase\n')"
+printf 'alpha 1\n' > "$T111/w-1.0/f.c"
+(cd "$T111" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Merge.\n' > "$T111/w.projeny"
+(cd "$T111" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'alpha 2 upstream\n' > "$T111/w/f.c"
+(cd "$T111" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T111/w.projeny" "$ROOT/t111-up.projeny"
+cat > "$T111/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Merge.
+EOF
+rm -rf "$T111/w" "$T111/w.projeny.status"
+(cd "$T111" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T111/w/b.dat','wb').write(b'b\x00LOCAL\n')"
+cp "$ROOT/t111-up.projeny" "$T111/w.projeny"
+run_in "$T111" expect_ok "disjoint binary/text merge is clean" "$PROJENY" setup w.projeny
+expect_file_contains "upstream text change present" "$T111/w/f.c" "alpha 2 upstream"
+python3 -c "import sys; sys.exit(0 if open('$T111/w/b.dat','rb').read()==b'b\x00LOCAL\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "local binary edit preserved by merge"
+else
+    fail "local binary edit preserved by merge"
+fi
+
+# ----------------------------------------- 112. divergent binary edits conflict, keep local
+# Both sides change the same binary differently: setup exits nonzero, records
+# the conflict, and keeps the local bytes (never silently discards them).
+# resolve + commit then works.
+T112="$ROOT/t112"
+mkdir -p "$T112/w-1.0"
+python3 -c "open('$T112/w-1.0/b.dat','wb').write(b'b\x00ase\n')"
+printf 'f\n' > "$T112/w-1.0/f.c"
+(cd "$T112" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Conflict.\n' > "$T112/w.projeny"
+(cd "$T112" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T112/w/b.dat','wb').write(b'b\x00UPSTREAM\n')"
+(cd "$T112" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T112/w.projeny" "$ROOT/t112-up.projeny"
+cat > "$T112/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Conflict.
+EOF
+rm -rf "$T112/w" "$T112/w.projeny.status"
+(cd "$T112" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T112/w/b.dat','wb').write(b'b\x00LOCAL\n')"
+cp "$ROOT/t112-up.projeny" "$T112/w.projeny"
+run_in "$T112" expect_fail "divergent binary merge exits nonzero" "$PROJENY" setup w.projeny
+expect_file_contains "divergent binary records conflict" "$T112/w.projeny.status" "Conflict: b.dat"
+python3 -c "import sys; sys.exit(0 if open('$T112/w/b.dat','rb').read()==b'b\x00LOCAL\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "binary conflict keeps local bytes"
+else
+    fail "binary conflict keeps local bytes"
+fi
+python3 -c "open('$T112/w/b.dat','wb').write(b'b\x00RESOLVED\n')"
+run_in "$T112" expect_ok "resolve binary conflict" "$PROJENY" resolve w.projeny w/b.dat
+run_in "$T112" expect_ok "commit resolved binary" "$PROJENY" commit w.projeny
+rm -rf "$T112/w" "$T112/w.projeny.status"
+run_in "$T112" expect_ok "setup after binary resolve" "$PROJENY" setup w.projeny
+python3 -c "import sys; sys.exit(0 if open('$T112/w/b.dat','rb').read()==b'b\x00RESOLVED\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "resolved binary byte-identical after re-setup"
+else
+    fail "resolved binary byte-identical after re-setup"
+fi
+
+# ----------------------------------------- 113. binary delete vs modify conflicts
+# Upstream deletes a binary (rm+commit) while the workdir modifies it: setup
+# must conflict and keep the local bytes.
+T113="$ROOT/t113"
+mkdir -p "$T113/w-1.0"
+python3 -c "open('$T113/w-1.0/b.dat','wb').write(b'b\x00ase\n')"
+printf 'f\n' > "$T113/w-1.0/f.c"
+(cd "$T113" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Delmod.\n' > "$T113/w.projeny"
+(cd "$T113" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+(cd "$T113" && "$PROJENY" rm w.projeny w/b.dat >/dev/null 2>&1 && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$T113/w.projeny" "$ROOT/t113-up.projeny"
+cat > "$T113/w.projeny" <<'EOF'
+Archive: w-1.0.tar.gz
+Origname: w-1.0
+Name: w
+
+    Delmod.
+EOF
+rm -rf "$T113/w" "$T113/w.projeny.status"
+(cd "$T113" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T113/w/b.dat','wb').write(b'b\x00LOCAL\n')"
+cp "$ROOT/t113-up.projeny" "$T113/w.projeny"
+run_in "$T113" expect_fail "binary delete/modify exits nonzero" "$PROJENY" setup w.projeny
+expect_file_contains "binary delete/modify records conflict" "$T113/w.projeny.status" "Conflict: b.dat"
+python3 -c "import sys; sys.exit(0 if open('$T113/w/b.dat','rb').read()==b'b\x00LOCAL\n' else 1)"
+if [ $? -eq 0 ]; then
+    ok "binary delete/modify keeps local bytes"
+else
+    fail "binary delete/modify keeps local bytes"
+fi
+
+# ----------------------------------------- 114. diff/patch roundtrip carries binaries
+# `projeny diff` emits binary blocks and `projeny patch` reproduces the bytes.
+T114="$ROOT/t114"
+mkdir -p "$T114/a" "$T114/b"
+python3 -c "open('$T114/a/b.dat','wb').write(b'a\x00A\n')"
+python3 -c "open('$T114/b/b.dat','wb').write(b'b\x00B\n' * 100)"
+printf 'same\n' > "$T114/a/f.c"
+printf 'same\n' > "$T114/b/f.c"
+printf 'added text\n' > "$T114/b/new.txt"
+(cd "$T114" && "$PROJENY" diff a b > roundtrip.diff 2>/dev/null)
+expect_file_contains "diff emits binary block" "$T114/roundtrip.diff" "GIT binary patch"
+rm -rf "$T114/c" && cp -a "$T114/a" "$T114/c"
+run_in "$T114" expect_ok "patch applies binary diff" "$PROJENY" patch c roundtrip.diff
+if cmp -s "$T114/c/b.dat" "$T114/b/b.dat" && cmp -s "$T114/c/new.txt" "$T114/b/new.txt"; then
+    ok "patched tree byte-identical"
+else
+    fail "patched tree byte-identical"
+fi
+
+# ----------------------------------------- 115. package/extract carry committed binaries
+# Committed binaries ride in package tarballs and extract dirs byte-identical.
+T115="$ROOT/t115"
+mkdir -p "$T115/w-1.0"
+python3 -c "open('$T115/w-1.0/b.dat','wb').write(b'p\x00kg\n' * 200)"
+printf 'ok\n' > "$T115/w-1.0/f.c"
+(cd "$T115" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Pkg.\n' > "$T115/w.projeny"
+(cd "$T115" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T115/w/b.dat','wb').write(bytes(range(256)) * 10)"
+(cd "$T115" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+python3 -c "open('$ROOT/t115-expect.bin','wb').write(open('$T115/w/b.dat','rb').read())"
+run_in "$T115" expect_ok "package with binary" "$PROJENY" package w.projeny w/out.tar.gz
+(cd "$T115" && tar -tzf w/out.tar.gz | sort > members.txt)
+expect_file_contains "package holds the binary" "$T115/members.txt" "b.dat"
+(cd "$T115" && rm -rf pk && mkdir pk && tar -xzf w/out.tar.gz -C pk)
+if cmp -s "$T115/pk/out/b.dat" "$ROOT/t115-expect.bin"; then
+    ok "packaged binary byte-identical"
+else
+    fail "packaged binary byte-identical"
+fi
+run_in "$T115" expect_ok "extract with binary" "$PROJENY" extract w.projeny ext
+if cmp -s "$T115/ext/b.dat" "$ROOT/t115-expect.bin"; then
+    ok "extracted binary byte-identical"
+else
+    fail "extracted binary byte-identical"
+fi
+
+# ----------------------------------------- 116. extract/package preserve tarball mtimes
+# Files the patch never touches must keep the tarball timestamps through
+# setup, extract, and package (like libffi's configure/mdate-sh, whose
+# staleness decides whether the doc build runs).
+T116="$ROOT/t116"
+mkdir -p "$T116/w-1.0"
+printf 'content\n' > "$T116/w-1.0/a.c"
+printf '#!/bin/sh\necho hi\n' > "$T116/w-1.0/run.sh"
+chmod 755 "$T116/w-1.0/run.sh"
+touch -d "2020-01-01 00:00:00" "$T116/w-1.0/a.c" "$T116/w-1.0/run.sh"
+(cd "$T116" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Times.\n' > "$T116/w.projeny"
+(cd "$T116" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+if [ "$(stat -c %Y "$T116/w/a.c")" = "$(stat -c %Y "$T116/w/run.sh")" ] && [ "$(stat -c %y "$T116/w/a.c" | cut -c1-10)" = "2020-01-01" ]; then
+    ok "setup preserves tarball mtimes"
+else
+    fail "setup preserves tarball mtimes" "$(stat -c '%y %n' "$T116/w/a.c" "$T116/w/run.sh")"
+fi
+run_in "$T116" expect_ok "extract for mtimes" "$PROJENY" extract w.projeny ext
+if [ "$(stat -c %Y "$T116/ext/a.c")" = "$(stat -c %Y "$T116/w-1.0.tar.gz")" ] || [ "$(stat -c %y "$T116/ext/a.c" | cut -c1-10)" = "2020-01-01" ]; then
+    ok "extract preserves tarball mtimes"
+else
+    fail "extract preserves tarball mtimes" "$(stat -c '%y %n' "$T116/ext/a.c" "$T116/ext/run.sh")"
+fi
+if [ -x "$T116/ext/run.sh" ]; then
+    ok "extract keeps +x with old mtime"
+else
+    fail "extract keeps +x with old mtime"
+fi
+run_in "$T116" expect_ok "package for mtimes" "$PROJENY" package w.projeny w/out.tar.gz
+(cd "$T116" && rm -rf pk && mkdir pk && tar -xzf w/out.tar.gz -C pk)
+if [ "$(stat -c %y "$T116/pk/out/a.c" | cut -c1-10)" = "2020-01-01" ]; then
+    ok "package preserves tarball mtimes"
+else
+    fail "package preserves tarball mtimes" "$(stat -c '%y %n' "$T116/pk/out/a.c")"
+fi
+# A file touched by the patch gets a newer timestamp, and extract keeps it newer.
+printf 'content v2\n' > "$T116/w/a.c"
+(cd "$T116" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+rm -rf "$T116/w" "$T116/w.projeny.status" "$T116/ext"
+(cd "$T116" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+if [ "$T116/w/a.c" -nt "$T116/w-1.0.tar.gz" ] || [ "$(stat -c %y "$T116/w/a.c" | cut -c1-10)" != "2020-01-01" ]; then
+    ok "patched file gets a newer timestamp"
+else
+    fail "patched file gets a newer timestamp" "$(stat -c '%y %n' "$T116/w/a.c")"
+fi
+if [ "$(stat -c %y "$T116/w/run.sh" | cut -c1-10)" = "2020-01-01" ]; then
+    ok "unpatched file keeps tarball mtime after patch commit"
+else
+    fail "unpatched file keeps tarball mtime after patch commit" "$(stat -c '%y %n' "$T116/w/run.sh")"
+fi
+run_in "$T116" expect_ok "extract after patch" "$PROJENY" extract w.projeny ext
+if [ "$(stat -c %y "$T116/ext/run.sh" | cut -c1-10)" = "2020-01-01" ] && [ "$T116/ext/a.c" -nt "$T116/ext/run.sh" ]; then
+    ok "extract keeps patched-newer/unpatched-old order"
+else
+    fail "extract keeps patched-newer/unpatched-old order" "$(stat -c '%y %n' "$T116/ext/a.c" "$T116/ext/run.sh")"
+fi
+
+# ----------------------------------------- 117. text/binary transitions roundtrip
+# A text file rewritten with NUL bytes (and a binary rewritten as text)
+# commits as a binary block and comes back byte-identical.
+T117="$ROOT/t117"
+mkdir -p "$T117/w-1.0"
+python3 -c "open('$T117/w-1.0/b.dat','wb').write(b'b\x00in\n')"
+printf 'plain text\n' > "$T117/w-1.0/t.txt"
+(cd "$T117" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Trans.\n' > "$T117/w.projeny"
+(cd "$T117" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+python3 -c "open('$T117/w/t.txt','wb').write(b't\x00ext to bin\n')"
+printf 'now plain\n' > "$T117/w/b.dat"
+run_in "$T117" expect_ok "commit text/binary transitions" "$PROJENY" commit w.projeny
+python3 -c "open('$ROOT/t117-t.bin','wb').write(open('$T117/w/t.txt','rb').read())"
+rm -rf "$T117/w" "$T117/w.projeny.status"
+run_in "$T117" expect_ok "setup after transitions" "$PROJENY" setup w.projeny
+if cmp -s "$T117/w/t.txt" "$ROOT/t117-t.bin"; then
+    ok "text->binary byte-identical after re-setup"
+else
+    fail "text->binary byte-identical after re-setup"
+fi
+expect_file_contains "binary->text content survives" "$T117/w/b.dat" "now plain"
+
+# ----------------------------------------- 118. directory rm persists across setup
+# `projeny rm` on a directory records the dir itself while patch blocks name
+# files under it: setup must prefix-match so it does not restore them, and
+# commit+setup keeps them deleted (text and binary alike).
+T118="$ROOT/t118"
+mkdir -p "$T118/w-1.0/d"
+printf 'text a\n' > "$T118/w-1.0/d/a.txt"
+python3 -c "open('$T118/w-1.0/d/b.dat','wb').write(b'd\x00ir bin\n')"
+printf 'keep me\n' > "$T118/w-1.0/keep.txt"
+(cd "$T118" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    DirRm.\n' > "$T118/w.projeny"
+(cd "$T118" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+run_in "$T118" expect_ok "rm directory" "$PROJENY" rm w.projeny w/d
+expect_file_contains "dir rm records pending op" "$T118/w.projeny.status" "Removed: d"
+if [ ! -e "$T118/w/d/a.txt" ] && [ ! -e "$T118/w/d/b.dat" ]; then
+    ok "dir rm removes files from workdir"
+else
+    fail "dir rm removes files from workdir" "$(ls -R "$T118/w" 2>&1)"
+fi
+run_in "$T118" expect_ok "setup keeps dir-rm" "$PROJENY" setup w.projeny
+if [ ! -e "$T118/w/d/a.txt" ] && [ ! -e "$T118/w/d/b.dat" ] && [ -f "$T118/w/keep.txt" ]; then
+    ok "dir-rm persists across setup"
+else
+    fail "dir-rm persists across setup" "$(ls -R "$T118/w" 2>&1)"
+fi
+run_in "$T118" expect_ok "commit dir-rm" "$PROJENY" commit w.projeny
+expect_file_contains "dir-rm commit stores text delete" "$T118/w.projeny" "d/a.txt"
+expect_file_contains "dir-rm commit stores binary delete" "$T118/w.projeny" "d/b.dat"
+rm -rf "$T118/w" "$T118/w.projeny.status"
+run_in "$T118" expect_ok "setup after dir-rm commit" "$PROJENY" setup w.projeny
+if [ ! -e "$T118/w/d/a.txt" ] && [ ! -e "$T118/w/d/b.dat" ] && [ -f "$T118/w/keep.txt" ]; then
+    ok "committed dir-rm stays deleted after re-setup"
+else
+    fail "committed dir-rm stays deleted after re-setup" "$(ls -R "$T118/w" 2>&1)"
+fi
+
+# ----------------------------------------- 119. directory add with binaries commits
+# `projeny add` on a directory records the dir itself while patch blocks name
+# files under it: commit must prefix-match so binary adds under the dir are
+# kept (text adds are never filtered), and fresh setup reproduces them.
+T119="$ROOT/t119"
+mkdir -p "$T119/w-1.0"
+printf 'base\n' > "$T119/w-1.0/f.c"
+(cd "$T119" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    DirAdd.\n' > "$T119/w.projeny"
+(cd "$T119" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+mkdir -p "$T119/w/newdir"
+printf 'new text\n' > "$T119/w/newdir/nt.txt"
+python3 -c "open('$T119/w/newdir/nb.dat','wb').write(b'n\x00ew bin\n' * 20)"
+run_in "$T119" expect_ok "add directory" "$PROJENY" add w.projeny w/newdir
+expect_file_contains "dir add records pending op" "$T119/w.projeny.status" "Added: newdir"
+run_in "$T119" expect_ok "commit dir-add" "$PROJENY" commit w.projeny
+expect_file_contains "dir-add text stored in patch" "$T119/w.projeny" "newdir/nt.txt"
+expect_file_contains "dir-add binary stored in patch" "$T119/w.projeny" "newdir/nb.dat"
+expect_file_contains "dir-add binary block stored" "$T119/w.projeny" "GIT binary patch"
+python3 -c "open('$ROOT/t119-expect.bin','wb').write(open('$T119/w/newdir/nb.dat','rb').read())"
+rm -rf "$T119/w" "$T119/w.projeny.status"
+run_in "$T119" expect_ok "setup after dir-add commit" "$PROJENY" setup w.projeny
+expect_file_contains "dir-add text survives re-setup" "$T119/w/newdir/nt.txt" "new text"
+if cmp -s "$T119/w/newdir/nb.dat" "$ROOT/t119-expect.bin"; then
+    ok "dir-add binary byte-identical after re-setup"
+else
+    fail "dir-add binary byte-identical after re-setup"
 fi
 
 # ------------------------------------------------------------- summary

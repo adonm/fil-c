@@ -66,6 +66,29 @@ std::string vcs_drop_deletes_not_in(const std::string& patch,
 std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
                                               const std::string& wid);
 
+// Workdir-relative new paths of pure-add blocks in `patch` (text, symlink
+// and binary adds that create a file, excluding renames). Used by commit to
+// tell previously committed adds (tracked: keep them on every recommit)
+// apart from truly untracked files (leave them out).
+std::vector<std::string> vcs_add_paths(const std::string& patch,
+                                       const std::string& wid);
+
+// Workdir-relative deleted paths of pure-deletion blocks in `patch`
+// (excluding renames). Used by commit to tell previously committed deletes
+// (tracked: still deleted) apart from new disappearances.
+std::vector<std::string> vcs_deleted_paths(const std::string& patch,
+                                           const std::string& wid);
+
+// Drop pure-add blocks whose new path is not in `keep` (workdir-relative,
+// exact or under-a-kept-dir). Used by commit so untracked files (never
+// committed, never `add`ed) stay out of the patch like git leaves untracked
+// files out, while explicitly `add`ed files and pending rename destinations
+// (listed in `keep`) are carried. Rename, modify, delete and mode-only
+// blocks are always kept.
+std::string vcs_drop_adds_not_in(const std::string& patch,
+                                 const std::string& wid,
+                                 const std::vector<std::string>& keep);
+
 // Drop binary-add blocks whose new path is not in `keep` (workdir-relative).
 // Used by commit so untracked binaries (build junk, package tarballs written
 // into the workdir) stay out of the patch like git leaves untracked files

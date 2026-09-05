@@ -27,6 +27,16 @@ diff --git a/libffi/Makefile.in b/libffi/Makefile.in
  @LIBFFI_BUILD_VERSIONED_SHLIB_SUN_TRUE@@LIBFFI_BUILD_VERSIONED_SHLIB_TRUE@libffi_version_script = -Wl,-M,libffi.map-sun
  @LIBFFI_BUILD_VERSIONED_SHLIB_FALSE@libffi_version_dep = 
  @LIBFFI_BUILD_VERSIONED_SHLIB_GNU_TRUE@@LIBFFI_BUILD_VERSIONED_SHLIB_TRUE@libffi_version_dep = libffi.map
+diff --git a/libffi/README.md b/libffi/README.md
+--- a/libffi/README.md
++++ b/libffi/README.md
+@@ -1,5 +1,5 @@
+
+-libffi-3.7.1 was released on July 10, 2026.
++libffi-3.8.0 was released on August 8, 2026.
+
+
+ What is libffi?
 diff --git a/libffi/configure.host b/libffi/configure.host
 --- a/libffi/configure.host
 +++ b/libffi/configure.host

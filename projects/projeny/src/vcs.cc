@@ -2910,6 +2910,99 @@ std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
     return out;
 }
 
+std::vector<std::string> vcs_add_paths(const std::string& patch,
+                                       const std::string& wid)
+{
+    std::vector<std::string> out;
+    if (patch.empty())
+        return out;
+    for (auto& b : parse_patch(patch, wid)) {
+        bool pure_add = b.is_new && !b.is_rename && !b.is_deleted &&
+                        !b.is_combined;
+        if (!pure_add)
+            continue;
+        std::string rel = b.new_rel;
+        if (rel.empty())
+            rel = failure_for_block(b, wid).display;
+        if (rel.empty() || rel == "<unknown file>" || rel == "<combined diff>" ||
+            rel == "<rename>")
+            continue;
+        if (std::find(out.begin(), out.end(), rel) == out.end())
+            out.push_back(rel);
+    }
+    return out;
+}
+
+std::vector<std::string> vcs_deleted_paths(const std::string& patch,
+                                           const std::string& wid)
+{
+    std::vector<std::string> out;
+    if (patch.empty())
+        return out;
+    for (auto& b : parse_patch(patch, wid)) {
+        bool pure_delete = b.is_deleted && !b.is_rename && !b.is_new &&
+                           !b.is_combined;
+        if (!pure_delete)
+            continue;
+        std::string rel = b.old_rel;
+        if (rel.empty())
+            rel = failure_for_block(b, wid).display;
+        if (rel.empty() || rel == "<unknown file>" || rel == "<combined diff>" ||
+            rel == "<rename>")
+            continue;
+        if (std::find(out.begin(), out.end(), rel) == out.end())
+            out.push_back(rel);
+    }
+    return out;
+}
+
+namespace {
+bool vcs_is_prefix_path(const std::string& pre, const std::string& full)
+{
+    return full.size() > pre.size() &&
+           full.compare(0, pre.size(), pre) == 0 &&
+           full[pre.size()] == '/';
+}
+
+bool vcs_is_kept_path(const std::vector<std::string>& keep,
+                      const std::string& rel)
+{
+    for (auto& k : keep) {
+        if (k.empty())
+            continue;
+        if (rel == k || vcs_is_prefix_path(k, rel))
+            return true;
+    }
+    return false;
+}
+} // namespace
+
+std::string vcs_drop_adds_not_in(const std::string& patch,
+                                 const std::string& wid,
+                                 const std::vector<std::string>& keep)
+{
+    if (patch.empty())
+        return patch;
+    std::vector<PBlock> blocks = parse_patch(patch, wid);
+    // `keep` may hold directories (projeny add takes dirs): an add under a
+    // pending-added (or rename-destination) dir is kept via under_path
+    // semantics, as is_tracked_path does.
+    std::string out;
+    for (auto& b : blocks) {
+        bool pure_add = b.is_new && !b.is_rename && !b.is_deleted &&
+                        !b.is_combined;
+        if (pure_add) {
+            std::string rel = b.new_rel;
+            if (rel.empty())
+                rel = failure_for_block(b, wid).display;
+            if (!vcs_is_kept_path(keep, rel))
+                continue; // untracked file: leave it out of the patch
+        }
+        out += b.raw;
+    }
+    return out;
+}
+
 std::string vcs_drop_binary_adds_not_in(const std::string& patch,
                                         const std::string& wid,
                                         const std::vector<std::string>& keep)

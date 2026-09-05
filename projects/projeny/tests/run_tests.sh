@@ -1988,7 +1988,13 @@ open(os.path.join(d, "caf\xc3\xa9-\u20ac.c"), "w").write("plain\n")
 open(os.path.join(d, "emoji.c"), "w").write("smile \U0001F600\nsnow \u2603\n")
 EOF
 (cd "$T54" && ls w | LC_ALL=C sort > "$ROOT/t54-expect-ls.txt")
-run_in "$T54" expect_ok "commit unicode names (no add needed)" "$PROJENY" commit w.projeny
+for _n in "$T54"/w/*.c; do
+    _b="$(basename "$_n")"
+    if [ "$_b" != "base.c" ]; then
+        run_in "$T54" expect_ok "add unicode file" "$PROJENY" add w.projeny "w/$_b"
+    fi
+done
+run_in "$T54" expect_ok "commit unicode names" "$PROJENY" commit w.projeny
 rm -rf "$T54/w" "$T54/w.projeny.status"
 run_in "$T54" expect_ok "setup after unicode commit" "$PROJENY" setup w.projeny
 (cd "$T54" && ls w | LC_ALL=C sort > "$ROOT/t54-got-ls.txt")
@@ -2062,7 +2068,8 @@ for i in $(seq 1 60); do printf 'content %s\n' "$i" > "$T57/m-1.0/f$i.c"; done
 printf 'Archive: m-1.0.tar.gz\nOrigname: m-1.0\nName: m\n\n    Many.\n' > "$T57/m.projeny"
 run_in "$T57" expect_ok "many-file setup" "$PROJENY" setup m.projeny
 for i in $(seq 1 60); do printf 'changed %s\n' "$i" > "$T57/m/f$i.c"; done
-rm "$T57/m/f1.c" "$T57/m/f2.c"
+run_in "$T57" expect_ok "rm f1 for many-file" "$PROJENY" rm m.projeny m/f1.c
+run_in "$T57" expect_ok "rm f2 for many-file" "$PROJENY" rm m.projeny m/f2.c
 printf 'extra\n' > "$T57/m/extra.c"
 run_in "$T57" expect_ok "add among many files" "$PROJENY" add m.projeny m/extra.c
 run_in "$T57" expect_ok "commit 60-file change" "$PROJENY" commit m.projeny
@@ -2144,6 +2151,9 @@ run_in "$T60" expect_ok "link setup" "$PROJENY" setup w.projeny
 ln -s nowhere "$T60/w/dangling"
 ln -s self "$T60/w/self"
 ln -s sub/t.txt "$T60/w/sublink"
+run_in "$T60" expect_ok "add dangling link" "$PROJENY" add w.projeny w/dangling
+run_in "$T60" expect_ok "add self link" "$PROJENY" add w.projeny w/self
+run_in "$T60" expect_ok "add sublink" "$PROJENY" add w.projeny w/sublink
 run_in "$T60" expect_ok "commit dangling/loop/subdir links" "$PROJENY" commit w.projeny
 expect_file_contains "dangling link stored" "$T60/w.projeny" "nowhere"
 rm -rf "$T60/w" "$T60/w.projeny.status"
@@ -2195,6 +2205,8 @@ printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Hardlinks.\n' > "
 run_in "$T62" expect_ok "hardlink setup" "$PROJENY" setup w.projeny
 printf 'shared bytes\n' > "$T62/w/orig.txt"
 ln "$T62/w/orig.txt" "$T62/w/twin.txt"
+run_in "$T62" expect_ok "add hardlink orig" "$PROJENY" add w.projeny w/orig.txt
+run_in "$T62" expect_ok "add hardlink twin" "$PROJENY" add w.projeny w/twin.txt
 run_in "$T62" expect_ok "commit hardlinked pair" "$PROJENY" commit w.projeny
 rm -rf "$T62/w" "$T62/w.projeny.status"
 run_in "$T62" expect_ok "setup after hardlink commit" "$PROJENY" setup w.projeny
@@ -2340,6 +2352,7 @@ mkdir -p "$T68/w/newdir"
 printf 'one\n' > "$T68/w/newdir/one.c"
 printf 'two\n' > "$T68/w/newdir/two.c"
 run_in "$T68" expect_ok "add file under new dir" "$PROJENY" add w.projeny w/newdir/one.c
+run_in "$T68" expect_ok "add second file under new dir" "$PROJENY" add w.projeny w/newdir/two.c
 run_in "$T68" expect_ok "commit new dir content" "$PROJENY" commit w.projeny
 expect_file_contains "newdir file committed" "$T68/w.projeny" "two"
 rm -rf "$T68/w" "$T68/w.projeny.status"
@@ -4381,6 +4394,8 @@ printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Blanks.\n' > "$TN
 printf 'a\n\n\n' > "$TNL/w/blanks.txt"
 printf 'b\n\n' > "$TNL/w/one.txt"
 printf 'seed\n\n' > "$TNL/w/s.txt"
+run_in "$TNL" expect_ok "add blanks file" "$PROJENY" add w.projeny w/blanks.txt
+run_in "$TNL" expect_ok "add one-blank file" "$PROJENY" add w.projeny w/one.txt
 (cd "$TNL" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
 printf 'a\n\n\n' > "$TNL/expect-blanks.txt"
 printf 'b\n\n' > "$TNL/expect-one.txt"
@@ -4442,10 +4457,13 @@ else
     ok "commit leaves binaries out of the patch"
 fi
 if grep -q "NOTE" "$TBIN/pkg.projeny"; then
-    ok "commit still folds untracked text (binaries only are special)"
+    fail "commit leaves untracked text out of the patch"
 else
-    fail "commit still folds untracked text (binaries only are special)"
+    ok "commit leaves untracked text out of the patch"
 fi
+run_in "$TBIN" expect_ok "add untracked text" "$PROJENY" add pkg.projeny pkg/NOTE.txt
+run_in "$TBIN" expect_ok "commit of added text succeeds" "$PROJENY" commit pkg.projeny
+expect_file_contains "added text is stored" "$TBIN/pkg.projeny" "NOTE"
 run_in "$TBIN" expect_ok "setup after binary commit" "$PROJENY" setup pkg.projeny
 if [ -f "$TBIN/pkg/blob.bin" ] && [ -f "$TBIN/pkg/NOTE.txt" ]; then
     ok "post-commit setup preserves untracked files"
@@ -4753,12 +4771,14 @@ printf 'Archive: d-1.0.tar.gz\nOrigname: d-1.0\nName: d\n\n    Add-add fixture.\
 run_in "$TADD" expect_ok "add-add setup" "$PROJENY" setup d.projeny
 printf '#!/bin/sh\necho local\n' > "$TADD/d/newtool.sh"
 chmod 755 "$TADD/d/newtool.sh"
+run_in "$TADD" expect_ok "add local newtool" "$PROJENY" add d.projeny d/newtool.sh
 UADD="$ROOT/taddup"
 mkdir -p "$UADD"
 cp "$TADD/d-1.0.tar.gz" "$TADD/d.projeny" "$UADD/"
 (cd "$UADD" && "$PROJENY" setup d.projeny >/dev/null 2>&1)
 printf '#!/bin/sh\necho upstream\n' > "$UADD/d/newtool.sh"
 chmod 755 "$UADD/d/newtool.sh"
+run_in "$UADD" expect_ok "add upstream newtool" "$PROJENY" add d.projeny d/newtool.sh
 (cd "$UADD" && "$PROJENY" commit d.projeny >/dev/null 2>&1)
 cp "$UADD/d.projeny" "$TADD/d.projeny"
 run_in "$TADD" expect_fail "add-add merge exits nonzero" "$PROJENY" setup d.projeny
@@ -5244,6 +5264,243 @@ if cmp -s "$T119/w/newdir/nb.dat" "$ROOT/t119-expect.bin"; then
 else
     fail "dir-add binary byte-identical after re-setup"
 fi
+
+# ----------------------------------------- 120. commit refuses disappeared files
+# A tracked file deleted without `projeny rm` is an error at commit time,
+# not a silent deletion. Marking it with `projeny rm` recovers.
+T120="$ROOT/t120"
+mkdir -p "$T120/w-1.0"
+printf 'one\n' > "$T120/w-1.0/a.c"
+printf 'two\n' > "$T120/w-1.0/b.c"
+(cd "$T120" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Disappear.\n' > "$T120/w.projeny"
+run_in "$T120" expect_ok "disappear setup" "$PROJENY" setup w.projeny
+rm "$T120/w/b.c"
+run_in "$T120" expect_fail "commit with disappeared file fails" "$PROJENY" commit w.projeny
+out="$(cd "$T120" && "$PROJENY" commit w.projeny 2>&1 || true)"
+case "$out" in
+*b.c*)
+    ok "disappeared error names the file"
+    ;;
+*)
+    fail "disappeared error names the file" "out: $out"
+    ;;
+esac
+if grep -q "^diff --git " "$T120/w.projeny"; then
+    fail "failed commit stores no patch"
+else
+    ok "failed commit stores no patch"
+fi
+run_in "$T120" expect_ok "rm disappeared file" "$PROJENY" rm w.projeny w/b.c
+run_in "$T120" expect_ok "commit after rm succeeds" "$PROJENY" commit w.projeny
+expect_file_contains "rm commit stores deletion" "$T120/w.projeny" "deleted file"
+rm -rf "$T120/w" "$T120/w.projeny.status"
+run_in "$T120" expect_ok "setup after disappeared-rm commit" "$PROJENY" setup w.projeny
+if [ ! -e "$T120/w/b.c" ]; then
+    ok "removed file stays deleted"
+else
+    fail "removed file stays deleted" "ls: $(ls "$T120/w" 2>&1)"
+fi
+
+# ----------------------------------------- 121. commit ignores untracked files
+# A new file that appeared without `projeny add` is left out of the patch.
+# Adding it explicitly folds it in, and a later no-change commit keeps it.
+T121="$ROOT/t121"
+mkdir -p "$T121/w-1.0"
+printf 'base\n' > "$T121/w-1.0/f.c"
+(cd "$T121" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Untracked.\n' > "$T121/w.projeny"
+run_in "$T121" expect_ok "untracked setup" "$PROJENY" setup w.projeny
+printf 'untracked bytes\n' > "$T121/w/loose.c"
+run_in "$T121" expect_ok "commit ignores untracked file" "$PROJENY" commit w.projeny
+if grep -q "loose.c" "$T121/w.projeny"; then
+    fail "untracked file stays out of the patch" "$(grep "loose" "$T121/w.projeny")"
+else
+    ok "untracked file stays out of the patch"
+fi
+if [ -f "$T121/w/loose.c" ]; then
+    ok "untracked file survives the commit on disk"
+else
+    fail "untracked file survives the commit on disk"
+fi
+run_in "$T121" expect_ok "add untracked file" "$PROJENY" add w.projeny w/loose.c
+run_in "$T121" expect_ok "commit of added file succeeds" "$PROJENY" commit w.projeny
+expect_file_contains "added file is stored" "$T121/w.projeny" "loose.c"
+run_in "$T121" expect_ok "recommit keeps tracked add" "$PROJENY" commit w.projeny
+expect_file_contains "tracked add survives recommit" "$T121/w.projeny" "loose.c"
+rm -rf "$T121/w" "$T121/w.projeny.status"
+run_in "$T121" expect_ok "setup after add commit" "$PROJENY" setup w.projeny
+expect_file_contains "added file survives re-setup" "$T121/w/loose.c" "untracked bytes"
+
+# ----------------------------------------- 122. mv pair is exempt from the filter
+# The delete-side of a `projeny mv` must not error as disappeared, the
+# add-side must not be ignored as untracked, and the patch must carry a
+# rename.
+T122="$ROOT/t122"
+mkdir -p "$T122/w-1.0"
+seq 1 20 > "$T122/w-1.0/n.txt"
+(cd "$T122" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    MvExempt.\n' > "$T122/w.projeny"
+run_in "$T122" expect_ok "mv-exempt setup" "$PROJENY" setup w.projeny
+run_in "$T122" expect_ok "mv records rename" "$PROJENY" mv w.projeny w/n.txt w/m.txt
+run_in "$T122" expect_ok "commit of mv succeeds" "$PROJENY" commit w.projeny
+expect_file_contains "mv commit stores rename" "$T122/w.projeny" "rename from"
+expect_file_contains "mv commit names source" "$T122/w.projeny" "n.txt"
+expect_file_contains "mv commit names dest" "$T122/w.projeny" "m.txt"
+rm -rf "$T122/w" "$T122/w.projeny.status"
+run_in "$T122" expect_ok "setup after mv commit" "$PROJENY" setup w.projeny
+if [ -f "$T122/w/m.txt" ] && [ ! -e "$T122/w/n.txt" ]; then
+    ok "mv paths exact after re-setup"
+else
+    fail "mv paths exact after re-setup" "ls: $(ls "$T122/w" 2>&1)"
+fi
+
+# ----------------------------------------- 123. disappeared binaries error
+# A tracked NUL-bearing file removed without `projeny rm` fails the commit
+# like text; an untracked binary stays out until added.
+T123="$ROOT/t123"
+mkdir -p "$T123/w-1.0"
+python3 -c "open('$T123/w-1.0/b.dat','wb').write(b'a\x00b\n')"
+printf 'ok\n' > "$T123/w-1.0/f.c"
+(cd "$T123" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    BinDis.\n' > "$T123/w.projeny"
+run_in "$T123" expect_ok "binary-disappear setup" "$PROJENY" setup w.projeny
+rm "$T123/w/b.dat"
+run_in "$T123" expect_fail "commit with disappeared binary fails" "$PROJENY" commit w.projeny
+out="$(cd "$T123" && "$PROJENY" commit w.projeny 2>&1 || true)"
+case "$out" in
+*b.dat*)
+    ok "disappeared-binary error names the file"
+    ;;
+*)
+    fail "disappeared-binary error names the file" "out: $out"
+    ;;
+esac
+run_in "$T123" expect_ok "rm disappeared binary" "$PROJENY" rm w.projeny w/b.dat
+run_in "$T123" expect_ok "commit after binary rm succeeds" "$PROJENY" commit w.projeny
+expect_file_contains "binary delete names the file" "$T123/w.projeny" "b.dat"
+python3 -c "open('$T123/w/untracked.bin','wb').write(b'u\x00n\n')"
+run_in "$T123" expect_ok "commit ignores untracked binary" "$PROJENY" commit w.projeny
+if grep -q "untracked.bin" "$T123/w.projeny"; then
+    fail "untracked binary stays out of the patch"
+else
+    ok "untracked binary stays out of the patch"
+fi
+run_in "$T123" expect_ok "add untracked binary" "$PROJENY" add w.projeny w/untracked.bin
+run_in "$T123" expect_ok "commit of added binary succeeds" "$PROJENY" commit w.projeny
+expect_file_contains "added binary is stored" "$T123/w.projeny" "untracked.bin"
+
+# ----------------------------------------- 124. directory add covers its files
+# `projeny add` on a directory marks everything under it: one add folds the
+# whole subtree into the patch (prefix match, text and binary alike).
+T124="$ROOT/t124"
+mkdir -p "$T124/w-1.0"
+printf 'base\n' > "$T124/w-1.0/base.c"
+(cd "$T124" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    DirAdd.\n' > "$T124/w.projeny"
+run_in "$T124" expect_ok "dir-add setup" "$PROJENY" setup w.projeny
+mkdir -p "$T124/w/newdir"
+printf 'new text\n' > "$T124/w/newdir/nt.txt"
+python3 -c "open('$T124/w/newdir/nb.dat','wb').write(b'n\x00b\n')"
+run_in "$T124" expect_ok "add whole directory" "$PROJENY" add w.projeny w/newdir
+run_in "$T124" expect_ok "commit dir-add" "$PROJENY" commit w.projeny
+expect_file_contains "dir-add text stored" "$T124/w.projeny" "newdir/nt.txt"
+expect_file_contains "dir-add binary stored" "$T124/w.projeny" "newdir/nb.dat"
+python3 -c "open('$ROOT/t124-expect.bin','wb').write(open('$T124/w/newdir/nb.dat','rb').read())"
+rm -rf "$T124/w" "$T124/w.projeny.status"
+run_in "$T124" expect_ok "setup after dir-add" "$PROJENY" setup w.projeny
+expect_file_contains "dir-add text survives" "$T124/w/newdir/nt.txt" "new text"
+if cmp -s "$T124/w/newdir/nb.dat" "$ROOT/t124-expect.bin"; then
+    ok "dir-add binary byte-identical after re-setup"
+else
+    fail "dir-add binary byte-identical after re-setup"
+fi
+
+# ----------------------------------------- 125. status reports all six categories
+# One checkout holds a modification, a pending removal, a pending addition,
+# an untracked file, a disappeared file, and a pending rename at once.
+T125="$ROOT/t125"
+mkdir -p "$T125/w-1.0"
+printf 'v1\n' > "$T125/w-1.0/mod.c"
+printf 'v1\n' > "$T125/w-1.0/gone.c"
+printf 'v1\n' > "$T125/w-1.0/victim.c"
+printf 'v1\n' > "$T125/w-1.0/old.c"
+(cd "$T125" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Six.\n' > "$T125/w.projeny"
+run_in "$T125" expect_ok "six-state setup" "$PROJENY" setup w.projeny
+printf 'v2\n' > "$T125/w/mod.c"
+rm "$T125/w/gone.c"
+printf 'fresh\n' > "$T125/w/fresh.c"
+run_in "$T125" expect_ok "six-state add" "$PROJENY" add w.projeny w/fresh.c
+run_in "$T125" expect_ok "six-state rm" "$PROJENY" rm w.projeny w/victim.c
+run_in "$T125" expect_ok "six-state mv" "$PROJENY" mv w.projeny w/old.c w/new.c
+printf 'loose\n' > "$T125/w/loose.c"
+out="$(cd "$T125" && "$PROJENY" status w.projeny 2>&1)"
+case "$out" in
+*Modified:\ mod.c*)
+    ok "status lists modified file"
+    ;;
+*)
+    fail "status lists modified file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Removed:\ victim.c*)
+    ok "status lists marked-for-deletion file"
+    ;;
+*)
+    fail "status lists marked-for-deletion file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Added:\ fresh.c*)
+    ok "status lists marked-for-addition file"
+    ;;
+*)
+    fail "status lists marked-for-addition file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Untracked:\ loose.c*)
+    ok "status lists untracked file"
+    ;;
+*)
+    fail "status lists untracked file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Disappeared:\ gone.c*)
+    ok "status lists disappeared file"
+    ;;
+*)
+    fail "status lists disappeared file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Renamed:\ old.c\ -\>\ new.c*)
+    ok "status lists renamed file"
+    ;;
+*)
+    fail "status lists renamed file" "out: $out"
+    ;;
+esac
+case "$out" in
+*Disappeared:\ victim.c*)
+    fail "pending removal is not reported as disappeared" "out: $out"
+    ;;
+*)
+    ok "pending removal is not reported as disappeared"
+    ;;
+esac
+case "$out" in
+*Untracked:\ fresh.c*|*Untracked:\ new.c*)
+    fail "pending add/rename-dest is not reported as untracked" "out: $out"
+    ;;
+*)
+    ok "pending add/rename-dest is not reported as untracked"
+    ;;
+esac
+run_in "$T125" expect_fail "commit with disappeared file fails" "$PROJENY" commit w.projeny
 
 # ------------------------------------------------------------- summary
 echo "---"

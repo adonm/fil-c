@@ -32,7 +32,9 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <functional>
 #include <iostream>
+#include <map>
 #include <unistd.h>
 
 #include <sys/stat.h>
@@ -1216,19 +1218,104 @@ int cmd_commit(const std::string& projeny_arg)
     // absolute paths and produced garbage labels). normalize_patch_text
     // already ends the patch with exactly one newline.
     std::string raw_patch = diff_trees(base, workdir, cur.name);
+    // Commit filtering: only explicitly marked files change tracking state.
+    //   - a file that disappeared without `projeny rm` (or a `projeny mv`
+    //     source) is an error: refuse instead of silently deleting.
+    //   - a new file that appeared without `projeny add` (or a `projeny mv`
+    //     destination) is untracked: leave it out of the patch, like git.
+    // Rename blocks (including mv pairs the differ paired by content) are
+    // always kept, so `projeny mv` renders as a rename diff.
+    // Previously committed adds/deletes are tracked too: the diff is
+    // regenerated from scratch on every commit, so without them a recommit
+    // would silently drop every committed addition or re-error on every
+    // committed deletion. `keep` entries may name directories (add/rm take
+    // dirs): files under them match via prefix, as is_tracked_path does.
+    {
+        std::vector<std::string> del_keep;
+        for (const auto& r : st.removed)
+            del_keep.push_back(r);
+        for (const auto& rn : st.renamed)
+            del_keep.push_back(rn.first);
+        for (const auto& p : vcs_deleted_paths(cur.patch, cur.name)) {
+            if (std::find(del_keep.begin(), del_keep.end(), p) == del_keep.end())
+                del_keep.push_back(p);
+        }
+        auto covered = [&del_keep](const std::string& rel) -> bool {
+            for (auto& k : del_keep) {
+                if (k.empty())
+                    continue;
+                if (rel == k)
+                    return true;
+                if (rel.size() > k.size() && rel.compare(0, k.size(), k) == 0 &&
+                    rel[k.size()] == '/')
+                    return true;
+            }
+            return false;
+        };
+        // Authoritative disappeared check: walk the expected tree E (base
+        // archive plus the current patch) and require every file missing
+        // from the workdir to be covered above. This runs on the trees
+        // themselves rather than the raw diff blocks, so content-based
+        // rename pairing can never attribute a disappearance to the wrong
+        // source when several same-content files changed hands at once.
+        TempDir tmpE(scratch_parent_for(ctx.pdir), "projeny-commit-exp-");
+        std::string Etree = build_tree_from_patch(
+            tmpE, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
+            cur.patch, "patch in '" + ctx.projeny_arg + "'");
+        std::vector<std::string> disappeared;
+        std::vector<std::string> stack;
+        stack.push_back("");
+        while (!stack.empty()) {
+            std::string d = stack.back();
+            stack.pop_back();
+            std::string abs = d.empty() ? Etree : join_path(Etree, d);
+            for (const std::string& name : list_dir_names(abs)) {
+                std::string rel = d.empty() ? name : d + "/" + name;
+                if (rel == ".projeny-tmp" ||
+                    rel.compare(0, 13, ".projeny-tmp") == 0 ||
+                    rel.find("/.projeny-tmp") != std::string::npos)
+                    continue;
+                std::string efull = join_path(Etree, rel);
+                struct stat lst;
+                if (lstat(efull.c_str(), &lst) != 0)
+                    die("cannot stat '" + efull + "': " + strerror(errno));
+                if (S_ISDIR(lst.st_mode)) {
+                    stack.push_back(rel);
+                    continue;
+                }
+                if (!path_exists(join_path(workdir, rel)) && !covered(rel))
+                    disappeared.push_back(rel);
+            }
+        }
+        sort_unique(&disappeared);
+        if (!disappeared.empty()) {
+            std::string detail;
+            for (auto& dd : disappeared)
+                detail += "  " + dd + "\n";
+            die("cannot commit with disappeared files (deleted on disk but not "
+                "marked with 'projeny rm'; restore them or run 'projeny rm' "
+                "first)",
+                detail);
+        }
+    }
     {
         std::vector<std::string> keep;
         for (const auto& a : st.added)
             keep.push_back(a);
         for (const auto& rn : st.renamed)
             keep.push_back(rn.second);
-        // Previously committed binary adds are tracked too: the diff is
+        // Previously committed adds are tracked too: the diff is
         // regenerated from scratch on every commit, so without them a
-        // recommits would silently drop every committed binary addition.
+        // recommit would silently drop every committed addition.
+        for (const auto& p : vcs_add_paths(cur.patch, cur.name)) {
+            if (std::find(keep.begin(), keep.end(), p) == keep.end())
+                keep.push_back(p);
+        }
         for (const auto& p : vcs_binary_add_paths(cur.patch, cur.name)) {
             if (std::find(keep.begin(), keep.end(), p) == keep.end())
                 keep.push_back(p);
         }
+        raw_patch = vcs_drop_adds_not_in(raw_patch, cur.name, keep);
         raw_patch = vcs_drop_binary_adds_not_in(raw_patch, cur.name, keep);
     }
     std::string new_patch = normalize_patch_text(raw_patch);
@@ -1670,6 +1757,145 @@ int cmd_status(const std::string& projeny_arg)
         printf("Removed: %s\n", r.c_str());
     for (auto& rn : st.renamed)
         printf("Renamed: %s -> %s\n", rn.first.c_str(), rn.second.c_str());
+
+    // Live workdir state vs the expected tree (base archive + embedded
+    // patch): modified files, disappeared files (in the expected tree but
+    // missing on disk and not marked removed/rename-source), and untracked
+    // files (on disk but in neither the expected tree nor the pending
+    // added/rename-destination sets). Pending ops themselves stay on their
+    // Added:/Removed:/Renamed: lines above and are not repeated here.
+    do {
+        ProjenyFile emb = ProjenyFile::parse_bytes(
+            st.embedded, "embedded copy in '" + ctx.statusfile + "'");
+        // Workdir: prefer the embedded Name's dir, fall back to the current
+        // .projeny Name's dir when only that one exists (Name may have
+        // changed since the last setup/commit).
+        std::string workdir = join_path(ctx.pdir, emb.name);
+        std::string cur_raw;
+        if (try_read_file_bytes(ctx.projeny_arg, &cur_raw) &&
+            !projeny_has_conflict_markers(cur_raw) &&
+            validate_projeny_bytes(cur_raw).empty()) {
+            ProjenyFile curpf =
+                ProjenyFile::parse_bytes(cur_raw, "'" + ctx.projeny_arg + "'");
+            std::string curdir = join_path(ctx.pdir, curpf.name);
+            if (!is_dir(workdir) && is_dir(curdir))
+                workdir = curdir;
+        }
+        if (!is_dir(workdir))
+            break;
+        std::string archive_path = join_path(ctx.pdir, emb.archive);
+        if (!path_exists(archive_path))
+            break;
+        TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-status-");
+        std::string Etree = build_tree_from_patch(
+            tmp, archive_path, emb.origname, emb.name, emb.patch,
+            "embedded patch in '" + ctx.statusfile + "'");
+
+        struct Entry {
+            int kind = 0; // 0=regular, 1=symlink, 2=other
+            std::string content; // regular: bytes; symlink: target
+            bool exec = false;
+        };
+        auto is_scratch = [](const std::string& rel) -> bool {
+            if (rel == ".projeny-tmp" ||
+                rel.compare(0, 13, ".projeny-tmp") == 0)
+                return true;
+            return rel.find("/.projeny-tmp") != std::string::npos;
+        };
+        std::function<void(const std::string&, const std::string&,
+                           std::map<std::string, Entry>&)>
+            collect = [&](const std::string& root, const std::string& rel,
+                          std::map<std::string, Entry>& out) {
+                std::string full = rel.empty() ? root : join_path(root, rel);
+                struct stat lst;
+                if (lstat(full.c_str(), &lst) != 0)
+                    return; // raced deletion; diff will catch it next time
+                if (S_ISDIR(lst.st_mode)) {
+                    for (const std::string& name : list_dir_names(full)) {
+                        std::string child =
+                            rel.empty() ? name : rel + "/" + name;
+                        if (is_scratch(child))
+                            continue;
+                        collect(root, child, out);
+                    }
+                    return;
+                }
+                if (is_scratch(rel))
+                    return;
+                Entry e;
+                if (S_ISLNK(lst.st_mode)) {
+                    e.kind = 1;
+                    std::vector<char> buf(lst.st_size > 0
+                                              ? (size_t)lst.st_size + 1
+                                              : 4096);
+                    ssize_t r =
+                        readlink(full.c_str(), buf.data(), buf.size());
+                    if (r >= 0)
+                        e.content.assign(buf.data(), (size_t)r);
+                } else if (S_ISREG(lst.st_mode)) {
+                    e.kind = 0;
+                    e.exec = (lst.st_mode & 0111) != 0;
+                    std::string data;
+                    if (try_read_file_bytes(full, &data))
+                        e.content = data;
+                } else {
+                    e.kind = 2;
+                }
+                out[rel] = e;
+            };
+        std::map<std::string, Entry> emap, wmap;
+        collect(Etree, "", emap);
+        collect(workdir, "", wmap);
+
+        auto covered_by = [](const std::vector<std::string>& lst,
+                             const std::string& rel) -> bool {
+            for (auto& k : lst) {
+                if (k.empty())
+                    continue;
+                if (rel == k)
+                    return true;
+                if (rel.size() > k.size() && rel.compare(0, k.size(), k) == 0 &&
+                    rel[k.size()] == '/')
+                    return true;
+            }
+            return false;
+        };
+        std::vector<std::string> rm_cover = st.removed;
+        std::vector<std::string> add_cover = st.added;
+        for (auto& rn : st.renamed) {
+            rm_cover.push_back(rn.first);
+            add_cover.push_back(rn.second);
+        }
+        std::vector<std::string> modified, disappeared, untracked;
+        for (auto& kv : emap) {
+            auto it = wmap.find(kv.first);
+            if (it == wmap.end()) {
+                if (!covered_by(rm_cover, kv.first))
+                    disappeared.push_back(kv.first);
+            } else {
+                const Entry& a = kv.second;
+                const Entry& b = it->second;
+                bool same = (a.kind == b.kind && a.content == b.content &&
+                             a.exec == b.exec);
+                if (!same && !covered_by(rm_cover, kv.first))
+                    modified.push_back(kv.first);
+            }
+        }
+        for (auto& kv : wmap) {
+            if (emap.find(kv.first) == emap.end() &&
+                !covered_by(add_cover, kv.first))
+                untracked.push_back(kv.first);
+        }
+        sort_unique(&modified);
+        sort_unique(&disappeared);
+        sort_unique(&untracked);
+        for (auto& m : modified)
+            printf("Modified: %s\n", m.c_str());
+        for (auto& d : disappeared)
+            printf("Disappeared: %s\n", d.c_str());
+        for (auto& u : untracked)
+            printf("Untracked: %s\n", u.c_str());
+    } while (0);
     return 0;
 }
 
@@ -2230,6 +2456,14 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                ".projeny file and the status copy. Pending add/rm/mv\n"
                "operations are validated and folded in.\n"
                "\n"
+               "Only explicitly marked files change tracking state: a file\n"
+               "that vanished without `projeny rm` (or a `projeny mv`\n"
+               "source) is a hard error (restore it or `rm` it first),\n"
+               "and a new file that appeared without `projeny add` (or a\n"
+               "`projeny mv` destination) is left out of the patch, like\n"
+               "git leaves untracked files out. Rename pairs recorded\n"
+               "with `projeny mv` render as rename diffs.\n"
+               "\n"
                "NUL-bearing (binary) files travel in the patch as base64\n"
                "`GIT binary patch` blocks: tracked binaries that changed or\n"
                "vanished, and explicitly `add`ed (or rename-destination)\n"
@@ -2308,7 +2542,12 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
         printf("%s status <f.projeny>\n"
                "\n"
                "Show the setup state from the status file: the Status: line\n"
-               "plus pending Conflict:/Added:/Removed:/Renamed: entries.\n"
+               "plus pending Conflict:/Added:/Removed:/Renamed: entries,\n"
+               "plus the live workdir state versus the expected tree:\n"
+               "Modified: (tracked files with uncommitted edits),\n"
+               "Disappeared: (tracked files missing on disk and not marked\n"
+               "removed/renamed), and Untracked: (new files not marked\n"
+               "added/renamed) lines.\n"
                "Exits nonzero when never set up (no status file).\n",
                t);
         return 0;

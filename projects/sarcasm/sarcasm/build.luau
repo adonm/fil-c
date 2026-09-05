@@ -56,7 +56,9 @@ function build.withShift(op, shOp, amount)
 	return op
 end
 
--- Instruction node. `attrs` may include defs, uses, move, control, targets, fallsThrough.
+-- Instruction node. `attrs` may include defs, uses, move, control, targets, fallsThrough,
+-- noreturnCall (marks a call that never returns, e.g. a fail-stub panic call; regalloc
+-- may then model it as not falling through — see sarcasm.luau's buildRaInsns).
 function build.insn(mnemonic, operands, attrs)
 	attrs = attrs or {}
 	return {
@@ -70,6 +72,7 @@ function build.insn(mnemonic, operands, attrs)
 		control = attrs.control or "none",
 		targets = attrs.targets,
 		fallsThrough = attrs.fallsThrough,
+		noreturnCall = attrs.noreturnCall,
 	}
 end
 

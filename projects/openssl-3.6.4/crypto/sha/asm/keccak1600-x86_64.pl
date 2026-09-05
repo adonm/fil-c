@@ -453,6 +453,18 @@ SHA3_absorb:
 
 	shr	\$3,$bsz
 	lea	-100(%rdi),$A_flat
+___
+if ($ENV{SARCASM}) {
+# Fil-C requires natural alignment for every access, but SHA3_absorb's
+# contract (like the C code) accepts an arbitrarily aligned input. Branch
+# to a byte-wise variant when $inp is not 8-aligned; its alignment modulo
+# 8 is invariant across the loop (it only ever advances by 8).
+$code.=<<___;
+	test	\$7,$inp
+	jnz	.Lblock_absorb_unal
+___
+}
+$code.=<<___;
 
 .Lblock_absorb:
 	mov	($inp),%rax
@@ -463,6 +475,36 @@ SHA3_absorb:
 	mov	%rax,-8($A_flat)
 	sub	\$1,$bsz
 	jnz	.Lblock_absorb
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Labsorb_block_done
+.Lblock_absorb_unal:
+	mov	($inp),%al
+	xorb	%al,($A_flat)
+	mov	1($inp),%al
+	xorb	%al,1($A_flat)
+	mov	2($inp),%al
+	xorb	%al,2($A_flat)
+	mov	3($inp),%al
+	xorb	%al,3($A_flat)
+	mov	4($inp),%al
+	xorb	%al,4($A_flat)
+	mov	5($inp),%al
+	xorb	%al,5($A_flat)
+	mov	6($inp),%al
+	xorb	%al,6($A_flat)
+	mov	7($inp),%al
+	xorb	%al,7($A_flat)
+	lea	8($inp),$inp
+	lea	8($A_flat),$A_flat
+	sub	\$8,$len
+	sub	\$1,$bsz
+	jnz	.Lblock_absorb_unal
+.Labsorb_block_done:
+___
+}
+$code.=<<___;
 
 	mov	$inp,200-100(%rsi)	# save inp	#! store ptr
 	mov	$len,208-100(%rsi)	# save len
@@ -526,6 +568,20 @@ SHA3_squeeze:
 	mov	%rcx,$bsz
 	bt	\$0,${next}d
 	jc	.Lnext_block
+___
+if ($ENV{SARCASM}) {
+# Fil-C requires natural alignment for every access, but SHA3_squeeze's
+# contract (like the C code) accepts an arbitrarily aligned output. Use a
+# byte-wise variant of the loop when $out is not 8-aligned; its alignment
+# modulo 8 is invariant across the loop (it only ever advances by 8), so
+# re-dispatching per block (see .Lnext_block) always re-enters the same
+# loop.
+$code.=<<___;
+	test	\$7,$out
+	jnz	.Loop_squeeze_unal
+___
+}
+$code.=<<___;
 	jmp	.Loop_squeeze
 
 .align	32
@@ -546,7 +602,49 @@ SHA3_squeeze:
 	call	KeccakF1600
 	mov	$A_flat,%r9
 	mov	$bsz,%rcx
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	test	\$7,$out
+	jnz	.Loop_squeeze_unal
+___
+}
+$code.=<<___;
 	jmp	.Loop_squeeze
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+.Loop_squeeze_unal:
+	cmp	\$8,$len
+	jb	.Ltail_squeeze
+
+	mov	(%r9),%al
+	mov	%al,($out)
+	mov	1(%r9),%al
+	mov	%al,1($out)
+	mov	2(%r9),%al
+	mov	%al,2($out)
+	mov	3(%r9),%al
+	mov	%al,3($out)
+	mov	4(%r9),%al
+	mov	%al,4($out)
+	mov	5(%r9),%al
+	mov	%al,5($out)
+	mov	6(%r9),%al
+	mov	%al,6($out)
+	mov	7(%r9),%al
+	mov	%al,7($out)
+	lea	8(%r9),%r9
+	lea	8($out),$out
+	sub	\$8,$len		# len -= 8
+	jz	.Ldone_squeeze
+
+	sub	\$1,%rcx		# bsz--
+	jnz	.Loop_squeeze_unal
+	jmp	.Lnext_block
+___
+}
+$code.=<<___;
 
 .Ltail_squeeze:
 	mov	%r9, %rsi

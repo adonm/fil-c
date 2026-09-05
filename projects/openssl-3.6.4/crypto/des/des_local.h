@@ -104,7 +104,7 @@
 #elif defined(__ICC)
 #define ROTATE(a, n) (_rotr(a, n))
 #elif defined(__GNUC__) && __GNUC__ >= 2 && !defined(__STRICT_ANSI__) && !defined(OPENSSL_NO_ASM) && !defined(OPENSSL_NO_INLINE_ASM) && !defined(PEDANTIC)
-#if defined(__i386) || defined(__i386__) || defined(__x86_64) || defined(__x86_64__)
+#if (defined(__i386) || defined(__i386__) || defined(__x86_64) || defined(__x86_64__)) && !defined(__FILC__)
 #define ROTATE(a, n) ({        \
     register unsigned int ret; \
     asm("rorl %1,%0"           \
@@ -113,6 +113,8 @@
         : "cc");               \
     ret;                       \
 })
+/* Fil-C: no rorl inline asm (the "I" constraint is unsupported); the C
+ * ROTATE below is recognized as a rotate by the compiler anyway. */
 #elif defined(__riscv_zbb) || defined(__riscv_zbkb)
 #if __riscv_xlen == 64
 #define ROTATE(x, n) ({ register unsigned int ret; \

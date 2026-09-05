@@ -14,6 +14,7 @@ local build = require("./build")
 local detect = require("./detect")
 local localcall = require("./localcall")
 local tailcall = require("./tailcall")
+local prof = require("./prof")
 
 -- Per-architecture module pairs (arm64_* / x86_64_*).
 local arm64_parse = require("./arm64_parse")
@@ -200,7 +201,21 @@ end
 sarcasm.splitFunctions = splitFunctions
 
 -- Build the regalloc instruction array from transform IR nodes.
-local function buildRaInsns(nodes)
+-- Functions whose fipNodes stream exceeds this many nodes take the scalable
+-- regalloc path: fail-stub noreturn calls (marked noreturnCall by the codegen
+-- fail-stub builders) are modeled as NOT falling through. With the historical
+-- (small-function) model every fail stub falls into the next, so liveness
+-- chains backward through the whole stub run: every check's eff/lower temps
+-- become live at every earlier stub, an O(stubs^2) interference clique and
+-- O(insns x stubs) live-set memory (75+ GB on OpenSSL's aes-gcm-avx512, whose
+-- two 60K-line functions emit 230K+ IR nodes). The panic calls ARE noreturn
+-- (the trap path never resumes), so not falling through is the faithful model
+-- — but it changes liveness and with it the coloring, so it is enabled only
+-- where the exact historical coloring is unaffordable; every function small
+-- enough keeps the exact historical path (and its byte-identical output).
+local BIG_RA_INSNS = 32768
+
+local function buildRaInsns(nodes, bigMode)
 	local ra = {}
 	for _, node in nodes do
 		if node.kind == "label" then
@@ -211,6 +226,7 @@ local function buildRaInsns(nodes)
 			local fallsThrough = node.fallsThrough
 			if fallsThrough == nil then fallsThrough = node.c and node.c.fallsThrough end
 			if fallsThrough == nil then fallsThrough = true end
+			if bigMode and node.noreturnCall then fallsThrough = false end
 			local mv = node.move
 			if mv then
 				-- A move-marked insn is always a pure single-def copy (both cg.move
@@ -360,7 +376,7 @@ end
 -- run the same backward liveness the register allocator uses, then greedily color slots
 -- (a slot's store interferes with everything live across it). Rewrites each spill node's
 -- offset and returns the packed slot count.
-local function packSpillSlots(tr, spillBase, numSlots, target)
+local function packSpillSlots(tr, spillBase, numSlots, target, bigMode)
 	if numSlots <= 1 then return numSlots end
 	local function slotIdOf(off) return math.floor((off - spillBase) / 8) end
 
@@ -375,6 +391,7 @@ local function packSpillSlots(tr, spillBase, numSlots, target)
 			local ft = node.fallsThrough
 			if ft == nil then ft = node.c and node.c.fallsThrough end
 			if ft == nil then ft = true end
+			if bigMode and node.noreturnCall then ft = false end
 			local defs, uses = {}, {}
 			if node.spillStore then defs = { slotIdOf(node.spillOff) } end
 			if node.spillReload then uses = { slotIdOf(node.spillOff) } end
@@ -450,6 +467,9 @@ local function allocateWithSpilling(tr, target)
 	local fpRegion = (tr.fpSaveBytes or 0) + (tr.fpBytes or 0) + (tr.yoloBytes or 0)
 	local fpPad = (fpRegion > 0 and numRoots % 2 == 1) and 8 or 0
 	local spillBase = 16 + 8 * numRoots + fpPad + fpRegion
+	local bigMode = #tr.fipNodes > BIG_RA_INSNS
+	prof.mark("fn " .. (tr.name or "?") .. " allocate (" .. #tr.fipNodes .. " fipNodes"
+		.. (bigMode and ", big" or "") .. ")")
 	for _ = 1, 32 do
 		-- spill-cost heuristic: cost ~ number of def/use occurrences, so IRC prefers
 		-- spilling rarely-used temps (a value used once is cheap to reload; a value used
@@ -462,11 +482,11 @@ local function allocateWithSpilling(tr, target)
 		for t, d in tr.temps do
 			if (d.spillCost or 0) < 1e9 then d.spillCost = math.max(cnt[t] or 1, 1) end
 		end
-		local cr = regalloc.color(buildRaInsns(tr.fipNodes), tr.temps,
+		local cr = regalloc.color(buildRaInsns(tr.fipNodes, bigMode), tr.temps,
 			{ allocatable = target.allocatable, reserved = tr.reservedColors })
 		if #cr.spilled == 0 then
 			-- allocation converged; pack spill slots (reuse offsets for non-overlapping slots)
-			tr.numSpillSlots = packSpillSlots(tr, spillBase, numSlots, target)
+			tr.numSpillSlots = packSpillSlots(tr, spillBase, numSlots, target, bigMode)
 			return cr
 		end
 		local spilledSet = {}
@@ -979,8 +999,10 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	local localCalled = localcall.prescanCalls(stmts, target.arch)
 	local functions, consumed, aliases, aliasGlobals = splitFunctions(stmts,
 		{ globals = globals, localCalled = localCalled, arch = target.arch })
+	prof.mark("splitFunctions")
 	local locals = localcall.discover(stmts, consumed, globals, target.arch,
 		{ functions = functions, aliases = aliases })
+	prof.mark("localcall.discover")
 	-- Same-file FUNCTION name resolution (x86_64, for `#! funcref` and
 	-- `.section .init` calls): every signature-annotated function name AND
 	-- alias-entry name maps to the OWNING function (an alias entry shares the
@@ -1005,6 +1027,7 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	if target.decodeBody then
 		for _, fn in functions do fn.body = target.decodeBody(fn.body) end
 	end
+	prof.mark("decodeBody")
 	-- Cross-function jumps (x86_64): the B1/B2 resolution context (tail branches
 	-- to signatured function entries become call+epilogue; mid-body shared-tail
 	-- joins clone the region into the jumper — tailcall.luau). arm64 does not
@@ -1312,12 +1335,15 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		-- instructions. Undecodable sequences stay `.byte` directives and keep
 		-- hitting the usual in-body data rejection.
 		if target.decodeBody then body = target.decodeBody(body) end
+		prof.mark("fn " .. fn.name .. " pre-transform")
 		local tr = target.transformFunction(fn.name, sigDesc, body,
 			{ globals = dataGlobals, clones = clonesInfo, fnNames = fnNames, subNames = subNames })
+		prof.mark("fn " .. fn.name .. " transform")
 		tr.fileUserLabels = fileUserLabels
 
 		-- allocate registers (spilling to the stack + re-running IRC as needed)
 		local colorResult = allocateWithSpilling(tr, target)
+		prof.mark("fn " .. fn.name .. " regalloc")
 
 		-- source-location info for -g origins (points at the input assembly)
 		local fnDbg = debug and { filename = fileDirective or "?", funcLine = tr.funcLine or 0 } or nil
@@ -1359,6 +1385,7 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 		for _, ext in tr.calledExterns do
 			calledExterns[ext.sigName] = ext
 		end
+		prof.mark("fn " .. fn.name .. " emit")
 	end
 
 	-- Emit weak/hidden callsite resolver thunks for called externals (deduped, and only
@@ -1547,8 +1574,12 @@ function sarcasm.main(argv)
 	-- as compile-time rejections.
 	local ok, asm = pcall(function()
 		local stmts = (arch == "x86_64") and x86_64_parse.parseString(text, syntax) or arm64_parse.parseString(text)
-		return sarcasm.compile(stmts, fileName, debug, target)
+		prof.mark("parse")
+		local r = sarcasm.compile(stmts, fileName, debug, target)
+		prof.mark("compile")
+		return r
 	end)
+	prof.report()
 	if not ok then
 		local msg = tostring(asm)
 		-- Errors we raise deliberately are prefixed "sarcasm:" and are user-facing:

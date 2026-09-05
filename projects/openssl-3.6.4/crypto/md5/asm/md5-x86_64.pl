@@ -173,6 +173,19 @@ ossl_md5_block_asm_data_order:
 
 	cmp	%rdi,		%rsi		# cmp end with ptr
 	je	.Lend				# jmp if ptr == end
+EOF
+if ($ENV{SARCASM}) {
+# Fil-C requires natural alignment for every access, but the MD5 block
+# function's contract (like the C code) accepts an arbitrarily aligned
+# input. When the input is not 4-aligned, bounce each 64-byte block
+# through an aligned stack buffer (its alignment modulo 4 is invariant
+# across the multi-block loop) and run an identical round sequence on it.
+$code .= <<EOF;
+	test	\$3,%rsi
+	jnz	.Lmd5_unal
+EOF
+}
+$code .= <<EOF;
 
 	# BEGIN of loop over 16-word blocks
 .Lloop:	# save old values of A, B, C, D
@@ -260,6 +273,246 @@ $code .= <<EOF;
 	cmp	%rdi,		%rsi		# cmp end with ptr
 	jb	.Lloop				# jmp if ptr < end
 	# END of loop over 16-word blocks
+EOF
+if ($ENV{SARCASM}) {
+$code .= <<EOF;
+	jmp	.Lend
+.Lmd5_unal:
+	push	%r13
+	mov	%rsp,%r13		# restore base for the alloca teardown
+	sub	\$72,%rsp			#! alloca result size=72
+.Lmd5_unal_loop:
+	mov	%eax,	%r8d
+	mov	%ebx,	%r9d
+	mov	%ecx,	%r14d
+	mov	%edx,	%r15d
+	mov	%rsi,64(%rsp)		#! store ptr	# park real input pointer
+	mov	%rsp,%rsi
+	mov	64(%rsp),%r10		#! load ptr
+	mov	0(%r10),%r11b
+	mov	%r11b,0(%rsp)
+	mov	1(%r10),%r11b
+	mov	%r11b,1(%rsp)
+	mov	2(%r10),%r11b
+	mov	%r11b,2(%rsp)
+	mov	3(%r10),%r11b
+	mov	%r11b,3(%rsp)
+	mov	4(%r10),%r11b
+	mov	%r11b,4(%rsp)
+	mov	5(%r10),%r11b
+	mov	%r11b,5(%rsp)
+	mov	6(%r10),%r11b
+	mov	%r11b,6(%rsp)
+	mov	7(%r10),%r11b
+	mov	%r11b,7(%rsp)
+	mov	8(%r10),%r11b
+	mov	%r11b,8(%rsp)
+	mov	9(%r10),%r11b
+	mov	%r11b,9(%rsp)
+	mov	10(%r10),%r11b
+	mov	%r11b,10(%rsp)
+	mov	11(%r10),%r11b
+	mov	%r11b,11(%rsp)
+	mov	12(%r10),%r11b
+	mov	%r11b,12(%rsp)
+	mov	13(%r10),%r11b
+	mov	%r11b,13(%rsp)
+	mov	14(%r10),%r11b
+	mov	%r11b,14(%rsp)
+	mov	15(%r10),%r11b
+	mov	%r11b,15(%rsp)
+	mov	16(%r10),%r11b
+	mov	%r11b,16(%rsp)
+	mov	17(%r10),%r11b
+	mov	%r11b,17(%rsp)
+	mov	18(%r10),%r11b
+	mov	%r11b,18(%rsp)
+	mov	19(%r10),%r11b
+	mov	%r11b,19(%rsp)
+	mov	20(%r10),%r11b
+	mov	%r11b,20(%rsp)
+	mov	21(%r10),%r11b
+	mov	%r11b,21(%rsp)
+	mov	22(%r10),%r11b
+	mov	%r11b,22(%rsp)
+	mov	23(%r10),%r11b
+	mov	%r11b,23(%rsp)
+	mov	24(%r10),%r11b
+	mov	%r11b,24(%rsp)
+	mov	25(%r10),%r11b
+	mov	%r11b,25(%rsp)
+	mov	26(%r10),%r11b
+	mov	%r11b,26(%rsp)
+	mov	27(%r10),%r11b
+	mov	%r11b,27(%rsp)
+	mov	28(%r10),%r11b
+	mov	%r11b,28(%rsp)
+	mov	29(%r10),%r11b
+	mov	%r11b,29(%rsp)
+	mov	30(%r10),%r11b
+	mov	%r11b,30(%rsp)
+	mov	31(%r10),%r11b
+	mov	%r11b,31(%rsp)
+	mov	32(%r10),%r11b
+	mov	%r11b,32(%rsp)
+	mov	33(%r10),%r11b
+	mov	%r11b,33(%rsp)
+	mov	34(%r10),%r11b
+	mov	%r11b,34(%rsp)
+	mov	35(%r10),%r11b
+	mov	%r11b,35(%rsp)
+	mov	36(%r10),%r11b
+	mov	%r11b,36(%rsp)
+	mov	37(%r10),%r11b
+	mov	%r11b,37(%rsp)
+	mov	38(%r10),%r11b
+	mov	%r11b,38(%rsp)
+	mov	39(%r10),%r11b
+	mov	%r11b,39(%rsp)
+	mov	40(%r10),%r11b
+	mov	%r11b,40(%rsp)
+	mov	41(%r10),%r11b
+	mov	%r11b,41(%rsp)
+	mov	42(%r10),%r11b
+	mov	%r11b,42(%rsp)
+	mov	43(%r10),%r11b
+	mov	%r11b,43(%rsp)
+	mov	44(%r10),%r11b
+	mov	%r11b,44(%rsp)
+	mov	45(%r10),%r11b
+	mov	%r11b,45(%rsp)
+	mov	46(%r10),%r11b
+	mov	%r11b,46(%rsp)
+	mov	47(%r10),%r11b
+	mov	%r11b,47(%rsp)
+	mov	48(%r10),%r11b
+	mov	%r11b,48(%rsp)
+	mov	49(%r10),%r11b
+	mov	%r11b,49(%rsp)
+	mov	50(%r10),%r11b
+	mov	%r11b,50(%rsp)
+	mov	51(%r10),%r11b
+	mov	%r11b,51(%rsp)
+	mov	52(%r10),%r11b
+	mov	%r11b,52(%rsp)
+	mov	53(%r10),%r11b
+	mov	%r11b,53(%rsp)
+	mov	54(%r10),%r11b
+	mov	%r11b,54(%rsp)
+	mov	55(%r10),%r11b
+	mov	%r11b,55(%rsp)
+	mov	56(%r10),%r11b
+	mov	%r11b,56(%rsp)
+	mov	57(%r10),%r11b
+	mov	%r11b,57(%rsp)
+	mov	58(%r10),%r11b
+	mov	%r11b,58(%rsp)
+	mov	59(%r10),%r11b
+	mov	%r11b,59(%rsp)
+	mov	60(%r10),%r11b
+	mov	%r11b,60(%rsp)
+	mov	61(%r10),%r11b
+	mov	%r11b,61(%rsp)
+	mov	62(%r10),%r11b
+	mov	%r11b,62(%rsp)
+	mov	63(%r10),%r11b
+	mov	%r11b,63(%rsp)
+EOF
+round1_step(-1,'%eax','%ebx','%ecx','%edx', '1','0xd76aa478', '7');
+round1_step( 0,'%edx','%eax','%ebx','%ecx', '2','0xe8c7b756','12');
+round1_step( 0,'%ecx','%edx','%eax','%ebx', '3','0x242070db','17');
+round1_step( 0,'%ebx','%ecx','%edx','%eax', '4','0xc1bdceee','22');
+round1_step( 0,'%eax','%ebx','%ecx','%edx', '5','0xf57c0faf', '7');
+round1_step( 0,'%edx','%eax','%ebx','%ecx', '6','0x4787c62a','12');
+round1_step( 0,'%ecx','%edx','%eax','%ebx', '7','0xa8304613','17');
+round1_step( 0,'%ebx','%ecx','%edx','%eax', '8','0xfd469501','22');
+round1_step( 0,'%eax','%ebx','%ecx','%edx', '9','0x698098d8', '7');
+round1_step( 0,'%edx','%eax','%ebx','%ecx','10','0x8b44f7af','12');
+round1_step( 0,'%ecx','%edx','%eax','%ebx','11','0xffff5bb1','17');
+round1_step( 0,'%ebx','%ecx','%edx','%eax','12','0x895cd7be','22');
+round1_step( 0,'%eax','%ebx','%ecx','%edx','13','0x6b901122', '7');
+round1_step( 0,'%edx','%eax','%ebx','%ecx','14','0xfd987193','12');
+round1_step( 0,'%ecx','%edx','%eax','%ebx','15','0xa679438e','17');
+round1_step( 1,'%ebx','%ecx','%edx','%eax', '1','0x49b40821','22');
+
+round2_step(-1,'%eax','%ebx','%ecx','%edx', '6','0xf61e2562', '5');
+round2_step( 0,'%edx','%eax','%ebx','%ecx','11','0xc040b340', '9');
+round2_step( 0,'%ecx','%edx','%eax','%ebx', '0','0x265e5a51','14');
+round2_step( 0,'%ebx','%ecx','%edx','%eax', '5','0xe9b6c7aa','20');
+round2_step( 0,'%eax','%ebx','%ecx','%edx','10','0xd62f105d', '5');
+round2_step( 0,'%edx','%eax','%ebx','%ecx','15', '0x2441453', '9');
+round2_step( 0,'%ecx','%edx','%eax','%ebx', '4','0xd8a1e681','14');
+round2_step( 0,'%ebx','%ecx','%edx','%eax', '9','0xe7d3fbc8','20');
+round2_step( 0,'%eax','%ebx','%ecx','%edx','14','0x21e1cde6', '5');
+round2_step( 0,'%edx','%eax','%ebx','%ecx', '3','0xc33707d6', '9');
+round2_step( 0,'%ecx','%edx','%eax','%ebx', '8','0xf4d50d87','14');
+round2_step( 0,'%ebx','%ecx','%edx','%eax','13','0x455a14ed','20');
+round2_step( 0,'%eax','%ebx','%ecx','%edx', '2','0xa9e3e905', '5');
+round2_step( 0,'%edx','%eax','%ebx','%ecx', '7','0xfcefa3f8', '9');
+round2_step( 0,'%ecx','%edx','%eax','%ebx','12','0x676f02d9','14');
+round2_step( 1,'%ebx','%ecx','%edx','%eax', '5','0x8d2a4c8a','20');
+
+round3_step(-1,'%eax','%ebx','%ecx','%edx', '8','0xfffa3942', '4');
+round3_step( 0,'%edx','%eax','%ebx','%ecx','11','0x8771f681','11');
+round3_step( 0,'%ecx','%edx','%eax','%ebx','14','0x6d9d6122','16');
+round3_step( 0,'%ebx','%ecx','%edx','%eax', '1','0xfde5380c','23');
+round3_step( 0,'%eax','%ebx','%ecx','%edx', '4','0xa4beea44', '4');
+round3_step( 0,'%edx','%eax','%ebx','%ecx', '7','0x4bdecfa9','11');
+round3_step( 0,'%ecx','%edx','%eax','%ebx','10','0xf6bb4b60','16');
+round3_step( 0,'%ebx','%ecx','%edx','%eax','13','0xbebfbc70','23');
+round3_step( 0,'%eax','%ebx','%ecx','%edx', '0','0x289b7ec6', '4');
+round3_step( 0,'%edx','%eax','%ebx','%ecx', '3','0xeaa127fa','11');
+round3_step( 0,'%ecx','%edx','%eax','%ebx', '6','0xd4ef3085','16');
+round3_step( 0,'%ebx','%ecx','%edx','%eax', '9', '0x4881d05','23');
+round3_step( 0,'%eax','%ebx','%ecx','%edx','12','0xd9d4d039', '4');
+round3_step( 0,'%edx','%eax','%ebx','%ecx','15','0xe6db99e5','11');
+round3_step( 0,'%ecx','%edx','%eax','%ebx', '2','0x1fa27cf8','16');
+round3_step( 1,'%ebx','%ecx','%edx','%eax', '0','0xc4ac5665','23');
+
+round4_step(-1,'%eax','%ebx','%ecx','%edx', '7','0xf4292244', '6');
+round4_step( 0,'%edx','%eax','%ebx','%ecx','14','0x432aff97','10');
+round4_step( 0,'%ecx','%edx','%eax','%ebx', '5','0xab9423a7','15');
+round4_step( 0,'%ebx','%ecx','%edx','%eax','12','0xfc93a039','21');
+round4_step( 0,'%eax','%ebx','%ecx','%edx', '3','0x655b59c3', '6');
+round4_step( 0,'%edx','%eax','%ebx','%ecx','10','0x8f0ccc92','10');
+round4_step( 0,'%ecx','%edx','%eax','%ebx', '1','0xffeff47d','15');
+round4_step( 0,'%ebx','%ecx','%edx','%eax', '8','0x85845dd1','21');
+round4_step( 0,'%eax','%ebx','%ecx','%edx','15','0x6fa87e4f', '6');
+round4_step( 0,'%edx','%eax','%ebx','%ecx', '6','0xfe2ce6e0','10');
+round4_step( 0,'%ecx','%edx','%eax','%ebx','13','0xa3014314','15');
+round4_step( 0,'%ebx','%ecx','%edx','%eax', '4','0x4e0811a1','21');
+round4_step( 0,'%eax','%ebx','%ecx','%edx','11','0xf7537e82', '6');
+round4_step( 0,'%edx','%eax','%ebx','%ecx', '2','0xbd3af235','10');
+round4_step( 0,'%ecx','%edx','%eax','%ebx', '9','0x2ad7d2bb','15');
+round4_step( 1,'%ebx','%ecx','%edx','%eax', '0','0xeb86d391','21');
+$code .= <<EOF;
+	add	%r8d,	%eax
+	add	%r9d,	%ebx
+	add	%r14d,	%ecx
+	add	%r15d,	%edx
+	mov	64(%rsp),%rsi		#! load ptr
+	add	\$64,	%rsi
+	cmp	%rdi,	%rsi
+	jb	.Lmd5_unal_loop
+	mov	%r13,%rsp
+	pop	%r13
+	# dedicated epilogue: sarcasm cannot prove the stack-depth join at
+	# .Lend between the aligned path (no alloca) and this path, so this
+	# path tears down its own frame and returns by itself.
+	mov	%eax,		0*4(%rbp)
+	mov	%ebx,		1*4(%rbp)
+	mov	%ecx,		2*4(%rbp)
+	mov	%edx,		3*4(%rbp)
+	mov	(%rsp),%r15
+	mov	8(%rsp),%r14
+	mov	16(%rsp),%r12
+	mov	24(%rsp),%rbx
+	mov	32(%rsp),%rbp
+	add	\$40,%rsp
+	ret
+EOF
+}
+$code .= <<EOF;
 
 .Lend:
 	mov	%eax,		0*4(%rbp)	# ctx->A = A

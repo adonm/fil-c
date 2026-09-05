@@ -20,6 +20,8 @@
 -- The driver re-runs after inserting spill code (handled by the caller) if spilled is
 -- non-empty; here we implement the classic actual-spill rewrite inline via a callback.
 
+local prof = require("./prof")
+
 local regalloc = {}
 
 -- This allocator is architecture-agnostic: the allocatable GPR set (the K colors) is
@@ -200,7 +202,9 @@ function regalloc.color(insns, temps, opts)
 	end
 	local K = #pool
 	local blocks = buildCFG(insns)
+	prof.mark("    [ra " .. #insns .. " insns] buildCFG")
 	local liveOutOf = computeLiveness(insns, blocks)
+	prof.mark("    [ra] computeLiveness")
 
 	-- Interference graph.
 	local adj = {}            -- tempId -> set of tempId
@@ -263,6 +267,12 @@ function regalloc.color(insns, temps, opts)
 			for l in live do addEdge(l, d) end
 		end
 	end
+	if prof.enabled then
+		local ne, maxdeg, maxlive = 0, 0, 0
+		for t in nodes do ne += #adjList[t]; if #adjList[t] > maxdeg then maxdeg = #adjList[t] end end
+		for i, ins in insns do local c = 0; for _ in (liveOutOf[i] or {}) do c += 1 end; if c > maxlive then maxlive = c end end
+		prof.mark("    [ra] interference edges=" .. ne .. " maxdeg=" .. maxdeg .. " maxlive=" .. maxlive)
+	end
 
 	-- Coloring worklists.
 	local precoloredSet = newSet()
@@ -285,6 +295,8 @@ function regalloc.color(insns, temps, opts)
 	local simplifyWorklist = {}
 	local freezeWorklist = {}
 	local spillWorklist = {}
+
+	local nSimplify, nCoalesce, nFreeze, nSpill, nScan, nDec = 0, 0, 0, 0, 0, 0
 
 	local function inArray(arr, x)
 		for idx, v in arr do if v == x then return idx end end
@@ -338,6 +350,7 @@ function regalloc.color(insns, temps, opts)
 	end
 
 	local function decrementDegree(t)
+		nDec += 1
 		local d = degree[t]
 		degree[t] = d - 1
 		if d == K and not precolored(t) then
@@ -354,6 +367,7 @@ function regalloc.color(insns, temps, opts)
 	end
 
 	local function simplify()
+		nSimplify += 1
 		local t = table.remove(simplifyWorklist)
 		table.insert(selectStack, t)
 		onStack[t] = true
@@ -409,6 +423,7 @@ function regalloc.color(insns, temps, opts)
 	end
 
 	local function coalesce()
+		nCoalesce += 1
 		local m
 		for mm in worklistMoves do m = mm; break end
 		worklistMoves[m] = nil
@@ -464,17 +479,30 @@ function regalloc.color(insns, temps, opts)
 	end
 
 	local function freeze()
+		nFreeze += 1
 		local u = table.remove(freezeWorklist)
 		table.insert(simplifyWorklist, u)
 		freezeMoves(u)
 	end
 
+	-- Spill-score denominators (max(spillCost, eps)) are loop-invariant: temps'
+	-- spillCost is fixed by the caller before coloring and never mutated here.
+	-- Cache them so the O(|spillWorklist|) selection scans skip two table lookups
+	-- per entry (52M+ scanned entries on huge functions); the score arithmetic
+	-- (degree[t] / denom[t], strict-greater scan in array order) is unchanged.
+	local spillDen = {}
 	local function selectSpill()
+		nSpill += 1
 		-- pick highest-degree (cheap heuristic) to spill optimistically
 		local best, bestIdx, bestScore
 		for idx, t in spillWorklist do
-			local cost = (temps[t] and temps[t].spillCost) or 1
-			local score = degree[t] / math.max(cost, 0.0001)
+			nScan += 1
+			local den = spillDen[t]
+			if den == nil then
+				den = math.max((temps[t] and temps[t].spillCost) or 1, 0.0001)
+				spillDen[t] = den
+			end
+			local score = degree[t] / den
 			if not bestScore or score > bestScore then
 				bestScore = score; best = t; bestIdx = idx
 			end
@@ -492,6 +520,7 @@ function regalloc.color(insns, temps, opts)
 		elseif #spillWorklist > 0 then selectSpill()
 		else break end
 	end
+	prof.mark("    [ra] IRC main loop simp=" .. nSimplify .. " coal=" .. nCoalesce .. " frz=" .. nFreeze .. " spill=" .. nSpill .. " scan=" .. nScan .. " dec=" .. nDec)
 
 	-- assign colors
 	local color = {}
@@ -523,6 +552,7 @@ function regalloc.color(insns, temps, opts)
 	for t in coalescedNodes do
 		color[t] = color[getAlias(t)]
 	end
+	prof.mark("    [ra] assign colors")
 
 	-- Soundness backstop (runs on every function, and again after every spill-round
 	-- re-run): verify the coloring before handing it to the emitter. If coloring ever
@@ -599,6 +629,7 @@ function regalloc.color(insns, temps, opts)
 		end
 	end
 
+	prof.mark("    [ra] soundness backstop")
 	return { color = color, spilled = actualSpills, blocks = blocks, aliasOf = getAlias }
 end
 

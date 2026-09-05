@@ -286,6 +286,10 @@ if ($ENV{SARCASM}) {
 	$code.=<<___;
 	movq	%rsp,%r10		# place the mask after tp[num+3] (+ICache optimization)
 	lea	-96(%r10,$num,8),%r10
+	mov	${num}d,%r11d		# the movdqa mask stores/loads need a 16-
+	and	\$1,%r11d		# aligned pointer: the alloca region base is
+	shl	\$3,%r11d		# 16-aligned and the mask's region coordinate
+	lea	(%r10,%r11),%r10	# is 8*(num&1) mod 16, so round up by that
 ___
 } else {
 	$code.=<<___;
@@ -448,6 +452,10 @@ if ($ENV{SARCASM}) {
 	$code.=<<___;
 	movq	%rsp,%rdx		# where 256-byte mask is (+size optimization)
 	lea	144(%rdx,$num,8),%rdx
+	mov	${num}d,%r11d		# same 8*(num&1) rounding as the mask-build
+	and	\$1,%r11d		# pointer: this one must be 16-aligned for
+	shl	\$3,%r11d		# the pand loads, and stay build+240
+	lea	(%rdx,%r11),%rdx
 ___
 } else {
 	$code.=<<___;
@@ -3837,7 +3845,23 @@ bn_get_bits5:
 	cmp	\$11,%ecx
 	cmova	%r11,%r10
 	cmova	%eax,%ecx
+___
+if ($ENV{SARCASM}) {
+# Fil-C requires natural alignment for every access, but the windowed bit
+# extraction deliberately reads a 16-bit word at a byte offset that can be
+# odd; assemble it from two byte loads instead (always correct).
+$code.=<<___;
+	movzb	(%r10,$num,2),%eax
+	movzb	1(%r10,$num,2),%r11d
+	shl	\$8,%r11d
+	or	%r11d,%eax
+___
+} else {
+$code.=<<___;
 	movzw	(%r10,$num,2),%eax
+___
+}
+$code.=<<___;
 	shrl	%cl,%eax
 	and	\$31,%eax
 	ret

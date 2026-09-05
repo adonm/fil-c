@@ -20,6 +20,8 @@ local sig = require("./sig")
 local build = require("./build")
 local framePass = require("./frame")
 
+local prof = require("./prof")
+
 local transform = {}
 
 -- `;! alloca ...` annotation parser (architecture-independent).
@@ -416,6 +418,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	if cgm.strictBodyValidation then
 		validateBody(body, cgm, name)
 	end
+	prof.mark("  [" .. name .. "] validateBody")
 
 	-- Floating-point signature classes (float/double), supported on BOTH backends.
 	-- FP args pass in the arch's vector registers (xmm0..xmm7 on x86_64, v0..v7 on
@@ -458,6 +461,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- stack-argument info (slot count, which slots FP instructions read, and the
 		-- materialized area's base offset when any do).
 		local fs, fpo, ufp, fpinfo, yolo = framePolicy.analyzeFrame(body, sigDesc)
+		prof.mark("  [" .. name .. "] analyzeFrame")
 		fctx = { frameSize = fs, fpOffset = fpo, usesFp = ufp, fp = fpinfo, yolo = yolo,
 			-- the frame base depth (x86_64: the +8 rule's clone displacement bias
 			-- origin for local subroutines — localcall.luau)
@@ -1022,7 +1026,9 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- (validateBody already ran at the top of this function — before the frame
 	-- analysis and every rewrite — see the comment there.)
 
+	prof.mark("  [" .. name .. "] pre-preprocess")
 	body = framePass.preprocess(body, allocaRegions, framePolicy, sigDesc)
+	prof.mark("  [" .. name .. "] framePass.preprocess")
 
 	-- per-call signature info
 	local callSigCache = {}
@@ -1082,6 +1088,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	end
 
 	local lf = lift.liftFunction(body, { classify = cgm.classify, returnRegs = returnRegs, callInfo = callInfo })
+	prof.mark("  [" .. name .. "] lift")
 
 	local temps = lf.temps
 	local nextTemp = lf.nextTemp
@@ -1579,6 +1586,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			if not removed then break end
 		end
 	end
+	prof.mark("  [" .. name .. "] DCE")
 
 	-- The deferred dynamic-alloca idiom's dropped machinery (st.allocaPlace allocation
 	-- point, st.allocaOwned rsp-derived feeder chain) defines values that must never be
@@ -1728,6 +1736,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		{ argPtrTemps = argPtrTemps, loadPtrDefs = ptrSeedDefs, allocaResultDefs = allocaResultDefs,
 			callPtrDefs = callPtrDefs },
 		allocTemp, { baseMnemonic = cgm.baseMnemonic, widenSwaps = backend.arch == "x86_64" })
+	prof.mark("  [" .. name .. "] ptrflow")
 
 	-- Link each fixed-size alloca-result node to its region; give the region a stable pointer
 	-- temp for redirecting sp-relative math and a shared lower (the result's seeded lower).

@@ -670,7 +670,7 @@ function M.make(ctx)
 			{ defs = { pColored(a2) }, uses = { loTemp } }))
 		-- appended to the list (the stubs flush at function end), never emitted here
 		table.insert(list, build.insn("call", { build.sym("filc_check_function_call_fail", "plt") },
-			{ control = "call", uses = { pColored(a1), pColored(a2) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2) } }))
 	end
 	function cg.emitRetsFailStub(list, lbl, actualTemp, expectedBytes)
 		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
@@ -682,7 +682,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("mov", { build.rp(a3, 32), build.imm(0) },
 			{ defs = { pColored(a3) } }))
 		table.insert(list, build.insn("call", { build.sym("filc_cc_rets_check_failure", "plt") },
-			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 	function cg.leaGlobal(destPhys, sym)  -- destPhys is a physical reg num
 		emit(build.insn("lea", { build.rp(destPhys), build.memx({ kind = "reg", rc = "rip" }, { dispSym = sym }) },
@@ -1586,7 +1586,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("lea", { build.rp(a3), build.memx({ kind = "reg", rc = "rip" }, { dispSym = acoSym }) },
 			{ defs = { pColored(a3) } }))
 		table.insert(list, build.insn("call", { build.sym("filc_optimized_access_check_fail", "plt") },
-			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 
 	-- Fail stub for an alignment failure the optimized-access-check origin cannot
@@ -1621,7 +1621,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("mov", { nameLoSlot, build.imm(0) }, {}))
 		table.insert(list, build.insn("sub", { build.rp(4), build.imm(16) }, {}))
 		table.insert(list, build.insn("call", { build.sym("filc_check_aligned_access_fail", "plt") },
-			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3),
 				pColored(a4), pColored(a5), pColored(a6) } }))
 	end
 
@@ -1655,7 +1655,7 @@ function M.make(ctx)
 				{ dispSym = originSym }) }, { defs = { pColored(a6) } }))
 			sym = isWrite and "filc_compress_write_check_fail" or "filc_expand_read_check_fail"
 			table.insert(list, build.insn("call", { build.sym(sym, "plt") },
-				{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+				{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3),
 					pColored(a4), pColored(a5), pColored(a6) } }))
 		else
 			table.insert(list, build.insn("mov", { build.rp(a4), build.imm(info.vecsize) },
@@ -1664,7 +1664,7 @@ function M.make(ctx)
 				{ dispSym = originSym }) }, { defs = { pColored(a5) } }))
 			sym = isWrite and "filc_masked_write_check_fail" or "filc_masked_read_check_fail"
 			table.insert(list, build.insn("call", { build.sym(sym, "plt") },
-				{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3),
+				{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3),
 					pColored(a4), pColored(a5) } }))
 		end
 	end

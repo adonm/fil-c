@@ -8,10 +8,13 @@
  */
 
 #include "../bn_local.h"
-#if !(defined(__GNUC__) && __GNUC__ >= 2)
+#if !(defined(__GNUC__) && __GNUC__ >= 2) || defined(__FILC__)
 /* clang-format off */
 # include "../bn_asm.c"         /* kind of dirty hack for Sun Studio */
 /* clang-format on */
+/* ... and for Fil-C: the inline assembler below uses "m"/"+m"/"g" constraints
+ * and pointer arguments that Fil-C's safe inline assembly cannot express; the
+ * C versions in bn_asm.c provide the same functions. */
 #else
 /*-
  * x86_64 BIGNUM accelerator version 0.1, December 2002.

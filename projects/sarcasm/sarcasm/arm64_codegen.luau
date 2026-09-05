@@ -865,7 +865,7 @@ function M.make(ctx)
 			{ defs = { pColored(a2) }, uses = { loTemp } }))
 		-- appended to the list (the stubs flush at function end), never emitted here
 		table.insert(list, build.insn("bl", { build.sym("filc_check_function_call_fail") },
-			{ control = "call", uses = { pColored(a1), pColored(a2) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2) } }))
 	end
 	function cg.emitRetsFailStub(list, lbl, actualTemp, expectedBytes)
 		local a1, a2, a3 = M.cc.rtArg(1), M.cc.rtArg(2), M.cc.rtArg(3)
@@ -877,7 +877,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("mov", { build.rp(a3, 32), build.imm(0) },
 			{ defs = { pColored(a3) } }))
 		table.insert(list, build.insn("bl", { build.sym("filc_cc_rets_check_failure") },
-			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 	function cg.leaGlobal(destPhys, sym)
 		emit(build.insn("adrp", { build.rp(destPhys), build.sym(sym) }, { defs = { pColored(destPhys) } }))
@@ -962,7 +962,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("adrp", { build.rp(a3), build.sym(acoSym) }, { defs = { pColored(a3) } }))
 		table.insert(list, build.insn("add", { build.rp(a3), build.rp(a3), build.sym(acoSym, "lo12") }, { defs = { pColored(a3) }, uses = { pColored(a3) } }))
 		table.insert(list, build.insn("bl", { build.sym("filc_optimized_access_check_fail") },
-			{ control = "call", uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+			{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 
 	-- Redirect an sp-relative address computation landing inside a fixed alloca region to the
@@ -1345,7 +1345,7 @@ function M.make(ctx)
 		table.insert(list, build.insn("mov", { build.rp(a[6]), build.xzr() }, { defs = { pColored(a[6]) } }))
 		table.insert(list, build.insn("mov", { build.rp(a[7]), build.xzr() }, { defs = { pColored(a[7]) } }))
 		table.insert(list, build.insn("bl", { build.sym("filc_check_aligned_access_fail") },
-			{ control = "call", uses = { pColored(a[1]), pColored(a[2]), pColored(a[3]),
+			{ control = "call", noreturnCall = true, uses = { pColored(a[1]), pColored(a[2]), pColored(a[3]),
 				pColored(a[4]), pColored(a[5]), pColored(a[6]), pColored(a[7]) } }))
 	end
 

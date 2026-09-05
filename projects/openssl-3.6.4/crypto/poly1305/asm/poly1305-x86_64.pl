@@ -275,6 +275,17 @@ poly1305_blocks:
 	shr	\$2,$s1
 	mov	$r1,%rax
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but the input
+	# here is a byte stream of arbitrary alignment; use a byte-wise
+	# accumulate loop when it is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$inp
+	jnz	.Loop_unal
+___
+}
+$code.=<<___;
 	jmp	.Loop
 
 .align	32
@@ -289,6 +300,70 @@ $code.=<<___;
 	mov	$r1,%rax
 	dec	%r15			# len-=16
 	jnz	.Loop
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	jmp	.Loop_done
+.Loop_unal:
+	movzbl	0($inp),%rax
+	movzbl	1($inp),%rdx
+	shl	\$8,%rdx
+	or	%rdx,%rax
+	movzbl	2($inp),%rdx
+	shl	\$16,%rdx
+	or	%rdx,%rax
+	movzbl	3($inp),%rdx
+	shl	\$24,%rdx
+	or	%rdx,%rax
+	movzbl	4($inp),%rdx
+	shl	\$32,%rdx
+	or	%rdx,%rax
+	movzbl	5($inp),%rdx
+	shl	\$40,%rdx
+	or	%rdx,%rax
+	movzbl	6($inp),%rdx
+	shl	\$48,%rdx
+	or	%rdx,%rax
+	movzbl	7($inp),%rdx
+	shl	\$56,%rdx
+	or	%rdx,%rax
+	add	%rax,$h0
+	adc	\$0,$h1
+	movzbl	8($inp),%rdx
+	movzbl	9($inp),%rax
+	shl	\$8,%rax
+	or	%rax,%rdx
+	movzbl	10($inp),%rax
+	shl	\$16,%rax
+	or	%rax,%rdx
+	movzbl	11($inp),%rax
+	shl	\$24,%rax
+	or	%rax,%rdx
+	movzbl	12($inp),%rax
+	shl	\$32,%rax
+	or	%rax,%rdx
+	movzbl	13($inp),%rax
+	shl	\$40,%rax
+	or	%rax,%rdx
+	movzbl	14($inp),%rax
+	shl	\$48,%rax
+	or	%rax,%rdx
+	movzbl	15($inp),%rax
+	shl	\$56,%rax
+	or	%rax,%rdx
+	add	%rdx,$h1
+	lea	16($inp),$inp
+	adc	$padbit,$h2
+	mov	$r1,%rax
+___
+	&poly1305_iteration();
+$code.=<<___;
+	dec	%r15			# len-=16
+	jnz	.Loop_unal
+.Loop_done:
+___
+}
+$code.=<<___;
 
 	mov	$h0,0($ctx)		# store hash value
 	mov	$h1,8($ctx)
@@ -333,10 +408,112 @@ poly1305_emit:
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but the
+	# MAC output (and in principle the nonce) are byte buffers of
+	# arbitrary alignment; do the final accumulate/store byte-wise
+	# when either is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$mac
+	jnz	.Lemit_unal
+	test	\$7,$nonce
+	jnz	.Lemit_unal
+___
+}
+$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lemit_done
+.Lemit_unal:
+	movzbl	0($nonce),%r8
+	movzbl	1($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	2($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	3($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	4($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	5($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	6($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	7($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rax
+	adc	\$0,%rcx
+	movzbl	8($nonce),%r8
+	movzbl	9($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	10($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	11($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	12($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	13($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	14($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	15($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rcx
+	mov	%rax,%r9
+	mov	%r9b,0($mac)
+	shr	\$8,%r9
+	mov	%r9b,1($mac)
+	shr	\$8,%r9
+	mov	%r9b,2($mac)
+	shr	\$8,%r9
+	mov	%r9b,3($mac)
+	shr	\$8,%r9
+	mov	%r9b,4($mac)
+	shr	\$8,%r9
+	mov	%r9b,5($mac)
+	shr	\$8,%r9
+	mov	%r9b,6($mac)
+	shr	\$8,%r9
+	mov	%r9b,7($mac)
+	mov	%rcx,%r9
+	mov	%r9b,8($mac)
+	shr	\$8,%r9
+	mov	%r9b,9($mac)
+	shr	\$8,%r9
+	mov	%r9b,10($mac)
+	shr	\$8,%r9
+	mov	%r9b,11($mac)
+	shr	\$8,%r9
+	mov	%r9b,12($mac)
+	shr	\$8,%r9
+	mov	%r9b,13($mac)
+	shr	\$8,%r9
+	mov	%r9b,14($mac)
+	shr	\$8,%r9
+	mov	%r9b,15($mac)
+.Lemit_done:
+___
+}
+$code.=<<___;
 
 	ret
 .cfi_endproc
@@ -618,10 +795,78 @@ poly1305_blocks_avx:
 	shr	\$2,$s1
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
+___
+if ($ENV{SARCASM}) {
+	# input is a byte stream of arbitrary alignment; byte-wise
+	# accumulate when it is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$inp
+	jnz	.Lavx_pre1_unal
+___
+}
+$code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lavx_pre1_done
+.Lavx_pre1_unal:
+	movzbl	0($inp),%rax
+	movzbl	1($inp),%rdx
+	shl	\$8,%rdx
+	or	%rdx,%rax
+	movzbl	2($inp),%rdx
+	shl	\$16,%rdx
+	or	%rdx,%rax
+	movzbl	3($inp),%rdx
+	shl	\$24,%rdx
+	or	%rdx,%rax
+	movzbl	4($inp),%rdx
+	shl	\$32,%rdx
+	or	%rdx,%rax
+	movzbl	5($inp),%rdx
+	shl	\$40,%rdx
+	or	%rdx,%rax
+	movzbl	6($inp),%rdx
+	shl	\$48,%rdx
+	or	%rdx,%rax
+	movzbl	7($inp),%rdx
+	shl	\$56,%rdx
+	or	%rdx,%rax
+	add	%rax,$h0
+	adc	\$0,$h1
+	movzbl	8($inp),%rdx
+	movzbl	9($inp),%rax
+	shl	\$8,%rax
+	or	%rax,%rdx
+	movzbl	10($inp),%rax
+	shl	\$16,%rax
+	or	%rax,%rdx
+	movzbl	11($inp),%rax
+	shl	\$24,%rax
+	or	%rax,%rdx
+	movzbl	12($inp),%rax
+	shl	\$32,%rax
+	or	%rax,%rdx
+	movzbl	13($inp),%rax
+	shl	\$40,%rax
+	or	%rax,%rdx
+	movzbl	14($inp),%rax
+	shl	\$48,%rax
+	or	%rax,%rdx
+	movzbl	15($inp),%rax
+	shl	\$56,%rax
+	or	%rax,%rdx
+	add	%rdx,$h1
+	lea	16($inp),$inp
+	adc	$padbit,$h2
+.Lavx_pre1_done:
+___
+}
+$code.=<<___;
 
 	call	__poly1305_block
 
@@ -725,10 +970,78 @@ poly1305_blocks_avx:
 	test	\$31,$len
 	jz	.Linit_avx
 
+___
+if ($ENV{SARCASM}) {
+	# input is a byte stream of arbitrary alignment; byte-wise
+	# accumulate when it is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$inp
+	jnz	.Lavx_pre2_unal
+___
+}
+$code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lavx_pre2_done
+.Lavx_pre2_unal:
+	movzbl	0($inp),%rax
+	movzbl	1($inp),%rdx
+	shl	\$8,%rdx
+	or	%rdx,%rax
+	movzbl	2($inp),%rdx
+	shl	\$16,%rdx
+	or	%rdx,%rax
+	movzbl	3($inp),%rdx
+	shl	\$24,%rdx
+	or	%rdx,%rax
+	movzbl	4($inp),%rdx
+	shl	\$32,%rdx
+	or	%rdx,%rax
+	movzbl	5($inp),%rdx
+	shl	\$40,%rdx
+	or	%rdx,%rax
+	movzbl	6($inp),%rdx
+	shl	\$48,%rdx
+	or	%rdx,%rax
+	movzbl	7($inp),%rdx
+	shl	\$56,%rdx
+	or	%rdx,%rax
+	add	%rax,$h0
+	adc	\$0,$h1
+	movzbl	8($inp),%rdx
+	movzbl	9($inp),%rax
+	shl	\$8,%rax
+	or	%rax,%rdx
+	movzbl	10($inp),%rax
+	shl	\$16,%rax
+	or	%rax,%rdx
+	movzbl	11($inp),%rax
+	shl	\$24,%rax
+	or	%rax,%rdx
+	movzbl	12($inp),%rax
+	shl	\$32,%rax
+	or	%rax,%rdx
+	movzbl	13($inp),%rax
+	shl	\$40,%rax
+	or	%rax,%rdx
+	movzbl	14($inp),%rax
+	shl	\$48,%rax
+	or	%rax,%rdx
+	movzbl	15($inp),%rax
+	shl	\$56,%rax
+	or	%rax,%rdx
+	add	%rdx,$h1
+	lea	16($inp),$inp
+	adc	$padbit,$h2
+.Lavx_pre2_done:
+___
+}
+$code.=<<___;
 	sub	\$16,%r15
 
 	call	__poly1305_block
@@ -1446,10 +1759,112 @@ poly1305_emit_avx:
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but the
+	# MAC output (and in principle the nonce) are byte buffers of
+	# arbitrary alignment; do the final accumulate/store byte-wise
+	# when either is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$mac
+	jnz	.Lemit_avx_unal
+	test	\$7,$nonce
+	jnz	.Lemit_avx_unal
+___
+}
+$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lemit_avx_done
+.Lemit_avx_unal:
+	movzbl	0($nonce),%r8
+	movzbl	1($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	2($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	3($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	4($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	5($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	6($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	7($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rax
+	adc	\$0,%rcx
+	movzbl	8($nonce),%r8
+	movzbl	9($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	10($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	11($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	12($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	13($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	14($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	15($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rcx
+	mov	%rax,%r9
+	mov	%r9b,0($mac)
+	shr	\$8,%r9
+	mov	%r9b,1($mac)
+	shr	\$8,%r9
+	mov	%r9b,2($mac)
+	shr	\$8,%r9
+	mov	%r9b,3($mac)
+	shr	\$8,%r9
+	mov	%r9b,4($mac)
+	shr	\$8,%r9
+	mov	%r9b,5($mac)
+	shr	\$8,%r9
+	mov	%r9b,6($mac)
+	shr	\$8,%r9
+	mov	%r9b,7($mac)
+	mov	%rcx,%r9
+	mov	%r9b,8($mac)
+	shr	\$8,%r9
+	mov	%r9b,9($mac)
+	shr	\$8,%r9
+	mov	%r9b,10($mac)
+	shr	\$8,%r9
+	mov	%r9b,11($mac)
+	shr	\$8,%r9
+	mov	%r9b,12($mac)
+	shr	\$8,%r9
+	mov	%r9b,13($mac)
+	shr	\$8,%r9
+	mov	%r9b,14($mac)
+	shr	\$8,%r9
+	mov	%r9b,15($mac)
+.Lemit_avx_done:
+___
+}
+$code.=<<___;
 
 	ret
 .cfi_endproc
@@ -1544,6 +1959,16 @@ poly1305_blocks_avx2:
 	shr	\$2,$s1
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
+___
+if ($ENV{SARCASM}) {
+	# input is a byte stream of arbitrary alignment; byte-wise
+	# accumulate when it is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$inp
+	jnz	.Lb226pre_unal
+___
+}
+$code.=<<___;
 .Lbase2_26_pre_avx2:
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
@@ -1556,6 +1981,71 @@ poly1305_blocks_avx2:
 
 	test	\$63,%r15
 	jnz	.Lbase2_26_pre_avx2
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lb226pre_done
+.Lb226pre_unal:
+	movzbl	0($inp),%rax
+	movzbl	1($inp),%rdx
+	shl	\$8,%rdx
+	or	%rdx,%rax
+	movzbl	2($inp),%rdx
+	shl	\$16,%rdx
+	or	%rdx,%rax
+	movzbl	3($inp),%rdx
+	shl	\$24,%rdx
+	or	%rdx,%rax
+	movzbl	4($inp),%rdx
+	shl	\$32,%rdx
+	or	%rdx,%rax
+	movzbl	5($inp),%rdx
+	shl	\$40,%rdx
+	or	%rdx,%rax
+	movzbl	6($inp),%rdx
+	shl	\$48,%rdx
+	or	%rdx,%rax
+	movzbl	7($inp),%rdx
+	shl	\$56,%rdx
+	or	%rdx,%rax
+	add	%rax,$h0
+	adc	\$0,$h1
+	movzbl	8($inp),%rdx
+	movzbl	9($inp),%rax
+	shl	\$8,%rax
+	or	%rax,%rdx
+	movzbl	10($inp),%rax
+	shl	\$16,%rax
+	or	%rax,%rdx
+	movzbl	11($inp),%rax
+	shl	\$24,%rax
+	or	%rax,%rdx
+	movzbl	12($inp),%rax
+	shl	\$32,%rax
+	or	%rax,%rdx
+	movzbl	13($inp),%rax
+	shl	\$40,%rax
+	or	%rax,%rdx
+	movzbl	14($inp),%rax
+	shl	\$48,%rax
+	or	%rax,%rdx
+	movzbl	15($inp),%rax
+	shl	\$56,%rax
+	or	%rax,%rdx
+	add	%rdx,$h1
+	lea	16($inp),$inp
+	adc	$padbit,$h2
+	sub	\$16,%r15
+
+	call	__poly1305_block
+	mov	$r1,%rax
+
+	test	\$63,%r15
+	jnz	.Lb226pre_unal
+.Lb226pre_done:
+___
+}
+$code.=<<___;
 
 	test	$padbit,$padbit		# if $padbit is zero,
 	jz	.Lstore_base2_64_avx2	# store hash in base 2^64 format
@@ -1657,6 +2147,16 @@ poly1305_blocks_avx2:
 	test	\$63,$len
 	jz	.Linit_avx2
 
+___
+if ($ENV{SARCASM}) {
+	# input is a byte stream of arbitrary alignment; byte-wise
+	# accumulate when it is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$inp
+	jnz	.Lb264pre_unal
+___
+}
+$code.=<<___;
 .Lbase2_64_pre_avx2:
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
@@ -1669,6 +2169,71 @@ poly1305_blocks_avx2:
 
 	test	\$63,%r15
 	jnz	.Lbase2_64_pre_avx2
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lb264pre_done
+.Lb264pre_unal:
+	movzbl	0($inp),%rax
+	movzbl	1($inp),%rdx
+	shl	\$8,%rdx
+	or	%rdx,%rax
+	movzbl	2($inp),%rdx
+	shl	\$16,%rdx
+	or	%rdx,%rax
+	movzbl	3($inp),%rdx
+	shl	\$24,%rdx
+	or	%rdx,%rax
+	movzbl	4($inp),%rdx
+	shl	\$32,%rdx
+	or	%rdx,%rax
+	movzbl	5($inp),%rdx
+	shl	\$40,%rdx
+	or	%rdx,%rax
+	movzbl	6($inp),%rdx
+	shl	\$48,%rdx
+	or	%rdx,%rax
+	movzbl	7($inp),%rdx
+	shl	\$56,%rdx
+	or	%rdx,%rax
+	add	%rax,$h0
+	adc	\$0,$h1
+	movzbl	8($inp),%rdx
+	movzbl	9($inp),%rax
+	shl	\$8,%rax
+	or	%rax,%rdx
+	movzbl	10($inp),%rax
+	shl	\$16,%rax
+	or	%rax,%rdx
+	movzbl	11($inp),%rax
+	shl	\$24,%rax
+	or	%rax,%rdx
+	movzbl	12($inp),%rax
+	shl	\$32,%rax
+	or	%rax,%rdx
+	movzbl	13($inp),%rax
+	shl	\$40,%rax
+	or	%rax,%rdx
+	movzbl	14($inp),%rax
+	shl	\$48,%rax
+	or	%rax,%rdx
+	movzbl	15($inp),%rax
+	shl	\$56,%rax
+	or	%rax,%rdx
+	add	%rdx,$h1
+	lea	16($inp),$inp
+	adc	$padbit,$h2
+	sub	\$16,%r15
+
+	call	__poly1305_block
+	mov	$r1,%rax
+
+	test	\$63,%r15
+	jnz	.Lb264pre_unal
+.Lb264pre_done:
+___
+}
+$code.=<<___;
 
 .Linit_avx2:
 	################################# base 2^64 -> base 2^26
@@ -3787,10 +4352,112 @@ poly1305_emit_base2_44:
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but the
+	# MAC output (and in principle the nonce) are byte buffers of
+	# arbitrary alignment; do the final accumulate/store byte-wise
+	# when either is not 8-aligned.
+	$code.=<<___;
+	test	\$7,$mac
+	jnz	.Lemit44_unal
+	test	\$7,$nonce
+	jnz	.Lemit44_unal
+___
+}
+$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
+___
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	jmp	.Lemit44_done
+.Lemit44_unal:
+	movzbl	0($nonce),%r8
+	movzbl	1($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	2($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	3($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	4($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	5($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	6($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	7($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rax
+	adc	\$0,%rcx
+	movzbl	8($nonce),%r8
+	movzbl	9($nonce),%r9
+	shl	\$8,%r9
+	or	%r9,%r8
+	movzbl	10($nonce),%r9
+	shl	\$16,%r9
+	or	%r9,%r8
+	movzbl	11($nonce),%r9
+	shl	\$24,%r9
+	or	%r9,%r8
+	movzbl	12($nonce),%r9
+	shl	\$32,%r9
+	or	%r9,%r8
+	movzbl	13($nonce),%r9
+	shl	\$40,%r9
+	or	%r9,%r8
+	movzbl	14($nonce),%r9
+	shl	\$48,%r9
+	or	%r9,%r8
+	movzbl	15($nonce),%r9
+	shl	\$56,%r9
+	or	%r9,%r8
+	add	%r8,%rcx
+	mov	%rax,%r9
+	mov	%r9b,0($mac)
+	shr	\$8,%r9
+	mov	%r9b,1($mac)
+	shr	\$8,%r9
+	mov	%r9b,2($mac)
+	shr	\$8,%r9
+	mov	%r9b,3($mac)
+	shr	\$8,%r9
+	mov	%r9b,4($mac)
+	shr	\$8,%r9
+	mov	%r9b,5($mac)
+	shr	\$8,%r9
+	mov	%r9b,6($mac)
+	shr	\$8,%r9
+	mov	%r9b,7($mac)
+	mov	%rcx,%r9
+	mov	%r9b,8($mac)
+	shr	\$8,%r9
+	mov	%r9b,9($mac)
+	shr	\$8,%r9
+	mov	%r9b,10($mac)
+	shr	\$8,%r9
+	mov	%r9b,11($mac)
+	shr	\$8,%r9
+	mov	%r9b,12($mac)
+	shr	\$8,%r9
+	mov	%r9b,13($mac)
+	shr	\$8,%r9
+	mov	%r9b,14($mac)
+	shr	\$8,%r9
+	mov	%r9b,15($mac)
+.Lemit44_done:
+___
+}
+$code.=<<___;
 
 	ret
 .cfi_endproc

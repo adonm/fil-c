@@ -324,6 +324,7 @@ sub enclast()
 	$code.="\n";
 }
 
+if (!$ENV{SARCASM}) {
 $code.=<<___;
 .type	_x86_64_AES_encrypt,\@abi-omnipotent
 .align	16
@@ -367,6 +368,7 @@ $code.=<<___;
 .cfi_endproc
 .size	_x86_64_AES_encrypt,.-_x86_64_AES_encrypt
 ___
+}
 
 # it's possible to implement this by shifting tN by 8, filling least
 # significant byte with byte load and finally bswap-ing at the end,
@@ -658,10 +660,66 @@ $code.=<<___;
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
 
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but AES_encrypt's
+	# contract (like the C code) accepts an arbitrarily aligned input.
+	# Bounce an unaligned input block through the aligned frame buffer.
+	$code.=<<___;
+	test	\$3,%rdi
+	jnz	.Lenc_unal_in
+___
+}
+$code.=<<___;
 	mov	0(%rdi),$s0	# load input vector
 	mov	4(%rdi),$s1
 	mov	8(%rdi),$s2
 	mov	12(%rdi),$s3
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	jmp	.Lenc_in_done
+.Lenc_unal_in:
+	mov	0(%rdi),%r11b
+	mov	%r11b,32(%rsp)
+	mov	1(%rdi),%r11b
+	mov	%r11b,33(%rsp)
+	mov	2(%rdi),%r11b
+	mov	%r11b,34(%rsp)
+	mov	3(%rdi),%r11b
+	mov	%r11b,35(%rsp)
+	mov	4(%rdi),%r11b
+	mov	%r11b,36(%rsp)
+	mov	5(%rdi),%r11b
+	mov	%r11b,37(%rsp)
+	mov	6(%rdi),%r11b
+	mov	%r11b,38(%rsp)
+	mov	7(%rdi),%r11b
+	mov	%r11b,39(%rsp)
+	mov	8(%rdi),%r11b
+	mov	%r11b,40(%rsp)
+	mov	9(%rdi),%r11b
+	mov	%r11b,41(%rsp)
+	mov	10(%rdi),%r11b
+	mov	%r11b,42(%rsp)
+	mov	11(%rdi),%r11b
+	mov	%r11b,43(%rsp)
+	mov	12(%rdi),%r11b
+	mov	%r11b,44(%rsp)
+	mov	13(%rdi),%r11b
+	mov	%r11b,45(%rsp)
+	mov	14(%rdi),%r11b
+	mov	%r11b,46(%rsp)
+	mov	15(%rdi),%r11b
+	mov	%r11b,47(%rsp)
+	mov	32(%rsp),$s0
+	mov	36(%rsp),$s1
+	mov	40(%rsp),$s2
+	mov	44(%rsp),$s3
+.Lenc_in_done:
+___
+}
+$code.=<<___;
 
 	shl	\$4,$rnds
 	lea	($key,$rnds),%rbp
@@ -695,10 +753,64 @@ $code.=<<___;
 	mov	16(%rsp),$out	# restore out	#! load ptr
 	mov	24(%rsp),%rsi	# restore saved stack pointer
 .cfi_def_cfa	%rsi,8
+___
+if ($ENV{SARCASM}) {
+	# Same for the output block.
+	$code.=<<___;
+	test	\$3,$out
+	jnz	.Lenc_unal_out
+___
+}
+$code.=<<___;
 	mov	$s0,0($out)	# write output vector
 	mov	$s1,4($out)
 	mov	$s2,8($out)
 	mov	$s3,12($out)
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	jmp	.Lenc_out_done
+.Lenc_unal_out:
+	mov	$s0,32(%rsp)
+	mov	$s1,36(%rsp)
+	mov	$s2,40(%rsp)
+	mov	$s3,44(%rsp)
+	mov	32(%rsp),%r11b
+	mov	%r11b,0($out)
+	mov	33(%rsp),%r11b
+	mov	%r11b,1($out)
+	mov	34(%rsp),%r11b
+	mov	%r11b,2($out)
+	mov	35(%rsp),%r11b
+	mov	%r11b,3($out)
+	mov	36(%rsp),%r11b
+	mov	%r11b,4($out)
+	mov	37(%rsp),%r11b
+	mov	%r11b,5($out)
+	mov	38(%rsp),%r11b
+	mov	%r11b,6($out)
+	mov	39(%rsp),%r11b
+	mov	%r11b,7($out)
+	mov	40(%rsp),%r11b
+	mov	%r11b,8($out)
+	mov	41(%rsp),%r11b
+	mov	%r11b,9($out)
+	mov	42(%rsp),%r11b
+	mov	%r11b,10($out)
+	mov	43(%rsp),%r11b
+	mov	%r11b,11($out)
+	mov	44(%rsp),%r11b
+	mov	%r11b,12($out)
+	mov	45(%rsp),%r11b
+	mov	%r11b,13($out)
+	mov	46(%rsp),%r11b
+	mov	%r11b,14($out)
+	mov	47(%rsp),%r11b
+	mov	%r11b,15($out)
+.Lenc_out_done:
+___
+}
+$code.=<<___;
 
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -945,6 +1057,7 @@ sub declast()
 	$code.="\n";
 }
 
+if (!$ENV{SARCASM}) {
 $code.=<<___;
 .type	_x86_64_AES_decrypt,\@abi-omnipotent
 .align	16
@@ -995,6 +1108,7 @@ $code.=<<___;
 .cfi_endproc
 .size	_x86_64_AES_decrypt,.-_x86_64_AES_decrypt
 ___
+}
 
 sub deccompactvert()
 { my ($t3,$t4,$t5)=("%r8d","%r9d","%r13d");
@@ -1311,10 +1425,66 @@ $code.=<<___;
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
 
+___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every access, but AES_decrypt's
+	# contract (like the C code) accepts an arbitrarily aligned input.
+	# Bounce an unaligned input block through the aligned frame buffer.
+	$code.=<<___;
+	test	\$3,%rdi
+	jnz	.Ldec_unal_in
+___
+}
+$code.=<<___;
 	mov	0(%rdi),$s0	# load input vector
 	mov	4(%rdi),$s1
 	mov	8(%rdi),$s2
 	mov	12(%rdi),$s3
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	jmp	.Ldec_in_done
+.Ldec_unal_in:
+	mov	0(%rdi),%r11b
+	mov	%r11b,32(%rsp)
+	mov	1(%rdi),%r11b
+	mov	%r11b,33(%rsp)
+	mov	2(%rdi),%r11b
+	mov	%r11b,34(%rsp)
+	mov	3(%rdi),%r11b
+	mov	%r11b,35(%rsp)
+	mov	4(%rdi),%r11b
+	mov	%r11b,36(%rsp)
+	mov	5(%rdi),%r11b
+	mov	%r11b,37(%rsp)
+	mov	6(%rdi),%r11b
+	mov	%r11b,38(%rsp)
+	mov	7(%rdi),%r11b
+	mov	%r11b,39(%rsp)
+	mov	8(%rdi),%r11b
+	mov	%r11b,40(%rsp)
+	mov	9(%rdi),%r11b
+	mov	%r11b,41(%rsp)
+	mov	10(%rdi),%r11b
+	mov	%r11b,42(%rsp)
+	mov	11(%rdi),%r11b
+	mov	%r11b,43(%rsp)
+	mov	12(%rdi),%r11b
+	mov	%r11b,44(%rsp)
+	mov	13(%rdi),%r11b
+	mov	%r11b,45(%rsp)
+	mov	14(%rdi),%r11b
+	mov	%r11b,46(%rsp)
+	mov	15(%rdi),%r11b
+	mov	%r11b,47(%rsp)
+	mov	32(%rsp),$s0
+	mov	36(%rsp),$s1
+	mov	40(%rsp),$s2
+	mov	44(%rsp),$s3
+.Ldec_in_done:
+___
+}
+$code.=<<___;
 
 	shl	\$4,$rnds
 	lea	($key,$rnds),%rbp
@@ -1348,10 +1518,64 @@ $code.=<<___;
 	mov	16(%rsp),$out	# restore out	#! load ptr
 	mov	24(%rsp),%rsi	# restore saved stack pointer
 .cfi_def_cfa	%rsi,8
+___
+if ($ENV{SARCASM}) {
+	# Same for the output block.
+	$code.=<<___;
+	test	\$3,$out
+	jnz	.Ldec_unal_out
+___
+}
+$code.=<<___;
 	mov	$s0,0($out)	# write output vector
 	mov	$s1,4($out)
 	mov	$s2,8($out)
 	mov	$s3,12($out)
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	jmp	.Ldec_out_done
+.Ldec_unal_out:
+	mov	$s0,32(%rsp)
+	mov	$s1,36(%rsp)
+	mov	$s2,40(%rsp)
+	mov	$s3,44(%rsp)
+	mov	32(%rsp),%r11b
+	mov	%r11b,0($out)
+	mov	33(%rsp),%r11b
+	mov	%r11b,1($out)
+	mov	34(%rsp),%r11b
+	mov	%r11b,2($out)
+	mov	35(%rsp),%r11b
+	mov	%r11b,3($out)
+	mov	36(%rsp),%r11b
+	mov	%r11b,4($out)
+	mov	37(%rsp),%r11b
+	mov	%r11b,5($out)
+	mov	38(%rsp),%r11b
+	mov	%r11b,6($out)
+	mov	39(%rsp),%r11b
+	mov	%r11b,7($out)
+	mov	40(%rsp),%r11b
+	mov	%r11b,8($out)
+	mov	41(%rsp),%r11b
+	mov	%r11b,9($out)
+	mov	42(%rsp),%r11b
+	mov	%r11b,10($out)
+	mov	43(%rsp),%r11b
+	mov	%r11b,11($out)
+	mov	44(%rsp),%r11b
+	mov	%r11b,12($out)
+	mov	45(%rsp),%r11b
+	mov	%r11b,13($out)
+	mov	46(%rsp),%r11b
+	mov	%r11b,14($out)
+	mov	47(%rsp),%r11b
+	mov	%r11b,15($out)
+.Ldec_out_done:
+___
+}
+$code.=<<___;
 
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -1809,6 +2033,35 @@ AES_cbc_encrypt:
 	cmp	\$0,%rdx	# check length
 	je	.Lcbc_epilogue
 ___
+if ($ENV{SARCASM}) {
+	# Fil-C requires natural alignment for every memory access, while
+	# AES_cbc_encrypt's contract (like the C code) accepts arbitrarily
+	# aligned buffers. The fast CBC loops use word-sized loads/stores
+	# that cannot prove that, so forward to the always-compiled C CBC
+	# implementations (memcpy-based, hence alignment-safe) with the asm
+	# block functions passed as capabilities.
+	$code.=<<___;
+	test	%r9d,%r9d
+	jz	.Lcbc_fwd_dec
+	push	%rax
+	lea	AES_encrypt(%rip),%rax	#! funcref
+	mov	%rax,%r9
+	call	CRYPTO_cbc128_encrypt #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+	pop	%rax
+	ret
+.Lcbc_fwd_dec:
+	push	%rax
+	lea	AES_decrypt(%rip),%rax	#! funcref
+	mov	%rax,%r9
+	call	CRYPTO_cbc128_decrypt #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+	pop	%rax
+	ret
+.Lcbc_epilogue:
+	ret
+.cfi_endproc
+.size	AES_cbc_encrypt,.-AES_cbc_encrypt
+___
+} else {
 if ($ENV{SARCASM}) {
 	# pushfq/popfq omitted: sarcasm keeps a literal pushfq across the body,
 	# leaving %rsp 8 bytes lower than its frame model assumes and injecting
@@ -2394,6 +2647,7 @@ $code.=<<___;
 .cfi_endproc
 .size	AES_cbc_encrypt,.-AES_cbc_encrypt
 ___
+}	# end of the SARCASM-forwarding else branch
 }
 
 $code.=<<___;

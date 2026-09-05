@@ -13,6 +13,7 @@
 -- }
 
 local arm64 = require("./arm64_isa")
+local prof = require("./prof")
 
 local lift = {}
 
@@ -174,6 +175,7 @@ function lift.liftFunction(body, opts)
 	-- OUT[0] = gen[0]
 	for id in gen[0] do OUT[0][id] = true end
 	local changed = true
+	local rounds = 0
 	while changed do
 		changed = false
 		for i = 1, n do
@@ -197,7 +199,9 @@ function lift.liftFunction(body, opts)
 				changed = true; IN[i] = newIn; OUT[i] = newOut
 			end
 		end
+		rounds += 1
 	end
+	prof.mark("    [lift " .. n .. " flow] reaching-defs rounds=" .. rounds .. " sites=" .. #sites)
 
 	-- Build webs: union def-sites reaching common uses.
 	local uf = makeUF()

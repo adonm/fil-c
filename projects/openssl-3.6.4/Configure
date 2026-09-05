@@ -1742,8 +1742,11 @@ if (!$disabled{makedepend}) {
     disable('unavailable', 'makedepend') unless $config{makedep_scheme};
 }
 
-if (!$disabled{asm} && !$predefined_C{__MACH__} && $^O ne 'VMS' && !$predefined_C{_AIX}) {
+if (!$disabled{asm} && !$predefined_C{__MACH__} && $^O ne 'VMS' && !$predefined_C{_AIX}
+        && !$ENV{SARCASM}) {
     # probe for -Wa,--noexecstack option...
+    # (skipped under SARCASM: Fil-C's sarcasm assembler accepts no -Wa options
+    # at all, and it always emits .note.GNU-stack by itself)
     if ($predefined_C{__clang__}) {
         # clang has builtin assembler, which doesn't recognize --help,
         # but it apparently recognizes the option in question on all

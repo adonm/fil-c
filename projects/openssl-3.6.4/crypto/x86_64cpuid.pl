@@ -313,6 +313,19 @@ CRYPTO_memcmp:
 	je	.Lno_data
 	cmp	\$16,$arg3
 	jne	.Loop_cmp
+___
+if ($ENV{SARCASM}) {
+# Fil-C requires natural alignment for every access, but CRYPTO_memcmp's
+# contract (like the C code) accepts arbitrarily aligned buffers. Fall
+# back to a byte-wise compare when either pointer is not 8-aligned.
+print<<___;
+	test	\$7,$arg1
+	jnz	.Lcmp16_unal
+	test	\$7,$arg2
+	jnz	.Lcmp16_unal
+___
+}
+print<<___;
 	mov	($arg1),%r10
 	mov	8($arg1),%r11
 	mov	\$1,$arg3
@@ -321,6 +334,65 @@ CRYPTO_memcmp:
 	or	%r11,%r10
 	cmovnz	$arg3,%rax
 	ret
+___
+if ($ENV{SARCASM}) {
+print<<___;
+.align	16
+.Lcmp16_unal:
+	mov	\$1,$arg3
+	movzbl	($arg1),%r11d
+	xor	($arg2),%r11b
+	or	%r11,%r10
+	movzbl	1($arg1),%r11d
+	xor	1($arg2),%r11b
+	or	%r11,%r10
+	movzbl	2($arg1),%r11d
+	xor	2($arg2),%r11b
+	or	%r11,%r10
+	movzbl	3($arg1),%r11d
+	xor	3($arg2),%r11b
+	or	%r11,%r10
+	movzbl	4($arg1),%r11d
+	xor	4($arg2),%r11b
+	or	%r11,%r10
+	movzbl	5($arg1),%r11d
+	xor	5($arg2),%r11b
+	or	%r11,%r10
+	movzbl	6($arg1),%r11d
+	xor	6($arg2),%r11b
+	or	%r11,%r10
+	movzbl	7($arg1),%r11d
+	xor	7($arg2),%r11b
+	or	%r11,%r10
+	movzbl	8($arg1),%r11d
+	xor	8($arg2),%r11b
+	or	%r11,%r10
+	movzbl	9($arg1),%r11d
+	xor	9($arg2),%r11b
+	or	%r11,%r10
+	movzbl	10($arg1),%r11d
+	xor	10($arg2),%r11b
+	or	%r11,%r10
+	movzbl	11($arg1),%r11d
+	xor	11($arg2),%r11b
+	or	%r11,%r10
+	movzbl	12($arg1),%r11d
+	xor	12($arg2),%r11b
+	or	%r11,%r10
+	movzbl	13($arg1),%r11d
+	xor	13($arg2),%r11b
+	or	%r11,%r10
+	movzbl	14($arg1),%r11d
+	xor	14($arg2),%r11b
+	or	%r11,%r10
+	movzbl	15($arg1),%r11d
+	xor	15($arg2),%r11b
+	or	%r11,%r10
+	cmovnz	$arg3,%rax
+	ret
+___
+}
+print<<___;
 
 .align	16
 .Loop_cmp:

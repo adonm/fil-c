@@ -741,6 +741,15 @@ void copy_path_preserving(const std::string& src, const std::string& dst)
     }
     if (S_ISREG(st.st_mode)) {
         copy_file_bytes(src, dst);
+        // write_file_bytes creates the destination with 0666 & ~umask, so
+        // restore the source permission bits (notably the executable bit)
+        // that `cp -a` would have kept. Without this, package/extract and
+        // other staged copies silently drop +x (e.g. configure). Mask with
+        // 0777: the full rwx bits are preserved (0700 stays 0700, 0640 stays
+        // 0640) but setuid/setgid/sticky are never propagated into staged
+        // package/extract payloads.
+        if (chmod(dst.c_str(), (mode_t)(st.st_mode & 0777)) != 0)
+            die("cannot set permissions on '" + dst + "': " + strerror(errno));
         return;
     }
     die("cannot copy '" + src + "': unsupported file type; only regular files, "

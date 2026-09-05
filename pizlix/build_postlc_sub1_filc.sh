@@ -36,14 +36,6 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/XML-Parser-2.47 pizlonated-xml-parser
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
 ./package-source.sh projects/elfutils-0.191 pizlonated-elfutils
-# libffi is managed by projeny (projects/libffi.projeny plus
-# projects/libffi-3.8.0.tar.gz): `projeny package` runs setup and then tars
-# the tracked files, including uncommitted changes, failing on conflicts.
-if [ ! -x filc/projeny ]; then
-    (cd projects/projeny && make -j `nproc`)
-    mkdir -p filc
-    cp projects/projeny/projeny filc/projeny
-fi
 filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/Python-3.12.5 pizlonated-cpython
 ./package-source.sh projects/check-0.15.2 pizlonated-check

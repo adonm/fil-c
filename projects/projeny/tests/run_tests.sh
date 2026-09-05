@@ -4475,6 +4475,278 @@ else
     fail "refused rm leaves the file alone"
 fi
 
+# ----------------------------------------- 99. package/extract keep +x
+# Regression test: an executable shipped by the base tarball (never touched
+# by the patch, like libffi's configure) must stay executable through
+# setup, package (tar member mode), and extract (on-disk mode).
+TXBIT="$ROOT/txbit"
+mkdir -p "$TXBIT/x-1.0"
+printf '#!/bin/sh\necho hi\n' > "$TXBIT/x-1.0/configure"
+chmod 755 "$TXBIT/x-1.0/configure"
+printf 'plain\n' > "$TXBIT/x-1.0/README"
+(cd "$TXBIT" && tar -czf x-1.0.tar.gz x-1.0 && rm -rf x-1.0)
+printf 'Archive: x-1.0.tar.gz\nOrigname: x-1.0\nName: x\n\n    Exec fixture.\n' > "$TXBIT/x.projeny"
+run_in "$TXBIT" expect_ok "exec setup" "$PROJENY" setup x.projeny
+if [ -x "$TXBIT/x/configure" ]; then
+    ok "setup keeps base +x"
+else
+    fail "setup keeps base +x" "$(ls -l "$TXBIT/x/configure" 2>&1)"
+fi
+run_in "$TXBIT" expect_ok "exec package" "$PROJENY" package x.projeny x-out.tar.gz
+if tar -tvzf "$TXBIT/x-out.tar.gz" | grep -q "^-rwx.*configure"; then
+    ok "package tar keeps +x"
+else
+    fail "package tar keeps +x" "$(tar -tvzf "$TXBIT/x-out.tar.gz" 2>&1)"
+fi
+run_in "$TXBIT" expect_ok "exec extract" "$PROJENY" extract x.projeny x-dest
+if [ -x "$TXBIT/x-dest/configure" ]; then
+    ok "extract keeps +x"
+else
+    fail "extract keeps +x" "$(ls -l "$TXBIT/x-dest/configure" 2>&1)"
+fi
+if [ -x "$TXBIT/x-dest/configure" ] && [ ! -x "$TXBIT/x-dest/README" ]; then
+    ok "extract keeps non-exec non-exec"
+else
+    fail "extract keeps non-exec non-exec" "$(ls -l "$TXBIT/x-dest" 2>&1)"
+fi
+# Content-only edit of the executable plus commit must still package +x.
+printf '#!/bin/sh\necho yo\n' > "$TXBIT/x/configure"
+chmod 755 "$TXBIT/x/configure"
+run_in "$TXBIT" expect_ok "exec content commit" "$PROJENY" commit x.projeny
+rm -rf "$TXBIT/x-dest" "$TXBIT/x-out.tar.gz"
+run_in "$TXBIT" expect_ok "repackage after content edit" "$PROJENY" package x.projeny x-out.tar.gz
+if tar -tvzf "$TXBIT/x-out.tar.gz" | grep -q "^-rwx.*configure"; then
+    ok "repackage keeps +x after content edit"
+else
+    fail "repackage keeps +x after content edit" "$(tar -tvzf "$TXBIT/x-out.tar.gz" 2>&1)"
+fi
+run_in "$TXBIT" expect_ok "re-extract after content edit" "$PROJENY" extract x.projeny x-dest2
+if [ -x "$TXBIT/x-dest2/configure" ]; then
+    ok "re-extract keeps +x after content edit"
+else
+    fail "re-extract keeps +x after content edit" "$(ls -l "$TXBIT/x-dest2/configure" 2>&1)"
+fi
+
+# ----------------------------------------- 100. clean merge keeps +x
+# Regression test: a genuine three-way line merge of an executable (adjacent
+# local/upstream edits, so the local hunk cannot apply directly and the
+# merger rewrites the file) must keep +x. Note ours aliases dst in every
+# in-place merge, so the exec vote has to be sampled before the write.
+TMERGE="$ROOT/tmerge"
+mkdir -p "$TMERGE/m-1.0"
+cat > "$TMERGE/m-1.0/run.sh" <<'EOF'
+#!/bin/sh
+echo one
+echo two
+echo three
+echo four
+echo five
+EOF
+chmod 755 "$TMERGE/m-1.0/run.sh"
+printf 'hello v1\n' > "$TMERGE/m-1.0/README"
+(cd "$TMERGE" && tar -czf m-1.0.tar.gz m-1.0 && rm -rf m-1.0)
+printf 'Archive: m-1.0.tar.gz\nOrigname: m-1.0\nName: m\n\n    Merge exec fixture.\n' > "$TMERGE/m.projeny"
+run_in "$TMERGE" expect_ok "merge-exec setup" "$PROJENY" setup m.projeny
+sed -i 's/echo two/echo TWO/' "$TMERGE/m/run.sh"
+chmod 755 "$TMERGE/m/run.sh"
+mkdir -p "$TMERGE/up"
+cp "$TMERGE/m-1.0.tar.gz" "$TMERGE/m.projeny" "$TMERGE/up/"
+(cd "$TMERGE/up" && "$PROJENY" setup m.projeny >/dev/null 2>&1)
+sed -i 's/echo three/echo THREE/' "$TMERGE/up/m/run.sh"
+chmod 755 "$TMERGE/up/m/run.sh"
+(cd "$TMERGE/up" && "$PROJENY" commit m.projeny >/dev/null 2>&1)
+cp "$TMERGE/up/m.projeny" "$TMERGE/m.projeny"
+run_in "$TMERGE" expect_ok "adjacent-edit merge exits 0" "$PROJENY" setup m.projeny
+expect_file_contains "merge keeps local edit" "$TMERGE/m/run.sh" "echo TWO"
+expect_file_contains "merge keeps upstream edit" "$TMERGE/m/run.sh" "echo THREE"
+if [ -x "$TMERGE/m/run.sh" ]; then
+    ok "clean merge keeps +x"
+else
+    fail "clean merge keeps +x" "$(ls -l "$TMERGE/m/run.sh" 2>&1)"
+fi
+
+# ----------------------------------------- 101. all execs + modes via package/extract
+# libffi-style: many executables (configure, config.guess, ...) plus
+# restrictive modes (0700 owner-only, 0640 group-read). Every +x member of
+# the base tarball must stay +x through setup, package (tar member mode),
+# and extract (on-disk mode); rw bits must not widen (0700 stays 700, 0640
+# stays 640); setuid must never leak into package/extract payloads.
+TMODE="$ROOT/tmode"
+mkdir -p "$TMODE/y-1.0"
+for f in configure config.guess config.sub missing compile depcomp install-sh ltmain.sh mdate-sh texinfo.tex; do
+    printf '#!/bin/sh\necho %s\n' "$f" > "$TMODE/y-1.0/$f"
+    chmod 755 "$TMODE/y-1.0/$f"
+done
+printf '#!/bin/sh\necho private\n' > "$TMODE/y-1.0/tool-700"
+chmod 700 "$TMODE/y-1.0/tool-700"
+printf 'group data\n' > "$TMODE/y-1.0/data-640"
+chmod 640 "$TMODE/y-1.0/data-640"
+printf 'plain\n' > "$TMODE/y-1.0/README"
+(cd "$TMODE" && tar -czf y-1.0.tar.gz y-1.0 && rm -rf y-1.0)
+printf 'Archive: y-1.0.tar.gz\nOrigname: y-1.0\nName: y\n\n    Mode fixture.\n' > "$TMODE/y.projeny"
+run_in "$TMODE" expect_ok "mode setup" "$PROJENY" setup y.projeny
+# Enumerate every executable member shipped by the base tarball (libffi
+# ships ~21) instead of asserting a single file.
+BASE_EXECS=$(cd "$TMODE" && tar -tzvf y-1.0.tar.gz | awk '$1 ~ /^-..x/ {print $NF}' | sed 's|^y-1.0/||')
+NEXEC=0
+for f in $BASE_EXECS; do
+    [ -n "$f" ] || continue
+    NEXEC=$((NEXEC + 1))
+    if [ -x "$TMODE/y/$f" ]; then
+        ok "setup keeps +x on $f"
+    else
+        fail "setup keeps +x on $f" "$(ls -l "$TMODE/y/$f" 2>&1)"
+    fi
+done
+if [ "$NEXEC" -ge 10 ]; then
+    ok "base tarball ships all executables ($NEXEC)"
+else
+    fail "base tarball ships all executables" "found $NEXEC: $BASE_EXECS"
+fi
+if [ "$(stat -c %a "$TMODE/y/tool-700")" = "700" ]; then
+    ok "setup keeps 0700 exact"
+else
+    fail "setup keeps 0700 exact" "$(stat -c %a "$TMODE/y/tool-700" 2>&1)"
+fi
+if [ "$(stat -c %a "$TMODE/y/data-640")" = "640" ]; then
+    ok "setup keeps 0640 exact"
+else
+    fail "setup keeps 0640 exact" "$(stat -c %a "$TMODE/y/data-640" 2>&1)"
+fi
+if [ ! -x "$TMODE/y/README" ] && [ ! -x "$TMODE/y/data-640" ]; then
+    ok "setup keeps non-exec non-exec"
+else
+    fail "setup keeps non-exec non-exec" "$(ls -l "$TMODE/y" 2>&1)"
+fi
+run_in "$TMODE" expect_ok "mode package" "$PROJENY" package y.projeny y-out.tar.gz
+for f in $BASE_EXECS; do
+    [ -n "$f" ] || continue
+    if tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/$f" | grep -q "^-..x"; then
+        ok "package tar keeps +x on $f"
+    else
+        fail "package tar keeps +x on $f" "$(tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/$f" 2>&1)"
+    fi
+done
+if tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/tool-700" | grep -q "^-rwx------"; then
+    ok "package tar keeps 0700 exact"
+else
+    fail "package tar keeps 0700 exact" "$(tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/tool-700" 2>&1)"
+fi
+if tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/data-640" | grep -q "^-rw-r-----"; then
+    ok "package tar keeps 0640 exact"
+else
+    fail "package tar keeps 0640 exact" "$(tar -tzvf "$TMODE/y-out.tar.gz" | grep -F "/data-640" 2>&1)"
+fi
+run_in "$TMODE" expect_ok "mode extract" "$PROJENY" extract y.projeny y-dest
+for f in $BASE_EXECS; do
+    [ -n "$f" ] || continue
+    if [ -x "$TMODE/y-dest/$f" ]; then
+        ok "extract keeps +x on $f"
+    else
+        fail "extract keeps +x on $f" "$(ls -l "$TMODE/y-dest/$f" 2>&1)"
+    fi
+done
+if [ "$(stat -c %a "$TMODE/y-dest/tool-700")" = "700" ]; then
+    ok "extract keeps 0700 exact"
+else
+    fail "extract keeps 0700 exact" "$(stat -c %a "$TMODE/y-dest/tool-700" 2>&1)"
+fi
+if [ "$(stat -c %a "$TMODE/y-dest/data-640")" = "640" ]; then
+    ok "extract keeps 0640 exact"
+else
+    fail "extract keeps 0640 exact" "$(stat -c %a "$TMODE/y-dest/data-640" 2>&1)"
+fi
+if [ ! -x "$TMODE/y-dest/README" ] && [ ! -x "$TMODE/y-dest/data-640" ]; then
+    ok "extract keeps non-exec non-exec"
+else
+    fail "extract keeps non-exec non-exec" "$(ls -l "$TMODE/y-dest" 2>&1)"
+fi
+# setuid/setgid/sticky must never leak into staged payloads (staged copies
+# mask 0777). setup normalizes workdir modes first, so this is defense in
+# depth: the payload must still be clean even for a pending-added suid file.
+printf '#!/bin/sh\necho suid\n' > "$TMODE/y/suid-tool"
+chmod 4755 "$TMODE/y/suid-tool"
+run_in "$TMODE" expect_ok "suid add" "$PROJENY" add y.projeny y/suid-tool
+run_in "$TMODE" expect_ok "suid package" "$PROJENY" package y.projeny y-suid.tar.gz
+if tar -tzvf "$TMODE/y-suid.tar.gz" | grep -F "/suid-tool" | grep -Eq "^[^ ]*[sST]"; then
+    fail "package strips setuid" "$(tar -tzvf "$TMODE/y-suid.tar.gz" | grep -F "/suid-tool" 2>&1)"
+else
+    ok "package strips setuid"
+fi
+run_in "$TMODE" expect_ok "suid extract" "$PROJENY" extract y.projeny y-suid-dest
+if [ -u "$TMODE/y-suid-dest/suid-tool" ]; then
+    fail "extract strips setuid" "$(ls -l "$TMODE/y-suid-dest/suid-tool" 2>&1)"
+else
+    ok "extract strips setuid"
+fi
+
+# ----------------------------------------- 102. conflict merge keeps +x
+# Same-line local/upstream edits to an executable force conflict markers
+# (the early and late merge-conflict write paths); the result must stay
+# executable with its restrictive mode intact (0700, not widened to 0755).
+TCONF="$ROOT/tconf"
+mkdir -p "$TCONF/c-1.0"
+cat > "$TCONF/c-1.0/run.sh" <<'EOF'
+#!/bin/sh
+echo one
+echo two
+echo three
+echo four
+echo five
+EOF
+chmod 700 "$TCONF/c-1.0/run.sh"
+printf 'hello v1\n' > "$TCONF/c-1.0/README"
+(cd "$TCONF" && tar -czf c-1.0.tar.gz c-1.0 && rm -rf c-1.0)
+printf 'Archive: c-1.0.tar.gz\nOrigname: c-1.0\nName: c\n\n    Conflict exec fixture.\n' > "$TCONF/c.projeny"
+run_in "$TCONF" expect_ok "conflict-exec setup" "$PROJENY" setup c.projeny
+sed -i 's/echo two/echo LOCAL/' "$TCONF/c/run.sh"
+UCONF="$ROOT/tconfup"
+mkdir -p "$UCONF"
+cp "$TCONF/c-1.0.tar.gz" "$TCONF/c.projeny" "$UCONF/"
+(cd "$UCONF" && "$PROJENY" setup c.projeny >/dev/null 2>&1)
+sed -i 's/echo two/echo UPSTREAM/' "$UCONF/c/run.sh"
+(cd "$UCONF" && "$PROJENY" commit c.projeny >/dev/null 2>&1)
+cp "$UCONF/c.projeny" "$TCONF/c.projeny"
+run_in "$TCONF" expect_fail "conflicting merge exits nonzero" "$PROJENY" setup c.projeny
+expect_file_contains "conflict leaves markers" "$TCONF/c/run.sh" "<<<<<<<"
+if [ -x "$TCONF/c/run.sh" ]; then
+    ok "conflict merge keeps +x"
+else
+    fail "conflict merge keeps +x" "$(ls -l "$TCONF/c/run.sh" 2>&1)"
+fi
+if [ "$(stat -c %a "$TCONF/c/run.sh")" = "700" ]; then
+    ok "conflict merge keeps 0700 exact"
+else
+    fail "conflict merge keeps 0700 exact" "$(stat -c %a "$TCONF/c/run.sh" 2>&1)"
+fi
+
+# ----------------------------------------- 103. add/add conflict keeps +x
+# File absent from base, added differently on both sides with +x: the
+# new-file conflict path must also restore the executable bit.
+TADD="$ROOT/tadd"
+mkdir -p "$TADD/d-1.0"
+printf 'hello v1\n' > "$TADD/d-1.0/README"
+(cd "$TADD" && tar -czf d-1.0.tar.gz d-1.0 && rm -rf d-1.0)
+printf 'Archive: d-1.0.tar.gz\nOrigname: d-1.0\nName: d\n\n    Add-add fixture.\n' > "$TADD/d.projeny"
+run_in "$TADD" expect_ok "add-add setup" "$PROJENY" setup d.projeny
+printf '#!/bin/sh\necho local\n' > "$TADD/d/newtool.sh"
+chmod 755 "$TADD/d/newtool.sh"
+UADD="$ROOT/taddup"
+mkdir -p "$UADD"
+cp "$TADD/d-1.0.tar.gz" "$TADD/d.projeny" "$UADD/"
+(cd "$UADD" && "$PROJENY" setup d.projeny >/dev/null 2>&1)
+printf '#!/bin/sh\necho upstream\n' > "$UADD/d/newtool.sh"
+chmod 755 "$UADD/d/newtool.sh"
+(cd "$UADD" && "$PROJENY" commit d.projeny >/dev/null 2>&1)
+cp "$UADD/d.projeny" "$TADD/d.projeny"
+run_in "$TADD" expect_fail "add-add merge exits nonzero" "$PROJENY" setup d.projeny
+expect_file_contains "add-add leaves markers" "$TADD/d/newtool.sh" "<<<<<<<"
+if [ -x "$TADD/d/newtool.sh" ]; then
+    ok "add-add conflict keeps +x"
+else
+    fail "add-add conflict keeps +x" "$(ls -l "$TADD/d/newtool.sh" 2>&1)"
+fi
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

@@ -1558,21 +1558,30 @@ void enforce_already_newline(const std::string& path, FileLines& cur,
         expected = false;
     if (cur.ends_nl == expected)
         return;
-    // Remember exec state so the rewrite does not drop +x.
-    bool was_exec = false;
+    // Remember the full mode so the rename-based rewrite neither drops
+    // +x nor widens restrictive modes (0700->0755) nor leaks rw (0640->0644).
+    // An explicit patch mode still wins below; otherwise the exact bits stay.
+    mode_t prev_mode = 0;
+    bool have_prev_mode = false;
     struct stat sst;
-    if (stat(path.c_str(), &sst) == 0 && S_ISREG(sst.st_mode) &&
-        (sst.st_mode & 0111))
-        was_exec = true;
+    if (stat(path.c_str(), &sst) == 0 && S_ISREG(sst.st_mode)) {
+        prev_mode = (mode_t)(sst.st_mode & 07777);
+        have_prev_mode = true;
+    }
     cur.ends_nl = expected;
     write_file_bytes(path, join_content(cur.lines, cur.ends_nl));
     if (!blk.new_mode.empty() && blk.new_mode != "120000") {
         mode_t m = is_exec_mode(blk.new_mode) ? 0755 : 0644;
         if (chmod(path.c_str(), m) != 0)
             die("cannot set permissions on '" + path + "': " + strerror(errno));
-    } else if (was_exec) {
-        if (chmod(path.c_str(), 0755) != 0)
-            die("cannot set permissions on '" + path + "': " + strerror(errno));
+    } else if (have_prev_mode) {
+        struct stat dst_st;
+        if (lstat(path.c_str(), &dst_st) == 0 && S_ISREG(dst_st.st_mode) &&
+            (mode_t)(dst_st.st_mode & 07777) != prev_mode) {
+            if (chmod(path.c_str(), prev_mode) != 0)
+                die("cannot set permissions on '" + path + "': " +
+                    strerror(errno));
+        }
     }
 }
 
@@ -1996,14 +2005,24 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     // stays a symlink and a regular file keeps its executable bit, so
     // applying a content-only change never silently drops +x.
     std::string eff_mode = blk.new_mode;
+    // Full permission snapshot for content-only rewrites (no explicit mode
+    // in the patch): write_target is rename-based, so without a restore it
+    // would reset restrictive modes (0700->0755 via the inferred 100755, or
+    // 0640->0644 via 0666&~umask when non-exec). Restored below; explicit
+    // mode changes keep the patch's declared 0755/0644.
+    mode_t src_full_mode = 0;
+    bool have_src_full_mode = false;
     if (eff_mode.empty()) {
         if (is_link) {
             eff_mode = "120000";
         } else {
             struct stat sst;
-            if (stat(src_full.c_str(), &sst) == 0 && S_ISREG(sst.st_mode) &&
-                (sst.st_mode & 0111))
-                eff_mode = "100755";
+            if (stat(src_full.c_str(), &sst) == 0 && S_ISREG(sst.st_mode)) {
+                src_full_mode = (mode_t)(sst.st_mode & 07777);
+                have_src_full_mode = true;
+                if (sst.st_mode & 0111)
+                    eff_mode = "100755";
+            }
         }
     }
     // A regular write follows the destination itself when it is a symlink:
@@ -2024,6 +2043,16 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
             remove_recursive(src_full);
     } else {
         write_target(dst_full, res, eff_mode);
+    }
+    if (have_src_full_mode) {
+        struct stat dst_st;
+        if (lstat(dst_full.c_str(), &dst_st) == 0 &&
+            S_ISREG(dst_st.st_mode) &&
+            (mode_t)(dst_st.st_mode & 07777) != src_full_mode) {
+            if (chmod(dst_full.c_str(), src_full_mode) != 0)
+                die("cannot set permissions on '" + dst_full +
+                    "': " + strerror(errno));
+        }
     }
     return BlkStatus::Applied;
 }
@@ -2524,7 +2553,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 struct stat sst;
                 if (lstat(src.c_str(), &sst) == 0 && S_ISREG(sst.st_mode)) {
                     if (chmod(dst_path.c_str(),
-                              (mode_t)(sst.st_mode & 0777)) != 0)
+                              (mode_t)(sst.st_mode & 07777)) != 0)
                         die("cannot set permissions on '" + dst_path +
                             "': " + strerror(errno));
                 }
@@ -2594,7 +2623,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
         }
         copy_file_bytes(src, dst_path);
         if (lstat(src.c_str(), &sst) == 0 && S_ISREG(sst.st_mode)) {
-            if (chmod(dst_path.c_str(), (mode_t)(sst.st_mode & 0777)) != 0)
+            if (chmod(dst_path.c_str(), (mode_t)(sst.st_mode & 07777)) != 0)
                 die("cannot set permissions on '" + dst_path +
                     "': " + strerror(errno));
         }
@@ -2604,6 +2633,86 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
         if (lstat(f.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
             return -1;
         return (st.st_mode & 0111) ? 1 : 0;
+    };
+    // Desired executable bit for a freshly written merge result. Three-way
+    // rule: agreement wins; a chmod on exactly one side wins; divergent
+    // chmods keep ours. Missing/non-regular sides vote -1 and are ignored.
+    // NOTE: sample this BEFORE writing dst: every in-place caller
+    // (setup, conflicted setup, rebase) merges with ours_file == dst_path,
+    // so voting after the write would read back the fresh 0666&~umask mode
+    // and mistake it for an upstream chmod -x.
+    auto merged_exec_want = [&]() -> int {
+        int bo = exec_flag(base_file), oo = exec_flag(ours_file),
+            to = exec_flag(theirs_file);
+        if (oo == to && oo >= 0)
+            return oo;
+        if (bo == oo && to >= 0)
+            return to;
+        if (bo == to && oo >= 0)
+            return oo;
+        if (oo >= 0)
+            return oo;
+        if (to >= 0)
+            return to;
+        if (bo >= 0)
+            return bo;
+        return -1;
+    };
+    // Full permission template for a freshly written merge result. Prefers
+    // ours (which aliases dst in every in-place caller), then theirs, then
+    // base, so restrictive modes survive: 0700 stays 0700, 0640 stays 0640.
+    // Masked with 07777 so suid/sgid/sticky survive local merges; staged
+    // package/extract payloads strip them separately (copy_path_preserving
+    // uses 0777). Sample BEFORE writing dst for the same aliasing reason
+    // as merged_exec_want below. Falls back to 0644 for brand-new conflict
+    // files with no regular side to sample.
+    auto merged_mode_template = [&]() -> mode_t {
+        struct stat st;
+        if (stat(ours_file.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            return (mode_t)(st.st_mode & 07777);
+        if (stat(theirs_file.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            return (mode_t)(st.st_mode & 07777);
+        if (stat(base_file.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+            return (mode_t)(st.st_mode & 07777);
+        return (mode_t)0644;
+    };
+    // Restore the full mode on a freshly written merge result at `dst`
+    // to the pre-sampled `want` exec vote applied onto the pre-sampled
+    // `tmpl` permission template (-1 vote: leave alone). Line merges and
+    // conflict-marker writes go through write_file_bytes (0666 & ~umask),
+    // so without this a merge of an executable file silently drops +x and
+    // the next commit would record a spurious mode change. Hardcoding
+    // 0755/0644 here would widen 0700->0755, leak 0640->0644, and drop
+    // suid/sgid/sticky; instead the rw (and special) bits come from the
+    // template while only the exec bits follow the vote:
+    //   want==1 and template already exec -> keep template exactly
+    //     (0700 stays 0700);
+    //   want==1 and template non-exec -> template | 0111
+    //     (0640->0751, 0644->0755; rw bits preserved);
+    //   want==0 -> template & ~0111
+    //     (0755->0644, 0700->0600, 0750->0640; rw bits preserved).
+    auto restore_merged_exec = [&](const std::string& dst, int want,
+                                   mode_t tmpl) {
+        if (want < 0)
+            return;
+        struct stat dst_st;
+        if (lstat(dst.c_str(), &dst_st) != 0 || !S_ISREG(dst_st.st_mode))
+            return;
+        tmpl = (mode_t)(tmpl & 07777);
+        mode_t m;
+        if (want) {
+            if (tmpl & 0111)
+                m = tmpl;
+            else
+                m = (mode_t)(tmpl | 0111);
+        } else {
+            m = (mode_t)(tmpl & ~0111);
+        }
+        if ((dst_st.st_mode & 07777) != m) {
+            if (chmod(dst.c_str(), m) != 0)
+                die("cannot set permissions on '" + dst + "': " +
+                    strerror(errno));
+        }
     };
     auto conflict_text = [](const std::string& o, const std::string& t) {
         std::string out = "<<<<<<< projeny (new setup)\n" + o;
@@ -2642,8 +2751,13 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 make_dirs(dirname_of(dst_path));
                 // Conflict becomes a regular file with markers; any
                 // pre-existing symlink at dst is replaced.
+                // Sample mode/vote before the unlink+write: ours may alias
+                // dst, so sampling after would read the fresh 0666 mode.
+                int ew_link = merged_exec_want();
+                mode_t tm_link = merged_mode_template();
                 unlink(dst_path.c_str());
                 write_file_bytes(dst_path, conflict_text(o, t));
+                restore_merged_exec(dst_path, ew_link, tm_link);
                 return false;
             }
             std::string o = read_file_bytes(ours_file);
@@ -2656,8 +2770,11 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 return true;
             }
             make_dirs(dirname_of(dst_path));
+            int ew_new = merged_exec_want();
+            mode_t tm_new = merged_mode_template();
             unlink(dst_path.c_str());
             write_file_bytes(dst_path, conflict_text(o, t));
+            restore_merged_exec(dst_path, ew_new, tm_new);
             return false;
         }
         place(ours_e ? ours_file : theirs_file);
@@ -2695,8 +2812,11 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                     out += "\n";
                 out += "=======\n>>>>>>> projeny (local changes: file deleted)\n";
             }
+            int ew_dell = merged_exec_want();
+            mode_t tm_dell = merged_mode_template();
             unlink(dst_path.c_str());
             write_file_bytes(dst_path, out);
+            restore_merged_exec(dst_path, ew_dell, tm_dell);
             return false;
         }
         std::string k = read_file_bytes(kept);
@@ -2721,8 +2841,11 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 out += "\n";
             out += "=======\n>>>>>>> projeny (local changes: file deleted)\n";
         }
+        int ew_del = merged_exec_want();
+        mode_t tm_del = merged_mode_template();
         unlink(dst_path.c_str());
         write_file_bytes(dst_path, out);
+        restore_merged_exec(dst_path, ew_del, tm_del);
         return false;
     }
     // All three exist: lstat first. If any side is a symlink, compare by
@@ -2769,8 +2892,11 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
                 return true;
             }
             make_dirs(dirname_of(dst_path));
+            int ew_sym = merged_exec_want();
+            mode_t tm_sym = merged_mode_template();
             unlink(dst_path.c_str());
             write_file_bytes(dst_path, conflict_text(o_s, t_s));
+            restore_merged_exec(dst_path, ew_sym, tm_sym);
             return false;
         }
     }
@@ -2963,6 +3089,10 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
         }
     }
     make_dirs(dirname_of(dst_path));
+    // Sample the exec vote before any write: ours may alias dst (all
+    // in-place merges pass ours_file == dst_path).
+    int exec_want = merged_exec_want();
+    mode_t exec_tmpl = merged_mode_template();
     if (!clean) {
         std::string out;
         for (auto& l : merged) {
@@ -2970,6 +3100,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
             out += '\n';
         }
         write_file_bytes(dst_path, out);
+        restore_merged_exec(dst_path, exec_want, exec_tmpl);
         return false;
     }
     // Clean: resolve trailing-newline flag three-way on the flag alone.
@@ -2981,5 +3112,6 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
     else if (theirs.ends_nl == base.ends_nl)
         flag = ours.ends_nl;
     write_file_bytes(dst_path, join_content(merged, flag));
+    restore_merged_exec(dst_path, exec_want, exec_tmpl);
     return true;
 }

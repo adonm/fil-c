@@ -70,14 +70,6 @@ cd ../..
 ./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
-# libffi is managed by projeny (projects/libffi.projeny plus
-# projects/libffi-3.8.0.tar.gz): `projeny package` runs setup and then tars
-# the tracked files, including uncommitted changes, failing on conflicts.
-if [ ! -x filc/projeny ]; then
-    (cd projects/projeny && make -j `nproc`)
-    mkdir -p filc
-    cp projects/projeny/projeny filc/projeny
-fi
 filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils

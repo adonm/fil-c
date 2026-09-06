@@ -297,7 +297,7 @@ cd ..
 rm -rf pizlonated-blake3
 hash -r
 
-tar -xf $FILCSRC/projects/brotli-1.1.0/pizlonated-brotli.tar.gz
+tar -xf $FILCSRC/projects/brotli/pizlonated-brotli.tar.gz
 cd pizlonated-brotli
 mkdir build
 cd build

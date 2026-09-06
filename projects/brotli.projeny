@@ -1,0 +1,6 @@
+Archive: brotli-1.2.0.tar.gz
+Origname: brotli-1.2.0
+Name: brotli
+
+    brotli 1.2.0 with no Fil-C changes; the 1.1.0 tree was
+    byte-identical to its upstream release tarball, so the patch is empty.

@@ -289,8 +289,8 @@ cd ..
 rm -rf pizlonated-cmake
 hash -r
 
-tar -xf brotli-1.1.0.tar.gz
-cd brotli-1.1.0
+tar -xf brotli-1.2.0.tar.gz
+cd brotli-1.2.0
 mkdir build
 cd build
 cmake -D CMAKE_INSTALL_PREFIX=/usr \
@@ -307,7 +307,7 @@ sed "/c\/.*\.[ch]'/d;\
 pip3 wheel -w dist --no-build-isolation --no-deps --no-cache-dir $PWD
 pip3 install --no-index --find-links=dist --no-cache-dir --no-user Brotli
 cd ..
-rm -rf brotli-1.1.0
+rm -rf brotli-1.2.0
 hash -r
 
 tar -xf pizlonated-yaml.tar.gz

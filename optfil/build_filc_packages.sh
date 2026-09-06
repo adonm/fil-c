@@ -105,7 +105,7 @@ filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
 filc/projeny package projects/libxml2 projects/libxml2/pizlonated-libxml2.tar.gz
-./package-source.sh projects/brotli-1.1.0 pizlonated-brotli
+filc/projeny package projects/brotli projects/brotli/pizlonated-brotli.tar.gz
 ./package-source.sh projects/BLAKE3-1.8.5 pizlonated-blake3
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip

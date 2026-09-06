@@ -28,8 +28,10 @@
 set -e
 set -x
 
-cd projects/brotli-1.1.0
-extract_source
+cd projects
+rm -rf brotli/extracted-source
+../filc/projeny extract brotli.projeny brotli/extracted-source
+cd brotli/extracted-source
 mkdir build
 cd build
 CC=$PWD/../../../../build/bin/clang CXX=$PWD/../../../../build/bin/clang++ \
@@ -38,4 +40,6 @@ CC=$PWD/../../../../build/bin/clang CXX=$PWD/../../../../build/bin/clang++ \
           ..
 make -j $NCPU
 make -j $NCPU install
+cd ..
+rm -rf extracted-source
 

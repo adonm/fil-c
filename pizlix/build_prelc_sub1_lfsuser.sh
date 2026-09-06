@@ -269,8 +269,8 @@ make DESTDIR=$LFS install
 cd ..
 rm -rf findutils-4.11.0
 
-tar -xf gawk-5.3.0.tar.xz
-cd gawk-5.3.0
+tar -xf gawk-5.4.1.tar.xz
+cd gawk-5.4.1
 sed -i 's/extras//' Makefile.in
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
@@ -278,7 +278,7 @@ sed -i 's/extras//' Makefile.in
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf gawk-5.3.0
+rm -rf gawk-5.4.1
 
 tar -xf grep-3.12.tar.xz
 cd grep-3.12

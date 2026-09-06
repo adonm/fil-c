@@ -716,13 +716,13 @@ cd ..
 rm -rf pizlonated-diffutils
 hash -r
 
-tar -xf $FILCSRC/pizlix/gawk-5.3.0.tar.xz
-cd gawk-5.3.0
+tar -xf $FILCSRC/pizlix/gawk-5.4.1.tar.xz
+cd gawk-5.4.1
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf gawk-5.3.0
+rm -rf gawk-5.4.1
 hash -r
 
 tar -xf $FILCSRC/pizlix/findutils-4.11.0.tar.xz

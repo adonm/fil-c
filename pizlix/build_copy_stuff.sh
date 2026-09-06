@@ -53,7 +53,7 @@ cp -v \
     findutils-4.11.0.tar.xz \
     flex-2.6.4.tar.gz \
     flit_core-3.9.0.tar.gz \
-    gawk-5.3.0.tar.xz \
+    gawk-5.4.1.tar.xz \
     gcc-14.2.0.tar.xz \
     gdbm-1.24.tar.gz \
     gettext-0.22.5.tar.xz \

@@ -272,16 +272,16 @@ cd ..
 rm -rf pizlonated-diffutils
 hash -r
 
-tar -xf gawk-5.3.0.tar.xz
-cd gawk-5.3.0
+tar -xf gawk-5.4.1.tar.xz
+cd gawk-5.4.1
 sed -i 's/extras//' Makefile.in
 ./configure --prefix=/usr
 make
-rm -f /usr/bin/gawk-5.3.0
+rm -f /usr/bin/gawk-5.4.1
 make install
 ln -sv gawk.1 /usr/share/man/man1/awk.1
 cd ..
-rm -rf gawk-5.3.0
+rm -rf gawk-5.4.1
 hash -r
 
 tar -xf findutils-4.11.0.tar.xz

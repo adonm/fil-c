@@ -906,7 +906,7 @@ cd ..
 rm -rf pizlonated-rsync
 hash -r
 
-tar -xf $FILCSRC/projects/patchelf-0.18.0/pizlonated-patchelf.tar.gz
+tar -xf $FILCSRC/projects/patchelf/pizlonated-patchelf.tar.gz
 cd pizlonated-patchelf
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

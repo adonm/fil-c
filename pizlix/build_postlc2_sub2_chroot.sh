@@ -13,7 +13,7 @@ hash -r
 tar -xf pizlonated-patchelf.tar.gz
 cd pizlonated-patchelf
 ./configure --prefix=/usr \
-            --docdir=/usr/share/doc/patchelf-0.18.0
+            --docdir=/usr/share/doc/patchelf-0.19.1
 make
 make install
 cd ..

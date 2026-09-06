@@ -1,0 +1,11 @@
+Archive: patchelf-0.19.1.tar.gz
+Origname: patchelf-0.19.1
+Name: patchelf
+
+    patchelf 0.19.1 with no Fil-C changes needed. The 0.18.0 Fil-C patch
+    rewrote the .shstrtab pointer to be derived as
+    fileContents->data() + rdi(shdrs[shstrtabIndex].sh_offset) instead of
+    round-tripping a pointer through size_t, which Fil-C cannot do
+    safely; upstream 0.19.1 restructured that code to the same
+    capability-safe shape (data() + shstrtabOffset), so the patch is
+    empty and the rebase needed no conflict resolution.

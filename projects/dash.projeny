@@ -1,14 +1,14 @@
-Archive: dash-0.5.12.tar.gz
-Origname: dash-0.5.12
+Archive: dash-0.5.13.5.tar.gz
+Origname: dash-0.5.13.5
 Name: dash
 
-    dash 0.5.12 with the Fil-C port (fork instead of vfork).
+    dash 0.5.13.5 with the Fil-C port (fork instead of vfork).
 diff --git a/dash/src/jobs.c b/dash/src/jobs.c
 --- a/dash/src/jobs.c
 +++ b/dash/src/jobs.c
-@@ -968,7 +968,7 @@
- 	sigblockall(NULL);
- 	vforked++;
+@@ -999,7 +999,7 @@
+ 		mypid = getpid();
+ 	vforked = mypid;
 
 -	pid = vfork();
 +	pid = fork();

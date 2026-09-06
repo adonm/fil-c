@@ -36,7 +36,7 @@ cp -v $FILCSRC/projects/*/pizlonated-*.tar.gz $LFS/sources
 cp -v which-2.21.tar.gz $LFS/sources
 cp -v brotli-1.2.0.tar.gz $LFS/sources
 cp -v libunistring-1.2.tar.xz $LFS/sources
-cp -v libpsl-0.21.5.tar.gz $LFS/sources
+cp -v libpsl-0.23.3.tar.gz $LFS/sources
 cp -v make-ca-1.16.1.tar.gz $LFS/sources
 cp -v nghttp2-1.70.0.tar.xz $LFS/sources
 cp -v pcre2-10.48.tar.bz2 $LFS/sources

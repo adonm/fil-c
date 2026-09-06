@@ -34,15 +34,15 @@ hash -r
 ./build_postlc2_chroot_project_libidn2.sh
 hash -r
 
-tar -xf libpsl-0.21.5.tar.gz
-cd libpsl-0.21.5
+tar -xf libpsl-0.23.3.tar.gz
+cd libpsl-0.23.3
 mkdir -v build
 cd build
 meson setup --prefix=/usr --buildtype=release
 ninja
 ninja install
 cd ../..
-rm -rf libpsl-0.21.5
+rm -rf libpsl-0.23.3
 hash -r
 
 tar -xf pizlonated-libtasn1.tar.gz

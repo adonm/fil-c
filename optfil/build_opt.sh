@@ -830,15 +830,15 @@ cd ..
 rm -rf pizlonated-libidn2
 hash -r
 
-tar -xf $FILCSRC/pizlix/libpsl-0.21.5.tar.gz
-cd libpsl-0.21.5
+tar -xf $FILCSRC/pizlix/libpsl-0.23.3.tar.gz
+cd libpsl-0.23.3
 mkdir -v build
 cd build
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ meson setup .. --prefix=/opt/fil --sysconfdir=/etc --buildtype=release
 ninja
 ninja install
 cd ../..
-rm -rf libpsl-0.21.5
+rm -rf libpsl-0.23.3
 hash -r
 
 tar -xf $FILCSRC/projects/libtasn1-4.21.0/pizlonated-libtasn1.tar.gz

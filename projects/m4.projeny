@@ -32,6 +32,14 @@ Name: m4
       guards (Fil-C panics on oversized allocations instead of returning
       NULL + ENOMEM, and memset_explicit's heap test memcmps freed
       memory after rebuilding a pointer from its integer address).
+    - tests/test-c32ispunct.c: skip the U+E003A TAG COLON check under
+      __FILC__. Fil-C's clang does not preinclude musl's stdc-predef.h
+      (GCC auto-preincludes it), so __STDC_ISO_10646__ is invisible and
+      gnulib's uchar.h does not treat wchar_t as UCS-4; c32ispunct then
+      uses gnulib's ISO-C-style uc_is_punct table, which classifies the
+      Cf format character U+E003A as punctuation, unlike musl's
+      iswpunct, which is what gets used when __STDC_ISO_10646__ is
+      defined (as on musl+GCC).
 diff --git a/m4/checks/006.command_li b/m4/checks/006.command_li
 deleted file mode 100644
 --- a/m4/checks/006.command_li
@@ -242,6 +250,18 @@ diff --git a/m4/src/macro.c b/m4/src/macro.c
 
    loc_close_file = current_file;
    loc_close_line = current_line;
+diff --git a/m4/tests/test-c32ispunct.c b/m4/tests/test-c32ispunct.c
+--- a/m4/tests/test-c32ispunct.c
++++ b/m4/tests/test-c32ispunct.c
+@@ -255,7 +255,7 @@
+           is = for_character ("\360\235\204\200", 4);
+           ASSERT (is != 0);
+         #endif
+-        #if !(defined __GLIBC__ || (defined __APPLE__ && defined __MACH__) || defined __FreeBSD__ || defined __NetBSD__ || defined __OpenBSD__ || defined _AIX || defined __sun || defined __CYGWIN__ || (defined _WIN32 && !defined __CYGWIN__) || defined __ANDROID__)
++        #if !(defined __GLIBC__ || (defined __APPLE__ && defined __MACH__) || defined __FreeBSD__ || defined __NetBSD__ || defined __OpenBSD__ || defined _AIX || defined __sun || defined __CYGWIN__ || (defined _WIN32 && !defined __CYGWIN__) || defined __ANDROID__ || defined __FILC__)
+           /* U+E003A TAG COLON */
+           is = for_character ("\363\240\200\272", 4);
+           ASSERT (is == 0);
 diff --git a/m4/tests/test-calloc-gnu.c b/m4/tests/test-calloc-gnu.c
 --- a/m4/tests/test-calloc-gnu.c
 +++ b/m4/tests/test-calloc-gnu.c

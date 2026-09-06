@@ -1,6 +1,0 @@
-dist_doc_DATA += \
-	doc/CHANGES \
-	doc/COPYING \
-	doc/COPYING.LGPL
-EXTRA_DIST += \
-	%D%/INSTALL

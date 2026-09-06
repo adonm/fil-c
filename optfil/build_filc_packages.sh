@@ -101,7 +101,7 @@ filc/projeny package projects/tmux projects/tmux/pizlonated-tmux.tar.gz
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
 ./package-source.sh projects/xxHash-0.8.3 pizlonated-xxHash
 ./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
-./package-source.sh projects/attr-2.5.2 pizlonated-attr
+filc/projeny package projects/attr projects/attr/pizlonated-attr.tar.gz
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
 filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz

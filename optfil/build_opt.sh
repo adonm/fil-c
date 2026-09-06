@@ -325,10 +325,10 @@ make -f unix/Makefile install CC=/opt/fil/bin/filcc prefix=/opt/fil -j `nproc`
 cd ..
 rm -rf pizlonated-unzip
 
-tar -xf $FILCSRC/projects/attr-2.5.2/pizlonated-attr.tar.gz
+tar -xf $FILCSRC/projects/attr/pizlonated-attr.tar.gz
 cd pizlonated-attr
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure \
-    --prefix=/opt/fil --disable-static --sysconfdir=/etc --docdir=/opt/fil/share/doc/attr-2.5.2
+    --prefix=/opt/fil --disable-static --sysconfdir=/etc --docdir=/opt/fil/share/doc/attr-2.6.0
 make -j `nproc`
 make -j `nproc` install
 cd ..

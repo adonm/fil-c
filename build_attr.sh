@@ -28,8 +28,10 @@
 set -e
 set -x
 
-cd projects/attr-2.5.2
-extract_source
+cd projects
+rm -rf attr/extracted-source
+../filc/projeny extract attr.projeny attr/extracted-source
+cd attr/extracted-source
 CC=$PWD/../../../build/bin/clang ./configure --disable-static --prefix=$PWD/../../../pizfix
 make -j $NCPU
 
@@ -38,3 +40,5 @@ make -j $NCPU
 # make -j $NCPU check
 
 make -j $NCPU install
+cd ..
+rm -rf extracted-source

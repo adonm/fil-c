@@ -1,0 +1,21 @@
+Archive: attr-2.6.0.tar.gz
+Origname: attr-2.6.0
+Name: attr
+
+    attr 2.6.0 with the Fil-C port: the libattr version-script link flag
+    is passed to the compiler driver as -Wc,--version-script=... instead
+    of -Wl,--version-script,... because Fil-C's linker driver does not
+    accept -Wl,--version-script. The same one-line Makefile.in change was
+    carried over from 2.5.2 and rebased onto 2.6.0.
+diff --git a/attr/Makefile.in b/attr/Makefile.in
+--- a/attr/Makefile.in
++++ b/attr/Makefile.in
+@@ -749,7 +749,7 @@
+ 	libattr/attr_copy_check.c libattr/attr_copy_fd.c \
+ 	libattr/attr_copy_file.c libattr/libattr.c $(am__append_1)
+ libattr_la_LDFLAGS = \
+-	-Wl,--version-script,$(top_srcdir)/exports \
++	-Wc,--version-script=$(top_srcdir)/exports \
+ 	-version-info $(LTVERSION)
+
+ libmisc_la_SOURCES = libmisc/getxattrat_compat.c \

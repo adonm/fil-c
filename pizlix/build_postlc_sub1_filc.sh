@@ -25,7 +25,7 @@ rm -vf projects/pizlonated-*.tar.gz
 filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/gmp-6.3.0 pizlonated-gmp
-./package-source.sh projects/attr-2.5.2 pizlonated-attr
+filc/projeny package projects/attr projects/attr/pizlonated-attr.tar.gz
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/shadow-4.16.0 pizlonated-shadow
 ./package-source.sh projects/sed-4.10 pizlonated-sed

@@ -1,0 +1,18 @@
+Archive: libidn2-2.3.8.tar.gz
+Origname: libidn2-2.3.8
+Name: libidn2
+
+    libidn2 2.3.8 with the Fil-C port: use -Wc,--version-script since
+    the Fil-C linker rejects -Wl,--version-script.
+diff --git a/libidn2/lib/Makefile.in b/libidn2/lib/Makefile.in
+--- a/libidn2/lib/Makefile.in
++++ b/libidn2/lib/Makefile.in
+@@ -105,7 +105,7 @@
+ POST_UNINSTALL = :
+ build_triplet = @build@
+ host_triplet = @host@
+-@HAVE_LD_VERSION_SCRIPT_TRUE@am__append_1 = -Wl,--version-script=$(srcdir)/idn2.map
++@HAVE_LD_VERSION_SCRIPT_TRUE@am__append_1 = -Wc,--version-script=$(srcdir)/idn2.map
+ @HAVE_LD_VERSION_SCRIPT_FALSE@am__append_2 = -export-symbols-regex '^(idn2_.*|_idn2_punycode_encode|_idn2_punycode_decode)$$'
+ @HAVE_LD_OUTPUT_DEF_TRUE@am__append_3 = -Wl,--output-def,libidn2-$(DLL_VERSION).def
+ @HAVE_LD_OUTPUT_DEF_TRUE@am__append_4 = $(defexec_DATA)

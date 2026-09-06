@@ -91,7 +91,7 @@ filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.t
 filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/procps-ng-4.0.7 pizlonated-procps
 filc/projeny package projects/tmux.projeny projects/tmux/pizlonated-tmux.tar.gz
-./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2
+filc/projeny package projects/libidn2.projeny projects/libidn2/pizlonated-libidn2.tar.gz
 ./package-source.sh projects/libtasn1-4.21.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.26.5 pizlonated-p11-kit
 ./package-source.sh projects/curl-8.22.0 pizlonated-curl

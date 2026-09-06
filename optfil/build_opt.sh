@@ -821,7 +821,7 @@ cd ..
 rm -rf libunistring-1.2
 hash -r
 
-tar -xf $FILCSRC/projects/libidn2-2.3.7/pizlonated-libidn2.tar.gz
+tar -xf $FILCSRC/projects/libidn2/pizlonated-libidn2.tar.gz
 cd pizlonated-libidn2
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc --disable-static
 make -j `nproc`

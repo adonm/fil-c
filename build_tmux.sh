@@ -28,8 +28,12 @@
 set -e
 set -x
 
-cd projects/tmux-3.5a
-extract_source
+cd projects
+rm -rf tmux/extracted-source
+../filc/projeny extract tmux.projeny tmux/extracted-source
+cd tmux/extracted-source
 PATH=$PWD/../../../pizfix/bin:$PATH CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
 make -j $NCPU install
+cd ..
+rm -rf extracted-source

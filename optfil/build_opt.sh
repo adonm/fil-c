@@ -803,7 +803,7 @@ cd ..
 rm -rf pizlonated-libevent
 hash -r
 
-tar -xf $FILCSRC/projects/tmux-3.5a/pizlonated-tmux.tar.gz
+tar -xf $FILCSRC/projects/tmux/pizlonated-tmux.tar.gz
 cd pizlonated-tmux
 CC="/opt/fil/bin/filcc -Wno-pointer-sign" CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil --sysconfdir=/etc
 make -j `nproc`

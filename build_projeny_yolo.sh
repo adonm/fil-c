@@ -32,14 +32,27 @@ set -x
 # C/C++ compiler (NOT Fil-C) and install the executable to filc/projeny.
 # Runs early in build_base.sh so a working projeny exists before it's needed
 # for any part of the build.
+
 cd projects/projeny
-
-$MAKE -j $NCPU CC=cc CXX=g++
-
+$MAKE -j $NCPU
 cd ../..
-
 cp projects/projeny/projeny filc/projeny
 chmod +x filc/projeny
 
 # Validation.
-filc/projeny help
+if ! filc/projeny help
+then
+    # Do a clean build, since this implies that projeny was built for a different ABI
+    # (Possibly because we built in a container.)
+    
+    cd projects/projeny
+    $MAKE clean
+    $MAKE -j $NCPU
+    cd ../..
+    cp projects/projeny/projeny filc/projeny
+    chmod +x filc/projeny
+
+    # Final validation
+    filc/projeny help
+fi
+

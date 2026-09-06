@@ -65,13 +65,6 @@ test ! -d projects/pizfix
 
 ./build_nghttp2.sh
 ./build_curl.sh
-
-if [ "$ARCH" = aarch64 ]; then
-    # Everything through curl has been ported to Fil-C on ARM64.  Exit early
-    # until more of the corpus is ported.
-    exit 0
-fi
-
 ./build_openssh.sh
 ./build_mg.sh
 ./build_tcl.sh
@@ -79,6 +72,13 @@ fi
 ./build_cpython.sh
 ./build_zsh.sh
 ./build_lua.sh
+
+if [ "$ARCH" = aarch64 ]; then
+    # Everything through lua has been ported to Fil-C on ARM64.  Exit early
+    # until more of the corpus is ported.
+    exit 0
+fi
+
 ./build_simdutf.sh
 ./build_quickjs.sh
 ./build_ffmpeg.sh

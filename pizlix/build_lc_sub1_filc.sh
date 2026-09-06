@@ -59,6 +59,7 @@ test -d libpas
 
 rm -rf pizfix
 . ./setup_glibc.sh
+./build_projeny_yolo.sh
 ./build_compiler_rt.sh
 ./build_yolounwind.sh
 ./configure_llvm.sh

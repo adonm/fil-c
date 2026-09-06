@@ -350,13 +350,13 @@ cd ..
 rm -rf pizlonated-make
 hash -r
 
-tar -xf patch-2.7.6.tar.xz
-cd patch-2.7.6
+tar -xf patch-2.8.tar.xz
+cd patch-2.8
 ./configure --prefix=/usr
 make
 make install
 cd ..
-rm -rf patch-2.7.6
+rm -rf patch-2.8
 hash -r
 
 tar -xf pizlonated-tar.tar.gz

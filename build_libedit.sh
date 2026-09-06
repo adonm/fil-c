@@ -28,10 +28,14 @@
 set -e
 set -x
 
-cd projects/libedit-20240808-3.1
-extract_source
+cd projects
+rm -rf libedit/extracted-source
+../filc/projeny extract libedit.projeny libedit/extracted-source
+cd libedit/extracted-source
 CC="$PWD/../../../build/bin/clang -g -O3" CPPFLAGS="-I$PWD/../../../pizfix/include/ncurses" ./configure --prefix="$PWD/../../../pizfix"
 $MAKE -j $NCPU
 $MAKE -j $NCPU install
 
+cd ..
+rm -rf extracted-source
 

@@ -1,0 +1,19 @@
+Archive: libedit-20260512-3.1.tar.gz
+Origname: libedit-20260512-3.1
+Name: libedit
+
+    libedit 20260512-3.1 with the Fil-C port: skip the wchar_t/ISO-10646
+    assumption block on Linux, like the BSDs do.
+diff --git a/libedit/src/chartype.h b/libedit/src/chartype.h
+--- a/libedit/src/chartype.h
++++ b/libedit/src/chartype.h
+@@ -39,7 +39,8 @@
+ 	!(defined(__APPLE__) && defined(__MACH__)) && \
+ 	!defined(__OpenBSD__) && \
+ 	!defined(__FreeBSD__) && \
+-	!defined(__DragonFly__)
++	!defined(__DragonFly__) && \
++	!defined(__linux__)
+ #ifndef __STDC_ISO_10646__
+ /* In many places it is assumed that the first 127 code points are ASCII
+  * compatible, so ensure wchar_t indeed does ISO 10646 and not some other

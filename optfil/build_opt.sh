@@ -407,7 +407,7 @@ cd ..
 rm -rf readline-8.3
 hash -r
 
-tar -xf $FILCSRC/projects/libedit-20240808-3.1/pizlonated-libedit.tar.gz
+tar -xf $FILCSRC/projects/libedit/pizlonated-libedit.tar.gz
 cd pizlonated-libedit
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

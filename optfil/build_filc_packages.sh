@@ -102,7 +102,7 @@ filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 ./package-source.sh projects/xxHash-0.8.3 pizlonated-xxHash
 ./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
 filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
-./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
+filc/projeny package projects/libedit.projeny projects/libedit/pizlonated-libedit.tar.gz
 filc/projeny package projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz
 filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz
 filc/projeny package projects/brotli.projeny projects/brotli/pizlonated-brotli.tar.gz

@@ -106,7 +106,7 @@ filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
 filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz
 filc/projeny package projects/brotli.projeny projects/brotli/pizlonated-brotli.tar.gz
-./package-source.sh projects/BLAKE3-1.8.5 pizlonated-blake3
+filc/projeny package projects/blake3.projeny projects/blake3/pizlonated-blake3.tar.gz
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip
 filc/projeny package projects/dash.projeny projects/dash/pizlonated-dash.tar.gz

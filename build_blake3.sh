@@ -28,8 +28,10 @@
 set -e
 set -x
 
-cd projects/BLAKE3-1.8.5
-extract_source
+cd projects
+rm -rf blake3/extracted-source
+../filc/projeny extract blake3.projeny blake3/extracted-source
+cd blake3/extracted-source
 BLAKE3_SIMD_TYPE=x86-intrinsics
 if [ "$ARCH" = aarch64 ]; then
     BLAKE3_SIMD_TYPE=neon-intrinsics
@@ -39,6 +41,8 @@ cmake --build c/build --target install -j $NCPU
 ../../../build/bin/clang -o example c/example.c -lblake3 -O2 -g
 test `./example < README.md` = "a5fdca3e301ce0f1b4bf92e9532fdd731842715b244b26f393404796a1c15b06"
 test `./example < ../../../benchmarkData/Pizigani_1367_Chart_10MB.pnm` = "5eefbdaa7deb1c614f17d39f7f1d6274856f005a7d3e3543f17c5bac4fbb9d25"
+cd ..
+rm -rf extracted-source
 
 # I would need to build the onetbb thing to do this.
 # ../../../build/bin/clang -o example_tbb c/example_tbb.c -lblake3 -O2 -g

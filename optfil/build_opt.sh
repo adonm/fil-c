@@ -289,7 +289,7 @@ cd ..
 rm -rf pizlonated-xxHash
 hash -r
 
-tar -xf $FILCSRC/projects/BLAKE3-1.8.5/pizlonated-blake3.tar.gz
+tar -xf $FILCSRC/projects/blake3/pizlonated-blake3.tar.gz
 cd pizlonated-blake3
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=/opt/fil -DBLAKE3_SIMD_TYPE=x86-intrinsics -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build c/build --target install -j `nproc`

@@ -66,11 +66,11 @@ cd ../..
 
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/xz-5.8.3 pizlonated-xz
-filc/projeny package projects/pkgconf projects/pkgconf/pizlonated-pkgconf.tar.gz
+filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
-filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
+filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/Linux-PAM-1.7.2 pizlonated-pam
@@ -104,11 +104,11 @@ filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 ./package-source.sh projects/patchelf-0.18.0 pizlonated-patchelf
-filc/projeny package projects/libxml2 projects/libxml2/pizlonated-libxml2.tar.gz
-filc/projeny package projects/brotli projects/brotli/pizlonated-brotli.tar.gz
+filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz
+filc/projeny package projects/brotli.projeny projects/brotli/pizlonated-brotli.tar.gz
 ./package-source.sh projects/BLAKE3-1.8.5 pizlonated-blake3
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip
-filc/projeny package projects/dash projects/dash/pizlonated-dash.tar.gz
+filc/projeny package projects/dash.projeny projects/dash/pizlonated-dash.tar.gz
 ./package-source.sh projects/zsh-5.9.2 pizlonated-zsh
 

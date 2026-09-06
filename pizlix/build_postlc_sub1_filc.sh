@@ -22,7 +22,7 @@ rm -vf projects/pizlonated-*.tar.gz
 ./package-source.sh projects/kbd-2.6.4 pizlonated-kbd
 ./package-source.sh projects/xz-5.8.3 pizlonated-xz
 ./package-source.sh projects/m4-1.4.19 pizlonated-m4
-filc/projeny package projects/pkgconf projects/pkgconf/pizlonated-pkgconf.tar.gz
+filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/gmp-6.3.0 pizlonated-gmp
 ./package-source.sh projects/attr-2.5.2 pizlonated-attr
@@ -36,7 +36,7 @@ filc/projeny package projects/pkgconf projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/XML-Parser-2.47 pizlonated-xml-parser
 ./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
 ./package-source.sh projects/elfutils-0.191 pizlonated-elfutils
-filc/projeny package projects/libffi projects/libffi/pizlonated-libffi.tar.gz
+filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/Python-3.12.5 pizlonated-cpython
 ./package-source.sh projects/check-0.15.2 pizlonated-check
 ./package-source.sh projects/diffutils-3.12 pizlonated-diffutils

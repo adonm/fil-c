@@ -29,11 +29,15 @@
 set -e
 set -x
 
-cd projects/m4-1.4.19
-extract_source
+cd projects
+rm -rf m4/extracted-source
+../filc/projeny extract m4.projeny m4/extracted-source
+cd m4/extracted-source
 CC=$PWD/../../../build/bin/clang ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
 # make_check (libpas/common.sh) resets ignored SIGINT/SIGQUIT dispositions so
 # gnulib's test-execute passes in batch/unprivileged-container environments.
 make_check -j $NCPU
 make install -j $NCPU
+cd ..
+rm -rf extracted-source

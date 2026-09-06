@@ -162,15 +162,15 @@ rm -rf gcc-14.2.0
 # So, although this is one of the points where it's tempting to start using the Fil-C compiler, it
 # might not be the right option.
 
-tar -xf m4-1.4.19.tar.xz 
-cd m4-1.4.19
+tar -xf m4-1.4.21.tar.xz 
+cd m4-1.4.21
 ./configure --prefix=/yolo \
     --host=$LFS_TGT \
     --build=$(build-aux/config.guess)
 make
 make DESTDIR=$LFS install
 cd ..
-rm -rf m4-1.4.19
+rm -rf m4-1.4.21
 
 tar -xf ncurses-6.6.tar.gz
 cd ncurses-6.6

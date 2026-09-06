@@ -662,7 +662,7 @@ cd ..
 rm -rf psmisc-23.7
 hash -r
 
-tar -xf $FILCSRC/projects/m4-1.4.19/pizlonated-m4.tar.gz
+tar -xf $FILCSRC/projects/m4/pizlonated-m4.tar.gz
 cd pizlonated-m4
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`

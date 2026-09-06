@@ -90,18 +90,18 @@ filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.t
 ./package-source.sh projects/tar-1.35 pizlonated-tar
 filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/procps-ng-4.0.7 pizlonated-procps
-filc/projeny package projects/tmux projects/tmux/pizlonated-tmux.tar.gz
+filc/projeny package projects/tmux.projeny projects/tmux/pizlonated-tmux.tar.gz
 ./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2
 ./package-source.sh projects/libtasn1-4.21.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.26.5 pizlonated-p11-kit
 ./package-source.sh projects/curl-8.22.0 pizlonated-curl
 ./package-source.sh projects/git-2.55.0 pizlonated-git
 ./package-source.sh projects/libevent-2.1.13 pizlonated-libevent
-./package-source.sh projects/m4-1.4.19 pizlonated-m4
+filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
 ./package-source.sh projects/xxHash-0.8.3 pizlonated-xxHash
 ./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
-filc/projeny package projects/attr projects/attr/pizlonated-attr.tar.gz
+filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
 ./package-source.sh projects/libedit-20240808-3.1 pizlonated-libedit
 filc/projeny package projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz
 filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz

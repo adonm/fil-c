@@ -242,15 +242,15 @@ RUN apt-get install -y build-essential perl libxml-parser-perl
 
 # Build specific versions of autotools from source (required for Fil-C)
 # These must be built in order: m4, autoconf, automake, libtool
-COPY pizlix/m4-1.4.19.tar.xz /usr/local/src/
+COPY pizlix/m4-1.4.21.tar.xz /usr/local/src/
 RUN cd /usr/local/src && \
-    tar -xf m4-1.4.19.tar.xz && \
-    cd m4-1.4.19 && \
+    tar -xf m4-1.4.21.tar.xz && \
+    cd m4-1.4.21 && \
     ./configure --prefix=/usr/local && \
     make -j $(nproc) && \
     make -j $(nproc) install && \
     cd /usr/local/src && \
-    rm -rf m4-1.4.19 m4-1.4.19.tar.xz
+    rm -rf m4-1.4.21 m4-1.4.21.tar.xz
 
 COPY pizlix/autoconf-2.72.tar /usr/local/src/
 RUN cd /usr/local/src && \

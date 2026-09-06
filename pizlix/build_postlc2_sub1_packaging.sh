@@ -23,8 +23,8 @@ rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/sudo-1.9.17p2 pizlonated-sudo
 ./package-source.sh projects/git-2.55.0 pizlonated-git
 ./package-source.sh projects/libuv-1.52.1 pizlonated-libuv
-./package-source.sh projects/icu-78.3 pizlonated-icu
 filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz
+filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/libarchive-3.7.4 pizlonated-libarchive
 ./package-source.sh projects/dhcpcd-10.0.8 pizlonated-dhcpcd
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh

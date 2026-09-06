@@ -28,10 +28,30 @@
 set -e
 set -x
 
-cd projects/icu-78.3
-extract_source
-cd icu4c/source
-THE_OS=Linux THE_COMP="the Clang C++" CC=$PWD/../../../../../build/bin/clang CXX=$PWD/../../../../../build/bin/clang++ CFLAGS="-O3 -g" CXXFLAGS="-O3 -g" ./configure --enable-debug --prefix="$PWD/../../../../../pizfix"
+# Depth-robust paths: resolve everything from this script's own directory so
+# the script works no matter where it is invoked from (no relative cd chains
+# like `cd projects` that depend on the caller's CWD).
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECTS_DIR="$SCRIPT_DIR/projects"
+WORKDIR="$PROJECTS_DIR/icu/extracted-source"
+PROJENY_BIN="$SCRIPT_DIR/filc/projeny"
+PROJENY_FILE="$PROJECTS_DIR/icu.projeny"
+CC_BIN="$SCRIPT_DIR/build/bin/clang"
+CXX_BIN="$SCRIPT_DIR/build/bin/clang++"
+PREFIX="$SCRIPT_DIR/pizfix"
+
+# Always remove the scratch extraction tree on exit/interrupt, even if the
+# build below fails. The ${WORKDIR:?} expansion aborts instead of running
+# rm -rf on an empty path if WORKDIR is ever unset (safe rm).
+cleanup() {
+    rm -rf "${WORKDIR:?}"
+}
+trap cleanup EXIT INT TERM
+
+rm -rf "${WORKDIR:?}"
+"$PROJENY_BIN" extract "$PROJENY_FILE" "$WORKDIR"
+cd "$WORKDIR/icu4c/source"
+THE_OS=Linux THE_COMP="the Clang C++" CC="$CC_BIN" CXX="$CXX_BIN" CFLAGS="-O3 -g" CXXFLAGS="-O3 -g" ./configure --enable-debug --prefix="$PREFIX"
 make -j $NCPU
 
 make -j $NCPU check

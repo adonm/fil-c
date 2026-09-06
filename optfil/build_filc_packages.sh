@@ -88,7 +88,7 @@ filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.t
 ./package-source.sh projects/diffutils-3.12 pizlonated-diffutils
 ./package-source.sh projects/make-4.4.1 pizlonated-make
 ./package-source.sh projects/tar-1.35 pizlonated-tar
-./package-source.sh projects/icu-78.3 pizlonated-icu
+filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/procps-ng-4.0.7 pizlonated-procps
 ./package-source.sh projects/tmux-3.5a pizlonated-tmux
 ./package-source.sh projects/libidn2-2.3.7 pizlonated-libidn2

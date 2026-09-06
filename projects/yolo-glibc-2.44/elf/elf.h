@@ -1277,6 +1277,8 @@ typedef struct
 
 #define AT_MINSIGSTKSZ		51 /* Stack needed for signal delivery  */
 
+#define AT_MAX_KEY              51
+
 /* Note section contents.  Each entry in the note section begins with
    a header of a fixed form.  */
 

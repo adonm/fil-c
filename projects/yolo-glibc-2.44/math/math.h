@@ -31,6 +31,8 @@
 # warning This will cause compilation problems.
 #endif
 
+#define FILC_YOLO_MATH_HACKS 1
+
 __BEGIN_DECLS
 
 /* Get machine-dependent vector math functions declarations.  */

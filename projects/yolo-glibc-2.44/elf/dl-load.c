@@ -35,6 +35,9 @@
 #include <dl-tunables.h>
 #include <dl-scratch-buffer.h>
 
+#undef LIBC_SO
+#define LIBC_SO "libyolocimpl.so"
+
 #include "dynamic-link.h"
 #include "get-dynamic-info.h"
 #include <abi-tag.h>

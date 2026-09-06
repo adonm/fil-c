@@ -18,26 +18,19 @@
 
 #include <ldsodefs.h>
 #include <stackinfo.h>
+#include <errno.h>
+#include <libintl.h>
+#include <list.h>
+#include <pthreadP.h>
+#include <stdbool.h>
+#include <sys/mman.h>
+#include <sysdep.h>
+#include <unistd.h>
+#include <stdio.h>
 
 int
 _dl_make_stack_executable (const void *stack_endp)
 {
-  /* This gives us the highest/lowest page that needs to be changed.  */
-  uintptr_t page = ((uintptr_t) stack_endp
-		    & -(intptr_t) GLRO(dl_pagesize));
-
-  if (__mprotect ((void *) page, GLRO(dl_pagesize),
-		  PROT_READ | PROT_WRITE | PROT_EXEC
-#if _STACK_GROWS_DOWN
-		  | PROT_GROWSDOWN
-#elif _STACK_GROWS_UP
-		  | PROT_GROWSUP
-#endif
-		  ) != 0)
-    return errno;
-
-  /* Remember that we changed the permission.  */
-  GL(dl_stack_prot_flags) |= PROT_EXEC;
-
+  __libc_fatal("refusing to make stack executable in _dl_make_stack_executable (Fil-C policy)\n");
   return 0;
 }

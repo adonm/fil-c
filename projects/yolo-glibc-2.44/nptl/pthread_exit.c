@@ -24,15 +24,6 @@
 void
 __pthread_exit (void *value)
 {
-#ifdef SHARED
-  {
-    struct unwind_link *unwind_link = __libc_unwind_link_get ();
-    if (unwind_link == NULL)
-      __libc_fatal (UNWIND_SONAME
-                    " must be installed for pthread_exit to work\n");
-  }
-#endif
-
   __do_cancel (value);
 }
 libc_hidden_def (__pthread_exit)

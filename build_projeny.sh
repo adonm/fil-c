@@ -29,9 +29,7 @@ set -e
 set -x
 
 # Fil-C build of projeny: compile projects/projeny with Fil-C++ (build/bin),
-# run the projeny test suite (fails the build on test failure), and install
-# the executable to filc/projeny, overwriting the yolo build installed by
-# build_projeny_yolo.sh. Runs first in build_all_slow.sh.
+# run the projeny test suite (fails the build on test failure)
 cd projects/projeny
 
 $MAKE clean
@@ -40,11 +38,3 @@ $MAKE -j $NCPU CC="$PWD/../../build/bin/clang" CXX="$PWD/../../build/bin/clang++
 
 $MAKE test CC="$PWD/../../build/bin/clang" CXX="$PWD/../../build/bin/clang++"
 
-cd ../..
-
-mkdir -p filc
-cp projects/projeny/projeny filc/projeny
-chmod +x filc/projeny
-
-# Validation: the Fil-C-built projeny must run.
-filc/projeny help

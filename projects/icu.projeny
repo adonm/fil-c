@@ -20,8 +20,7 @@ Name: icu
     still correct for Yolo-C.
 
     Fil-C builtins audit: rg -nw "zmkptr|zcompiler_fence|zcap|stdfil" over
-    the workdir shows only common/ucnv.cpp (zmkptr) and
-    common/unicode/char16ptr.h (zcompiler_fence) use Fil-C builtins.
+    the workdir shows only common/ucnv.cpp (zmkptr) uses Fil-C builtins.
 diff --git a/icu/icu4c/source/common/putil.cpp b/icu/icu4c/source/common/putil.cpp
 --- a/icu/icu4c/source/common/putil.cpp
 +++ b/icu/icu4c/source/common/putil.cpp
@@ -171,17 +170,6 @@ diff --git a/icu/icu4c/source/common/unicode/char16ptr.h b/icu/icu4c/source/comm
   */
  #ifdef U_ALIASING_BARRIER
      // Use the predefined value.
-+#elif defined(__PIZLONATOR_WAS_HERE__)
-+/* Fil-C: use zcompiler_fence() -- the Fil-C-blessed compiler-ordering
-+   barrier (see stdfil.h: __c11_atomic_signal_fence, seq_cst) -- in place of
-+   the upstream asm volatile("" : : "rm"(ptr) : "memory"). This preserves the
-+   compiler-ordering property the macro relies on (no memory access is moved
-+   across it at compile time); it is not claimed to be an identical or
-+   stronger construct than the inline-asm form (in particular it takes no
-+   "rm"(ptr) input operand), so ptr is consumed explicitly to keep the
-+   macro's interface (and -Wunused-value / -Wunused-parameter behavior at use
-+   sites) identical to upstream. */
-+#   define U_ALIASING_BARRIER(ptr) (zcompiler_fence(), (void)(ptr))
  #elif (defined(__clang__) || defined(__GNUC__)) && U_PLATFORM != U_PF_BROWSER_NATIVE_CLIENT
  #   define U_ALIASING_BARRIER(ptr) asm volatile("" : : "rm"(ptr) : "memory")
  #elif defined(U_IN_DOXYGEN)

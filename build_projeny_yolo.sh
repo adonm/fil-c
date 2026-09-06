@@ -30,18 +30,14 @@ set -x
 
 # Yolo build of projeny: compile projects/projeny with the default system
 # C/C++ compiler (NOT Fil-C) and install the executable to filc/projeny.
-# Runs early in build_base.sh so a working projeny exists before the Fil-C
-# toolchain is built. build_projeny.sh later rebuilds projeny with Fil-C++
-# and overwrites filc/projeny.
+# Runs early in build_base.sh so a working projeny exists before it's needed
+# for any part of the build.
 cd projects/projeny
-
-$MAKE clean
 
 $MAKE -j $NCPU CC=cc CXX=g++
 
 cd ../..
 
-mkdir -p filc
 cp projects/projeny/projeny filc/projeny
 chmod +x filc/projeny
 

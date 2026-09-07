@@ -834,10 +834,12 @@ _Static_assert (0, "IEEE 128-bits long double requires redirection on this platf
    are not valid.  This should not be defined for C++, as macros are
    not an appropriate way of implementing such qualifier-generic
    operations for C++.  */
-# define __glibc_const_generic(PTR, CTYPE, CALL)	\
-  _Generic (0 ? (PTR) : (void *) 1,			\
-	    const void *: (CTYPE) (CALL),		\
-	    default: CALL)
+/* Fil-C: __glibc_const_generic is intentionally not defined.  glibc 2.44
+   uses it to make strstr and friends return const-qualified pointers when
+   given const-qualified arguments (which happens whenever _GNU_SOURCE is
+   defined, since it now implies _ISOC23_SOURCE).  This breaks existing
+   code that assigns the result to a mutable pointer, and we prefer
+   maximum source compatibility with pre-2.44 glibc.  */
 #endif
 
 #if __GNUC_PREREQ (10, 0)

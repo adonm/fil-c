@@ -52,11 +52,8 @@ struct my_statx {
 	uint64_t spare[14];
 };
 
-struct open_how {
-    unsigned long long flags;
-    unsigned long long mode;
-    unsigned long long resolve;
-};
+/* struct open_how comes from <fcntl.h> (glibc 2.44 pulls in the kernel's
+   linux/openat2.h, and always defines struct open_how one way or another). */
 
 int main(int argc, char** argv)
 {

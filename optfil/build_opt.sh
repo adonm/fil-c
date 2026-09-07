@@ -335,15 +335,15 @@ cd ..
 rm -rf pizlonated-attr
 hash -r
 
-tar -xf $FILCSRC/pizlix/acl-2.3.2.tar.xz
-cd acl-2.3.2
+tar -xf $FILCSRC/pizlix/acl-2.4.0.tar.xz
+cd acl-2.4.0
 sed -i s/-Wl,--version-script,/-Wc,--version-script=/g Makefile.in
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure \
-    --prefix=/opt/fil --disable-static --docdir=/opt/fil/share/doc/acl-2.3.2
+    --prefix=/opt/fil --disable-static --docdir=/opt/fil/share/doc/acl-2.4.0
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf acl-2.3.2
+rm -rf acl-2.4.0
 hash -r
 
 tar -xf $FILCSRC/pizlix/pcre2-10.48.tar.bz2

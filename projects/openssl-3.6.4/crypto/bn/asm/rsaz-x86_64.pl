@@ -109,7 +109,7 @@ $code.=<<___;
 .globl	rsaz_512_sqr
 .type	rsaz_512_sqr,\@function,5
 .align	32
-rsaz_512_sqr:				# 25-29% faster than rsaz_512_mul
+rsaz_512_sqr:				# 25-29% faster than rsaz_512_mul #! void(ptr,ptr,ptr,long,int)
 .cfi_startproc
 ___
 $code.=<<___ if ($ENV{SARCASM});
@@ -133,9 +133,9 @@ ___
 if ($ENV{SARCASM}) {
 	# Grow the region to 168 so $mod/$out can be parked in region slots
 	# (xmm pointer parking loses capabilities under sarcasm).
-	$code.="\tsubq	\$128+40, %rsp		#! alloca result size=168\n";
+	$code.="\tsubq	\$128+40, %rsp\n";
 } else {
-	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+	$code.="\tsubq	\$128+24, %rsp\n";
 }
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
@@ -144,7 +144,7 @@ $code.=<<___;
 .cfi_adjust_cfa_offset	128+24
 .Lsqr_body:
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	$mod, 152(%rsp)		#! store ptr	# park \$mod in the region\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	$mod, 152(%rsp)	# park \$mod in the region\n"; }
 else { $code.="\tmovq	$mod, %xmm1		# common off-load\n"; }
 $code.=<<___;
 	movq	($inp), %rdx
@@ -503,7 +503,7 @@ $code.=<<___;
 	movq	48(%rsp), %r14
 	movq	56(%rsp), %r15
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), %rbp		#! load ptr	# reload parked \$mod\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), %rbp	# reload parked \$mod\n"; }
 else { $code.="\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -539,7 +539,7 @@ $code.=<<___;
 .Loop_sqrx:
 	movl	$times,128+8(%rsp)
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	$out, 160(%rsp)		#! store ptr	# park \$out in the region\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	$out, 160(%rsp)	# park \$out in the region\n"; }
 else { $code.="\tmovq	$out, %xmm0		# off-load\n"; }
 $code.=<<___;
 #first iteration
@@ -773,7 +773,7 @@ $code.=<<___;
 	adcx	%r13, %rax
 	adcx	%rdx, %rbx
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	160(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr	# reload parked \$out/\$mod\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	160(%rsp), $out\n\tmovq	152(%rsp), %rbp	# reload parked \$out/\$mod\n"; }
 else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -866,7 +866,7 @@ $code.=<<___;
 .globl	rsaz_512_mul
 .type	rsaz_512_mul,\@function,5
 .align	32
-rsaz_512_mul:
+rsaz_512_mul: #! void(ptr,ptr,ptr,ptr,long)
 .cfi_startproc
 ___
 $code.=<<___ if ($ENV{SARCASM});
@@ -890,9 +890,9 @@ ___
 if ($ENV{SARCASM}) {
 	# Grow the region to 160 so $out/$mod can be parked in region slots
 	# (xmm pointer parking loses capabilities under sarcasm).
-	$code.="\tsubq	\$128+32, %rsp		#! alloca result size=160\n";
+	$code.="\tsubq	\$128+32, %rsp\n";
 } else {
-	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+	$code.="\tsubq	\$128+24, %rsp\n";
 }
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
@@ -903,8 +903,8 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
 $code.=<<___;
-	movq	$out, 136(%rsp)		#! store ptr
-	movq	$mod, 152(%rsp)		#! store ptr
+	movq	$out, 136(%rsp)
+	movq	$mod, 152(%rsp)
 	movq	$n0, 128(%rsp)
 ___
 } else {
@@ -926,7 +926,7 @@ $code.=<<___;
 	call	__rsaz_512_mul
 
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out\n\tmovq	152(%rsp), %rbp\n"; }
 else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -951,7 +951,7 @@ $code.=<<___ if ($addx);
 	call	__rsaz_512_mulx
 
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out		#! load ptr\n\tmovq	152(%rsp), %rbp		#! load ptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	136(%rsp), $out\n\tmovq	152(%rsp), %rbp\n"; }
 else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -1030,7 +1030,7 @@ $code.=<<___;
 .globl	rsaz_512_mul_gather4
 .type	rsaz_512_mul_gather4,\@function,6
 .align	32
-rsaz_512_mul_gather4:
+rsaz_512_mul_gather4: #! void(ptr,ptr,ptr,ptr,long,unsigned)
 .cfi_startproc
 ___
 $code.=<<___ if ($ENV{SARCASM});
@@ -1055,7 +1055,7 @@ if ($ENV{SARCASM}) {
 	# Region grows by 16 to host the saved stack pointer (slot 144 is
 	# $mod in this function).
 	$code.=<<___;
-	subq	\$`128+24+16+($win64?0xb0:0)`, %rsp	#! alloca result size=`128+24+16+($win64?0xb0:0)`
+	subq	\$`128+24+16+($win64?0xb0:0)`, %rsp
 	movq	%rax, 152(%rsp)		# park entry %rsp in the region
 ___
 } else {
@@ -1145,8 +1145,8 @@ $code.=<<___;
 	movq	%xmm8,%rbx
 
 	movq	$n0, 128(%rsp)		# off-load arguments
-	movq	$out, 128+8(%rsp)	#! store ptr
-	movq	$mod, 128+16(%rsp)	#! store ptr
+	movq	$out, 128+8(%rsp)
+	movq	$mod, 128+16(%rsp)
 
 	movq	($ap), %rax
 	 movq	8($ap), %rcx
@@ -1197,12 +1197,11 @@ $code.=<<___;
 	movq	%rdx, %r15
 	adcq	\$0, %r15
 
-	leaq	8(%rsp), %rdi
-	movl	\$7, %ecx
-	jmp	.Loop_mul_gather
-
-.align	32
-.Loop_mul_gather:
+___
+# Sarcasm: unrolled GATHER (7 fixed-multiplier rows). The
+# bump-pointer/indexed frame store becomes a constant frame
+# displacement per row; the gas path keeps the original loop.
+my $gather_body = <<___GATHER_BODY___;
 	movdqa	16*0(%rbp),%xmm8
 	movdqa	16*1(%rbp),%xmm9
 	movdqa	16*2(%rbp),%xmm10
@@ -1235,7 +1234,7 @@ $code.=<<___;
 	mulq	%rbx
 	addq	%rax, %r8
 	movq	8($ap), %rax
-	movq	%r8, (%rdi)
+	movq	%r8, @@@
 	movq	%rdx, %r8
 	adcq	\$0, %r8
 
@@ -1295,10 +1294,46 @@ $code.=<<___;
 	movq	%rdx, %r15
 	adcq	\$0, %r15
 
+___GATHER_BODY___
+if ($ENV{SARCASM}) {
+	for my $k (0..6) {
+		(my $b = $gather_body) =~ s/@@@/(8+8*$k)."(%rsp)"/e;
+		$code .= $b;
+	}
+} else {
+	$code.=<<___;
+	leaq	8(%rsp), %rdi
+	movl	\$7, %ecx
+	jmp	.Loop_mul_gather
+
+.align	32
+.Loop_mul_gather:
+___
+	my $b = $gather_body; $b =~ s/@@@/(%rdi)/;
+	$code .= $b;
+	$code.=<<___;
 	leaq	8(%rdi), %rdi
 
 	decl	%ecx
 	jnz	.Loop_mul_gather
+___
+}
+# Sarcasm: GATHER tail. The rows above stored caller slots 8-56; the tail
+# completes 64-120 (inline in the caller, so no clone bias). The gas
+# bump-pointer %rdi is never materialized under sarcasm.
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	movq	%r8, 64(%rsp)
+	movq	%r9, 72(%rsp)
+	movq	%r10, 80(%rsp)
+	movq	%r11, 88(%rsp)
+	movq	%r12, 96(%rsp)
+	movq	%r13, 104(%rsp)
+	movq	%r14, 112(%rsp)
+	movq	%r15, 120(%rsp)
+___
+} else {
+$code.=<<___;
 
 	movq	%r8, (%rdi)
 	movq	%r9, 8(%rdi)
@@ -1308,9 +1343,12 @@ $code.=<<___;
 	movq	%r13, 40(%rdi)
 	movq	%r14, 48(%rdi)
 	movq	%r15, 56(%rdi)
+___
+}
+$code.=<<___;
 
-	movq	128+8(%rsp), $out	#! load ptr
-	movq	128+16(%rsp), %rbp	#! load ptr
+	movq	128+8(%rsp), $out
+	movq	128+16(%rsp), %rbp
 
 	movq	(%rsp), %r8
 	movq	8(%rsp), %r9
@@ -1331,8 +1369,8 @@ $code.=<<___ if ($addx);
 	movq	%xmm8,%rdx
 
 	mov	$n0, 128(%rsp)		# off-load arguments
-	mov	$out, 128+8(%rsp)	#! store ptr
-	mov	$mod, 128+16(%rsp)	#! store ptr
+	mov	$out, 128+8(%rsp)
+	mov	$mod, 128+16(%rsp)
 
 	mulx	($ap), %rbx, %r8	# 0 iteration
 	mov	%rbx, (%rsp)
@@ -1362,11 +1400,11 @@ $code.=<<___ if ($addx);
 	mov	%r8, %rbx
 	adcx	%rdi, %r15		# %rdi is 0
 
-	mov	\$-7, %rcx
-	jmp	.Loop_mulx_gather
-
-.align	32
-.Loop_mulx_gather:
+___
+# Sarcasm: unrolled GATHERX (7 fixed-multiplier rows). The
+# bump-pointer/indexed frame store becomes a constant frame
+# displacement per row; the gas path keeps the original loop.
+my $gatherx_body = <<___GATHERX_BODY___;
 	movdqa	16*0(%rbp),%xmm8
 	movdqa	16*1(%rbp),%xmm9
 	movdqa	16*2(%rbp),%xmm10
@@ -1426,14 +1464,34 @@ $code.=<<___ if ($addx);
 	adox	%r15, %r14
 
 	mulx	56($ap), %rax, %r15
-	 mov	%rbx, 64(%rsp,%rcx,8)
+	 mov	%rbx, @@@
 	adcx	%rax, %r14
 	adox	%rdi, %r15
 	mov	%r8, %rbx
 	adcx	%rdi, %r15		# cf=0
 
+___GATHERX_BODY___
+if ($ENV{SARCASM}) {
+	for my $k (0..6) {
+		(my $b = $gatherx_body) =~ s/@@@/(8+8*$k)."(%rsp)"/e;
+		$code .= $b;
+	}
+} else {
+	$code.=<<___;
+	mov	\$-7, %rcx
+	jmp	.Loop_mulx_gather
+
+.align	32
+.Loop_mulx_gather:
+___
+	my $b = $gatherx_body; $b =~ s/@@@/64(%rsp,%rcx,8)/;
+	$code .= $b;
+	$code.=<<___;
 	inc	%rcx			# of=0
 	jnz	.Loop_mulx_gather
+___
+}
+$code.=<<___;
 
 	mov	%r8, 64(%rsp)
 	mov	%r9, 64+8(%rsp)
@@ -1445,8 +1503,8 @@ $code.=<<___ if ($addx);
 	mov	%r15, 64+56(%rsp)
 
 	mov	128(%rsp), %rdx		# pull arguments
-	mov	128+8(%rsp), $out	#! load ptr
-	mov	128+16(%rsp), %rbp	#! load ptr
+	mov	128+8(%rsp), $out
+	mov	128+16(%rsp), %rbp
 
 	mov	(%rsp), %r8
 	mov	8(%rsp), %r9
@@ -1538,7 +1596,7 @@ $code.=<<___;
 .globl	rsaz_512_mul_scatter4
 .type	rsaz_512_mul_scatter4,\@function,6
 .align	32
-rsaz_512_mul_scatter4:
+rsaz_512_mul_scatter4: #! void(ptr,ptr,ptr,long,ptr,unsigned)
 .cfi_startproc
 ___
 $code.=<<___ if ($ENV{SARCASM});
@@ -1563,9 +1621,9 @@ ___
 if ($ENV{SARCASM}) {
 	# Grow the region to 184 so $out/$mod/$tbl can be parked in region slots
 	# (xmm pointer parking loses capabilities under sarcasm).
-	$code.="\tsubq	\$128+56, %rsp		#! alloca result size=184\n";
+	$code.="\tsubq	\$128+56, %rsp\n";
 } else {
-	$code.="\tsubq	\$128+24, %rsp		#! alloca result size=152\n";
+	$code.="\tsubq	\$128+24, %rsp\n";
 }
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
@@ -1577,9 +1635,9 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
 $code.=<<___;
-	movq	$out, 152(%rsp)		#! store ptr
-	movq	$mod, 160(%rsp)		#! store ptr
-	movq	$tbl, 168(%rsp)		#! store ptr
+	movq	$out, 152(%rsp)
+	movq	$mod, 160(%rsp)
+	movq	$tbl, 168(%rsp)
 	movq	$n0, 128(%rsp)
 ___
 } else {
@@ -1605,7 +1663,7 @@ $code.=<<___;
 	call	__rsaz_512_mul
 
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out		#! load ptr\n\tmovq	160(%rsp), %rbp		#! load ptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out\n\tmovq	160(%rsp), %rbp\n"; }
 else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -1629,7 +1687,7 @@ $code.=<<___ if ($addx);
 	call	__rsaz_512_mulx
 
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out		#! load ptr\n\tmovq	160(%rsp), %rbp		#! load ptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	152(%rsp), $out\n\tmovq	160(%rsp), %rbp\n"; }
 else { $code.="\tmovq	%xmm0, $out\n\tmovq	%xmm1, %rbp\n"; }
 $code.=<<___;
 
@@ -1657,7 +1715,7 @@ $code.=<<___;
 	adcq	112(%rsp), %r14
 	adcq	120(%rsp), %r15
 ___
-if ($ENV{SARCASM}) { $code.="\tmovq	168(%rsp), $inp		#! load ptr\n"; }
+if ($ENV{SARCASM}) { $code.="\tmovq	168(%rsp), $inp\n"; }
 else { $code.="\tmovq	%xmm2, $inp\n"; }
 $code.=<<___;
 	sbbq	%rcx, %rcx
@@ -1722,7 +1780,7 @@ $code.=<<___;
 .globl	rsaz_512_mul_by_one
 .type	rsaz_512_mul_by_one,\@function,4
 .align	32
-rsaz_512_mul_by_one:
+rsaz_512_mul_by_one: #! void(ptr,ptr,ptr,long)
 .cfi_startproc
 ___
 $code.=<<___ if ($ENV{SARCASM});
@@ -1742,7 +1800,7 @@ $code.=<<___;
 	push	%r15
 .cfi_push	%r15
 
-	subq	\$128+24, %rsp		#! alloca result size=152
+	subq	\$128+24, %rsp
 ___
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rax, 144(%rsp)		# park entry %rsp in the region
@@ -2082,11 +2140,26 @@ $code.=<<___;
 .align	32
 __rsaz_512_mul:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	8(%rsp), %rdi
+___
+$code.=<<___;
 
 	movq	($ap), %rax
 	mulq	%rbx
+___
+if ($ENV{SARCASM}) {
+	# Row 0 lands at caller slot 0 (clone displacement 8 keys to caller 0).
+	$code.=<<___;
+	movq	%rax, 8(%rsp)
+___
+} else {
+	$code.=<<___;
 	movq	%rax, (%rdi)
+___
+}
+$code.=<<___;
 	movq	8($ap), %rax
 	movq	%rdx, %r8
 
@@ -2133,18 +2206,21 @@ __rsaz_512_mul:
 	adcq	\$0, %r15
 
 	leaq	8($bp), $bp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	leaq	8(%rdi), %rdi
+___
+$code.=<<___;
 
-	movl	\$7, %ecx
-	jmp	.Loop_mul
-
-.align	32
-.Loop_mul:
+___
+# Sarcasm: unrolled .Loop_mul (7 rows of __rsaz_512_mul). Row 0 went
+# to displacement 8 above; rows 1-7 land at 16-64. Gas keeps the loop.
+my $mul_body = <<___MUL_BODY___;
 	movq	($bp), %rbx
 	mulq	%rbx
 	addq	%rax, %r8
 	movq	8($ap), %rax
-	movq	%r8, (%rdi)
+	movq	%r8, @@@
 	movq	%rdx, %r8
 	adcq	\$0, %r8
 
@@ -2205,10 +2281,46 @@ __rsaz_512_mul:
 	movq	%rdx, %r15
 	adcq	\$0, %r15
 
+___MUL_BODY___
+if ($ENV{SARCASM}) {
+	for my $k (0..6) {
+		(my $b = $mul_body) =~ s/@@@/(16+8*$k)."(%rsp)"/e;
+		$code .= $b;
+	}
+} else {
+	$code.=<<___;
+	movl	\$7, %ecx
+	jmp	.Loop_mul
+
+.align	32
+.Loop_mul:
+___
+	my $b = $mul_body; $b =~ s/@@@/(%rdi)/;
+	$code .= $b;
+	$code.=<<___;
 	leaq	8(%rdi), %rdi
 
 	decl	%ecx
 	jnz	.Loop_mul
+___
+}
+# Sarcasm: __rsaz_512_mul tail. Rows above stored clone slots 8-64
+# (caller slots 0-56); the tail completes caller slots 64-120, i.e. clone
+# displacements 72-128. The gas bump-pointer %rdi is never materialized
+# under sarcasm.
+if ($ENV{SARCASM}) {
+$code.=<<___;
+	movq	%r8, 72(%rsp)
+	movq	%r9, 80(%rsp)
+	movq	%r10, 88(%rsp)
+	movq	%r11, 96(%rsp)
+	movq	%r12, 104(%rsp)
+	movq	%r13, 112(%rsp)
+	movq	%r14, 120(%rsp)
+	movq	%r15, 128(%rsp)
+___
+} else {
+$code.=<<___;
 
 	movq	%r8, (%rdi)
 	movq	%r9, 8(%rdi)
@@ -2218,6 +2330,9 @@ __rsaz_512_mul:
 	movq	%r13, 40(%rdi)
 	movq	%r14, 48(%rdi)
 	movq	%r15, 56(%rdi)
+___
+}
+$code.=<<___;
 
 	ret
 .cfi_endproc
@@ -2263,11 +2378,11 @@ __rsaz_512_mulx:
 	adc	%rax, %r14
 	adc	\$0, %r15
 
-	xor	$zero, $zero		# cf=0,of=0
-	jmp	.Loop_mulx
-
-.align	32
-.Loop_mulx:
+___
+# Sarcasm: unrolled MULX (6 fixed-multiplier rows). The
+# bump-pointer/indexed frame store becomes a constant frame
+# displacement per row; the gas path keeps the original loop.
+my $mulx_body = <<___MULX_BODY___;
 	movq	%r8, %rbx
 	mulx	($ap), %rax, %r8
 	adcx	%rax, %rbx
@@ -2298,14 +2413,42 @@ __rsaz_512_mulx:
 	adox	%r15, %r14
 
 	mulx	56($ap), %rax, %r15
-	 movq	64($bp,%rcx,8), %rdx
-	 movq	%rbx, 8+64-8(%rsp,%rcx,8)
+	 movq	###, %rdx
+	 movq	%rbx, @@@
 	adcx	%rax, %r14
 	adox	$zero, %r15
 	adcx	$zero, %r15		# cf=0
 
+___MULX_BODY___
+if ($ENV{SARCASM}) {
+	# Unrolled .Loop_mulx rows need the same cf=0,of=0 entry state.
+	# Each row also constant-folds the loop-variant b-word load
+	# (gas steps %rcx from -6; row k reads 16+8*k($bp)).
+	$code.=<<___;
+	xor	$zero, $zero		# cf=0,of=0
+___
+	for my $k (0..5) {
+		(my $b = $mulx_body) =~ s/@@@/(16+8*$k)."(%rsp)"/e;
+		$b =~ s/###/(16+8*$k)."($bp)"/e;
+		$code .= $b;
+	}
+} else {
+	$code.=<<___;
+	xor	$zero, $zero		# cf=0,of=0
+	jmp	.Loop_mulx
+
+.align	32
+.Loop_mulx:
+___
+	my $b = $mulx_body; $b =~ s/@@@/8+64-8(%rsp,%rcx,8)/;
+	$b =~ s/###/64($bp,%rcx,8)/;
+	$code .= $b;
+	$code.=<<___;
 	inc	%rcx			# of=0
 	jnz	.Loop_mulx
+___
+}
+$code.=<<___;
 
 	movq	%r8, %rbx
 	mulx	($ap), %rax, %r8
@@ -2362,7 +2505,7 @@ $code.=<<___;
 .globl	rsaz_512_scatter4
 .type	rsaz_512_scatter4,\@abi-omnipotent
 .align	16
-rsaz_512_scatter4:
+rsaz_512_scatter4: #! void(ptr,ptr,int)
 .cfi_startproc
 	leaq	($out,$power,8), $out
 	movl	\$8, %r9d
@@ -2382,7 +2525,7 @@ rsaz_512_scatter4:
 .globl	rsaz_512_gather4
 .type	rsaz_512_gather4,\@abi-omnipotent
 .align	16
-rsaz_512_gather4:
+rsaz_512_gather4: #! void(ptr,ptr,int)
 .cfi_startproc
 ___
 $code.=<<___	if ($win64);

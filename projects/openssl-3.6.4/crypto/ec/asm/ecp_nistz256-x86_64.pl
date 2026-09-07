@@ -132,7 +132,7 @@ $code.=<<___;
 .globl	ecp_nistz256_mul_by_2
 .type	ecp_nistz256_mul_by_2,\@function,2
 .align	64
-ecp_nistz256_mul_by_2:
+ecp_nistz256_mul_by_2: #! void(ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -187,7 +187,7 @@ ecp_nistz256_mul_by_2:
 .globl	ecp_nistz256_div_by_2
 .type	ecp_nistz256_div_by_2,\@function,2
 .align	32
-ecp_nistz256_div_by_2:
+ecp_nistz256_div_by_2: #! void(ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -257,7 +257,7 @@ ecp_nistz256_div_by_2:
 .globl	ecp_nistz256_mul_by_3
 .type	ecp_nistz256_mul_by_3,\@function,2
 .align	32
-ecp_nistz256_mul_by_3:
+ecp_nistz256_mul_by_3: #! void(ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -333,7 +333,7 @@ ecp_nistz256_mul_by_3:
 .globl	ecp_nistz256_add
 .type	ecp_nistz256_add,\@function,3
 .align	32
-ecp_nistz256_add:
+ecp_nistz256_add: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -389,7 +389,7 @@ ecp_nistz256_add:
 .globl	ecp_nistz256_sub
 .type	ecp_nistz256_sub,\@function,3
 .align	32
-ecp_nistz256_sub:
+ecp_nistz256_sub: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -445,7 +445,7 @@ ecp_nistz256_sub:
 .globl	ecp_nistz256_neg
 .type	ecp_nistz256_neg,\@function,2
 .align	32
-ecp_nistz256_neg:
+ecp_nistz256_neg: #! void(ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -513,7 +513,7 @@ $code.=<<___;
 .globl	ecp_nistz256_ord_mul_mont
 .type	ecp_nistz256_ord_mul_mont,\@function,3
 .align	32
-ecp_nistz256_ord_mul_mont:
+ecp_nistz256_ord_mul_mont: #! void(ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -843,7 +843,7 @@ $code.=<<___;
 .globl	ecp_nistz256_ord_sqr_mont
 .type	ecp_nistz256_ord_sqr_mont,\@function,3
 .align	32
-ecp_nistz256_ord_sqr_mont:
+ecp_nistz256_ord_sqr_mont: #! void(ptr,ptr,long)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -1139,7 +1139,7 @@ $code.=<<___	if ($addx);
 ################################################################################
 .type	ecp_nistz256_ord_mul_montx,\@function,3
 .align	32
-ecp_nistz256_ord_mul_montx:
+ecp_nistz256_ord_mul_montx: #! void(ptr,ptr,ptr)
 .cfi_startproc
 .Lecp_nistz256_ord_mul_montx:
 	push	%rbp
@@ -1375,7 +1375,7 @@ ecp_nistz256_ord_mul_montx:
 
 .type	ecp_nistz256_ord_sqr_montx,\@function,3
 .align	32
-ecp_nistz256_ord_sqr_montx:
+ecp_nistz256_ord_sqr_montx: #! void(ptr,ptr,long)
 .cfi_startproc
 .Lecp_nistz256_ord_sqr_montx:
 	push	%rbp
@@ -1590,7 +1590,7 @@ $code.=<<___;
 .globl	ecp_nistz256_to_mont
 .type	ecp_nistz256_to_mont,\@function,2
 .align	32
-ecp_nistz256_to_mont:
+ecp_nistz256_to_mont: #! void(ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -1612,7 +1612,7 @@ $code.=<<___;
 .globl	ecp_nistz256_mul_mont
 .type	ecp_nistz256_mul_mont,\@function,3
 .align	32
-ecp_nistz256_mul_mont:
+ecp_nistz256_mul_mont: #! void(ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -1913,7 +1913,7 @@ __ecp_nistz256_mul_montq:
 .globl	ecp_nistz256_sqr_mont
 .type	ecp_nistz256_sqr_mont,\@function,2
 .align	32
-ecp_nistz256_sqr_mont:
+ecp_nistz256_sqr_mont: #! void(ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -2464,7 +2464,7 @@ $code.=<<___;
 .globl	ecp_nistz256_from_mont
 .type	ecp_nistz256_from_mont,\@function,2
 .align	32
-ecp_nistz256_from_mont:
+ecp_nistz256_from_mont: #! void(ptr,ptr)
 .cfi_startproc
 	push	%r12
 .cfi_push	%r12
@@ -2575,7 +2575,7 @@ $code.=<<___;
 .globl	ecp_nistz256_scatter_w5
 .type	ecp_nistz256_scatter_w5,\@abi-omnipotent
 .align	32
-ecp_nistz256_scatter_w5:
+ecp_nistz256_scatter_w5: #! void(ptr,ptr,int)
 .cfi_startproc
 	lea	-3($index,$index,2), $index
 	movdqa	0x00($in_t), %xmm0
@@ -2601,7 +2601,7 @@ ecp_nistz256_scatter_w5:
 .globl	ecp_nistz256_gather_w5
 .type	ecp_nistz256_gather_w5,\@abi-omnipotent
 .align	32
-ecp_nistz256_gather_w5:
+ecp_nistz256_gather_w5: #! void(ptr,ptr,int)
 .cfi_startproc
 ___
 $code.=<<___	if ($avx>1);
@@ -2700,7 +2700,7 @@ $code.=<<___;
 .globl	ecp_nistz256_scatter_w7
 .type	ecp_nistz256_scatter_w7,\@abi-omnipotent
 .align	32
-ecp_nistz256_scatter_w7:
+ecp_nistz256_scatter_w7: #! void(ptr,ptr,int)
 .cfi_startproc
 	movdqu	0x00($in_t), %xmm0
 	shl	\$6, $index
@@ -2721,7 +2721,7 @@ ecp_nistz256_scatter_w7:
 .globl	ecp_nistz256_gather_w7
 .type	ecp_nistz256_gather_w7,\@abi-omnipotent
 .align	32
-ecp_nistz256_gather_w7:
+ecp_nistz256_gather_w7: #! void(ptr,ptr,int)
 .cfi_startproc
 ___
 $code.=<<___	if ($avx>1);
@@ -2816,7 +2816,7 @@ $code.=<<___;
 # void ecp_nistz256_avx2_gather_w5(uint64_t *val, uint64_t *in_t, int index);
 .type	ecp_nistz256_avx2_gather_w5,\@abi-omnipotent
 .align	32
-ecp_nistz256_avx2_gather_w5:
+ecp_nistz256_avx2_gather_w5: #! void(ptr,ptr,int)
 .cfi_startproc
 .Lavx2_gather_w5:
 	vzeroupper
@@ -2924,7 +2924,7 @@ $code.=<<___;
 .globl	ecp_nistz256_avx2_gather_w7
 .type	ecp_nistz256_avx2_gather_w7,\@abi-omnipotent
 .align	32
-ecp_nistz256_avx2_gather_w7:
+ecp_nistz256_avx2_gather_w7: #! void(ptr,ptr,int)
 .cfi_startproc
 .Lavx2_gather_w7:
 	vzeroupper
@@ -3037,7 +3037,7 @@ $code.=<<___;
 .globl	ecp_nistz256_avx2_gather_w7
 .type	ecp_nistz256_avx2_gather_w7,\@function,3
 .align	32
-ecp_nistz256_avx2_gather_w7:
+ecp_nistz256_avx2_gather_w7: #! void(ptr,ptr,int)
 .cfi_startproc
 	.byte	0x0f,0x0b	# ud2
 	ret
@@ -3069,13 +3069,10 @@ my ($poly1,$poly3)=($acc6,$acc7);
 sub load_for_mul () {
 my ($a,$b,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
-# Sarcasm: a negative-offset frame lea (rsp-128) escapes the region;
-# materialize the in-region address and subtract via register arithmetic
-# (same address, region-pointer form). $bias is -128 exactly for the
-# x-variants, 0 otherwise.
-my $a_lea = ($ENV{SARCASM} && $bias)
-	? "	lea	$a, $a_ptr\n	lea	".$bias."($a_ptr), $a_ptr"
-	: "	lea	$bias+$a, $a_ptr";
+# Single-step negative-offset frame lea: sarcasm proves these exactly like
+# the two-step materialize-and-subtract form, so the pristine spelling serves
+# both modes ($bias is -128 exactly for the x-variants, 0 otherwise).
+my $a_lea = "	lea	$bias+$a, $a_ptr";
 
 "	mov	$b, $src0
 	lea	$b, $b_ptr
@@ -3089,10 +3086,8 @@ $a_lea
 sub load_for_sqr () {
 my ($a,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
-# (see load_for_mul for the sarcasm split-lea rationale)
-my $a_lea = ($ENV{SARCASM} && $bias)
-	? "	lea	$a, $a_ptr\n	lea	".$bias."($a_ptr), $a_ptr"
-	: "	lea	$bias+$a, $a_ptr";
+# (see load_for_mul: single-step negative-offset frame lea for both modes)
+my $a_lea = "	lea	$bias+$a, $a_ptr";
 
 "	mov	8*0+$a, $src0
 	mov	8*1+$a, $acc6
@@ -3243,6 +3238,7 @@ sub gen_double () {
     my $x = shift;
     my ($src0,$sfx,$bias);
     my ($S,$M,$Zsqr,$in_x,$tmp0)=map(32*$_,(0..4));
+    my $FR = $ENV{SARCASM} ? "%fil_dbl" : "%rsp";
 
     if ($x ne "x") {
 	$src0 = "%rax";
@@ -3253,7 +3249,7 @@ $code.=<<___;
 .globl	ecp_nistz256_point_double
 .type	ecp_nistz256_point_double,\@function,2
 .align	32
-ecp_nistz256_point_double:
+ecp_nistz256_point_double: #! void(ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -3270,7 +3266,7 @@ ___
 $code.=<<___;
 .type	ecp_nistz256_point_doublex,\@function,2
 .align	32
-ecp_nistz256_point_doublex:
+ecp_nistz256_point_doublex: #! void(ptr,ptr)
 .cfi_startproc
 .Lpoint_doublex:
 ___
@@ -3300,7 +3296,7 @@ if ($ENV{SARCASM}) {
 	# and the following 8 bytes park $r_ptr (pointer parks in xmm
 	# registers cannot be tracked).
 	$code.=<<___;
-	sub	\$32*5+24, %rsp		#! alloca result size=184
+	sub	\$32*5+24, %rsp
 	movq	%rax, 32*5(%rsp)	# park entry %rsp in the region
 ___
 } else {
@@ -3310,6 +3306,17 @@ ___
 }
 $code.=<<___;
 .cfi_adjust_cfa_offset	32*5+24
+___
+if ($ENV{SARCASM}) {
+    # Heap scratch for the local-subroutine scalar slots (same
+    # layout as the gas frame block); frame-slot pointers cannot
+    # be materialized under sarcasm, so the subs address this
+    # GC buffer instead (gas keeps the frame block).
+    $code.=<<___;
+	.alloca	\$160,\$16,%fil_dbl
+___
+}
+$code.=<<___;
 .Lpoint_double${x}_body:
 
 .Lpoint_double_shortcut$x:
@@ -3322,11 +3329,11 @@ $code.=<<___;
 	 mov	0x20+8*3($a_ptr), $acc1
 	 mov	.Lpoly+8*1(%rip), $poly1
 	 mov	.Lpoly+8*3(%rip), $poly3
-	movdqa	%xmm0, $in_x(%rsp)
-	movdqa	%xmm1, $in_x+0x10(%rsp)
-	movq	$r_ptr, 32*5+8(%rsp)	#! store ptr	# park $r_ptr in the region
+	movdqa	%xmm0, $in_x($FR)
+	movdqa	%xmm1, $in_x+0x10($FR)
+	movq	$r_ptr, 32*5+8(%rsp)	# park $r_ptr in the region
 
-	lea	$S(%rsp), $r_ptr
+	lea	$S($FR), $r_ptr
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(S, in_y);
 
 	mov	0x40+8*0($a_ptr), $src0
@@ -3334,11 +3341,11 @@ $code.=<<___;
 	mov	0x40+8*2($a_ptr), $acc7
 	mov	0x40+8*3($a_ptr), $acc0
 	lea	0x40-$bias($a_ptr), $a_ptr
-	lea	$Zsqr(%rsp), $r_ptr
+	lea	$Zsqr($FR), $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Zsqr, in_z);
 
-	`&load_for_sqr("$S(%rsp)", "$src0")`
-	lea	$S(%rsp), $r_ptr
+	`&load_for_sqr("$S($FR)", "$src0")`
+	lea	$S($FR), $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(S, S);
 
 	mov	0x20($b_ptr), $src0		# $b_ptr is still valid
@@ -3348,29 +3355,29 @@ $code.=<<___;
 	mov	0x40+8*3($b_ptr), $acc4
 	lea	0x40-$bias($b_ptr), $a_ptr
 	lea	0x20($b_ptr), $b_ptr
-	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_z = parked $r_ptr + 0x40
+	movq	32*5+8(%rsp), $r_ptr	# res_z = parked $r_ptr + 0x40
 	lea	0x40($r_ptr), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_z, in_z, in_y);
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(res_z, res_z);
 
-	mov	$in_x+8*0(%rsp), $acc4		# "5-4-0-1" order
-	mov	$in_x+8*1(%rsp), $acc5
-	lea	$Zsqr(%rsp), $b_ptr
-	mov	$in_x+8*2(%rsp), $acc0
-	mov	$in_x+8*3(%rsp), $acc1
-	lea	$M(%rsp), $r_ptr
+	mov	$in_x+8*0($FR), $acc4		# "5-4-0-1" order
+	mov	$in_x+8*1($FR), $acc5
+	lea	$Zsqr($FR), $b_ptr
+	mov	$in_x+8*2($FR), $acc0
+	mov	$in_x+8*3($FR), $acc1
+	lea	$M($FR), $r_ptr
 	call	__ecp_nistz256_add_to$x		# p256_add(M, in_x, Zsqr);
 
-	mov	$in_x+8*0(%rsp), $acc4		# "5-4-0-1" order
-	mov	$in_x+8*1(%rsp), $acc5
-	lea	$Zsqr(%rsp), $b_ptr
-	mov	$in_x+8*2(%rsp), $acc0
-	mov	$in_x+8*3(%rsp), $acc1
-	lea	$Zsqr(%rsp), $r_ptr
+	mov	$in_x+8*0($FR), $acc4		# "5-4-0-1" order
+	mov	$in_x+8*1($FR), $acc5
+	lea	$Zsqr($FR), $b_ptr
+	mov	$in_x+8*2($FR), $acc0
+	mov	$in_x+8*3($FR), $acc1
+	lea	$Zsqr($FR), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(Zsqr, in_x, Zsqr);
 
-	`&load_for_sqr("$S(%rsp)", "$src0")`
-	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_y = parked $r_ptr + 0x20
+	`&load_for_sqr("$S($FR)", "$src0")`
+	movq	32*5+8(%rsp), $r_ptr	# res_y = parked $r_ptr + 0x20
 	lea	0x20($r_ptr), $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(res_y, S);
 ___
@@ -3423,67 +3430,64 @@ $code.=<<___;
 ___
 }
 $code.=<<___;
-	`&load_for_mul("$M(%rsp)", "$Zsqr(%rsp)", "$src0")`
-	lea	$M(%rsp), $r_ptr
+	`&load_for_mul("$M($FR)", "$Zsqr($FR)", "$src0")`
+	lea	$M($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(M, M, Zsqr);
 
-	lea	$tmp0(%rsp), $r_ptr
+	lea	$tmp0($FR), $r_ptr
 	call	__ecp_nistz256_mul_by_2$x
 
-	lea	$M(%rsp), $b_ptr
-	lea	$M(%rsp), $r_ptr
+	lea	$M($FR), $b_ptr
+	lea	$M($FR), $r_ptr
 	call	__ecp_nistz256_add_to$x		# p256_mul_by_3(M, M);
 
-	`&load_for_mul("$S(%rsp)", "$in_x(%rsp)", "$src0")`
-	lea	$S(%rsp), $r_ptr
+	`&load_for_mul("$S($FR)", "$in_x($FR)", "$src0")`
+	lea	$S($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S, S, in_x);
 
-	lea	$tmp0(%rsp), $r_ptr
+	lea	$tmp0($FR), $r_ptr
 	call	__ecp_nistz256_mul_by_2$x	# p256_mul_by_2(tmp0, S);
 
-	`&load_for_sqr("$M(%rsp)", "$src0")`
-	movq	32*5+8(%rsp), $r_ptr	#! load ptr	# res_x = parked $r_ptr
+	`&load_for_sqr("$M($FR)", "$src0")`
+	movq	32*5+8(%rsp), $r_ptr	# res_x = parked $r_ptr
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(res_x, M);
 
-	lea	$tmp0(%rsp), $b_ptr
+	lea	$tmp0($FR), $b_ptr
 	mov	$acc6, $acc0			# harmonize sqr output and sub input
 	mov	$acc7, $acc1
 	mov	$a_ptr, $poly1
 	mov	$t1, $poly3
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_x, res_x, tmp0);
 
-	mov	$S+8*0(%rsp), $t0
-	mov	$S+8*1(%rsp), $t1
-	mov	$S+8*2(%rsp), $t2
-	mov	$S+8*3(%rsp), $acc2		# "4-5-0-1" order
-	lea	$S(%rsp), $r_ptr
+	mov	$S+8*0($FR), $t0
+	mov	$S+8*1($FR), $t1
+	mov	$S+8*2($FR), $t2
+	mov	$S+8*3($FR), $acc2		# "4-5-0-1" order
+	lea	$S($FR), $r_ptr
 	call	__ecp_nistz256_sub$x		# p256_sub(S, S, res_x);
 
-	mov	$M(%rsp), $src0
-	lea	$M(%rsp), $b_ptr
+	mov	$M($FR), $src0
+	lea	$M($FR), $b_ptr
 	mov	$acc4, $acc6			# harmonize sub output and mul input
 	xor	%ecx, %ecx
-	mov	$acc4, $S+8*0(%rsp)		# have to save:-(
+	mov	$acc4, $S+8*0($FR)		# have to save:-(
 	mov	$acc5, $acc2
-	mov	$acc5, $S+8*1(%rsp)
+	mov	$acc5, $S+8*1($FR)
 	cmovz	$acc0, $acc3
-	mov	$acc0, $S+8*2(%rsp)
+	mov	$acc0, $S+8*2($FR)
 ___
-$code.=<<___ if ($ENV{SARCASM} && $bias);
-	lea	$S(%rsp), $a_ptr
-	lea	-128($a_ptr), $a_ptr
-___
-$code.=<<___ if (!($ENV{SARCASM} && $bias));
-	lea	$S-$bias(%rsp), $a_ptr
+# Single-step negative-offset frame lea (see load_for_mul).
+$code.=<<___;
+	lea	$S-$bias($FR), $a_ptr
 ___
 $code.=<<___;
 	cmovz	$acc1, $acc4
-	mov	$acc1, $S+8*3(%rsp)
+	mov	$acc1, $S+8*3($FR)
 	mov	$acc6, $acc1
-	lea	$S(%rsp), $r_ptr
+	lea	$S($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S, S, M);
 
-	movq	32*5+8(%rsp), $b_ptr	#! load ptr	# res_y = parked $r_ptr + 0x20
+	movq	32*5+8(%rsp), $b_ptr	# res_y = parked $r_ptr + 0x20
 	lea	0x20($b_ptr), $b_ptr
 	mov	$b_ptr, $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, S, res_y);
@@ -3527,6 +3531,7 @@ sub gen_add () {
 	$res_x,$res_y,$res_z,
 	$in1_x,$in1_y,$in1_z,
 	$in2_x,$in2_y,$in2_z)=map(32*$_,(0..17));
+    my $FR = $ENV{SARCASM} ? "%fil_add" : "%rsp";
     my ($Z1sqr, $Z2sqr) = ($Hsqr, $Rsqr);
 
     if ($x ne "x") {
@@ -3538,7 +3543,7 @@ $code.=<<___;
 .globl	ecp_nistz256_point_add
 .type	ecp_nistz256_point_add,\@function,3
 .align	32
-ecp_nistz256_point_add:
+ecp_nistz256_point_add: #! void(ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -3555,7 +3560,7 @@ ___
 $code.=<<___;
 .type	ecp_nistz256_point_addx,\@function,3
 .align	32
-ecp_nistz256_point_addx:
+ecp_nistz256_point_addx: #! void(ptr,ptr,ptr)
 .cfi_startproc
 .Lpoint_addx:
 ___
@@ -3584,7 +3589,7 @@ if ($ENV{SARCASM}) {
 	# and the following 16 bytes park $r_ptr / the in1 pointer
 	# (pointer parks in xmm registers cannot be tracked).
 	$code.=<<___;
-	sub	\$32*18+24, %rsp	#! alloca result size=600
+	sub	\$32*18+24, %rsp
 	movq	%rax, 32*18(%rsp)	# park entry %rsp in the region
 ___
 } else {
@@ -3594,6 +3599,17 @@ ___
 }
 $code.=<<___;
 .cfi_adjust_cfa_offset	32*18+24
+___
+if ($ENV{SARCASM}) {
+    # Heap scratch for the local-subroutine scalar slots (same
+    # layout as the gas frame block); frame-slot pointers cannot
+    # be materialized under sarcasm, so the subs address this
+    # GC buffer instead (gas keeps the frame block).
+    $code.=<<___;
+	.alloca	\$576,\$16,%fil_add
+___
+}
+$code.=<<___;
 .Lpoint_add${x}_body:
 
 	movdqu	0x00($a_ptr), %xmm0		# copy	*(P256_POINT *)$a_ptr
@@ -3604,12 +3620,12 @@ $code.=<<___;
 	movdqu	0x50($a_ptr), %xmm5
 	mov	$a_ptr, $b_ptr			# reassign
 	mov	$b_org, $a_ptr			# reassign
-	movdqa	%xmm0, $in1_x(%rsp)
-	movdqa	%xmm1, $in1_x+0x10(%rsp)
-	movdqa	%xmm2, $in1_y(%rsp)
-	movdqa	%xmm3, $in1_y+0x10(%rsp)
-	movdqa	%xmm4, $in1_z(%rsp)
-	movdqa	%xmm5, $in1_z+0x10(%rsp)
+	movdqa	%xmm0, $in1_x($FR)
+	movdqa	%xmm1, $in1_x+0x10($FR)
+	movdqa	%xmm2, $in1_y($FR)
+	movdqa	%xmm3, $in1_y+0x10($FR)
+	movdqa	%xmm4, $in1_z($FR)
+	movdqa	%xmm5, $in1_z+0x10($FR)
 	por	%xmm4, %xmm5
 
 	movdqu	0x00($a_ptr), %xmm0		# copy	*(P256_POINT *)$b_ptr
@@ -3622,24 +3638,24 @@ $code.=<<___;
 	 mov	0x40+8*1($a_ptr), $acc6
 	 mov	0x40+8*2($a_ptr), $acc7
 	 mov	0x40+8*3($a_ptr), $acc0
-	movdqa	%xmm0, $in2_x(%rsp)
+	movdqa	%xmm0, $in2_x($FR)
 	 pshufd	\$0x1e, %xmm5, %xmm4
-	movdqa	%xmm1, $in2_x+0x10(%rsp)
+	movdqa	%xmm1, $in2_x+0x10($FR)
 	movdqu	0x40($a_ptr),%xmm0		# in2_z again
 	movdqu	0x50($a_ptr),%xmm1
-	movdqa	%xmm2, $in2_y(%rsp)
-	movdqa	%xmm3, $in2_y+0x10(%rsp)
+	movdqa	%xmm2, $in2_y($FR)
+	movdqa	%xmm3, $in2_y+0x10($FR)
 	 por	%xmm4, %xmm5
 	 pxor	%xmm4, %xmm4
 	por	%xmm0, %xmm1
-	 movq	$r_ptr, 32*18+8(%rsp)	#! store ptr	# park $r_ptr in the region
+	 movq	$r_ptr, 32*18+8(%rsp)	# park $r_ptr in the region
 
 	lea	0x40-$bias($a_ptr), $a_ptr	# $a_ptr is still valid
-	 mov	$src0, $in2_z+8*0(%rsp)		# make in2_z copy
-	 mov	$acc6, $in2_z+8*1(%rsp)
-	 mov	$acc7, $in2_z+8*2(%rsp)
-	 mov	$acc0, $in2_z+8*3(%rsp)
-	lea	$Z2sqr(%rsp), $r_ptr		# Z2^2
+	 mov	$src0, $in2_z+8*0($FR)		# make in2_z copy
+	 mov	$acc6, $in2_z+8*1($FR)
+	 mov	$acc7, $in2_z+8*2($FR)
+	 mov	$acc0, $in2_z+8*3($FR)
+	lea	$Z2sqr($FR), $r_ptr		# Z2^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Z2sqr, in2_z);
 
 	pcmpeqd	%xmm4, %xmm5
@@ -3655,30 +3671,30 @@ $code.=<<___;
 	 mov	0x40+8*1($b_ptr), $acc6
 	 mov	0x40+8*2($b_ptr), $acc7
 	 mov	0x40+8*3($b_ptr), $acc0
-	movq	$b_ptr, 32*18+16(%rsp)	#! store ptr	# park the in1 pointer in the region
+	movq	$b_ptr, 32*18+16(%rsp)	# park the in1 pointer in the region
 
 	lea	0x40-$bias($b_ptr), $a_ptr
-	lea	$Z1sqr(%rsp), $r_ptr		# Z1^2
+	lea	$Z1sqr($FR), $r_ptr		# Z1^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Z1sqr, in1_z);
 
-	`&load_for_mul("$Z2sqr(%rsp)", "$in2_z(%rsp)", "$src0")`
-	lea	$S1(%rsp), $r_ptr		# S1 = Z2^3
+	`&load_for_mul("$Z2sqr($FR)", "$in2_z($FR)", "$src0")`
+	lea	$S1($FR), $r_ptr		# S1 = Z2^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S1, Z2sqr, in2_z);
 
-	`&load_for_mul("$Z1sqr(%rsp)", "$in1_z(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr		# S2 = Z1^3
+	`&load_for_mul("$Z1sqr($FR)", "$in1_z($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr		# S2 = Z1^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, Z1sqr, in1_z);
 
-	`&load_for_mul("$S1(%rsp)", "$in1_y(%rsp)", "$src0")`
-	lea	$S1(%rsp), $r_ptr		# S1 = Y1*Z2^3
+	`&load_for_mul("$S1($FR)", "$in1_y($FR)", "$src0")`
+	lea	$S1($FR), $r_ptr		# S1 = Y1*Z2^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S1, S1, in1_y);
 
-	`&load_for_mul("$S2(%rsp)", "$in2_y(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr		# S2 = Y2*Z1^3
+	`&load_for_mul("$S2($FR)", "$in2_y($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr		# S2 = Y2*Z1^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, S2, in2_y);
 
-	lea	$S1(%rsp), $b_ptr
-	lea	$R(%rsp), $r_ptr		# R = S2 - S1
+	lea	$S1($FR), $b_ptr
+	lea	$R($FR), $r_ptr		# R = S2 - S1
 	call	__ecp_nistz256_sub_from$x	# p256_sub(R, S2, S1);
 
 	or	$acc5, $acc4			# see if result is zero
@@ -3688,16 +3704,16 @@ $code.=<<___;
 	por	%xmm5, %xmm2			# in1infty || in2infty
 	movq	$acc4, %xmm3
 
-	`&load_for_mul("$Z2sqr(%rsp)", "$in1_x(%rsp)", "$src0")`
-	lea	$U1(%rsp), $r_ptr		# U1 = X1*Z2^2
+	`&load_for_mul("$Z2sqr($FR)", "$in1_x($FR)", "$src0")`
+	lea	$U1($FR), $r_ptr		# U1 = X1*Z2^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U1, in1_x, Z2sqr);
 
-	`&load_for_mul("$Z1sqr(%rsp)", "$in2_x(%rsp)", "$src0")`
-	lea	$U2(%rsp), $r_ptr		# U2 = X2*Z1^2
+	`&load_for_mul("$Z1sqr($FR)", "$in2_x($FR)", "$src0")`
+	lea	$U2($FR), $r_ptr		# U2 = X2*Z1^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, in2_x, Z1sqr);
 
-	lea	$U1(%rsp), $b_ptr
-	lea	$H(%rsp), $r_ptr		# H = U2 - U1
+	lea	$U1($FR), $b_ptr
+	lea	$H($FR), $r_ptr		# H = U2 - U1
 	call	__ecp_nistz256_sub_from$x	# p256_sub(H, U2, U1);
 
 	or	$acc5, $acc4			# see if result is zero
@@ -3715,8 +3731,8 @@ $code.=<<___;
 	jnz	.Ladd_proceed$x
 
 .Ladd_double$x:
-	movq	32*18+16(%rsp), $a_ptr	#! load ptr	# restore $a_ptr
-	movq	32*18+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
+	movq	32*18+16(%rsp), $a_ptr	# restore $a_ptr
+	movq	32*18+8(%rsp), $r_ptr	# restore $r_ptr
 ___
 if ($ENV{SARCASM}) {
 	# The B2 tail-join re-anchors %rsp mid-function (the +416 frame
@@ -3726,7 +3742,7 @@ if ($ENV{SARCASM}) {
 	# inlined here: jumping to the shared epilogue merges two paths
 	# with divergent parked-%rsp carrier state.
 	$code.=<<___;
-	call	ecp_nistz256_point_double$sfx
+	call	ecp_nistz256_point_double$sfx #! void(ptr,ptr)
 	movq	32*18(%rsp), %rsi	# reload parked entry %rsp
 .cfi_def_cfa	%rsi,8
 	movq	-48(%rsi),%r15
@@ -3757,28 +3773,28 @@ $code.=<<___;
 
 .align	32
 .Ladd_proceed$x:
-	`&load_for_sqr("$R(%rsp)", "$src0")`
-	lea	$Rsqr(%rsp), $r_ptr		# R^2
+	`&load_for_sqr("$R($FR)", "$src0")`
+	lea	$Rsqr($FR), $r_ptr		# R^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Rsqr, R);
 
-	`&load_for_mul("$H(%rsp)", "$in1_z(%rsp)", "$src0")`
-	lea	$res_z(%rsp), $r_ptr		# Z3 = H*Z1*Z2
+	`&load_for_mul("$H($FR)", "$in1_z($FR)", "$src0")`
+	lea	$res_z($FR), $r_ptr		# Z3 = H*Z1*Z2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_z, H, in1_z);
 
-	`&load_for_sqr("$H(%rsp)", "$src0")`
-	lea	$Hsqr(%rsp), $r_ptr		# H^2
+	`&load_for_sqr("$H($FR)", "$src0")`
+	lea	$Hsqr($FR), $r_ptr		# H^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Hsqr, H);
 
-	`&load_for_mul("$res_z(%rsp)", "$in2_z(%rsp)", "$src0")`
-	lea	$res_z(%rsp), $r_ptr		# Z3 = H*Z1*Z2
+	`&load_for_mul("$res_z($FR)", "$in2_z($FR)", "$src0")`
+	lea	$res_z($FR), $r_ptr		# Z3 = H*Z1*Z2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_z, res_z, in2_z);
 
-	`&load_for_mul("$Hsqr(%rsp)", "$H(%rsp)", "$src0")`
-	lea	$Hcub(%rsp), $r_ptr		# H^3
+	`&load_for_mul("$Hsqr($FR)", "$H($FR)", "$src0")`
+	lea	$Hcub($FR), $r_ptr		# H^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(Hcub, Hsqr, H);
 
-	`&load_for_mul("$Hsqr(%rsp)", "$U1(%rsp)", "$src0")`
-	lea	$U2(%rsp), $r_ptr		# U1*H^2
+	`&load_for_mul("$Hsqr($FR)", "$U1($FR)", "$src0")`
+	lea	$U2($FR), $r_ptr		# U1*H^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, U1, Hsqr);
 ___
 {
@@ -3789,13 +3805,13 @@ my ($acc0,$acc1,$acc2,$acc3,$t3,$t4)=($acc4,$acc5,$acc0,$acc1,$acc2,$acc3);
 my ($poly1, $poly3)=($acc6,$acc7);
 
 $code.=<<___;
-	#lea	$U2(%rsp), $a_ptr
-	#lea	$Hsqr(%rsp), $r_ptr	# 2*U1*H^2
+	#lea	$U2($FR), $a_ptr
+	#lea	$Hsqr($FR), $r_ptr	# 2*U1*H^2
 	#call	__ecp_nistz256_mul_by_2	# ecp_nistz256_mul_by_2(Hsqr, U2);
 
 	xor	$t4, $t4
 	add	$acc0, $acc0		# a0:a3+a0:a3
-	lea	$Rsqr(%rsp), $a_ptr
+	lea	$Rsqr($FR), $a_ptr
 	adc	$acc1, $acc1
 	 mov	$acc0, $t0
 	adc	$acc2, $acc2
@@ -3822,15 +3838,15 @@ $code.=<<___;
 
 	call	__ecp_nistz256_sub$x		# p256_sub(res_x, Rsqr, Hsqr);
 
-	lea	$Hcub(%rsp), $b_ptr
-	lea	$res_x(%rsp), $r_ptr
+	lea	$Hcub($FR), $b_ptr
+	lea	$res_x($FR), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_x, res_x, Hcub);
 
-	mov	$U2+8*0(%rsp), $t0
-	mov	$U2+8*1(%rsp), $t1
-	mov	$U2+8*2(%rsp), $t2
-	mov	$U2+8*3(%rsp), $t3
-	lea	$res_y(%rsp), $r_ptr
+	mov	$U2+8*0($FR), $t0
+	mov	$U2+8*1($FR), $t1
+	mov	$U2+8*2($FR), $t2
+	mov	$U2+8*3($FR), $t3
+	lea	$res_y($FR), $r_ptr
 
 	call	__ecp_nistz256_sub$x		# p256_sub(res_y, U2, res_x);
 
@@ -3841,28 +3857,28 @@ $code.=<<___;
 ___
 }
 $code.=<<___;
-	`&load_for_mul("$S1(%rsp)", "$Hcub(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr
+	`&load_for_mul("$S1($FR)", "$Hcub($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, S1, Hcub);
 
-	`&load_for_mul("$R(%rsp)", "$res_y(%rsp)", "$src0")`
-	lea	$res_y(%rsp), $r_ptr
+	`&load_for_mul("$R($FR)", "$res_y($FR)", "$src0")`
+	lea	$res_y($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_y, R, res_y);
 
-	lea	$S2(%rsp), $b_ptr
-	lea	$res_y(%rsp), $r_ptr
+	lea	$S2($FR), $b_ptr
+	lea	$res_y($FR), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, res_y, S2);
 
-	movq	32*18+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
+	movq	32*18+8(%rsp), $r_ptr	# restore $r_ptr
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_z, in2_z, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_z(%rsp), %xmm0
+	pandn	$res_z($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_z+0x10(%rsp), %xmm1
+	pandn	$res_z+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
-	pand	$in2_z(%rsp), %xmm2
-	pand	$in2_z+0x10(%rsp), %xmm3
+	pand	$in2_z($FR), %xmm2
+	pand	$in2_z+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 
@@ -3872,8 +3888,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_z(%rsp), %xmm2
-	pand	$in1_z+0x10(%rsp), %xmm3
+	pand	$in1_z($FR), %xmm2
+	pand	$in1_z+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x40($r_ptr)
@@ -3881,12 +3897,12 @@ $code.=<<___;
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_x, in2_x, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_x(%rsp), %xmm0
+	pandn	$res_x($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_x+0x10(%rsp), %xmm1
+	pandn	$res_x+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
-	pand	$in2_x(%rsp), %xmm2
-	pand	$in2_x+0x10(%rsp), %xmm3
+	pand	$in2_x($FR), %xmm2
+	pand	$in2_x+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 
@@ -3896,8 +3912,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_x(%rsp), %xmm2
-	pand	$in1_x+0x10(%rsp), %xmm3
+	pand	$in1_x($FR), %xmm2
+	pand	$in1_x+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x00($r_ptr)
@@ -3905,12 +3921,12 @@ $code.=<<___;
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_y, in2_y, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_y(%rsp), %xmm0
+	pandn	$res_y($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_y+0x10(%rsp), %xmm1
+	pandn	$res_y+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
-	pand	$in2_y(%rsp), %xmm2
-	pand	$in2_y+0x10(%rsp), %xmm3
+	pand	$in2_y($FR), %xmm2
+	pand	$in2_y+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 
@@ -3920,8 +3936,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_y(%rsp), %xmm2
-	pand	$in1_y+0x10(%rsp), %xmm3
+	pand	$in1_y($FR), %xmm2
+	pand	$in1_y+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x20($r_ptr)
@@ -3966,6 +3982,7 @@ sub gen_add_affine () {
 	$res_x,$res_y,$res_z,
 	$in1_x,$in1_y,$in1_z,
 	$in2_x,$in2_y)=map(32*$_,(0..14));
+    my $FR = $ENV{SARCASM} ? "%fil_aff" : "%rsp";
     my $Z1sqr = $S2;
 
     if ($x ne "x") {
@@ -3977,7 +3994,7 @@ $code.=<<___;
 .globl	ecp_nistz256_point_add_affine
 .type	ecp_nistz256_point_add_affine,\@function,3
 .align	32
-ecp_nistz256_point_add_affine:
+ecp_nistz256_point_add_affine: #! void(ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___	if ($addx);
@@ -3994,7 +4011,7 @@ ___
 $code.=<<___;
 .type	ecp_nistz256_point_add_affinex,\@function,3
 .align	32
-ecp_nistz256_point_add_affinex:
+ecp_nistz256_point_add_affinex: #! void(ptr,ptr,ptr)
 .cfi_startproc
 .Lpoint_add_affinex:
 ___
@@ -4023,7 +4040,7 @@ if ($ENV{SARCASM}) {
 	# and the following 8 bytes park $r_ptr (pointer parks in xmm
 	# registers cannot be tracked).
 	$code.=<<___;
-	sub	\$32*15+24, %rsp	#! alloca result size=504
+	sub	\$32*15+24, %rsp
 	movq	%rax, 32*15(%rsp)	# park entry %rsp in the region
 ___
 } else {
@@ -4033,6 +4050,17 @@ ___
 }
 $code.=<<___;
 .cfi_adjust_cfa_offset	32*15+24
+___
+if ($ENV{SARCASM}) {
+    # Heap scratch for the local-subroutine scalar slots (same
+    # layout as the gas frame block); frame-slot pointers cannot
+    # be materialized under sarcasm, so the subs address this
+    # GC buffer instead (gas keeps the frame block).
+    $code.=<<___;
+	.alloca	\$480,\$16,%fil_aff
+___
+}
+$code.=<<___;
 .Ladd_affine${x}_body:
 
 	movdqu	0x00($a_ptr), %xmm0	# copy	*(P256_POINT *)$a_ptr
@@ -4046,12 +4074,12 @@ $code.=<<___;
 	 mov	0x40+8*1($a_ptr), $acc6
 	 mov	0x40+8*2($a_ptr), $acc7
 	 mov	0x40+8*3($a_ptr), $acc0
-	movdqa	%xmm0, $in1_x(%rsp)
-	movdqa	%xmm1, $in1_x+0x10(%rsp)
-	movdqa	%xmm2, $in1_y(%rsp)
-	movdqa	%xmm3, $in1_y+0x10(%rsp)
-	movdqa	%xmm4, $in1_z(%rsp)
-	movdqa	%xmm5, $in1_z+0x10(%rsp)
+	movdqa	%xmm0, $in1_x($FR)
+	movdqa	%xmm1, $in1_x+0x10($FR)
+	movdqa	%xmm2, $in1_y($FR)
+	movdqa	%xmm3, $in1_y+0x10($FR)
+	movdqa	%xmm4, $in1_z($FR)
+	movdqa	%xmm5, $in1_z+0x10($FR)
 	por	%xmm4, %xmm5
 
 	movdqu	0x00($b_ptr), %xmm0	# copy	*(P256_POINT_AFFINE *)$b_ptr
@@ -4060,20 +4088,20 @@ $code.=<<___;
 	movdqu	0x20($b_ptr), %xmm2
 	 por	%xmm3, %xmm5
 	movdqu	0x30($b_ptr), %xmm3
-	movdqa	%xmm0, $in2_x(%rsp)
+	movdqa	%xmm0, $in2_x($FR)
 	 pshufd	\$0x1e, %xmm5, %xmm4
-	movdqa	%xmm1, $in2_x+0x10(%rsp)
+	movdqa	%xmm1, $in2_x+0x10($FR)
 	por	%xmm0, %xmm1
-	 movq	$r_ptr, 32*15+8(%rsp)	#! store ptr	# park $r_ptr in the region
-	movdqa	%xmm2, $in2_y(%rsp)
-	movdqa	%xmm3, $in2_y+0x10(%rsp)
+	 movq	$r_ptr, 32*15+8(%rsp)	# park $r_ptr in the region
+	movdqa	%xmm2, $in2_y($FR)
+	movdqa	%xmm3, $in2_y+0x10($FR)
 	por	%xmm2, %xmm3
 	 por	%xmm4, %xmm5
 	 pxor	%xmm4, %xmm4
 	por	%xmm1, %xmm3
 
 	lea	0x40-$bias($a_ptr), $a_ptr	# $a_ptr is still valid
-	lea	$Z1sqr(%rsp), $r_ptr		# Z1^2
+	lea	$Z1sqr($FR), $r_ptr		# Z1^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Z1sqr, in1_z);
 
 	pcmpeqd	%xmm4, %xmm5
@@ -4092,52 +4120,49 @@ $code.=<<___;
 	pshufd	\$0, %xmm4, %xmm4		# in2infty
 
 ___
-$code.=<<___ if ($ENV{SARCASM} && $bias);
-	lea	$Z1sqr(%rsp), $a_ptr
-	lea	-128($a_ptr), $a_ptr
-___
-$code.=<<___ if (!($ENV{SARCASM} && $bias));
-	lea	$Z1sqr-$bias(%rsp), $a_ptr
+# Single-step negative-offset frame lea (see load_for_mul).
+$code.=<<___;
+	lea	$Z1sqr-$bias($FR), $a_ptr
 ___
 $code.=<<___;
 	mov	$acc7, $acc4
-	lea	$U2(%rsp), $r_ptr		# U2 = X2*Z1^2
+	lea	$U2($FR), $r_ptr		# U2 = X2*Z1^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, Z1sqr, in2_x);
 
-	lea	$in1_x(%rsp), $b_ptr
-	lea	$H(%rsp), $r_ptr		# H = U2 - U1
+	lea	$in1_x($FR), $b_ptr
+	lea	$H($FR), $r_ptr		# H = U2 - U1
 	call	__ecp_nistz256_sub_from$x	# p256_sub(H, U2, in1_x);
 
-	`&load_for_mul("$Z1sqr(%rsp)", "$in1_z(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr		# S2 = Z1^3
+	`&load_for_mul("$Z1sqr($FR)", "$in1_z($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr		# S2 = Z1^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, Z1sqr, in1_z);
 
-	`&load_for_mul("$H(%rsp)", "$in1_z(%rsp)", "$src0")`
-	lea	$res_z(%rsp), $r_ptr		# Z3 = H*Z1*Z2
+	`&load_for_mul("$H($FR)", "$in1_z($FR)", "$src0")`
+	lea	$res_z($FR), $r_ptr		# Z3 = H*Z1*Z2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(res_z, H, in1_z);
 
-	`&load_for_mul("$S2(%rsp)", "$in2_y(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr		# S2 = Y2*Z1^3
+	`&load_for_mul("$S2($FR)", "$in2_y($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr		# S2 = Y2*Z1^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, S2, in2_y);
 
-	lea	$in1_y(%rsp), $b_ptr
-	lea	$R(%rsp), $r_ptr		# R = S2 - S1
+	lea	$in1_y($FR), $b_ptr
+	lea	$R($FR), $r_ptr		# R = S2 - S1
 	call	__ecp_nistz256_sub_from$x	# p256_sub(R, S2, in1_y);
 
-	`&load_for_sqr("$H(%rsp)", "$src0")`
-	lea	$Hsqr(%rsp), $r_ptr		# H^2
+	`&load_for_sqr("$H($FR)", "$src0")`
+	lea	$Hsqr($FR), $r_ptr		# H^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Hsqr, H);
 
-	`&load_for_sqr("$R(%rsp)", "$src0")`
-	lea	$Rsqr(%rsp), $r_ptr		# R^2
+	`&load_for_sqr("$R($FR)", "$src0")`
+	lea	$Rsqr($FR), $r_ptr		# R^2
 	call	__ecp_nistz256_sqr_mont$x	# p256_sqr_mont(Rsqr, R);
 
-	`&load_for_mul("$H(%rsp)", "$Hsqr(%rsp)", "$src0")`
-	lea	$Hcub(%rsp), $r_ptr		# H^3
+	`&load_for_mul("$H($FR)", "$Hsqr($FR)", "$src0")`
+	lea	$Hcub($FR), $r_ptr		# H^3
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(Hcub, Hsqr, H);
 
-	`&load_for_mul("$Hsqr(%rsp)", "$in1_x(%rsp)", "$src0")`
-	lea	$U2(%rsp), $r_ptr		# U1*H^2
+	`&load_for_mul("$Hsqr($FR)", "$in1_x($FR)", "$src0")`
+	lea	$U2($FR), $r_ptr		# U1*H^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, in1_x, Hsqr);
 ___
 {
@@ -4148,13 +4173,13 @@ my ($acc0,$acc1,$acc2,$acc3,$t3,$t4)=($acc4,$acc5,$acc0,$acc1,$acc2,$acc3);
 my ($poly1, $poly3)=($acc6,$acc7);
 
 $code.=<<___;
-	#lea	$U2(%rsp), $a_ptr
-	#lea	$Hsqr(%rsp), $r_ptr	# 2*U1*H^2
+	#lea	$U2($FR), $a_ptr
+	#lea	$Hsqr($FR), $r_ptr	# 2*U1*H^2
 	#call	__ecp_nistz256_mul_by_2	# ecp_nistz256_mul_by_2(Hsqr, U2);
 
 	xor	$t4, $t4
 	add	$acc0, $acc0		# a0:a3+a0:a3
-	lea	$Rsqr(%rsp), $a_ptr
+	lea	$Rsqr($FR), $a_ptr
 	adc	$acc1, $acc1
 	 mov	$acc0, $t0
 	adc	$acc2, $acc2
@@ -4181,15 +4206,15 @@ $code.=<<___;
 
 	call	__ecp_nistz256_sub$x		# p256_sub(res_x, Rsqr, Hsqr);
 
-	lea	$Hcub(%rsp), $b_ptr
-	lea	$res_x(%rsp), $r_ptr
+	lea	$Hcub($FR), $b_ptr
+	lea	$res_x($FR), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_x, res_x, Hcub);
 
-	mov	$U2+8*0(%rsp), $t0
-	mov	$U2+8*1(%rsp), $t1
-	mov	$U2+8*2(%rsp), $t2
-	mov	$U2+8*3(%rsp), $t3
-	lea	$H(%rsp), $r_ptr
+	mov	$U2+8*0($FR), $t0
+	mov	$U2+8*1($FR), $t1
+	mov	$U2+8*2($FR), $t2
+	mov	$U2+8*3($FR), $t3
+	lea	$H($FR), $r_ptr
 
 	call	__ecp_nistz256_sub$x		# p256_sub(H, U2, res_x);
 
@@ -4200,25 +4225,25 @@ $code.=<<___;
 ___
 }
 $code.=<<___;
-	`&load_for_mul("$Hcub(%rsp)", "$in1_y(%rsp)", "$src0")`
-	lea	$S2(%rsp), $r_ptr
+	`&load_for_mul("$Hcub($FR)", "$in1_y($FR)", "$src0")`
+	lea	$S2($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(S2, Hcub, in1_y);
 
-	`&load_for_mul("$H(%rsp)", "$R(%rsp)", "$src0")`
-	lea	$H(%rsp), $r_ptr
+	`&load_for_mul("$H($FR)", "$R($FR)", "$src0")`
+	lea	$H($FR), $r_ptr
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(H, H, R);
 
-	lea	$S2(%rsp), $b_ptr
-	lea	$res_y(%rsp), $r_ptr
+	lea	$S2($FR), $b_ptr
+	lea	$res_y($FR), $r_ptr
 	call	__ecp_nistz256_sub_from$x	# p256_sub(res_y, H, S2);
 
-	movq	32*15+8(%rsp), $r_ptr	#! load ptr	# restore $r_ptr
+	movq	32*15+8(%rsp), $r_ptr	# restore $r_ptr
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_z, ONE, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_z(%rsp), %xmm0
+	pandn	$res_z($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_z+0x10(%rsp), %xmm1
+	pandn	$res_z+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
 	pand	.LONE_mont(%rip), %xmm2
 	pand	.LONE_mont+0x10(%rip), %xmm3
@@ -4231,8 +4256,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_z(%rsp), %xmm2
-	pand	$in1_z+0x10(%rsp), %xmm3
+	pand	$in1_z($FR), %xmm2
+	pand	$in1_z+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x40($r_ptr)
@@ -4240,12 +4265,12 @@ $code.=<<___;
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_x, in2_x, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_x(%rsp), %xmm0
+	pandn	$res_x($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_x+0x10(%rsp), %xmm1
+	pandn	$res_x+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
-	pand	$in2_x(%rsp), %xmm2
-	pand	$in2_x+0x10(%rsp), %xmm3
+	pand	$in2_x($FR), %xmm2
+	pand	$in2_x+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 
@@ -4255,8 +4280,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_x(%rsp), %xmm2
-	pand	$in1_x+0x10(%rsp), %xmm3
+	pand	$in1_x($FR), %xmm2
+	pand	$in1_x+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x00($r_ptr)
@@ -4264,12 +4289,12 @@ $code.=<<___;
 
 	movdqa	%xmm5, %xmm0		# copy_conditional(res_y, in2_y, in1infty);
 	movdqa	%xmm5, %xmm1
-	pandn	$res_y(%rsp), %xmm0
+	pandn	$res_y($FR), %xmm0
 	movdqa	%xmm5, %xmm2
-	pandn	$res_y+0x10(%rsp), %xmm1
+	pandn	$res_y+0x10($FR), %xmm1
 	movdqa	%xmm5, %xmm3
-	pand	$in2_y(%rsp), %xmm2
-	pand	$in2_y+0x10(%rsp), %xmm3
+	pand	$in2_y($FR), %xmm2
+	pand	$in2_y+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 
@@ -4279,8 +4304,8 @@ $code.=<<___;
 	movdqa	%xmm4, %xmm2
 	pandn	%xmm3, %xmm1
 	movdqa	%xmm4, %xmm3
-	pand	$in1_y(%rsp), %xmm2
-	pand	$in1_y+0x10(%rsp), %xmm3
+	pand	$in1_y($FR), %xmm2
+	pand	$in1_y+0x10($FR), %xmm3
 	por	%xmm0, %xmm2
 	por	%xmm1, %xmm3
 	movdqu	%xmm2, 0x20($r_ptr)

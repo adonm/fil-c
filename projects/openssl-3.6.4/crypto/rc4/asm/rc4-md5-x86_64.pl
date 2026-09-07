@@ -74,12 +74,15 @@ my ($dat,$in0,$out,$ctx,$inp,$len, $func,$nargs);
 if ($rc4 && !$md5) {
   ($dat,$len,$in0,$out) = ("%rdi","%rsi","%rdx","%rcx");
   $func="RC4";				$nargs=4;
+  $func_sig="void(ptr,size_t,ptr,ptr)";
 } elsif ($md5 && !$rc4) {
   ($ctx,$inp,$len) = ("%rdi","%rsi","%rdx");
   $func="ossl_md5_block_asm_data_order";	$nargs=3;
+  $func_sig="void(ptr,ptr,size_t)";
 } else {
   ($dat,$in0,$out,$ctx,$inp,$len) = ("%rdi","%rsi","%rdx","%rcx","%r8","%r9");
   $func="rc4_md5_enc";			$nargs=6;
+  $func_sig="void(ptr,ptr,ptr,ptr,ptr,size_t)";
   # void rc4_md5_enc(
   #		RC4_KEY *key,		#
   #		const void *in0,	# RC4 input
@@ -125,7 +128,7 @@ $code.=<<___;
 
 .globl	$func
 .type	$func,\@function,$nargs
-$func:
+$func: #! $func_sig
 .cfi_startproc
 	cmp	\$0,$len
 	je	.Labort
@@ -492,7 +495,7 @@ $code.=<<___;
 .globl	RC4_set_key
 .type	RC4_set_key,\@function,3
 .align	16
-RC4_set_key:
+RC4_set_key: #! void(ptr,int,ptr)
 .cfi_startproc
 	lea	8($dat),$dat
 	lea	($inp,$len),$inp
@@ -535,7 +538,7 @@ RC4_set_key:
 .globl	RC4_options
 .type	RC4_options,\@abi-omnipotent
 .align	16
-RC4_options:
+RC4_options: #! ptr()
 	lea	.Lopts(%rip),%rax
 	ret
 .align	64

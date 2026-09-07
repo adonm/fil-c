@@ -139,7 +139,7 @@ $code.=<<___;
 .globl	rsaz_1024_sqr_avx2
 .type	rsaz_1024_sqr_avx2,\@function,5
 .align	64
-rsaz_1024_sqr_avx2:		# 702 cycles, 14% faster than rsaz_1024_mul_avx2
+rsaz_1024_sqr_avx2:		# 702 cycles, 14% faster than rsaz_1024_mul_avx2 #! void(ptr,ptr,ptr,long,int)
 .cfi_startproc
 	lea	(%rsp), %rax
 .cfi_def_cfa_register	%rax
@@ -181,9 +181,10 @@ if ($ENV{SARCASM}) {
 	# The conditional n-copy sub/and dance below is a page-crossing
 	# performance workaround that cannot be proven safe (mid-function
 	# andq on an anchored %rsp) and is pointless for a GC allocation.
+	# The andq $-1024,%rsp alignment itself is likewise perf-only: the
+	# frame is virtualized, so all slots stay addressable without it.
 	$code.=<<___;
-	sub	\$1920,%rsp		#! alloca result size=1920
-	and	\$-1024,%rsp
+	sub	\$1920,%rsp
 	sub	\$-128, $rp			# size optimization
 	sub	\$-128, $ap
 	sub	\$-128, $np
@@ -233,12 +234,11 @@ $code.=<<___ if (!$ENV{SARCASM});
 
 ___
 }
-$code.=<<___ if (!$ENV{SARCASM});
+$code.=<<___;
 .Lsqr_1024_no_n_copy:
-	and		\$-1024, %rsp
 ___
-$code.=<<___ if ($ENV{SARCASM});
-.Lsqr_1024_no_n_copy:
+$code.=<<___ if (!$ENV{SARCASM});
+	and		\$-1024, %rsp
 ___
 $code.=<<___;
 
@@ -846,7 +846,23 @@ $code.=<<___ if ($win64);
 	movaps	-0x58(%rax),%xmm14
 	movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	mov	1920(%rsp),%r15
+.cfi_restore	%r15
+	mov	1928(%rsp),%r14
+.cfi_restore	%r14
+	mov	1936(%rsp),%r13
+.cfi_restore	%r13
+	mov	1944(%rsp),%r12
+.cfi_restore	%r12
+	mov	1952(%rsp),%rbp
+.cfi_restore	%rbp
+	mov	1960(%rsp),%rbx
+.cfi_restore	%rbx
+	add	\$1968,%rsp
+.cfi_def_cfa_register	%rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -861,6 +877,8 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	(%rax),%rsp		# restore %rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___;
 .Lsqr_1024_epilogue:
 	ret
 .cfi_endproc
@@ -915,7 +933,7 @@ $code.=<<___;
 .globl	rsaz_1024_mul_avx2
 .type	rsaz_1024_mul_avx2,\@function,5
 .align	64
-rsaz_1024_mul_avx2:
+rsaz_1024_mul_avx2: #! void(ptr,ptr,ptr,ptr,long)
 .cfi_startproc
 	lea	(%rsp), %rax
 .cfi_def_cfa_register	%rax
@@ -955,10 +973,10 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
 	# Merged alloca + anchor: 64 used bytes + 64 alignment slack (see
-	# the sqr frame above for why the n-copy dance is dropped).
+	# the sqr frame above for why the n-copy dance is dropped). The
+	# andq $-64,%rsp alignment is perf-only and dropped the same way.
 	$code.=<<___;
-	sub	\$128,%rsp		#! alloca result size=128
-	and	\$-64,%rsp
+	sub	\$128,%rsp
 ___
 } else {
 	$code.=<<___;
@@ -1032,12 +1050,11 @@ if (!$ENV{SARCASM}) {
 	vmovdqu		$ACC9, 32*9-128($np)	# $ACC9 is zero after vzeroall
 ___
 }
-$code.=<<___ if (!$ENV{SARCASM});
+$code.=<<___;
 .Lmul_1024_no_n_copy:
-	and	\$-64,%rsp
 ___
-$code.=<<___ if ($ENV{SARCASM});
-.Lmul_1024_no_n_copy:
+$code.=<<___ if (!$ENV{SARCASM});
+	and	\$-64,%rsp
 ___
 $code.=<<___;
 
@@ -1521,7 +1538,23 @@ $code.=<<___ if ($win64);
 	movaps	-0x58(%rax),%xmm14
 	movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	mov	128(%rsp),%r15
+.cfi_restore	%r15
+	mov	136(%rsp),%r14
+.cfi_restore	%r14
+	mov	144(%rsp),%r13
+.cfi_restore	%r13
+	mov	152(%rsp),%r12
+.cfi_restore	%r12
+	mov	160(%rsp),%rbp
+.cfi_restore	%rbp
+	mov	168(%rsp),%rbx
+.cfi_restore	%rbx
+	add	\$176,%rsp
+.cfi_def_cfa_register	%rsp
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -1536,6 +1569,8 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	(%rax),%rsp		# restore %rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___;
 .Lmul_1024_epilogue:
 	ret
 .cfi_endproc
@@ -1550,7 +1585,7 @@ $code.=<<___;
 .globl	rsaz_1024_red2norm_avx2
 .type	rsaz_1024_red2norm_avx2,\@abi-omnipotent
 .align	32
-rsaz_1024_red2norm_avx2:
+rsaz_1024_red2norm_avx2: #! void(ptr,ptr)
 .cfi_startproc
 	sub	\$-128,$inp	# size optimization
 	xor	%rax,%rax
@@ -1591,7 +1626,7 @@ $code.=<<___;
 .globl	rsaz_1024_norm2red_avx2
 .type	rsaz_1024_norm2red_avx2,\@abi-omnipotent
 .align	32
-rsaz_1024_norm2red_avx2:
+rsaz_1024_norm2red_avx2: #! void(ptr,ptr)
 .cfi_startproc
 	sub	\$-128,$out	# size optimization
 	mov	($inp),@T[0]
@@ -1629,13 +1664,18 @@ $code.=<<___;
 ___
 }
 {
+# Sarcasm: the gather spill slots live straight off %rsp (32*K(%rsp)); the
+# gas path keeps the u-op-density region base -128(%rsp) in %rax.
+sub gslot { my $k = shift; return $ENV{SARCASM} ? (32*$k)."(%rsp)" : "32*$k+128(%rax)"; }
+sub gstore { return $ENV{SARCASM} ? "vmovdqu" : "vmovdqa"; }
+
 my ($out,$inp,$power) = $win64 ? ("%rcx","%rdx","%r8d") : ("%rdi","%rsi","%edx");
 
 $code.=<<___;
 .globl	rsaz_1024_scatter5_avx2
 .type	rsaz_1024_scatter5_avx2,\@abi-omnipotent
 .align	32
-rsaz_1024_scatter5_avx2:
+rsaz_1024_scatter5_avx2: #! void(ptr,ptr,int)
 .cfi_startproc
 	vzeroupper
 	vmovdqu	.Lscatter_permd(%rip),%ymm5
@@ -1662,7 +1702,7 @@ rsaz_1024_scatter5_avx2:
 .globl	rsaz_1024_gather5_avx2
 .type	rsaz_1024_gather5_avx2,\@abi-omnipotent
 .align	32
-rsaz_1024_gather5_avx2:
+rsaz_1024_gather5_avx2: #! void(ptr,ptr,int)
 .cfi_startproc
 	vzeroupper
 	mov	%rsp,%r11
@@ -1689,9 +1729,9 @@ ___
 if ($ENV{SARCASM}) {
 	# andq-anchored region: 256 used bytes + 32 alignment slack (one
 	# merged allocation; the lea-and two-step cannot be proven safe).
+	# The andq $-32,%rsp alignment itself is perf-only and dropped.
 	$code.=<<___;
-	sub	\$288,%rsp		#! alloca result size=288
-	and	\$-32, %rsp
+	sub	\$288,%rsp
 ___
 } else {
 	$code.=<<___;
@@ -1702,18 +1742,9 @@ ___
 $code.=<<___;
 	lea	.Linc(%rip), %r10
 ___
-if ($ENV{SARCASM}) {
-	# lea -128(%rsp) is below the anchored region; materialize the
-	# region base and subtract (same address, region-pointer form).
-	$code.=<<___;
-	lea	0(%rsp),%rax
-	sub	\$128,%rax
-___
-} else {
-	$code.=<<___;
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	-128(%rsp),%rax			# control u-op density
 ___
-}
 $code.=<<___;
 
 	vmovd		$power, %xmm4
@@ -1726,28 +1757,28 @@ $code.=<<___;
 	vpcmpeqd	%ymm4, %ymm0, %ymm0
 	vpaddd		%ymm5, %ymm1, %ymm3
 	vpcmpeqd	%ymm4, %ymm1, %ymm1
-	vmovdqa		%ymm0, 32*0+128(%rax)
+	@{[gstore]}		%ymm0, @{[gslot(0)]}
 	vpaddd		%ymm5, %ymm2, %ymm0
 	vpcmpeqd	%ymm4, %ymm2, %ymm2
-	vmovdqa		%ymm1, 32*1+128(%rax)
+	@{[gstore]}		%ymm1, @{[gslot(1)]}
 	vpaddd		%ymm5, %ymm3, %ymm1
 	vpcmpeqd	%ymm4, %ymm3, %ymm3
-	vmovdqa		%ymm2, 32*2+128(%rax)
+	@{[gstore]}		%ymm2, @{[gslot(2)]}
 	vpaddd		%ymm5, %ymm0, %ymm2
 	vpcmpeqd	%ymm4, %ymm0, %ymm0
-	vmovdqa		%ymm3, 32*3+128(%rax)
+	@{[gstore]}		%ymm3, @{[gslot(3)]}
 	vpaddd		%ymm5, %ymm1, %ymm3
 	vpcmpeqd	%ymm4, %ymm1, %ymm1
-	vmovdqa		%ymm0, 32*4+128(%rax)
+	@{[gstore]}		%ymm0, @{[gslot(4)]}
 	vpaddd		%ymm5, %ymm2, %ymm8
 	vpcmpeqd	%ymm4, %ymm2, %ymm2
-	vmovdqa		%ymm1, 32*5+128(%rax)
+	@{[gstore]}		%ymm1, @{[gslot(5)]}
 	vpaddd		%ymm5, %ymm3, %ymm9
 	vpcmpeqd	%ymm4, %ymm3, %ymm3
-	vmovdqa		%ymm2, 32*6+128(%rax)
+	@{[gstore]}		%ymm2, @{[gslot(6)]}
 	vpaddd		%ymm5, %ymm8, %ymm10
 	vpcmpeqd	%ymm4, %ymm8, %ymm8
-	vmovdqa		%ymm3, 32*7+128(%rax)
+	@{[gstore]}		%ymm3, @{[gslot(7)]}
 	vpaddd		%ymm5, %ymm9, %ymm11
 	vpcmpeqd	%ymm4, %ymm9, %ymm9
 	vpaddd		%ymm5, %ymm10, %ymm12
@@ -1770,21 +1801,21 @@ $code.=<<___;
 	vmovdqa		32*1-128($inp),	%ymm1
 	vmovdqa		32*2-128($inp),	%ymm2
 	vmovdqa		32*3-128($inp),	%ymm3
-	vpand		32*0+128(%rax),	%ymm0,	%ymm0
-	vpand		32*1+128(%rax),	%ymm1,	%ymm1
-	vpand		32*2+128(%rax),	%ymm2,	%ymm2
+	vpand		@{[gslot(0)]},	%ymm0,	%ymm0
+	vpand		@{[gslot(1)]},	%ymm1,	%ymm1
+	vpand		@{[gslot(2)]},	%ymm2,	%ymm2
 	vpor		%ymm0, %ymm1, %ymm4
-	vpand		32*3+128(%rax),	%ymm3,	%ymm3
+	vpand		@{[gslot(3)]},	%ymm3,	%ymm3
 	vmovdqa		32*4-128($inp),	%ymm0
 	vmovdqa		32*5-128($inp),	%ymm1
 	vpor		%ymm2, %ymm3, %ymm5
 	vmovdqa		32*6-128($inp),	%ymm2
 	vmovdqa		32*7-128($inp),	%ymm3
-	vpand		32*4+128(%rax),	%ymm0,	%ymm0
-	vpand		32*5+128(%rax),	%ymm1,	%ymm1
-	vpand		32*6+128(%rax),	%ymm2,	%ymm2
+	vpand		@{[gslot(4)]},	%ymm0,	%ymm0
+	vpand		@{[gslot(5)]},	%ymm1,	%ymm1
+	vpand		@{[gslot(6)]},	%ymm2,	%ymm2
 	vpor		%ymm0, %ymm4, %ymm4
-	vpand		32*7+128(%rax),	%ymm3,	%ymm3
+	vpand		@{[gslot(7)]},	%ymm3,	%ymm3
 	vpand		32*8-128($inp),	%ymm8,	%ymm0
 	vpor		%ymm1, %ymm5, %ymm5
 	vpand		32*9-128($inp),	%ymm9,	%ymm1
@@ -1846,7 +1877,7 @@ $code.=<<___;
 .globl	rsaz_avx2_eligible
 .type	rsaz_avx2_eligible,\@abi-omnipotent
 .align	32
-rsaz_avx2_eligible:
+rsaz_avx2_eligible: #! int()
 	mov	OPENSSL_ia32cap_P+8(%rip),%eax
 ___
 $code.=<<___	if ($addx);
@@ -2042,7 +2073,7 @@ print <<___;	# assembler is too old
 
 .globl	rsaz_avx2_eligible
 .type	rsaz_avx2_eligible,\@abi-omnipotent
-rsaz_avx2_eligible:
+rsaz_avx2_eligible: #! int()
 	xor	%eax,%eax
 	ret
 .size	rsaz_avx2_eligible,.-rsaz_avx2_eligible

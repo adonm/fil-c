@@ -65,7 +65,7 @@ $code.=<<___;
 .globl  ossl_rsaz_avxifma_eligible
 .type   ossl_rsaz_avxifma_eligible,\@abi-omnipotent
 .align  32
-ossl_rsaz_avxifma_eligible:
+ossl_rsaz_avxifma_eligible: #! int()
     mov OPENSSL_ia32cap_P+20(%rip), %ecx
     xor %eax,%eax
     and \$`1<<23`, %ecx     # avxifma
@@ -354,7 +354,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x20_x1_avxifma256
 .type   ossl_rsaz_amm52x20_x1_avxifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x20_x1_avxifma256:
+ossl_rsaz_amm52x20_x1_avxifma256: #! void(ptr,ptr,ptr,ptr,long)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -579,7 +579,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x20_x2_avxifma256
 .type   ossl_rsaz_amm52x20_x2_avxifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x20_x2_avxifma256:
+ossl_rsaz_amm52x20_x2_avxifma256: #! void(ptr,ptr,ptr,ptr,ptr)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -735,7 +735,7 @@ $code.=<<___;
 .align 32
 .globl  ossl_extract_multiplier_2x20_win5_avx
 .type   ossl_extract_multiplier_2x20_win5_avx,\@abi-omnipotent
-ossl_extract_multiplier_2x20_win5_avx:
+ossl_extract_multiplier_2x20_win5_avx: #! void(ptr,ptr,int,int)
 .cfi_startproc
     endbranch
 ___
@@ -956,7 +956,7 @@ $code.=<<___;
 
 .globl  ossl_rsaz_avxifma_eligible
 .type   ossl_rsaz_avxifma_eligible,\@abi-omnipotent
-ossl_rsaz_avxifma_eligible:
+ossl_rsaz_avxifma_eligible: #! int()
     xor     %eax,%eax
     ret
 .size   ossl_rsaz_avxifma_eligible, .-ossl_rsaz_avxifma_eligible

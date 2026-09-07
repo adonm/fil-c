@@ -522,7 +522,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x40_x1_avxifma256
 .type   ossl_rsaz_amm52x40_x1_avxifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x40_x1_avxifma256:
+ossl_rsaz_amm52x40_x1_avxifma256: #! void(ptr,ptr,ptr,ptr,long)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -755,7 +755,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x40_x2_avxifma256
 .type   ossl_rsaz_amm52x40_x2_avxifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x40_x2_avxifma256:
+ossl_rsaz_amm52x40_x2_avxifma256: #! void(ptr,ptr,ptr,ptr,ptr)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -977,7 +977,7 @@ $code.=<<___;
 .align 32
 .globl  ossl_extract_multiplier_2x40_win5_avx
 .type   ossl_extract_multiplier_2x40_win5_avx,\@abi-omnipotent
-ossl_extract_multiplier_2x40_win5_avx:
+ossl_extract_multiplier_2x40_win5_avx: #! void(ptr,ptr,int,int)
 .cfi_startproc
     endbranch
 ___

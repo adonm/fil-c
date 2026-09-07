@@ -323,9 +323,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   stack-pointer/frame-pointer-relative slots, reject stack-address escapes. (arm64
   also virtualizes NEON/FP stack slots into the raw-byte GPR slot webs — including
   the AAPCS callee-saved d8-d15 writeback save/restore forms — and derives the
-  frame geometry that normalizes x29-relative alloca bases/offsets into the
+  frame geometry that normalizes x29-relative offsets into the
   sp-relative coordinate space; see the arm64 NEON subsection of the frame
-  section and the alloca-redirect NOTE below.)
+  section.)
 - `*_codegen.luau` — per-arch instruction emitters (neutral micro-ops) for the transform.
   (arm64 includes the checked-access width/alignment model: NEON
   single-/multi-structure sizing with arrangement validation, pair forms, the
@@ -362,17 +362,20 @@ and callsite-marshalling notes); arm64 packs from x2 across x2..x7 (6 words max)
 keeps rejecting wider signatures —
 e.g. `long(long,long,ptr)` puts arg1 in x3 and arg2's intval/lower in x4/x5.
 
-NOTE (arm64 alloca region redirect): The `regionRedirect` mov branch (`mov xD, sp`
-re-deriving a region pointer) redirects to `buffer + (0 - region.base)` via
-`cg.addImm(rd, r.ptrTemp, -r.base)` — an addImm is required because a plain
-`cg.move` is correct only for a region based at sp+0. arm64 also
-recognizes x29-based alloca bases and normalizes x29-relative offsets in
-region/slot math the way x86_64 does for rbp: arm64_frame.analyzeFrame derives
-the frame geometry (frameSize, fpOffset, usesFp — x29 = sp + fpOffset when x29
-is the frame pointer; it may be an ordinary GPR),
-arm64_codegen.allocaRegionBase maps an `add xD, x29, #imm` alloca base into the
-sp-relative coordinate space, and stackOff in cg.regionRedirect normalizes
-x29-relative re-derivations the same way.
+NOTE (historical alloca regions): the `;! alloca`-driven GC-allocation regions
+(fixed-size `alloca result size=N` regions and dynamic `alloca size/result` regions,
+with the `regionRedirect` address-math redirection and the arm64/x86_64
+alloca-base normalization) were removed with the annotations. The only region
+source left is the fixed-frame escape promotion (D9), which rides the same
+`regionOf`/`regionRedirect` machinery. Stack allocation is spelled with the
+`.alloca` directive, which never touches sp and needs no regions.
+An indexed region lea (`lea D(%rsp,%idx,s),%r` with the static displacement
+in the region) redirects exactly like its non-indexed form: the value rides
+the region pointer with the index preserved, and the result shares the
+region's capability — the single-step spelling of the sanctioned two-step
+idiom (`lea D(%rsp),%t` seeding the pointer, then `lea (%t,%idx,s),%r`),
+with identical behavior. The dynamic index is covered by the runtime bounds
+checks at every use (fail-closed: an out-of-region index traps there).
 
 ## Core stages
 
@@ -527,7 +530,7 @@ executes, and the frame rewrite rejects, with a clean `sarcasm: <file>: <msg>` e
   proven safe (a leave that does not lead directly to a ret may observe the caller's
   frame)" — hardware `leave` also restores the CALLER's frame pointer into %rbp), and
   a `leave` with no frame pointer established is rejected with its own error. Dynamic
-  allocation must use the `;! alloca` annotation, not raw `subq %rax, %rsp`;
+  allocation must use the `.alloca` directive, not raw `subq %rax, %rsp`;
 - stack accesses executed while rsp is of UNKNOWN depth, and returns (or indirect
   tail jumps) with an unbalanced or unknown stack pointer. An access at a
   STATICALLY KNOWN perturbed depth keys exactly in normalized coordinates
@@ -536,9 +539,7 @@ executes, and the frame rewrite rejects, with a clean `sarcasm: <file>: <msg>` e
   ride the save-slot model (the early-ret-then-frame shape — an early return
   before the pushes leaves the framed path's pushes POST-prologue, as in rc4's
   epilogue mov-reloads — the slot sits at displacement (depth - save.depth)
-  exactly like the transient prologue pad), and an access landing in an
-  alignment-anchored alloca region keeps the region's own coordinates (see the
-  alloca description);
+  exactly like the transient prologue pad);
 - mid-function pushes/pops of non-callee-saved operands, and pops of the frame pointer
   that are neither inside verified teardown nor provably paired with the outstanding
   save of rbp (a paired `popq %rbp` — e.g. the leaf `popq %rbp; ret` needing no frame
@@ -558,15 +559,13 @@ Balanced callee-saved push/pop save/restore pairs ARE permitted anywhere the dep
 analysis stays consistent (e.g. gcc's shrink-wrapped saves behind a conditional
 branch): they are dropped — sarcasm's synthesized frame preserves the callee-saved
 registers it actually uses — sound exactly because the depth analysis rejects every
-stack access and return that could observe the shifted rsp. The alloca-annotated
-dynamic `subq %rax, %rsp` makes the depth "unknown" until `leave`/`movq %rbp,%rsp`
-restores it, so raw stack accesses in its scope are rejected while the annotated
-alloca machinery itself (redirected to a GC allocation) keeps working. The alloca pops
-nothing, so the abstract save stack SURVIVES across it (and across the inert
-computation in its scope): the fp restore (`leave`, or `movq %rbp,%rsp` — the VLA
-epilogue's %rsp recovery from the frame pointer) revives both the known depth and the save shape, and the teardown pops
-after it pair with the prologue saves exactly as without an alloca. A constant
-`addq $imm,%rsp` in the alloca's scope keeps the save stack too (it pops nothing);
+registers it actually uses — sound exactly because the depth analysis rejects every
+stack access and return that could observe the shifted rsp. (Historically, the
+`alloca`-annotated dynamic `subq %rax, %rsp` made the depth "unknown" with the
+same save-stack survival; the annotations are gone — dynamic stack allocation is
+spelled with the `.alloca` directive, which never perturbs the depth at all.) A
+constant `addq $imm,%rsp` in an unknown-depth scope keeps the save stack too (it
+pops nothing);
 whether it is a legal teardown is decided by the straight-to-`ret` proof above.
 
 Dropping a callee-saved pop is sound ONLY when the pop provably restores a matching
@@ -650,7 +649,7 @@ slot carrier is rejected outright (it would observe the phantom value); and a
 address would escape as the return value). Epilogue restore loads THROUGH a
 carrier (`movq -48(%rsi), %r15` — the perlasm movq-restore riding the recovered
 pointer) are recognized like the epilogue movq-restore loads and dropped.
-Exceptions: (a) a caller-saved save with a static fixed-alloca region based at
+Exceptions: (a) a caller-saved save with the static frame-escape region based at
 rsp+0 is NOT a carrier — the region redirect keeps it alive as a REAL value;
 (b) when the entry signature has SysV stack arguments (see "fast-CC stack
 argument words" above), the save — and its `leaq 0(%rsp), %reg` form — may go
@@ -740,8 +739,8 @@ the ABI guarantees only 16-byte stack alignment and sarcasm rejects dynamic rsp
 alignment.
 
 The runtime calls sarcasm injects invisibly and that RETURN — the pollcheck slow
-path, filc_allocate for `;! alloca`, the ptr-store aux-ensure/barrier slow paths,
-the atomic pointer load/store/compare-exchange calls —
+path, filc_allocate for `.alloca` and the frame-escape region, the ptr-store
+aux-ensure/barrier slow paths, the atomic pointer load/store/compare-exchange calls —
 would clobber the program's live xmm state (SysV makes every FP/SIMD register
 caller-saved, and the Fil-C runtime is compiled SSE2-only), so the transform
 wraps them in a vector save/restore into a reserved frame area above the GC
@@ -864,8 +863,11 @@ x86_64 are in the frame policy and the save discipline:
 ### ptrflow.luau — pointer-flow analysis
 Seeds pointer-ness: function ptr args (from the signature), results of `;! load ptr`
 (likewise `;! atomic load ptr` and the `;! atomic ptr` cmpxchg's accumulator def),
-call results whose return type is ptr. Forward-propagates through `mov`/`add imm`/
-`sub imm`/copies (GEP keeps lower, changes intval). A temp marked ptr gets a paired
+call results whose return type is ptr. Forward-propagates through `mov`/copies and
+address arithmetic (`add`/`sub`/`and`/`or`/`shl`/`shr`/`sar`/`lea` and the arm64
+forms: GEP keeps lower, changes intval). In particular `and` never drops a
+capability: the integer value is masked but the capability pointer stays the
+same (fail-closed — a result masked out of bounds traps at the access).
 `lower` temp. `ptrtoint` (ptr used as int) reads only intval; `inttoptr` w/o known
 origin -> null lower. A memory operand's base/index registers are consumed as
 addresses, never as value sources (on x86, `addq (%rsi), %rax` adds the loaded SCALAR;
@@ -1279,57 +1281,20 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   object; generated names of different functions cannot collide, since each
   embeds its own function name), so synthesized labels are unique and
   deterministic.
-- alloca annotations -> a GC allocation via filc_allocate (payload = allocation + 16,
-  the capability rooted), not real stack memory. The `;! alloca size (x)` name goes in
-  EITHER of two places. The DEFERRED form puts it on a value-producing (register-dest)
-  instruction that dominates the result (CFG reachability) and precedes it in body
-  order, so the captured size is defined wherever the allocation runs: that
-  instruction STAYS and
-  computes the size. The ALLOCATION form puts it on the %rsp-writing allocation
-  instruction itself (x86_64 `subq %rax, %rsp`; arm64 `sub sp, sp, xN`): that
-  instruction is DROPPED and replaced by the allocation — filc_allocate consumes the
-  size value it carried. `;! alloca result (x)` sits on the instruction whose
-  destination the allocation replaces; its name must match a `;! alloca size (x)` name
-  (mismatched names are rejected as a missing size), and in the allocation form it
-  goes on the first instruction reading %rsp after the allocation instruction —
-  capturing the address with `leaq disp(%rsp), %rd` or `movq %rsp, %rd` compiles
-  identically. The remaining %rsp-mutating setup and its rsp-derived address chains
-  are dropped, and the dead-code-elimination pass removes the now-orphaned arithmetic.
-  `;! alloca result
-  size=N` (fixed region) instead annotates a `leaq disp(%rsp), %rd` / `movq %rsp, %rd`
-  (or `leaq disp(%rbp), %rd` when rbp is the frame pointer): it defines [base,
-  base+N) in frame coordinates; rsp math landing inside is redirected to the
-  allocation pointer, and DIRECT stack-relative accesses into a region are
-  redirected the same way — rewritten to a region-pointer-relative access
-  (disp-base off the region temp) riding the ordinary checked path (width from
-  accessSizeAlign, CanWrite for stores — GC buffers are writable). The same two
-  forms also anchor an ALIGNMENT-anchored region: the annotation may sit on the
-  `andq $-A, %rsp` of the perlasm dynamic-alignment idiom (or on the
-  `subq $K, %rsp` / `addq $-K, %rsp` feeding it — the andq is then dropped as
-  alloca machinery), defining [0, N) in post-alignment rsp coordinates; the
-  abstract depth there is the region's own {anchored} scope (any later rsp write
-  leaves it — region coordinates shift with rsp — so a second dynamic alloca
-  inside the scope soundly degrades to the plain unprovable depth rather than
-  redirecting at stale coordinates). An `align=A` option (A a power of two in
-  [16, 4096]; on the andq form it must equal the andq's own alignment) instead
-  over-allocates the region by A-16 bytes and aligns the region pointer up to
-  A — the capability lower stays the allocation's payload base, so bounds
-  checks remain sound — for the vmovdqa/vmovdqa64-class stack traffic; an
-  aligned access needing more than the region's provable alignment is a clean
-  compile-time rejection (ordinary regions are 16-aligned).
-  While %rsp is perturbed by an alloca, %rsp-relative frame accesses are rejected and
-  %rbp-relative slots keep working: the frame pointer is tracked per program point
-  (established by `movq %rsp,%rbp`, invalidated by a paired `popq %rbp`/`leave`), and
-  a %rsp recovery (`movq %rbp,%rsp`, `leaq N(%rbp),%rsp`, or `movq %reg,%rsp` /
-  `leaq K(%reg),%rsp` from an unredefined saved-rsp carrier) revives the known
-  depth. The dropped machinery is chosen
-  by form, not position: the recovery forms above and the teardown `addq $imm,%rsp`
-  (or its `leaq $imm(%rsp), %rsp` spelling; the prologue allocation may likewise be
-  spelled `leaq -N(%rsp), %rsp`)
-  are never marked as alloca machinery, so they are honored — not swallowed — even in
-  the same straight-line region as the `;! alloca result` annotation, and a
-  branch-free alloca function recovers %rsp and pops its epilogue immediately after
-  the result.
+- `.alloca size, alignment, result` -> a GC allocation via filc_allocate (payload
+  = allocation + 16, the capability lower rooted), not real stack memory — and
+  without touching %rsp/sp, so the input keeps its stack semantics. size/alignment:
+  immediates, GPRs (including pseudos), or spill slots; result: a register, a
+  pseudo, or a spill slot. Wider-than-16 alignments over-allocate and align the
+  payload up (the lower stays the payload base, so bounds checks cover the whole
+  object); a dynamic alignment is validated at runtime (nonzero power of two)
+  with a pure trap otherwise. The historical `;! alloca` annotations (which
+  rewrote the input %rsp math) were removed and are compile-time errors.
+- pseudoregisters (`%fil_<ident>` / `fil_<ident>`): extra 64-bit GPRs with no fixed
+  physical register, numbered in a dedicated band at parse time and colored by the
+  register allocator like any other virtual web (def/use/kill, calls, spills,
+  pointer flow). GPR-only: combined FP/vector use and malformed names are
+  compile-time errors.
 - dead-code elimination then deletes instructions whose modeled defs nothing
   forward-reachable reads.
 - fabricate prologue: SOV check + filc_frame push (prev,origin,roots) + callee-saved.
@@ -1530,8 +1495,8 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   8(%rsp), %rax`), by copying it (`movq %rsp, %rax`), or by storing it into a
   frame slot (`movq %rsp, (%rsp)` — the slot virtualization rewrites only the
   memory operand, so the live sp/fp value would leak into a virtual temp). The
-  exceptions: address arithmetic landing INSIDE a fixed alloca region (redirected
-  to a real pointer into the GC region) and the phantom saved-rsp carrier flow
+  exceptions: address arithmetic landing INSIDE the promoted frame-escape region
+  (redirected to a real pointer into the GC region) and the phantom saved-rsp carrier flow
   (every use of the parked value is dropped or rejected, so nothing observable
   escapes — see the frame section). The
   full mid-function stack-pointer-movement policy is in the frame section.
@@ -1541,16 +1506,11 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   rejected, as are indexed stack-relative access and a stack-relative memory
   operand with a SYMBOLIC displacement (`movq foo(%rsp), %rax`) — its target
   is unknown at compile time, so it cannot be bounds-checked or virtualized.
-- alloca requires the annotation pair: an `;! alloca result (x)` with no
-  preceding `;! alloca size (x)` or a duplicate size for the same name is
-  rejected. For
-  `;! alloca result size=N` the annotated instruction must compute the buffer
-  base stack-frame-relative (`leaq disp(%rsp), %rd` / `movq %rsp, %rd`, or
-  `leaq disp(%rbp), %rd` when rbp is the frame pointer) or be the
-  alignment-idiom `andq $-A, %rsp` (or the `subq $K, %rsp` / `addq $-K, %rsp`
-  feeding one); any other base is
-  rejected rather than silently creating no region (the region redirect is
-  described in the transform section).
+- `.alloca` requires exactly 3 operands (size, alignment, result) of the
+  documented shapes; anything else (symbols, FP/vector registers, heap memory,
+  bad immediates) is rejected. A `.alloca` in a promoted-region frame or at an
+  unknown depth with spill-slot operands is rejected rather than silently
+  mis-virtualizing the slot.
 - Dropping the alloca's %rsp-mutating instruction also discards its flag effects: a
   body whose control flow consumes the flags of that instruction (branching on the
   allocation's `sub`/`mov` flags) observes different flags than hardware. An
@@ -1896,10 +1856,9 @@ ret exemptions), and the transform (retaddr temps, emission, flag treatment).
   `fctx.callerDepth` = D0), so the sub's `8(%rsp)` keys to the caller's slot
   0 and `leaq 8(%rsp),%rdi` (rsaz's frame-address idiom) keys to region
   offset 0, which the redirect resolves to the region pointer when the
-  caller's buffer is a fixed `#! alloca result size=N` region. rbp-relative
-  operands are never biased (the call does not move rbp); anchored-region
-  (dyn-depth) accesses keep their raw coordinates (the sub's own frame is
-  its own); the entry-rsp-parking lea forms shift by the same 8 (a clone's
+  caller's buffer sits in the promoted frame-escape region. rbp-relative
+  operands are never biased (the call does not move rbp);
+  the entry-rsp-parking lea forms shift by the same 8 (a clone's
   `leaq d+8(%rsp)` parks the entry rsp).
 - **Emission.** At each callsite: `leaq retaddrTemp, cont(%rip)` + `jmp
   entry` (the lea is elided for a single-continuation clone, whose dispatch
@@ -2039,7 +1998,7 @@ an unannotated one keeps the plain tail-call rejection.
   the alias link — its function object IS the function's.
 - **Clone-source freshness.** B2 regions are extracted from PRISTINE copies
   of the owner bodies taken at context-build time: the transform rewrites
-  some memory operands in place (the alloca-region redirect substitutes the
+  some memory operands in place (the frame-escape-region redirect substitutes the
   region-pointer temp for the stack base register), so a body whose owner
   was already compiled is no longer a valid clone source for a later
   jumper.

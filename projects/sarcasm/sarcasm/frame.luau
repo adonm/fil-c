@@ -50,7 +50,7 @@ local function immVal(op)
 	return 0
 end
 
--- Rewrite `body` using the arch `policy`. `regions` are fixed-size alloca regions (their
+-- Rewrite `body` using the arch `policy`. `regions` are GC-allocation regions (their
 -- stack math is redirected to the allocation by the transform, so it passes through here).
 -- `sigDesc` (optional) is the function's entry signature: arm64's frame analysis uses it
 -- to force the vector-save reservation for FP-signature functions (float/double args or
@@ -64,7 +64,7 @@ function frame.preprocess(body, regions, policy, sigDesc)
 	local out = {}
 	local function emit(n) out[#out + 1] = n end
 
-	-- Fixed-alloca region lookup in one of the two coordinate spaces: `dyn` selects
+	-- Region lookup in one of the two coordinate spaces: `dyn` selects
 	-- the alignment-anchored regions (the andq/sub forms — "dyn"-depth rsp-relative
 	-- coordinates), static selects the lea/mov-anchored ones (ordinary frame
 	-- coordinates).
@@ -108,30 +108,11 @@ function frame.preprocess(body, regions, policy, sigDesc)
 	for _, st in body do
 		if st.kind ~= "insn" then
 			emit(st)
-		elseif st.allocaPlace or st.allocaOwned then
-			-- The deferred dynamic-alloca idiom's unannotated machinery (x86_64 -- see
-			-- the transform's idiom discovery): the input's stack math must not execute
-			-- (the allocation pointer replaces it), so it passes through untouched (no
-			-- setup drop, escape check, or slot conversion) and the emitter drops it.
-			emit(st)
-		elseif not (st.annotation and string.find(st.annotation, "alloca", 1, true)) then
-			policy.rewrite(st, ctx)
-		elseif string.match(st.annotation, "^alloca%s+result")
-			or (string.match(st.annotation, "^alloca%s+size")
-				and st.operands[1] and st.operands[1].kind == "reg"
-				and st.operands[1].rc == "sp") then
-			-- The instruction the transform replaces wholesale: the allocation-form
-			-- `;! alloca size` sitting on the rsp-writing adjustment itself, and the
-			-- `;! alloca result` / `;! alloca result size=N` forms. Bypass the rewrite.
-			emit(st)
+		-- (The historical `;! alloca` bypasses are gone with the annotations:
+		-- every instruction reaches the policy rewrite, which virtualizes its
+		-- frame accesses. The `.alloca` directive arrives here as an ordinary
+		-- insn whose spill-slot operands rewrite the same way.)
 		else
-			-- A deferred-idiom `;! alloca size` definition on an ordinary value-producing
-			-- instruction (a load, an ALU op, ...): the instruction STAYS and lowers
-			-- ordinarily, so its memory operands are ordinary frame accesses and must be
-			-- virtualized / bounds-checked exactly like unannotated traffic. (Passing it
-			-- through raw left a live %rbp/%rsp memory operand in the lifted IR, which
-			-- the transform then checked as a HEAP access through a non-pointer web --
-			-- an unconditional always-trap at runtime.)
 			policy.rewrite(st, ctx)
 		end
 	end

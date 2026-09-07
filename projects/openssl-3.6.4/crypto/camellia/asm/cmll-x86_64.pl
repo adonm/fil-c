@@ -125,7 +125,7 @@ $code=<<___;
 .globl	Camellia_EncryptBlock
 .type	Camellia_EncryptBlock,\@abi-omnipotent
 .align	16
-Camellia_EncryptBlock:
+Camellia_EncryptBlock: #! void(int,ptr,ptr,ptr)
 .cfi_startproc
 	movl	\$128,%eax
 	subl	$arg0d,%eax
@@ -139,7 +139,7 @@ Camellia_EncryptBlock:
 .type	Camellia_EncryptBlock_Rounds,\@function,4
 .align	16
 .Lenc_rounds:
-Camellia_EncryptBlock_Rounds:
+Camellia_EncryptBlock_Rounds: #! void(int,ptr,ptr,ptr)
 .cfi_startproc
 	push	%rbx
 .cfi_push	%rbx
@@ -162,15 +162,6 @@ Camellia_EncryptBlock_Rounds:
 	lea	($key,%rdi),$keyend
 
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the
-	# plaintext/ciphertext pointers of this API are byte pointers
-	# that may be arbitrarily aligned; assemble the words byte-wise.
-$code.=<<___;
-	test	\$3,%rsi
-	jnz	.Lenc_unal_in
-___
-}
 $code.=<<___;
 	mov	0(%rsi),@S[0]		# load plaintext
 	mov	4(%rsi),@S[1]
@@ -181,65 +172,11 @@ $code.=<<___;
 	bswap	@S[2]
 	bswap	@S[3]
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lenc_in_done
-.Lenc_unal_in:
-	movzbl	3(%rsi),@S[0]
-	movzbl	2(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[0]
-	movzbl	1(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[0]
-	movzbl	0(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[0]
-	movzbl	7(%rsi),@S[1]
-	movzbl	6(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[1]
-	movzbl	5(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[1]
-	movzbl	4(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[1]
-	movzbl	11(%rsi),@S[2]
-	movzbl	10(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[2]
-	movzbl	9(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[2]
-	movzbl	8(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[2]
-	movzbl	15(%rsi),@S[3]
-	movzbl	14(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[3]
-	movzbl	13(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[3]
-	movzbl	12(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[3]
-.Lenc_in_done:
-___
-}
 $code.=<<___;
 
 	call	_x86_64_Camellia_encrypt
 
 ___
-if ($ENV{SARCASM}) {
-	# Same for the ciphertext store.
-$code.=<<___;
-	test	\$3,$out
-	jnz	.Lenc_unal_out
-___
-}
 $code.=<<___;
 	bswap	@S[0]
 	bswap	@S[1]
@@ -250,49 +187,6 @@ $code.=<<___;
 	mov	@S[2],8($out)
 	mov	@S[3],12($out)
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lenc_out_done
-.Lenc_unal_out:
-	bswap	@S[0]
-	bswap	@S[1]
-	bswap	@S[2]
-	bswap	@S[3]
-	mov	@S[0],%eax
-	mov	%al,0($out)
-	shr	\$8,%eax
-	mov	%al,1($out)
-	shr	\$8,%eax
-	mov	%al,2($out)
-	shr	\$8,%eax
-	mov	%al,3($out)
-	mov	@S[1],%eax
-	mov	%al,4($out)
-	shr	\$8,%eax
-	mov	%al,5($out)
-	shr	\$8,%eax
-	mov	%al,6($out)
-	shr	\$8,%eax
-	mov	%al,7($out)
-	mov	@S[2],%eax
-	mov	%al,8($out)
-	shr	\$8,%eax
-	mov	%al,9($out)
-	shr	\$8,%eax
-	mov	%al,10($out)
-	shr	\$8,%eax
-	mov	%al,11($out)
-	mov	@S[3],%eax
-	mov	%al,12($out)
-	shr	\$8,%eax
-	mov	%al,13($out)
-	shr	\$8,%eax
-	mov	%al,14($out)
-	shr	\$8,%eax
-	mov	%al,15($out)
-.Lenc_out_done:
-___
-}
 $code.=<<___;
 
 	mov	0(%rsp),%r15
@@ -366,7 +260,7 @@ $code.=<<___;
 .globl	Camellia_DecryptBlock
 .type	Camellia_DecryptBlock,\@abi-omnipotent
 .align	16
-Camellia_DecryptBlock:
+Camellia_DecryptBlock: #! void(int,ptr,ptr,ptr)
 .cfi_startproc
 	movl	\$128,%eax
 	subl	$arg0d,%eax
@@ -380,7 +274,7 @@ Camellia_DecryptBlock:
 .type	Camellia_DecryptBlock_Rounds,\@function,4
 .align	16
 .Ldec_rounds:
-Camellia_DecryptBlock_Rounds:
+Camellia_DecryptBlock_Rounds: #! void(int,ptr,ptr,ptr)
 .cfi_startproc
 	push	%rbx
 .cfi_push	%rbx
@@ -403,15 +297,6 @@ Camellia_DecryptBlock_Rounds:
 	lea	($keyend,%rdi),$key
 
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the
-	# plaintext/ciphertext pointers of this API are byte pointers
-	# that may be arbitrarily aligned; assemble the words byte-wise.
-$code.=<<___;
-	test	\$3,%rsi
-	jnz	.Ldec_unal_in
-___
-}
 $code.=<<___;
 	mov	0(%rsi),@S[0]		# load plaintext
 	mov	4(%rsi),@S[1]
@@ -422,65 +307,11 @@ $code.=<<___;
 	bswap	@S[2]
 	bswap	@S[3]
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Ldec_in_done
-.Ldec_unal_in:
-	movzbl	3(%rsi),@S[0]
-	movzbl	2(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[0]
-	movzbl	1(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[0]
-	movzbl	0(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[0]
-	movzbl	7(%rsi),@S[1]
-	movzbl	6(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[1]
-	movzbl	5(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[1]
-	movzbl	4(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[1]
-	movzbl	11(%rsi),@S[2]
-	movzbl	10(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[2]
-	movzbl	9(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[2]
-	movzbl	8(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[2]
-	movzbl	15(%rsi),@S[3]
-	movzbl	14(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[3]
-	movzbl	13(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[3]
-	movzbl	12(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[3]
-.Ldec_in_done:
-___
-}
 $code.=<<___;
 
 	call	_x86_64_Camellia_decrypt
 
 ___
-if ($ENV{SARCASM}) {
-	# Same for the ciphertext store.
-$code.=<<___;
-	test	\$3,$out
-	jnz	.Ldec_unal_out
-___
-}
 $code.=<<___;
 	bswap	@S[0]
 	bswap	@S[1]
@@ -491,49 +322,6 @@ $code.=<<___;
 	mov	@S[2],8($out)
 	mov	@S[3],12($out)
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Ldec_out_done
-.Ldec_unal_out:
-	bswap	@S[0]
-	bswap	@S[1]
-	bswap	@S[2]
-	bswap	@S[3]
-	mov	@S[0],%eax
-	mov	%al,0($out)
-	shr	\$8,%eax
-	mov	%al,1($out)
-	shr	\$8,%eax
-	mov	%al,2($out)
-	shr	\$8,%eax
-	mov	%al,3($out)
-	mov	@S[1],%eax
-	mov	%al,4($out)
-	shr	\$8,%eax
-	mov	%al,5($out)
-	shr	\$8,%eax
-	mov	%al,6($out)
-	shr	\$8,%eax
-	mov	%al,7($out)
-	mov	@S[2],%eax
-	mov	%al,8($out)
-	shr	\$8,%eax
-	mov	%al,9($out)
-	shr	\$8,%eax
-	mov	%al,10($out)
-	shr	\$8,%eax
-	mov	%al,11($out)
-	mov	@S[3],%eax
-	mov	%al,12($out)
-	shr	\$8,%eax
-	mov	%al,13($out)
-	shr	\$8,%eax
-	mov	%al,14($out)
-	shr	\$8,%eax
-	mov	%al,15($out)
-.Ldec_out_done:
-___
-}
 $code.=<<___;
 
 	mov	0(%rsp),%r15
@@ -671,7 +459,7 @@ $code.=<<___;
 .globl	Camellia_Ekeygen
 .type	Camellia_Ekeygen,\@function,3
 .align	16
-Camellia_Ekeygen:
+Camellia_Ekeygen: #! int(int,ptr,ptr)
 .cfi_startproc
 	push	%rbx
 .cfi_push	%rbx
@@ -689,67 +477,12 @@ Camellia_Ekeygen:
 	mov	%rdx,$out		# keyTable
 
 ___
-if ($ENV{SARCASM}) {
-	# userKey is a byte pointer of arbitrary
-	# alignment; assemble the words byte-wise then.
-$code.=<<___;
-	test	\$3,%rsi
-	jnz	.Lkey_unal_in0
-___
-}
 $code.=<<___;
 	mov	0(%rsi),@S[0]		# load 0-127 bits
 	mov	4(%rsi),@S[1]
 	mov	8(%rsi),@S[2]
 	mov	12(%rsi),@S[3]
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lkey_in_done0
-.Lkey_unal_in0:
-	movzbl	0(%rsi),@S[0]
-	movzbl	1(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[0]
-	movzbl	2(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[0]
-	movzbl	3(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[0]
-	movzbl	4(%rsi),@S[1]
-	movzbl	5(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[1]
-	movzbl	6(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[1]
-	movzbl	7(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[1]
-	movzbl	8(%rsi),@S[2]
-	movzbl	9(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[2]
-	movzbl	10(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[2]
-	movzbl	11(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[2]
-	movzbl	12(%rsi),@S[3]
-	movzbl	13(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[3]
-	movzbl	14(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[3]
-	movzbl	15(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[3]
-.Lkey_in_done0:
-___
-}
 $code.=<<___;
 
 	bswap	@S[0]
@@ -763,53 +496,12 @@ $code.=<<___;
 	je	.L1st128
 
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	test	\$3,%rsi
-	jnz	.Lkey_unal_in2
-___
-}
 $code.=<<___;
 	mov	16(%rsi),@S[0]		# load 128-191 bits
 	mov	20(%rsi),@S[1]
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lkey_in_done2
-.Lkey_unal_in2:
-	movzbl	16(%rsi),@S[0]
-	movzbl	17(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[0]
-	movzbl	18(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[0]
-	movzbl	19(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[0]
-	movzbl	20(%rsi),@S[1]
-	movzbl	21(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[1]
-	movzbl	22(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[1]
-	movzbl	23(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[1]
-.Lkey_in_done2:
-___
-}
 $code.=<<___;
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	cmp	\$192,$keyend
-	je	.L1st192
-	test	\$3,%rsi
-	jnz	.Lkey_unal_in3
-___
-}
 $code.=<<___;
 	cmp	\$192,$keyend
 	je	.L1st192
@@ -817,32 +509,6 @@ $code.=<<___;
 	mov	28(%rsi),@S[3]
 	jmp	.L1st256
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-.Lkey_unal_in3:
-	movzbl	24(%rsi),@S[2]
-	movzbl	25(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[2]
-	movzbl	26(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[2]
-	movzbl	27(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[2]
-	movzbl	28(%rsi),@S[3]
-	movzbl	29(%rsi),%eax
-	shl	\$8,%eax
-	or	%eax,@S[3]
-	movzbl	30(%rsi),%eax
-	shl	\$16,%eax
-	or	%eax,@S[3]
-	movzbl	31(%rsi),%eax
-	shl	\$24,%eax
-	or	%eax,@S[3]
-	jmp	.L1st256
-___
-}
 $code.=<<___;
 .L1st192:
 	mov	@S[0],@S[2]
@@ -1048,7 +714,7 @@ $code.=<<___;
 .globl	Camellia_cbc_encrypt
 .type	Camellia_cbc_encrypt,\@function,6
 .align	16
-Camellia_cbc_encrypt:
+Camellia_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 .cfi_startproc
 	endbranch
 	cmp	\$0,%rdx
@@ -1099,18 +765,8 @@ $code.=<<___;
 .Lcbc_prologue:
 
 ___
-if ($ENV{SARCASM}) {
-	# Under sarcasm the anti-aliasing dynamic frame is a fixed-size GC
-	# allocation covering the 64-byte slot area (the %rsp carrier uses
-	# %r10 — sarcasm reserves %rbp for frame pointers).
-	$code.=<<___;
-	mov	%rsp,%r10
-	sub	\$128,%rsp		#! alloca size (cmll)
-	mov	%rsp,%r11		#! alloca result (cmll)
-
-	mov	%rdi,$inp		# inp argument
-___
-} else {
+# The CBC body below runs only under gas (SARCASM forwards to the C
+# CBC in Camellia_cbc_encrypt above); the dynamic anti-aliasing frame stays.
 	$code.=<<___;
 	mov	%rsp,%rbp
 .cfi_def_cfa_register	%rbp
@@ -1128,7 +784,6 @@ ___
 
 	mov	%rdi,$inp		# inp argument
 ___
-}
 $code.=<<___;
 	mov	%rsi,$out		# out argument
 	mov	%r8,%rbx		# ivp argument
@@ -1137,12 +792,9 @@ $code.=<<___;
 
 	mov	%r8,$_ivp	#! store ptr
 ___
-$code.=<<___	if (!$ENV{SARCASM});
+$code.=<<___;
 	mov	%rbp,$_rsp
 .cfi_cfa_expression	$_rsp,deref,+56
-___
-$code.=<<___	if ($ENV{SARCASM});
-	mov	%r10,$_rsp
 ___
 $code.=<<___;
 

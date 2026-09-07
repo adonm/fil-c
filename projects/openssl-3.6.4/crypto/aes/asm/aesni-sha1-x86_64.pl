@@ -137,7 +137,7 @@ $code.=<<___;
 .globl	aesni_cbc_sha1_enc
 .type	aesni_cbc_sha1_enc,\@abi-omnipotent
 .align	32
-aesni_cbc_sha1_enc:
+aesni_cbc_sha1_enc: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 	# caller should check for SSSE3 and AES-NI bits
 	mov	OPENSSL_ia32cap_P+0(%rip),%r10d
@@ -212,7 +212,7 @@ my $_ror=sub { &ror(@_) };
 $code.=<<___;
 .type	aesni_cbc_sha1_enc_ssse3,\@function,6
 .align	32
-aesni_cbc_sha1_enc_ssse3:
+aesni_cbc_sha1_enc_ssse3: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___ if (!$ENV{SARCASM});
@@ -1131,7 +1131,7 @@ my $_ror=sub { &shrd(@_[0],@_) };
 $code.=<<___;
 .type	aesni_cbc_sha1_enc_avx,\@function,6
 .align	32
-aesni_cbc_sha1_enc_avx:
+aesni_cbc_sha1_enc_avx: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 ___
 $code.=<<___ if (!$ENV{SARCASM});
@@ -1869,7 +1869,7 @@ my @MSG=map("%xmm$_",(3..6));
 $code.=<<___;
 .type	aesni_cbc_sha1_enc_shaext,\@function,6
 .align	32
-aesni_cbc_sha1_enc_shaext:
+aesni_cbc_sha1_enc_shaext: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
 ___

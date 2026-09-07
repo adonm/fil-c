@@ -140,7 +140,7 @@ $code=<<___;
 .globl	RC4
 .type	RC4,\@function,4
 .align	16
-RC4:
+RC4: #! void(ptr,size_t,ptr,ptr)
 .cfi_startproc
 	endbranch
 	or	$len,$len
@@ -235,24 +235,10 @@ $code.=<<___;
 	sub	\$8,$len
 
 ___
-if ($ENV{SARCASM}) {
-	# Sarcasm checks scalar accesses with natural alignment, but the
-	# 8-byte stream load/store here is deliberately unaligned (the
-	# warmup aligns the RC4 state index, not the buffers). The movq
-	# xmm,mem forms are unaligned-permissive (keystream is data,
-	# never a pointer, so no capability is at stake).
-	$code.=<<___;
-	movq	($inp,$idx),%xmm2
-	movq	%r8,%xmm3
-	pxor	%xmm3,%xmm2
-	movq	%xmm2,($out,$idx)
-___
-} else {
-	$code.=<<___;
+$code.=<<___;
 	xor	($inp,$idx),%r8
 	mov	%r8,($out,$idx)
 ___
-}
 $code.=<<___;
 	add	\$8,$idx
 
@@ -477,7 +463,7 @@ $code.=<<___;
 .globl	RC4_set_key
 .type	RC4_set_key,\@function,3
 .align	16
-RC4_set_key:
+RC4_set_key: #! void(ptr,int,ptr)
 .cfi_startproc
 	endbranch
 	lea	8($dat),$dat
@@ -552,7 +538,7 @@ RC4_set_key:
 .globl	RC4_options
 .type	RC4_options,\@abi-omnipotent
 .align	16
-RC4_options:
+RC4_options: #! ptr()
 .cfi_startproc
 	endbranch
 	lea	.Lopts(%rip),%rax

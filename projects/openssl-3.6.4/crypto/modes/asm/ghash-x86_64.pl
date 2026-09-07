@@ -269,7 +269,7 @@ $code=<<___;
 .globl	gcm_gmult_4bit
 .type	gcm_gmult_4bit,\@function,2
 .align	16
-gcm_gmult_4bit:
+gcm_gmult_4bit: #! void(ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -297,7 +297,7 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
     $code.=<<___;
-	sub	\$288,%rsp		#! alloca result size=288
+	sub	\$288,%rsp
 .cfi_adjust_cfa_offset	288
 	mov	%rax,280(%rsp)	# save original stack pointer
 .Lgmult_prologue:
@@ -358,7 +358,7 @@ $code.=<<___;
 .globl	gcm_ghash_4bit
 .type	gcm_ghash_4bit,\@function,4
 .align	16
-gcm_ghash_4bit:
+gcm_ghash_4bit: #! void(ptr,ptr,ptr,size_t)
 .cfi_startproc
 	endbranch
 ___
@@ -384,10 +384,17 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
     $code.=<<___;
-	sub	\$288,%rsp		#! alloca result size=288
+	sub	\$288,%rsp
 .cfi_adjust_cfa_offset	288
 	mov	%rax,280(%rsp)	# save original stack pointer
 .Lghash_prologue:
+	# Heap block for the Htable-derived param scratch (bytes 0..15,
+	# lo 16..144, hi 144..272 — same layout as the gas frame block):
+	# dynamic indexing into the frame is rejected, while heap indexed
+	# accesses are ordinary checked accesses.
+	.alloca	\$272,\$16,%fil_gh4
+___
+$code.=<<___;
 ___
 } else {
     $code.=<<___;
@@ -408,22 +415,27 @@ ___
   my $Hshr4="%rbp";
 
 	&sub	($Htbl,-128);		# size optimization
+	# No parked frame pointer under SARCASM: taking the frame's address is
+	# rejected, so the SARCASM heap buffer %fil_gh4 is used instead
+	# (same layout; gas keeps the %rbp frame block below).
+	if (!$ENV{SARCASM}) {
 	&lea	($Hshr4,"16+128(%rsp)");
+	}
 	{ my @lo =($nlo,$nhi);
           my @hi =($Zlo,$Zhi);
 
 	  &xor	($dat,$dat);
 	  for ($i=0,$j=-2;$i<18;$i++,$j++) {
-	    &mov	("$j(%rsp)",&LB($dat))		if ($i>1);
+	    if ($ENV{SARCASM}) { &mov	("$j(%fil_gh4)",&LB($dat))		if ($i>1); } else { &mov	("$j(%rsp)",&LB($dat))		if ($i>1); }
 	    &or		($lo[0],$tmp)			if ($i>1);
 	    &mov	(&LB($dat),&LB($lo[1]))		if ($i>0 && $i<17);
 	    &shr	($lo[1],4)			if ($i>0 && $i<17);
 	    &mov	($tmp,$hi[1])			if ($i>0 && $i<17);
 	    &shr	($hi[1],4)			if ($i>0 && $i<17);
-	    &mov	("8*$j($Hshr4)",$hi[0])		if ($i>1);
+	    if ($ENV{SARCASM}) { &mov	("144+8*$j(%fil_gh4)",$hi[0])	if ($i>1); } else { &mov	("8*$j($Hshr4)",$hi[0])		if ($i>1); }
 	    &mov	($hi[0],"16*$i+0-128($Htbl)")	if ($i<16);
 	    &shl	(&LB($dat),4)			if ($i>0 && $i<17);
-	    &mov	("8*$j-128($Hshr4)",$lo[0])	if ($i>1);
+	    if ($ENV{SARCASM}) { &mov	("16+8*$j(%fil_gh4)",$lo[0])	if ($i>1); } else { &mov	("8*$j-128($Hshr4)",$lo[0])	if ($i>1); }
 	    &mov	($lo[0],"16*$i+8-128($Htbl)")	if ($i<16);
 	    &shl	($tmp,60)			if ($i>0 && $i<17);
 
@@ -472,7 +484,7 @@ $code.=".align	16\n.Louter_loop:\n";
 
 	    &movz	($nhi[1],&LB($dat));
 	    &shl	(&LB($nlo),4);
-	    &movzb	($rem[0],"(%rsp,$nhi[0])");
+	    if ($ENV{SARCASM}) { &movzb	($rem[0],"(%fil_gh4,$nhi[0])"); } else { &movzb	($rem[0],"(%rsp,$nhi[0])"); }
 
 	    &shr	($nhi[1],4)				if ($i<14);
 	    &and	($nhi[1],0xf0)				if ($i==14);
@@ -493,9 +505,9 @@ $code.=".align	16\n.Louter_loop:\n";
 	    }
 	    &shr	($Zhi,8);
 
-	    &xor	($Zlo,"-128($Hshr4,$nhi[0],8)");
+	    if ($ENV{SARCASM}) { &xor	($Zlo,"16(%fil_gh4,$nhi[0],8)"); } else { &xor	($Zlo,"-128($Hshr4,$nhi[0],8)"); }
 	    &shl	($tmp,56);
-	    &xor	($Zhi,"($Hshr4,$nhi[0],8)");
+	    if ($ENV{SARCASM}) { &xor	($Zhi,"144(%fil_gh4,$nhi[0],8)"); } else { &xor	($Zhi,"($Hshr4,$nhi[0],8)"); }
 
 	    unshift	(@nhi,pop(@nhi));		# "rotate" registers
 	    unshift	(@rem,pop(@rem));
@@ -661,7 +673,7 @@ $code.=<<___;
 .globl	gcm_init_clmul
 .type	gcm_init_clmul,\@abi-omnipotent
 .align	16
-gcm_init_clmul:
+gcm_init_clmul: #! void(ptr,ptr)
 .cfi_startproc
 	endbranch
 .L_init_clmul:
@@ -744,7 +756,7 @@ $code.=<<___;
 .globl	gcm_gmult_clmul
 .type	gcm_gmult_clmul,\@abi-omnipotent
 .align	16
-gcm_gmult_clmul:
+gcm_gmult_clmul: #! void(ptr,ptr)
 .cfi_startproc
 	endbranch
 .L_gmult_clmul:
@@ -796,7 +808,7 @@ $code.=<<___;
 .globl	gcm_ghash_clmul
 .type	gcm_ghash_clmul,\@abi-omnipotent
 .align	32
-gcm_ghash_clmul:
+gcm_ghash_clmul: #! void(ptr,ptr,ptr,size_t)
 .cfi_startproc
 	endbranch
 .L_ghash_clmul:
@@ -1155,7 +1167,7 @@ $code.=<<___;
 .globl	gcm_init_avx
 .type	gcm_init_avx,\@abi-omnipotent
 .align	32
-gcm_init_avx:
+gcm_init_avx: #! void(ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -1301,7 +1313,7 @@ $code.=<<___;
 .globl	gcm_gmult_avx
 .type	gcm_gmult_avx,\@abi-omnipotent
 .align	32
-gcm_gmult_avx:
+gcm_gmult_avx: #! void(ptr,ptr)
 .cfi_startproc
 	endbranch
 	jmp	.L_gmult_clmul
@@ -1313,7 +1325,7 @@ $code.=<<___;
 .globl	gcm_ghash_avx
 .type	gcm_ghash_avx,\@abi-omnipotent
 .align	32
-gcm_ghash_avx:
+gcm_ghash_avx: #! void(ptr,ptr,ptr,size_t)
 .cfi_startproc
 	endbranch
 ___

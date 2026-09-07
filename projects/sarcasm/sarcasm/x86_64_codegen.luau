@@ -149,7 +149,7 @@ function M.accessSizeAlign(stmt)
 		end
 	end
 	local zs = string.match(mnem, "^mov[zs]([bw])")  -- movzbl/movswq/... source width letter
-	if zs then local s = WIDTH_LETTER[zs]; return s, s end
+	if zs then local s = WIDTH_LETTER[zs]; return s, 1 end
 	local mem
 	for _, op in stmt.operands do if op.kind == "mem" then mem = op end end
 	-- cmpxchg8b/cmpxchg16b: the ISA-fixed width is in the mnemonic itself (there
@@ -168,7 +168,7 @@ function M.accessSizeAlign(stmt)
 		return w, w
 	end
 	local base = isa.baseMnemonic(mnem)
-	if (base == "movzx" or base == "movsx") and mem and mem.size then return mem.size, mem.size end
+	if (base == "movzx" or base == "movsx") and mem and mem.size then return mem.size, 1 end
 	-- GPR access: the width is register-defined (AT&T suffix / first GPR operand
 	-- width). An Intel PTR size annotation CONTRADICTING that width is a lie — the
 	-- emitted instruction encodes the register width regardless (`mov WORD PTR
@@ -184,77 +184,19 @@ function M.accessSizeAlign(stmt)
 			.. " bytes) of '" .. mnem .. "': " .. (stmt.raw or mnem))
 	end
 	local sz = (mem and mem.size) or regW or 8
-	return sz, sz
+	-- GPR scalar accesses need only hardware-required alignment (x86 tolerates
+	-- misaligned scalar loads/stores), exactly like Fil-C compiled code:
+	-- FilPizlonator's needToCheckAlignment is false for integer/float/double
+	-- types, so a scalar access is checked with alignment 1, while pointers
+	-- are checked with alignment 8 (pointer loads/stores ride their own
+	-- invisicap sequences, not this path). A `lock`-prefixed access is
+	-- atomic, and the compiler checks atomics (min(ABIAlign, Alignment)), so
+	-- those keep natural alignment. (cmpxchg16b's hardware 16-byte requirement
+	-- is handled above and never reaches here.)
+	if stmt.lockPrefix then return sz, sz end
+	return sz, 1
 end
 
--- Fixed-size alloca base (mirrors arm64's `mov rd, sp` / `add rd, sp, #imm`): a fixed
--- stack buffer's address is materialized with `leaq disp(%rbp), %rd` when a frame pointer
--- is in use (the gcc/clang -O0 idiom), or `leaq disp(%rsp), %rd` / `movq %rsp, %rd` under
--- frame-pointer omission. `fctx` carries the frame analysis ({ frameSize, usesFp }); an
--- rbp-relative displacement is normalized to an rsp-relative frame offset (rbp = rsp +
--- frameSize) so region math stays in one coordinate space. Returns the rsp-relative base
--- offset, or nil if the annotated instruction does not compute a stack-frame-relative
--- address.
---
--- The perlasm dynamic-alignment idiom adds two ANCHORED forms, whose region base is the
--- POST-alignment rsp (region coordinate 0 — the frame-depth analysis tracks the
--- annotated/marked rsp adjustment as a "dyn" depth, and accesses execute in region
--- coordinates from there):
---   * `andq $-A, %rsp` — the alignment instruction itself (dropped as alloca machinery);
---     returns base 0 and the alignment A (any power of two — a non-power-of-two mask
---     cannot be an alignment and is not a recognized base).
---   * `subq $K, %rsp` — the reservation feeding such an andq (or standing alone); the
---     transform separately finds and marks the following andq (its alignment then wins).
--- The second/third returns are the instruction's own alignment (nil when the form
--- carries none) and whether the region is anchored (accesses live in "dyn"-depth
--- coordinates rather than ordinary frame coordinates).
-function M.allocaRegionBase(stmt, fctx)
-	local m = isa.baseMnemonic(string.lower(stmt.mnemonic))
-	local ops = stmt.operands
-	if m == "lea" then
-		local mem = M.memOperand(stmt)
-		if mem and mem.base and not mem.index and not mem.dispSym then
-			if mem.base.rc == "sp" then return mem.dispVal or 0, nil, false end
-			if fctx and fctx.usesFp and mem.base.name == "rbp" then
-				-- rbp-relative base: normalize with the frame rewrite's base
-				-- (rbp = rsp + rbpNorm; 0 at the rbp-at-the-bottom layout).
-				return (fctx.rbpNorm or fctx.frameSize) + (mem.dispVal or 0), nil, false
-			end
-		end
-		return nil
-	end
-	if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
-		and ops[2] and ops[2].rc == "sp" then
-		return 0, nil, false
-	end
-	if m == "and" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
-		and ops[2] and ops[2].kind == "imm" then
-		local v = ops[2].value or tonumber(ops[2].text)
-		if not v then return nil end
-		local a = -v
-		if a < 1 or a > 4096 or a ~= 2 ^ math.log(a, 2) then return nil end
-		return 0, a, true
-	end
-	if m == "sub" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
-		and ops[2] and ops[2].kind == "imm" then
-		return 0, nil, true
-	end
-	-- `addq $-K, %rsp` is the sub in add clothing (aesni-gcm's reservation).
-	if m == "add" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp"
-		and ops[2] and ops[2].kind == "imm"
-		and (ops[2].value or tonumber(ops[2].text) or 0) < 0 then
-		return 0, nil, true
-	end
-	return nil
-end
-
--- Is this a load/store the transform models? On x86 most instructions can carry a memory
--- operand (it is a load/store architecture only in spirit), so any mem operand is a real
--- access to bounds-check; nothing to reject as "mem on a non-load/store".
-function M.isMemInsn(mnem) return true end
-
--- `alloca size` size operand: `sub rsp, X` -> X is operands[2] (dest-first).
-function M.allocaSizeOperand(stmt) return stmt.operands[2] end
 
 -- Ptr-annotation shape validation (the shared transform rejects `;! load ptr` /
 -- `;! store ptr` on anything that is not the matching plain access — a mismatch
@@ -498,6 +440,14 @@ function M.make(ctx)
 	function cg.subReg(dst, a, b)      -- dst = a - b
 		cg.move(dst, a)
 		emit(build.insn("sub", { rt(dst), rt(b) }, { defs = {dst}, uses = {dst, b} }))
+	end
+	function cg.addReg(dst, a, b)      -- dst = a + b
+		cg.move(dst, a)
+		emit(build.insn("add", { rt(dst), rt(b) }, { defs = {dst}, uses = {dst, b} }))
+	end
+	function cg.andReg(dst, a, b)      -- dst = a & b
+		cg.move(dst, a)
+		emit(build.insn("and", { rt(dst), rt(b) }, { defs = {dst}, uses = {dst, b} }))
 	end
 	function cg.andImmInPlace(dst, mask)  -- dst = dst & mask
 		emit(build.insn("and", { rt(dst), build.imm(mask) }, { defs = {dst}, uses = {dst} }))
@@ -1271,15 +1221,37 @@ function M.make(ctx)
 		end
 		if m == "lea" then
 			local mem = M.memOperand(node.stmt)
-			if mem and not mem.index and not mem.dispSym then
+			if mem and not mem.dispSym and mem.base then
 				local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
 				local r, reloff = nil, nil
 				if off then r, reloff = nodeRegion(off, mem.base and mem.base.rc == "sp") end
 				if r then
 					local rd = node.defTemps[1]
-					cg.addImm(rd, r.ptrTemp, reloff)
-					seedRegionLower(rd, r)
-					return true
+					if mem.index and mem.index.kind == "reg" then
+						-- Indexed region lea (`lea D(%rsp,%idx,s),%rd`): the
+						-- single-step spelling of the sanctioned two-step
+						-- idiom (`lea D(%rsp),%t` + `lea (%t,%idx,s),%rd`).
+						-- Membership keys on the static displacement exactly
+						-- like the two-step's first lea; the dynamic index is
+						-- covered by the runtime bounds checks at every use
+						-- (fail-closed: an out-of-region index traps there).
+						-- The value rides the region pointer with the index
+						-- preserved, and the result shares the region's
+						-- capability — bit-identical behavior to the two-step
+						-- form (same address, same lower).
+						local idxT = node.opTemp and node.opTemp[mem.index] or nil
+						if idxT then
+							cg.effAddr(rd, r.ptrTemp, reloff, idxT, mem.scale or 1)
+							seedRegionLower(rd, r)
+							return true
+						end
+						-- No temp for the index (unmodeled register class):
+						-- fall through to the ordinary checked path below.
+					else
+						cg.addImm(rd, r.ptrTemp, reloff)
+						seedRegionLower(rd, r)
+						return true
+					end
 				end
 			end
 		end
@@ -1667,6 +1639,13 @@ function M.make(ctx)
 				{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2), pColored(a3),
 					pColored(a4), pColored(a5) } }))
 		end
+	end
+
+	-- Pure trap for a bad dynamic `.alloca` alignment (nonzero power-of-two check
+	-- failed): `ud2` raises SIGILL deterministically in every build configuration
+	-- (no runtime hook, no assert-behavior dependency).
+	function cg.trap()
+		emit(build.insn("ud2", {}, { control = "none", fallsThrough = false, noreturnCall = true }))
 	end
 
 	return cg

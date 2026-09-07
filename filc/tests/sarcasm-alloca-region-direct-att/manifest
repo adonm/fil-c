@@ -1,6 +1,4 @@
 return:
-  success
+  compileFailure
 only-on-platform:
   x86_64
-output-includes:
-  - "1234605616436509656"

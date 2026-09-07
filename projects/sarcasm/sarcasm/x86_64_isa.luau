@@ -630,6 +630,57 @@ function x86.classify(insn)
 		if isGpr(o) then table.insert(uses, o) elseif o and o.kind == "mem" then memRegs(o, uses) end
 	end
 
+	-- `.alloca size, alignment, result` (the `.alloca` directive): operands are in
+	-- WRITTEN order (no AT&T reversal). size/alignment: an immediate, a 32/64-bit
+	-- GPR (including `%fil_` pseudos and frame-slot webs), or a frame-relative
+	-- spill-slot memory reference (converted to a slot web by the frame rewrite —
+	-- provisionally unmodeled here so pre-rewrite validation sees no phantom use).
+	-- result: a 64-bit GPR, a pseudo, or a spill slot. Anything else (FP/vector
+	-- registers, immediates/symbols as result, heap memory, indirect markers,
+	-- non-64-bit result widths) is a clean rejection.
+	if m == "alloca" then  -- the `.alloca` directive only (dotAlloca marker from the parser)
+		if not insn.dotAlloca then
+			error("sarcasm: `alloca` is only supported as the `.alloca size, alignment, result` directive: " .. (insn.raw or rawMnem))
+		end
+		if #ops ~= 3 then
+			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. (insn.raw or rawMnem))
+		end
+		local function allocaUse(o, what)
+			if o.indirect then
+				error("sarcasm: `.alloca` " .. what .. " has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
+			end
+			if o.kind == "imm" then return end
+			if isGpr(o) then
+				if o.width ~= 64 and o.width ~= 32 then
+					error("sarcasm: `.alloca` " .. what .. " must be a 32/64-bit register (narrow writes do not define the full value): " .. (insn.raw or rawMnem))
+				end
+				table.insert(uses, o)
+				return
+			end
+			if o.kind == "mem" and o.base and (o.base.rc == "sp" or o.base.name == "rbp") then return end
+			error("sarcasm: `.alloca` " .. what .. " must be an immediate, a GPR (including a pseudoregister), or a frame spill slot: " .. (insn.raw or rawMnem))
+		end
+		allocaUse(ops[1], "size")
+		allocaUse(ops[2], "alignment")
+		do
+			local o = ops[3]
+			if o.indirect then
+				error("sarcasm: `.alloca` result has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
+			end
+			if isGpr(o) then
+				if o.width ~= 64 then
+					error("sarcasm: `.alloca` result must be a 64-bit register (a narrower destination would truncate the pointer): " .. (insn.raw or rawMnem))
+				end
+				table.insert(defs, o)
+			elseif o.kind == "mem" and o.base and (o.base.rc == "sp" or o.base.name == "rbp") then
+			-- spill-slot result: converted by the frame rewrite; provisionally unmodeled.
+			else
+				error("sarcasm: `.alloca` result must be a 64-bit register, a pseudoregister, or a frame spill slot: " .. (insn.raw or rawMnem))
+			end
+		end
+		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true }
+	end
+
 	if m == "jmp" then
 		control, fallsThrough = "branch", false
 		targets = {}

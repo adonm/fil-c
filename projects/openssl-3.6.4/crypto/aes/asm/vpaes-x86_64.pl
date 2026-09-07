@@ -696,7 +696,7 @@ _vpaes_schedule_mangle:
 .globl	${PREFIX}_set_encrypt_key
 .type	${PREFIX}_set_encrypt_key,\@function,3
 .align	16
-${PREFIX}_set_encrypt_key:
+${PREFIX}_set_encrypt_key: #! int(ptr,int,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -747,7 +747,7 @@ $code.=<<___;
 .globl	${PREFIX}_set_decrypt_key
 .type	${PREFIX}_set_decrypt_key,\@function,3
 .align	16
-${PREFIX}_set_decrypt_key:
+${PREFIX}_set_decrypt_key: #! int(ptr,int,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -803,7 +803,7 @@ $code.=<<___;
 .globl	${PREFIX}_encrypt
 .type	${PREFIX}_encrypt,\@function,3
 .align	16
-${PREFIX}_encrypt:
+${PREFIX}_encrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -849,7 +849,7 @@ $code.=<<___;
 .globl	${PREFIX}_decrypt
 .type	${PREFIX}_decrypt,\@function,3
 .align	16
-${PREFIX}_decrypt:
+${PREFIX}_decrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -901,7 +901,7 @@ $code.=<<___;
 .globl	${PREFIX}_cbc_encrypt
 .type	${PREFIX}_cbc_encrypt,\@function,6
 .align	16
-${PREFIX}_cbc_encrypt:
+${PREFIX}_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 .cfi_startproc
 	endbranch
 	xchg	$key,$len

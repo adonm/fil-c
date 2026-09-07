@@ -84,7 +84,7 @@ $code.=<<___;
 .type    ossl_aes_cfb128_vaes_eligible,\@abi-omnipotent
 .balign  64
 
-ossl_aes_cfb128_vaes_eligible:
+ossl_aes_cfb128_vaes_eligible: #! int()
 .cfi_startproc
     endbranch
 
@@ -450,7 +450,7 @@ $code.=<<___;
 .globl   ossl_aes_cfb128_vaes_enc
 .type    ossl_aes_cfb128_vaes_enc,\@function,6
 .balign  64
-ossl_aes_cfb128_vaes_enc:
+ossl_aes_cfb128_vaes_enc: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
     endbranch
 ___
@@ -688,7 +688,7 @@ $code.=<<___;
 .globl   ossl_aes_cfb128_vaes_dec
 .type    ossl_aes_cfb128_vaes_dec,\@function,6
 .balign  64
-ossl_aes_cfb128_vaes_dec:
+ossl_aes_cfb128_vaes_dec: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
     endbranch
 ___
@@ -1005,15 +1005,18 @@ ___
 
 $code .= <<___;
 .globl     ossl_aes_cfb128_vaes_enc
+.type      ossl_aes_cfb128_vaes_enc,\@function,6
 .globl     ossl_aes_cfb128_vaes_dec
+.type      ossl_aes_cfb128_vaes_dec,\@function,6
 
 # Mock implementations of AES-CFB128 encryption/decryption
 # that always fail. Should not be executed under normal circumstances.
 
-ossl_aes_cfb128_vaes_enc:
-ossl_aes_cfb128_vaes_dec:
+ossl_aes_cfb128_vaes_enc: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
     .byte 0x0f,0x0b                # Undefined Instruction in the Intel architecture
-                                   # Raises the Invalid Opcode exception
+    ret
+ossl_aes_cfb128_vaes_dec: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+    .byte 0x0f,0x0b                # Undefined Instruction
     ret
 
 #################################################################
@@ -1028,7 +1031,7 @@ ossl_aes_cfb128_vaes_dec:
 
 .globl     ossl_aes_cfb128_vaes_eligible
 .type      ossl_aes_cfb128_vaes_eligible,\@abi-omnipotent
-ossl_aes_cfb128_vaes_eligible:
+ossl_aes_cfb128_vaes_eligible: #! int()
     xor %eax,%eax
     ret
 .size ossl_aes_cfb128_vaes_eligible, .-ossl_aes_cfb128_vaes_eligible

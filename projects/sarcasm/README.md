@@ -84,6 +84,38 @@ incoming words.
 - adc/sbb with `;! load store ptr` run without trapping, but the carry-in
   is clobbered: carry semantics are not preserved.
 
+### Capability save/restore (both)
+
+Any instruction that produces a value into a register can carry
+`save capability (name)` or `restore capability (name)` (`;!` on both
+architectures, `#!`/`//!` also accepted on x86_64/arm64 respectively), where
+`name` is any `[_A-Za-z][_A-Za-z0-9]*` variable name:
+
+    movq %rdi, %rbx  #! save capability (tbl)
+    ... pointer math that is not capability-preserving ...
+    addq $0, %rbx    #! restore capability (tbl)
+
+- `save` records the destination register's capability under `name`; a later
+  `restore` re-attaches that exact capability to its own destination
+  register, overriding whatever pointer flow would otherwise compute. Every
+  `restore` must be dominated by its `save` (every path from function entry
+  to the restore executes the save).
+- The recorded capability is a snapshot of the capability flowing *into* the
+  save instruction, frozen at pointer-flow convergence — clobbering math on
+  the same register between the save and the restore cannot pollute it. A
+  wrongly restored capability can only trap (its bounds check still guards
+  every access), never access out of bounds.
+- The restored value is an ordinary pointer web sharing the saved lower, so
+  GC rooting, spilling, and checked accesses treat it exactly like the saved
+  value — no extra emission is involved.
+- The clause must stand alone as the whole annotation (combine it with
+  nothing — copy the value through a `mov` first if the instruction already
+  carries one). A name may only be saved once per function. Restoring a
+  dynamically-tracked capability (a register merging pointers from different
+  origins) is rejected, as are restores without saves, undominated restores,
+  and uses on instructions with no register destination — all clean
+  compile-time errors.
+
 ### Global variables (x86_64)
 
 Same-file data becomes real Fil-C globals automatically, and extern globals
@@ -233,45 +265,60 @@ label — asm_AES_encrypt:/AES_encrypt: or sha1's _shaext_shortcut:) share the
 function's signature and body: jumps to them resolve to the function, and a
 `.globl` alias gets its own getter/direct-call symbols so C callers link.
 
-### Alloca annotations
+### Pseudoregisters (both)
 
-Stack allocation becomes a GC allocation (`filc_allocate`), not stack
-memory:
+Handwritten assembly sometimes needs a scratch value without sparing a physical
+register. Name it `%fil_<ident>` on x86_64 (in Intel-syntax files the `%`
+prefix is still required, so a bare `fil_<ident>` keeps its plain-symbol
+reading) or `fil_<ident>` on arm64, where `<ident>` matches `[0-9a-zA-Z_]+`
+and may start with a digit:
 
-- `;! alloca size (x)` names the byte size and goes in EITHER of two
-  places. On a value-producing (register-dest) instruction that dominates
-  the result and precedes it in the body, so the captured size is defined
-  wherever the allocation runs — the deferred form — that instruction
-  stays and computes the size. On the %rsp-writing allocation instruction
-  itself (`subq
-  %rax,%rsp`; arm64 `sub sp,sp,xN`) — the allocation form — that
-  instruction is dropped and replaced by the allocation, which consumes
-  the size value it carried. `;! alloca result (x)` goes on the
-  instruction whose destination becomes the allocation pointer (replaced
-  by the GC allocation); its name must match a `;! alloca size (x)` name —
-  mismatched names are a compile error — and in the allocation form it
-  goes on the first instruction reading %rsp after the allocation
-  instruction (capturing the address with `leaq disp(%rsp),%rd` or `movq
-  %rsp,%rd` compiles identically). `;! alloca result size=N` fixes the
-  size.
-- Access the buffer through the allocation pointer: a direct
-  stack-relative access into an alloca region is rejected. The pointer
-  may escape and outlive the function.
-- An alloca perturbs %rsp. While it is perturbed, frame accesses must be
-  %rbp-relative (%rsp-relative accesses are rejected). %rsp recovery —
-  `movq %rbp,%rsp`, `leaq N(%rbp),%rsp`, or `movq %reg,%rsp` from a
-  prologue save — is silently ignored (freeing a GC object is a no-op) and
-  revives the known %rsp even after the alloca perturbed it; an
-  `addq $imm,%rsp` free is accepted only as a teardown provably reaching a
-  `ret` through callee-saved pops and non-stack computation. These
-  recovery and teardown forms are honored even in the same straight-line
-  region as the `;! alloca result` annotation — only the allocation's own
-  %rsp setup and its rsp-derived address chains are dropped — so a
-  branch-free alloca function may recover %rsp and pop its epilogue
-  immediately after the result. The prologue parks %rsp with `movq
-  %rsp,%reg` into a callee-saved register — caller-saved saves are
-  rejected, because a call clobbers them — and the save register must not
-  be redefined or read before the recovery.
+    movq %rdi, %fil_tmp
+    addq %rsi, %fil_tmp
+    movq %fil_tmp, %rax
+
+- A pseudo is a 64-bit GPR with no fixed physical register: sarcasm
+  register-allocates it exactly like a spilled GPR web (def/use/kill, calls,
+  spills, pointer capabilities, `save`/`restore capability` all work — a
+  pseudo holding a pointer dereferences like any GPR).
+- Pseudos are GPR-only: any instruction combining a pseudo with an FP/vector
+  register (`movq %fil_a, %xmm0`, `fmov d0, fil_a`) is a compile-time error,
+  as is a malformed name (`%fil_`, `%fil_foo-bar`).
+- On arm64 a bare `fil_<ident>` in operand position is always a pseudo, never
+  a symbol — do not name globals, functions, or local labels with a `fil_`
+  prefix.
+
+### The `.alloca` directive (both)
+
+Stack allocation is a GC allocation (`filc_allocate`), not stack memory — and
+it never touches `%rsp`/`sp`, so the input's own stack math keeps its meaning:
+
+    .alloca <size>, <alignment>, <result>
+
+- `<size>` and `<alignment>` are each an immediate, a GPR (including a
+  pseudo-register), or a frame-relative spill slot (`-8(%rbp)` / `[sp, #8]`);
+  `<result>` is a register, a pseudo-register, or a spill slot. (x86_64 AT&T
+  accepts `$N` or bare `N` immediates; operands stay in written order.)
+- Semantics: allocate `size` bytes with `alignment`, return the buffer pointer
+  in `result`. The buffer is a garbage-collected object: the pointer may
+  escape and outlive the function, and freeing it is a no-op. The returned
+  pointer satisfies `alignment` (which must be a positive power of two —
+  immediates are checked at compile time, registers at runtime with a clean
+  trap otherwise) and the whole `size` is writable through it.
+- Accesses through the result are capability-checked exactly like any heap
+  pointer (misaligned pointer-sized accesses trap; scalar/vector accesses
+  follow the usual hardware-alignment rules).
+- Alignment is consolidated in the directive: the result already satisfies
+  `alignment` (wider alignments over-allocate and align up), so call sites
+  use it directly for aligned traffic — no per-site `and $-16` masking and
+  no `and $8` / `xor $8` rounding dances. Such masking is unnecessary, and
+  `and` on a pointer preserves its capability anyway (the value is masked,
+  the capability stays; an out-of-bounds result traps at the access).
+- The historical `;! alloca ...` annotations (`alloca size (x)`,
+  `alloca result (x)`, `alloca result size=N`) were removed: they rewrote the
+  input's `%rsp` math, changing the original assembly's stack semantics. Any
+  `alloca` annotation is now a compile-time error.
+
 
 ### Frames and the stack pointer
 

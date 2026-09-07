@@ -8,6 +8,8 @@
 --   argPtrTemps  : array of temp ids that are pointer arguments
 --   loadPtrDefs  : set of node -> true for `;! load ptr` nodes (their def temp is a ptr)
 --   callPtrDefs  : set of node -> true for call nodes whose result is a pointer
+--   capSave      : map of node -> var name for `save capability (var)` nodes
+--   capRestore   : map of node -> var name for `restore capability (var)` nodes
 --
 -- Returns { isPtr = {temp->bool}, lowerTemp = {temp->loTemp}, newTemps = {...} }
 -- New lower temps are allocated via allocTemp().
@@ -33,8 +35,8 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 		isPtr[t] = true
 		ensureLower(t)
 	end
-	-- Seed load-ptr / call-ptr / alloca-result definitions (their def temp is a pointer
-	-- with a fresh lower).
+	-- Seed load-ptr / call-ptr / `.alloca`-result definitions (their def temp is a
+	-- pointer with a fresh lower).
 	for _, node in nodes do
 		if node.kind == "insn" then
 			if (seeds.loadPtrDefs and seeds.loadPtrDefs[node])
@@ -88,6 +90,129 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 	local widen = opts.widenSwaps and true or false
 	local dynamic = {}        -- web -> true once widened to a lockstep lower
 	local dynSrc = {}         -- node -> { [defWeb] = sourceWeb } for dynamic defs
+	local capShot = {}        -- save var -> { web, lo }: the frozen snapshot (phase 2)
+	-- Pinned webs (save AND restore def webs): in phase 2, no instruction but
+	-- a save may change a pinned web's capability. Saves need their own
+	-- natural inflow, and restores are explicit user overrides, so every other
+	-- node's merge into a pinned web is skipped — later clobbering math can
+	-- never overwrite a snapshot, and a restore always wins over its
+	-- instruction's own sources. Phase 1 runs the natural fixpoint with no cap
+	-- effects at all, so save webs resolve exactly as without annotations.
+	-- (Sound either way: a protected capability can only trap — its bounds
+	-- check still guards every access — never access out of bounds.)
+	local pinned = {}
+	do
+		local function pinMap(m)
+			if not m then return end
+			for pnode in m do
+				if pnode.kind == "insn" then
+					local pd = pnode.defTemps and pnode.defTemps[1]
+					if pd then pinned[pd] = true end
+				end
+			end
+		end
+		pinMap(seeds.capSave)
+		pinMap(seeds.capRestore)
+	end
+	-- Phase 2 runs only when restores exist (otherwise the phase-1 state is
+	-- already the answer, and lone saves are validated against it).
+	local phase2 = false
+
+	-- The memory-address exclusion shared by the propagation rule below and
+	-- the save snapshot below: a memory operand's base/index registers are
+	-- consumed as an ADDRESS, not as a value source (`lea` excepted). A
+	-- memory-source instruction is a LOAD, and the loaded value's pointer-ness
+	-- comes from a `;! load ptr` seed, never the address register. On x86 a
+	-- load is `mov reg, [mem]`, so without the hasMemSrc guard ptrflow would
+	-- treat it as `reg = base` and flip-flop the lower forever. The same
+	-- applies to memory-source arithmetic like `addq (%rsi), %rax` (which adds
+	-- the loaded SCALAR to %rax): the address registers are excluded from the
+	-- pointer-source candidates, otherwise each such def would re-derive %rax's
+	-- lower from its own address register and flip-flop across the defs of the
+	-- web. (`lea` is the exception: its memory-shaped operand IS the computed
+	-- value, so its base/index remain legitimate pointer sources.)
+	local function capAddrInfo(nd, m)
+		local memSrc, aus = false, nil
+		local sops = nd.stmt and nd.stmt.operands
+		if sops then
+			for _, op in sops do
+				if op.kind == "mem" then
+					memSrc = true
+					if m ~= "lea" and nd.opTemp then
+						if op.base and nd.opTemp[op.base] then
+							if not aus then aus = {} end
+							aus[nd.opTemp[op.base]] = true
+						end
+						if op.index and nd.opTemp[op.index] then
+							if not aus then aus = {} end
+							aus[nd.opTemp[op.index]] = true
+						end
+					end
+				end
+			end
+		end
+		return memSrc, aus
+	end
+
+	-- The address-arithmetic source selection shared by the propagation rule
+	-- below and the save snapshot below: which pointer source a
+	-- pointer-combined-with-integers result draws its lower from (including
+	-- the lea-with-pointer-base preference and the ptr-ptr-sub guard, which
+	-- keeps an integer difference capability-free). Returns (ptrSrc, intCount).
+	--
+	-- The lea preference covers aes's cache-alias trick (`leaq 768(%rsp),%rbp;
+	-- subq %r14,%rbp; andq $0x300,%rbp; leaq (%r14,%rbp,1),%r14` — the final
+	-- address derives from the T-table base, while the index is scalar math
+	-- that kept its seed's lower through the RMW web union): the computed
+	-- address derives from the base, so the base's lower is the right one.
+	-- Prefer it. (x86_64-gated via widen: arm64's behavior is unchanged.)
+	local function capAluSrc(nd, m, us, addrUse)
+		local ptrSrc, intCount = nil, 0
+		for _, u in us do
+			if addrUse and addrUse[u] then
+				-- consumed as a memory address, not a value source
+			elseif isPtr[u] then ptrSrc = u else intCount += 1 end
+		end
+		local sops = nd.stmt and nd.stmt.operands
+		if m == "lea" and widen and sops and nd.opTemp then
+			for _, op in sops do
+				if op.kind == "mem" and op.base and op.base ~= op.index then
+					local bt = nd.opTemp[op.base]
+					if bt and isPtr[bt] then ptrSrc = bt end
+				end
+			end
+		end
+		return ptrSrc, intCount
+	end
+
+	-- The source web whose capability a save captures: the value source the
+	-- propagation rule would draw from, read at phase-1 convergence — so later
+	-- clobbering math on the same web cannot pollute the snapshot. Falls back
+	-- to the save's own def web (RMW-sticky ops keep the web's own capability,
+	-- as do seeded address materializations like global leas; loads and other
+	-- scalar producers yield a lower-less web, which the transform rejects
+	-- loudly).
+	local function capSaveSource(snode)
+		local m = baseMnemonic(snode.stmt and snode.stmt.mnemonic or snode.mnemonic or "")
+		local us = snode.useTemps or {}
+		local d = snode.defTemps and snode.defTemps[1]
+		local hasMemSrc, addrUse = capAddrInfo(snode, m)
+		local src = nil
+		if m == "mov" then
+			if #us == 1 and not hasMemSrc then src = us[1] end
+		elseif m == "cmov" then
+			for _, u in us do
+				if u ~= d and not (addrUse and addrUse[u]) then src = u break end
+			end
+		elseif m == "add" or m == "sub" or m == "orr" or m == "lea"
+			or m == "lsl" or m == "lsr" or m == "asr" or m == "and"
+			or m == "or" or m == "shl" or m == "shr" or m == "sar" then
+			local ptrSrc, intCount = capAluSrc(snode, m, us, addrUse)
+			if ptrSrc and not (m == "sub" and intCount == 0) then src = ptrSrc end
+		end
+		if src and isPtr[src] then return src end
+		return d
+	end
 	local isXchg = function(m) return string.match(m, "^xchg[bwlq]?$") ~= nil end
 
 	local dynamicize
@@ -135,6 +260,17 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 						dynSrc[node][d] = srcPtr
 						return
 					end
+					if phase2 and pinned[d] and not (seeds.capSave and seeds.capSave[node]) then
+						-- A pinned (saved/restored) web keeps its capability:
+						-- only a save's own natural inflow may set it; every
+						-- other node's merge is skipped, so later clobbering
+						-- math can never overwrite a snapshot and a restore
+						-- always wins over its instruction's own sources. This
+						-- is sound either way: a protected capability can only
+						-- trap (its bounds check still guards every access),
+						-- never access out of bounds.
+						return
+					end
 					if not isPtr[d] then isPtr[d] = true; changed = true end
 					local lo = lowerTemp[srcPtr]
 					if lo and lowerTemp[d] ~= lo then
@@ -162,37 +298,8 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 					end
 				end
 				-- A memory operand's base/index registers are consumed as an ADDRESS, not
-				-- as a value source: a memory-source instruction is a LOAD, and the loaded
-				-- value's pointer-ness comes from a `;! load ptr` seed, never the address
-				-- register. On x86 a load is `mov reg, [mem]`, so without the hasMemSrc
-				-- guard ptrflow would treat it as `reg = base` and flip-flop the lower
-				-- forever. The same applies to memory-source arithmetic like
-				-- `addq (%rsi), %rax` (which adds the loaded SCALAR to %rax): the address
-				-- registers are excluded from the pointer-source candidates, otherwise
-				-- each such def would re-derive %rax's lower from its own address register
-				-- and flip-flop across the defs of the web. (`lea` is the exception: its
-				-- memory-shaped operand IS the computed value, so its base/index remain
-				-- legitimate pointer sources.)
-				local hasMemSrc = false
-				local addrUse = nil
-				local sops = node.stmt and node.stmt.operands
-				if sops then
-					for _, op in sops do
-						if op.kind == "mem" then
-							hasMemSrc = true
-							if m ~= "lea" and node.opTemp then
-								if op.base and node.opTemp[op.base] then
-									if not addrUse then addrUse = {} end
-									addrUse[node.opTemp[op.base]] = true
-								end
-								if op.index and node.opTemp[op.index] then
-									if not addrUse then addrUse = {} end
-									addrUse[node.opTemp[op.index]] = true
-								end
-							end
-						end
-					end
-				end
+				-- as a value source (see capAddrInfo above for the full rationale).
+				local hasMemSrc, addrUse = capAddrInfo(node, m)
 				if isXchg(m) then
 					-- register-register xchg (memory forms are rejected by classify):
 					-- the crossed pair — each def web receives the OTHER operand's value.
@@ -269,33 +376,36 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 							or m == "or" or m == "shl" or m == "shr" or m == "sar" then
 							-- address arithmetic / alignment: a pointer combined with integers
 							-- keeps the pointer's lower (bounds checks still guard any misuse).
-							local ptrSrc, intCount = nil, 0
-							for _, u in us do
-								if addrUse and addrUse[u] then
-									-- consumed as a memory address, not a value source
-								elseif isPtr[u] then ptrSrc = u else intCount += 1 end
-							end
-							if m == "lea" and widen and sops and node.opTemp then
-								-- A lea whose BASE register is a pointer and whose index
-								-- only carries a stale lower (aes's cache-alias trick:
-								-- `leaq 768(%rsp),%rbp; subq %r14,%rbp; andq $0x300,%rbp;
-								-- leaq (%r14,%rbp,1),%r14` — the final address derives
-								-- from the T-table base, while the index is scalar math
-								-- that kept its seed's lower through the RMW web union):
-								-- the computed address derives from the base, so the
-								-- base's lower is the right one. Prefer it. (x86_64-gated
-								-- via widen: arm64's behavior is unchanged.)
-								for _, op in sops do
-									if op.kind == "mem" and op.base and op.base ~= op.index then
-										local bt = node.opTemp[op.base]
-										if bt and isPtr[bt] then ptrSrc = bt end
-									end
-								end
-							end
+							-- (Source selection lives in capAluSrc above, shared with
+							-- the save snapshot.)
+							local ptrSrc, intCount = capAluSrc(node, m, us, addrUse)
 							if ptrSrc and not (m == "sub" and intCount == 0) then
 								markFrom(d, ptrSrc)
 							end
 						end
+					end
+				end
+			end
+			-- Capability restore (`restore capability (v)`, threaded in as
+			-- seeds.capRestore node -> var). Runs only in phase 2 (phase 1 ran
+			-- the natural fixpoint with no cap effects) and outside the seeded
+			-- guard above: a restore node is an ordinary value-producing
+			-- instruction whose propagation is unaffected. The shared lower is
+			-- the phase-1 snapshot frozen at convergence, so clobbering math
+			-- on the same web can never pollute what the restore re-attaches.
+			if phase2 and node.kind == "insn" then
+				local rv = seeds.capRestore and seeds.capRestore[node]
+				if rv then
+					local rd = node.defTemps and node.defTemps[1]
+					local shot = capShot[rv]
+					local slo = shot and shot.lo or nil
+					local sweb = shot and shot.web or nil
+					-- A dynamic (lockstep) lower belongs to exactly one web
+					-- and cannot be shared: the transform rejects such
+					-- saves/restores loudly in its post-pass validation.
+					if rd and slo and sweb and not dynamic[sweb] and not dynamic[rd] then
+						if not isPtr[rd] then isPtr[rd] = true; changed = true end
+						if lowerTemp[rd] ~= slo then lowerTemp[rd] = slo; changed = true end
 					end
 				end
 			end
@@ -332,6 +442,24 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 				seenStates = {}
 			else
 				seenStates[key] = true
+			end
+		else
+			-- Converged. After phase 1, freeze each save's snapshot (the source
+			-- capability at convergence) and — when restores exist — run phase 2,
+			-- which pins restore webs and threads the frozen snapshots. Lone
+			-- saves need no phase 2: the phase-1 state is already the answer.
+			if not phase2 and seeds.capSave and next(seeds.capSave) ~= nil then
+				for snode, var in pairs(seeds.capSave) do
+					if snode.kind == "insn" then
+						local sw = capSaveSource(snode)
+						capShot[var] = { web = sw, lo = sw and lowerTemp[sw] or nil }
+					end
+				end
+				if seeds.capRestore and next(seeds.capRestore) ~= nil then
+					phase2 = true
+					seenStates = {}
+					changed = true
+				end
 			end
 		end
 	end
@@ -383,7 +511,8 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 		end
 	end
 
-	return { isPtr = isPtr, lowerTemp = lowerTemp, dynCopy = dynCopy }
+	return { isPtr = isPtr, lowerTemp = lowerTemp, dynCopy = dynCopy, dynamic = dynamic,
+		capShot = capShot }
 end
 
 return ptrflow

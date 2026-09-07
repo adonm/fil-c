@@ -104,6 +104,21 @@ $j="%r15";
 $m0="%rbx";
 $m1="%rbp";
 
+# Sarcasm: the dynamic Montgomery frames below live in a GC-allocated
+# '.alloca' buffer, not on the stack (gas keeps the original %rsp math).
+# $FR spells the frame base in both modes (like aes-x86_64.pl's $FR): the
+# '.alloca' pseudo under SARCASM, %rsp under gas, so tp[] rebases 1:1 with
+# no offset shifts. All functions share one pseudo name so the pre-prologue
+# tail-join clones (bn_mul_mont -> .Lmul4x_enter) resolve into the jumper's
+# buffer.
+my $FRraw = "%fil_montframe_raw";
+my $FR = $ENV{SARCASM} ? "%fil_montframe" : "%rsp";
+# Shared save-slot spellings for the displacement-only teardown restores
+# below (Task 3: collapse into unconditional emission; gas output is
+# byte-identical either way).
+my $RSAVE = $ENV{SARCASM} ? "0(%rsp)" : "8(%rsp,$num,8)";
+my $RSAVE40 = $ENV{SARCASM} ? "0(%rsp)" : "40(%rsp)";
+
 $code=<<___;
 .text
 
@@ -112,7 +127,7 @@ $code=<<___;
 .globl	bn_mul_mont
 .type	bn_mul_mont,\@function,6
 .align	16
-bn_mul_mont:
+bn_mul_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
 .cfi_startproc
 	mov	${num}d,${num}d
 	mov	%rsp,%rax
@@ -165,14 +180,15 @@ if ($ENV{SARCASM}) {
 	# Sarcasm turns the whole dynamic frame into a GC allocation, so
 	# the page-walking probe is pointless and the stack-size computation
 	# collapses to a plain byte size. The region covers the tp[num+2]
-	# buffer (with its negative tp[j-1] offsets) plus the fixed
-	# original-%rsp save slot at the region base.
+	# buffer (with its negative tp[j-1] offsets); the original %rsp
+	# parks in a tiny fixed frame slot, so tp[] rebases 1:1 onto the
+	# '.alloca' buffer via $FR.
 	$code.=<<___;
-	lea	128(,$num,8),%r10	# region size: 8*(num+2) buffer + slack
-	sub	%r10,%rsp		#! alloca size (mont)
-	lea	-64(%rsp),%r10		#! alloca result (mont)
-
-	mov	%rax,-64(%rsp)		# save original %rsp (fixed slot)
+	sub	\$16,%rsp		# fixed save slot for original %rsp
+	lea	192(,$num,8),%r10	# region size: 8*(num+2) buffer + slack + 64 headroom
+	.alloca	%r10,\$16,$FRraw
+	lea	64($FRraw),$FR		# working base with headroom below
+	mov	%rax,0(%rsp)		# save original %rsp (fixed slot)
 .Lmul_body:
 ___
 } else {
@@ -249,7 +265,7 @@ $code.=<<___;
 	add	$hi0,$hi1		# np[j]*m1+ap[j]*bp[0]
 	mov	$lo0,$hi0
 	adc	\$0,%rdx
-	mov	$hi1,-16(%rsp,$j,8)	# tp[j-1]
+	mov	$hi1,-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$hi1
 
 .L1st_enter:
@@ -269,15 +285,15 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$hi0,$hi1		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$hi1,-16(%rsp,$j,8)	# tp[j-1]
+	mov	$hi1,-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$hi1
 	mov	$lo0,$hi0
 
 	xor	%rdx,%rdx
 	add	$hi0,$hi1
 	adc	\$0,%rdx
-	mov	$hi1,-8(%rsp,$num,8)
-	mov	%rdx,(%rsp,$num,8)	# store upmost overflow bit
+	mov	$hi1,-8($FR,$num,8)
+	mov	%rdx,($FR,$num,8)	# store upmost overflow bit
 
 	lea	1($i),$i		# i++
 	jmp	.Louter
@@ -286,7 +302,7 @@ $code.=<<___;
 	mov	($bp,$i,8),$m0		# m0=bp[i]
 	xor	$j,$j			# j=0
 	mov	$n0,$m1
-	mov	(%rsp),$lo0
+	mov	($FR),$lo0
 	mulq	$m0			# ap[0]*bp[i]
 	add	%rax,$lo0		# ap[0]*bp[i]+tp[0]
 	mov	($np),%rax
@@ -299,7 +315,7 @@ $code.=<<___;
 	add	%rax,$lo0		# discarded
 	mov	8($ap),%rax
 	adc	\$0,%rdx
-	mov	8(%rsp),$lo0		# tp[1]
+	mov	8($FR),$lo0		# tp[1]
 	mov	%rdx,$hi1
 
 	lea	1($j),$j		# j++
@@ -311,9 +327,9 @@ $code.=<<___;
 	mov	($ap,$j,8),%rax
 	adc	\$0,%rdx
 	add	$lo0,$hi1		# np[j]*m1+ap[j]*bp[i]+tp[j]
-	mov	(%rsp,$j,8),$lo0
+	mov	($FR,$j,8),$lo0
 	adc	\$0,%rdx
-	mov	$hi1,-16(%rsp,$j,8)	# tp[j-1]
+	mov	$hi1,-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$hi1
 
 .Linner_enter:
@@ -334,9 +350,9 @@ $code.=<<___;
 	mov	($ap),%rax		# ap[0]
 	adc	\$0,%rdx
 	add	$lo0,$hi1		# np[j]*m1+ap[j]*bp[i]+tp[j]
-	mov	(%rsp,$j,8),$lo0
+	mov	($FR,$j,8),$lo0
 	adc	\$0,%rdx
-	mov	$hi1,-16(%rsp,$j,8)	# tp[j-1]
+	mov	$hi1,-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$hi1
 
 	xor	%rdx,%rdx
@@ -344,21 +360,21 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$lo0,$hi1		# pull upmost overflow bit
 	adc	\$0,%rdx
-	mov	$hi1,-8(%rsp,$num,8)
-	mov	%rdx,(%rsp,$num,8)	# store upmost overflow bit
+	mov	$hi1,-8($FR,$num,8)
+	mov	%rdx,($FR,$num,8)	# store upmost overflow bit
 
 	lea	1($i),$i		# i++
 	cmp	$num,$i
 	jb	.Louter
 
 	xor	$i,$i			# i=0 and clear CF!
-	mov	(%rsp),%rax		# tp[0]
+	mov	($FR),%rax		# tp[0]
 	mov	$num,$j			# j=num
 
 .align	16
 .Lsub:	sbb	($np,$i,8),%rax
 	mov	%rax,($rp,$i,8)		# rp[i]=tp[i]-np[i]
-	mov	8(%rsp,$i,8),%rax	# tp[i+1]
+	mov	8($FR,$i,8),%rax	# tp[i+1]
 	lea	1($i),$i		# i++
 	dec	$j			# doesn't affect CF!
 	jnz	.Lsub
@@ -371,10 +387,10 @@ $code.=<<___;
 
 .Lcopy:					# conditional copy
 	mov	($rp,$i,8),%rcx
-	mov	(%rsp,$i,8),%rdx
+	mov	($FR,$i,8),%rdx
 	and	%rbx,%rcx
 	and	%rax,%rdx
-	mov	$num,(%rsp,$i,8)	# zap temporary vector
+	mov	$num,($FR,$i,8)	# zap temporary vector
 	or	%rcx,%rdx
 	mov	%rdx,($rp,$i,8)		# rp[i]=tp[i]
 	lea	1($i),$i
@@ -382,13 +398,8 @@ $code.=<<___;
 	jnz	.Lcopy
 
 ___
-$code.=<<___ if (!$ENV{SARCASM});
-	mov	8(%rsp,$num,8),%rsi	# restore %rsp
-___
-$code.=<<___ if ($ENV{SARCASM});
-	mov	-64(%rsp),%rsi		# restore %rsp (fixed save slot)
-___
 $code.=<<___;
+	mov	$RSAVE,%rsi		# restore %rsp
 .cfi_def_cfa	%rsi,8
 	mov	\$1,%rax
 	mov	-48(%rsi),%r15
@@ -416,7 +427,7 @@ my @N=("%r13","%rdi");
 $code.=<<___;
 .type	bn_mul4x_mont,\@function,6
 .align	16
-bn_mul4x_mont:
+bn_mul4x_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
 .cfi_startproc
 	mov	${num}d,${num}d
 	mov	%rsp,%rax
@@ -427,9 +438,11 @@ $code.=<<___ if ($addx);
 	and	\$0x80100,%r11d
 	cmp	\$0x80100,%r11d
 	jne	.Lmul4x_not_mulx
-	call	bn_mulx4x_mont		# (was `je .Lmulx4x_enter`: nested
-	mov	\$1,%eax		# cross-function jump; call+ret instead.
-	ret				# bn_mulx4x_mont always returns 1.)
+	# (was `je .Lmulx4x_enter`: nested cross-function jump; call+ret
+	# instead. bn_mulx4x_mont always returns 1.)
+	call	bn_mulx4x_mont #! int(ptr,ptr,ptr,ptr,ptr,int)
+	mov	\$1,%eax
+	ret
 .Lmul4x_not_mulx:
 ___
 $code.=<<___;
@@ -449,13 +462,14 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
 	# See the .Lmul_enter frame above for why the page walk and the
-	# TLB-aliasing stack math vanish under sarcasm.
+	# TLB-aliasing stack math vanish under sarcasm. The original %rsp
+	# parks in a tiny fixed frame slot, so tp[] rebases 1:1 via $FR.
 	$code.=<<___;
-	lea	128(,$num,8),%r10	# region size: 8*(num+4) buffer + slack
-	sub	%r10,%rsp		#! alloca size (mont)
-	lea	-64(%rsp),%r10		#! alloca result (mont)
-
-	mov	%rax,-64(%rsp)		# save original %rsp (fixed slot)
+	sub	\$16,%rsp		# fixed save slot for original %rsp
+	lea	192(,$num,8),%r10	# region size: 8*(num+4) buffer + slack + 64 headroom
+	.alloca	%r10,\$16,$FRraw
+	lea	64($FRraw),$FR		# working base with headroom below
+	mov	%rax,0(%rsp)		# save original %rsp (fixed slot)
 .Lmul4x_body:
 ___
 } else {
@@ -487,7 +501,7 @@ ___
 ___
 }
 $code.=<<___;
-	mov	$rp,16(%rsp,$num,8)	#! store ptr
+	mov	$rp,16($FR,$num,8)	#! store ptr
 	mov	%rdx,%r12		# reassign $bp
 ___
 		$bp="%r12";
@@ -526,7 +540,7 @@ $code.=<<___;
 	add	$A[1],$N[1]
 	lea	4($j),$j		# j++
 	adc	\$0,%rdx
-	mov	$N[1],(%rsp)
+	mov	$N[1],($FR)
 	mov	%rdx,$N[0]
 	jmp	.L1st4x
 .align	16
@@ -543,7 +557,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[0],-24(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-24($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[0]
@@ -558,7 +572,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[1],-16(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 
 	mulq	$m0			# ap[j]*bp[0]
@@ -573,7 +587,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[0],-8(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-8($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[0]
@@ -589,7 +603,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[1],-32(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-32($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 	cmp	$num,$j
 	jb	.L1st4x
@@ -606,7 +620,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[0],-24(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-24($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[0]
@@ -621,21 +635,21 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]		# np[j]*m1+ap[j]*bp[0]
 	adc	\$0,%rdx
-	mov	$N[1],-16(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 
 	xor	$N[1],$N[1]
 	add	$A[0],$N[0]
 	adc	\$0,$N[1]
-	mov	$N[0],-8(%rsp,$j,8)
-	mov	$N[1],(%rsp,$j,8)	# store upmost overflow bit
+	mov	$N[0],-8($FR,$j,8)
+	mov	$N[1],($FR,$j,8)	# store upmost overflow bit
 
 	lea	1($i),$i		# i++
 .align	4
 .Louter4x:
 	mov	($bp,$i,8),$m0		# m0=bp[i]
 	xor	$j,$j			# j=0
-	mov	(%rsp),$A[0]
+	mov	($FR),$A[0]
 	mov	$n0,$m1
 	mulq	$m0			# ap[0]*bp[i]
 	add	%rax,$A[0]		# ap[0]*bp[i]+tp[0]
@@ -655,7 +669,7 @@ $code.=<<___;
 	add	%rax,$A[1]
 	mov	8($np),%rax
 	adc	\$0,%rdx
-	add	8(%rsp),$A[1]		# +tp[1]
+	add	8($FR),$A[1]		# +tp[1]
 	adc	\$0,%rdx
 	mov	%rdx,$A[0]
 
@@ -666,7 +680,7 @@ $code.=<<___;
 	add	$A[1],$N[1]		# np[j]*m1+ap[j]*bp[i]+tp[j]
 	lea	4($j),$j		# j+=2
 	adc	\$0,%rdx
-	mov	$N[1],(%rsp)		# tp[j-1]
+	mov	$N[1],($FR)		# tp[j-1]
 	mov	%rdx,$N[0]
 	jmp	.Linner4x
 .align	16
@@ -675,7 +689,7 @@ $code.=<<___;
 	add	%rax,$A[0]
 	mov	-16($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	-16(%rsp,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
+	add	-16($FR,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
 	adc	\$0,%rdx
 	mov	%rdx,$A[1]
 
@@ -685,14 +699,14 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]
 	adc	\$0,%rdx
-	mov	$N[0],-24(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-24($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[i]
 	add	%rax,$A[1]
 	mov	-8($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	-8(%rsp,$j,8),$A[1]
+	add	-8($FR,$j,8),$A[1]
 	adc	\$0,%rdx
 	mov	%rdx,$A[0]
 
@@ -702,14 +716,14 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]
 	adc	\$0,%rdx
-	mov	$N[1],-16(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 
 	mulq	$m0			# ap[j]*bp[i]
 	add	%rax,$A[0]
 	mov	($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	(%rsp,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
+	add	($FR,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
 	adc	\$0,%rdx
 	mov	%rdx,$A[1]
 
@@ -719,14 +733,14 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]
 	adc	\$0,%rdx
-	mov	$N[0],-8(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-8($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[i]
 	add	%rax,$A[1]
 	mov	8($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	8(%rsp,$j,8),$A[1]
+	add	8($FR,$j,8),$A[1]
 	adc	\$0,%rdx
 	lea	4($j),$j		# j++
 	mov	%rdx,$A[0]
@@ -737,7 +751,7 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]
 	adc	\$0,%rdx
-	mov	$N[1],-32(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-32($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 	cmp	$num,$j
 	jb	.Linner4x
@@ -746,7 +760,7 @@ $code.=<<___;
 	add	%rax,$A[0]
 	mov	-16($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	-16(%rsp,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
+	add	-16($FR,$j,8),$A[0]	# ap[j]*bp[i]+tp[j]
 	adc	\$0,%rdx
 	mov	%rdx,$A[1]
 
@@ -756,14 +770,14 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[0],$N[0]
 	adc	\$0,%rdx
-	mov	$N[0],-24(%rsp,$j,8)	# tp[j-1]
+	mov	$N[0],-24($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[1]
 
 	mulq	$m0			# ap[j]*bp[i]
 	add	%rax,$A[1]
 	mov	-8($np,$j,8),%rax
 	adc	\$0,%rdx
-	add	-8(%rsp,$j,8),$A[1]
+	add	-8($FR,$j,8),$A[1]
 	adc	\$0,%rdx
 	lea	1($i),$i		# i++
 	mov	%rdx,$A[0]
@@ -774,16 +788,16 @@ $code.=<<___;
 	adc	\$0,%rdx
 	add	$A[1],$N[1]
 	adc	\$0,%rdx
-	mov	$N[1],-16(%rsp,$j,8)	# tp[j-1]
+	mov	$N[1],-16($FR,$j,8)	# tp[j-1]
 	mov	%rdx,$N[0]
 
 	xor	$N[1],$N[1]
 	add	$A[0],$N[0]
 	adc	\$0,$N[1]
-	add	(%rsp,$num,8),$N[0]	# pull upmost overflow bit
+	add	($FR,$num,8),$N[0]	# pull upmost overflow bit
 	adc	\$0,$N[1]
-	mov	$N[0],-8(%rsp,$j,8)
-	mov	$N[1],(%rsp,$j,8)	# store upmost overflow bit
+	mov	$N[0],-8($FR,$j,8)
+	mov	$N[1],($FR,$j,8)	# store upmost overflow bit
 
 	cmp	$num,$i
 	jb	.Louter4x
@@ -791,12 +805,12 @@ ___
 {
 my @ri=("%rax","%rdx",$m0,$m1);
 $code.=<<___;
-	mov	16(%rsp,$num,8),$rp	#! load ptr
+	mov	16($FR,$num,8),$rp	#! load ptr
 	lea	-4($num),$j
-	mov	0(%rsp),@ri[0]		# tp[0]
-	mov	8(%rsp),@ri[1]		# tp[1]
+	mov	0($FR),@ri[0]		# tp[0]
+	mov	8($FR),@ri[1]		# tp[1]
 	shr	\$2,$j			# j=num/4-1
-	lea	(%rsp),$ap		# borrow ap for tp
+	lea	($FR),$ap		# borrow ap for tp
 	xor	$i,$i			# i=0 and clear CF!
 
 	sub	0($np),@ri[0]
@@ -842,18 +856,18 @@ $code.=<<___;
 	jmp	.Lcopy4x
 .align	16
 .Lcopy4x:				# conditional copy
-	movdqa	(%rsp,%rax),%xmm1
+	movdqa	($FR,%rax),%xmm1
 	movdqu	($rp,%rax),%xmm2
 	pand	%xmm4,%xmm1
 	pand	%xmm5,%xmm2
-	movdqa	16(%rsp,%rax),%xmm3
-	movdqa	%xmm0,(%rsp,%rax)
+	movdqa	16($FR,%rax),%xmm3
+	movdqa	%xmm0,($FR,%rax)
 	por	%xmm2,%xmm1
 	movdqu	16($rp,%rax),%xmm2
 	movdqu	%xmm1,($rp,%rax)
 	pand	%xmm4,%xmm3
 	pand	%xmm5,%xmm2
-	movdqa	%xmm0,16(%rsp,%rax)
+	movdqa	%xmm0,16($FR,%rax)
 	por	%xmm2,%xmm3
 	movdqu	%xmm3,16($rp,%rax)
 	lea	32(%rax),%rax
@@ -861,13 +875,8 @@ $code.=<<___;
 	jnz	.Lcopy4x
 ___
 }
-$code.=<<___ if (!$ENV{SARCASM});
-	mov	8(%rsp,$num,8),%rsi	# restore %rsp
-___
-$code.=<<___ if ($ENV{SARCASM});
-	mov	-64(%rsp),%rsi		# restore %rsp (fixed save slot)
-___
 $code.=<<___;
+	mov	$RSAVE,%rsi		# restore %rsp
 .cfi_def_cfa	%rsi, 8
 	mov	\$1,%rax
 	mov	-48(%rsi),%r15
@@ -915,7 +924,7 @@ $code.=<<___;
 
 .type	bn_sqr8x_mont,\@function,6
 .align	32
-bn_sqr8x_mont:
+bn_sqr8x_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
 .cfi_startproc
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
@@ -935,30 +944,6 @@ bn_sqr8x_mont:
 .Lsqr8x_prologue:
 
 ___
-if ($ENV{SARCASM}) {
-	# Under sarcasm the dynamic frame is a GC allocation: the TLB
-	# anti-aliasing arithmetic and the page walk vanish, and the size
-	# is a plain byte size (frame 64 bytes + 2*$num quadwords + slack).
-	$code.=<<___;
-	mov	${num}d,%r10d
-	shl	\$3,${num}d		# convert $num to bytes
-	shl	\$3+2,%r10		# 4*$num
-	neg	$num
-	mov	($n0),$n0		# *n0
-
-	lea	192(%r10),%r11		# 32*num+192
-	shr	\$1,%r11		# region size: 16*num + 96
-	sub	%r11,%rsp		#! alloca size (mont)
-	mov	%rsp,%r11		#! alloca result (mont)
-
-	mov	$num,%r10
-	neg	$num
-
-	mov	$n0,  32(%rsp)
-	mov	%rax, 40(%rsp)		# save original %rsp
-.Lsqr8x_body:
-___
-} else {
 	$code.=<<___;
 	mov	${num}d,%r10d
 	shl	\$3,${num}d		# convert $num to bytes
@@ -1016,7 +1001,6 @@ ___
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lsqr8x_body:
 ___
-}
 $code.=<<___;
 
 	movq	$nptr, %xmm2		# save pointer to modulus
@@ -1030,7 +1014,7 @@ $code.=<<___ if ($addx);
 	cmp	\$0x80100,%eax
 	jne	.Lsqr8x_nox
 
-	call	bn_sqrx8x_internal	# see x86_64-mont5 module
+	call	bn_sqrx8x_internal	# see x86_64-mont5 module #! void(ptr,ptr,ptr,ptr,ptr,int)
 					# %rax	top-most carry
 					# %rbp	nptr
 					# %rcx	-8*num
@@ -1046,7 +1030,7 @@ $code.=<<___ if ($addx);
 .Lsqr8x_nox:
 ___
 $code.=<<___;
-	call	bn_sqr8x_internal	# see x86_64-mont5 module
+	call	bn_sqr8x_internal	# see x86_64-mont5 module #! void(ptr,ptr,ptr,ptr,ptr,int)
 					# %rax	top-most carry
 					# %rbp	nptr
 					# %r8	-8*num
@@ -1143,7 +1127,7 @@ my $bp="%rdx";	# original value
 $code.=<<___;
 .type	bn_mulx4x_mont,\@function,6
 .align	32
-bn_mulx4x_mont:
+bn_mulx4x_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
 .cfi_startproc
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
@@ -1166,12 +1150,18 @@ ___
 if ($ENV{SARCASM}) {
 	# Under sarcasm the dynamic frame is a GC allocation (see the
 	# .Lmul_enter frame): size = frame 72 + $num + 8 bytes + slack.
+	# The header slots (0-56, except the %rsp save) and tp[] rebase 1:1
+	# onto the buffer via $FR; the original %rsp parks in a tiny fixed
+	# frame slot (a prologue `%rsp` save may only spill to the frame,
+	# not to the region).
 	$code.=<<___;
+	sub	\$16,%rsp		# fixed save slot for original %rsp
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
-	lea	192($num),%r10		# region size: $num + 192
-	sub	%r10,%rsp		#! alloca size (mont)
-	mov	%rsp,%r10		#! alloca result (mont)
+	lea	256($num),%r10		# region size: $num + 192 + 64 headroom
+	.alloca	%r10,\$16,$FRraw
+	lea	64($FRraw),$FR		# working base with headroom below
+	mov	%rax,0(%rsp)		# save original %rsp (fixed slot)
 
 	lea	($bp,$num),%r10
 ___
@@ -1216,15 +1206,19 @@ $code.=<<___;
 	# +56
 	# +64	tmp[num+1]
 	#
-	mov	$num,0(%rsp)		# save $num
+	mov	$num,0($FR)		# save $num
 	shr	\$5,$num
-	mov	%r10,16(%rsp)		#! store ptr
+	mov	%r10,16($FR)		#! store ptr
 	sub	\$1,$num
-	mov	$n0, 24(%rsp)		# save *n0
-	mov	$rp, 32(%rsp)		#! store ptr
+	mov	$n0, 24($FR)		# save *n0
+	mov	$rp, 32($FR)		#! store ptr
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rax,40(%rsp)		# save original %rsp
+___
+$code.=<<___;
 .cfi_cfa_expression	%rsp+40,deref,+8
-	mov	$num,48(%rsp)		# inner counter
+	mov	$num,48($FR)		# inner counter
 	jmp	.Lmulx4x_body
 
 .align	32
@@ -1236,19 +1230,19 @@ my $rptr=$bptr;
 $code.=<<___;
 	lea	8($bp),$bptr
 	mov	($bp),%rdx		# b[0], $bp==%rdx actually
-	lea	64+32(%rsp),$tptr
+	lea	64+32($FR),$tptr
 	mov	%rdx,$bi
 
 	mulx	0*8($aptr),$mi,%rax	# a[0]*b[0]
 	mulx	1*8($aptr),%r11,%r14	# a[1]*b[0]
 	add	%rax,%r11
-	mov	$bptr,8(%rsp)		#! store ptr
+	mov	$bptr,8($FR)		#! store ptr
 	mulx	2*8($aptr),%r12,%r13	# ...
 	adc	%r14,%r12
 	adc	\$0,%r13
 
 	mov	$mi,$bptr		# borrow $bptr
-	imulq	24(%rsp),$mi		# "t[0]"*n0
+	imulq	24($FR),$mi		# "t[0]"*n0
 	xor	$zero,$zero		# cf=0, of=0
 
 	mulx	3*8($aptr),%rax,%r14
@@ -1264,7 +1258,7 @@ $code.=<<___;
 	adcx	%rax,%r10
 	adox	%r12,%r11
 	.byte	0xc4,0x62,0xfb,0xf6,0xa1,0x10,0x00,0x00,0x00	# mulx	2*8($nptr),%rax,%r12
-	mov	48(%rsp),$bptr		# counter value
+	mov	48($FR),$bptr		# counter value
 	mov	%r10,-4*8($tptr)
 	adcx	%rax,%r11
 	adox	%r13,%r12
@@ -1318,8 +1312,8 @@ $code.=<<___;
 	dec	$bptr			# of=0, pass cf
 	jnz	.Lmulx4x_1st
 
-	mov	0(%rsp),$num		# load num
-	mov	8(%rsp),$bptr		#! load ptr
+	mov	0($FR),$num		# load num
+	mov	8($FR),$bptr		#! load ptr
 	adc	$zero,%r15		# modulo-scheduled
 	add	%r15,%r14
 	sbb	%r15,%r15		# top-most carry
@@ -1332,7 +1326,7 @@ $code.=<<___;
 	lea	8($bptr),$bptr		# b++
 	sub	$num,$aptr		# rewind $aptr
 	mov	%r15,($tptr)		# save top-most carry
-	lea	64+4*8(%rsp),$tptr
+	lea	64+4*8($FR),$tptr
 	sub	$num,$nptr		# rewind $nptr
 
 	mulx	0*8($aptr),$mi,%r11	# a[0]*b[i]
@@ -1348,9 +1342,9 @@ $code.=<<___;
 	adcx	$zero,%r13
 	adox	$zero,%r13
 
-	mov	$bptr,8(%rsp)		#! store ptr
+	mov	$bptr,8($FR)		#! store ptr
 	mov	$mi,%r15
-	imulq	24(%rsp),$mi		# "t[0]"*n0
+	imulq	24($FR),$mi		# "t[0]"*n0
 	xor	%ebp,%ebp		# xor	$zero,$zero	# cf=0, of=0
 
 	mulx	3*8($aptr),%rax,%r14
@@ -1377,7 +1371,7 @@ $code.=<<___;
 	lea	4*8($nptr),$nptr
 	adcx	%rax,%r12
 	adox	$zero,%r15		# of=0
-	mov	48(%rsp),$bptr		# counter value
+	mov	48($FR),$bptr		# counter value
 	mov	%r12,-2*8($tptr)
 
 	jmp	.Lmulx4x_inner
@@ -1426,23 +1420,23 @@ $code.=<<___;
 	dec	$bptr			# of=0, pass cf
 	jnz	.Lmulx4x_inner
 
-	mov	0(%rsp),$num		# load num
-	mov	8(%rsp),$bptr		#! load ptr
+	mov	0($FR),$num		# load num
+	mov	8($FR),$bptr		#! load ptr
 	adc	$zero,%r15		# modulo-scheduled
 	sub	0*8($tptr),$zero	# pull top-most carry
 	adc	%r15,%r14
 	sbb	%r15,%r15		# top-most carry
 	mov	%r14,-1*8($tptr)
 
-	cmp	16(%rsp),$bptr
+	cmp	16($FR),$bptr
 	jne	.Lmulx4x_outer
 
-	lea	64(%rsp),$tptr
+	lea	64($FR),$tptr
 	sub	$num,$nptr		# rewind $nptr
 	neg	%r15
 	mov	$num,%rdx
 	shr	\$3+2,$num		# %cf=0
-	mov	32(%rsp),$rptr		#! load ptr
+	mov	32($FR),$rptr		#! load ptr
 	jmp	.Lmulx4x_sub
 
 .align	32
@@ -1466,13 +1460,15 @@ $code.=<<___;
 	jnz	.Lmulx4x_sub
 
 	sbb	\$0,%r15		# top-most carry
-	lea	64(%rsp),$tptr
+	lea	64($FR),$tptr
 	sub	%rdx,$rptr		# rewind
 
 	movq	%r15,%xmm1
 	pxor	%xmm0,%xmm0
 	pshufd	\$0,%xmm1,%xmm1
-	mov	40(%rsp),%rsi		# restore %rsp
+___
+$code.=<<___;
+	mov	$RSAVE40,%rsi		# restore %rsp
 .cfi_def_cfa	%rsi,8
 	jmp	.Lmulx4x_cond_copy
 

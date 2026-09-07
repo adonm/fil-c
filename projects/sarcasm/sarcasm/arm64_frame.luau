@@ -320,6 +320,35 @@ function arm64_frame.rewrite(st, ctx)
 		else ctx.cumAdj = cumBefore + adj end
 	end
 
+	-- `.alloca size, alignment, result`: convert frame-relative (spill-slot) memory
+	-- operands to slot pseudo-registers in place, keeping the mnemonic. Only plain
+	-- base+immediate slot references convert (sp or x29 base, no writeback, no shift,
+	-- no register index); anything else is a clean rejection.
+	if m == "alloca" then
+		local araw = st.raw or m
+		local anewops = {}
+		for oi, o in ops do
+			if o.kind ~= "mem" then table.insert(anewops, o)
+			else
+				if o.writeback or o.shift or o.postShift then
+					error("sarcasm: `.alloca` spill-slot operand must be a plain [sp, #off]/[x29, #off] reference: " .. araw)
+				end
+				if o.index and o.index.kind ~= "imm" then
+					error("sarcasm: indexed `.alloca` spill-slot operand is not supported: " .. araw)
+				end
+				if not isFrameBase(o.base) then
+					error("sarcasm: `.alloca` operand is not a register, immediate, or frame spill slot: " .. araw)
+				end
+				local abase = (o.base.name == "sp") and 0 or ctx.fpOffset
+				local aoff = abase + immVal(o.index)
+				ctx.checkBounds(aoff, 8, oi == 3, araw)
+				table.insert(anewops, ctx.slotReg(aoff, 64))
+			end
+		end
+		emit({ kind = "insn", mnemonic = "alloca", operands = anewops, raw = st.raw, line = st.line, dotAlloca = true })
+		return
+	end
+
 	-- (PHASE 2 removed the blanket NEON/FP rejection that lived here. NEON/FP
 	-- registers now pass through; their stack accesses virtualize below; SVE is
 	-- rejected in arm64_isa.classify, which validateBody runs on every
@@ -348,16 +377,17 @@ function arm64_frame.rewrite(st, ctx)
 
 	-- sp adjustments and fp setup. Constant sp (re)size (`sub/add sp, sp, #imm`) and the
 	-- fp setup (`mov x29, sp` / `add x29, sp, #N`) are frame boilerplate we drop; a
-	-- register-valued sp adjustment is a dynamic allocation that only the transform's
-	-- annotated-alloca path may model (annotated statements never reach this pass).
+	-- register-valued sp adjustment is a dynamic stack allocation, which sarcasm
+	-- does not model on the stack pointer (allocate with the `.alloca` directive,
+	-- which never touches sp).
 	if (m == "sub" or m == "add") and ops[1] and isSp(ops[1]) then
 		if ops[2] and isSp(ops[2]) and ops[3] and ops[3].kind == "imm" then return end
-		error("sarcasm: dynamic sp adjustment without an `alloca size` annotation is not supported: " .. raw)
+		error("sarcasm: dynamic sp adjustment is not supported (allocate with the `.alloca` directive, which never touches sp): " .. raw)
 	end
 	if (m == "mov" or m == "add") and ops[1] and ops[1].name == "x29" then return end
 	if m == "mov" and ops[1] and isSp(ops[1]) then
 		if ops[2] and ops[2].name == "x29" then return end  -- `mov sp, x29` (epilogue restore)
-		error("sarcasm: write to sp from a register without an `alloca` annotation is not supported: " .. raw)
+		error("sarcasm: write to sp from a register is not supported (allocate with the `.alloca` directive, which never touches sp): " .. raw)
 	end
 
 	local mem = nil

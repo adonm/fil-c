@@ -52,10 +52,15 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
 
 # Sarcasm: _mul_1x1 gets no frame of its own — when inlined as a localcall
 # clone, any %rsp write in the clone clears the caller's parked-%rsp slot
-# carrier (clearDynSlots). Its 16-entry tab lives in the caller's grown
-# region instead: clone displacement D keys to the caller's D-8 (the +8
-# rule), so the tab at caller offset 144 is spelled at displacement 152.
-my $TAB = $ENV{SARCASM} ? 152 : 0;
+# carrier (clearDynSlots). Its 16-entry tab lives in a GC-allocated '.alloca'
+# buffer instead: indexed frame access is rejected, but indexed access
+# through the heap buffer pointer is capability-checked and fine. The gas
+# path keeps the frame tab at 0(%rsp) (clone displacement D keys to the
+# caller's D-8, the +8 rule). $TAB is gas-only now: the heap tab lives
+# in %fil_gf2mtab (see tabslot/tabidx below).
+my $TAB = 0;
+sub tabslot { my $o = shift; return $ENV{SARCASM} ? "$o(%fil_gf2mtab)" : ($TAB+$o)."(%rsp)"; }
+sub tabidx { my $r = shift; return $ENV{SARCASM} ? "(%fil_gf2mtab,$r,8)" : "$TAB(%rsp,$r,8)"; }
 
 $code.=<<___;
 .text
@@ -99,57 +104,57 @@ $code.=<<___;
 	xor	$t0,$hi
 
 	mov	$a1,$a12
-	movq	\$0,`$TAB+0`(%rsp)		# tab[0]=0
+	movq	\$0,`tabslot(0)`		# tab[0]=0
 	xor	$a2,$a12		# a1^a2
-	mov	$a1,`$TAB+8`(%rsp)		# tab[1]=a1
+	mov	$a1,`tabslot(8)`		# tab[1]=a1
 	 mov	$a4,$a48
-	mov	$a2,`$TAB+16`(%rsp)		# tab[2]=a2
+	mov	$a2,`tabslot(16)`		# tab[2]=a2
 	 xor	$a8,$a48		# a4^a8
-	mov	$a12,`$TAB+24`(%rsp)		# tab[3]=a1^a2
+	mov	$a12,`tabslot(24)`		# tab[3]=a1^a2
 
 	xor	$a4,$a1
-	mov	$a4,`$TAB+32`(%rsp)		# tab[4]=a4
+	mov	$a4,`tabslot(32)`		# tab[4]=a4
 	xor	$a4,$a2
-	mov	$a1,`$TAB+40`(%rsp)		# tab[5]=a1^a4
+	mov	$a1,`tabslot(40)`		# tab[5]=a1^a4
 	xor	$a4,$a12
-	mov	$a2,`$TAB+48`(%rsp)		# tab[6]=a2^a4
+	mov	$a2,`tabslot(48)`		# tab[6]=a2^a4
 	 xor	$a48,$a1		# a1^a4^a4^a8=a1^a8
-	mov	$a12,`$TAB+56`(%rsp)		# tab[7]=a1^a2^a4
+	mov	$a12,`tabslot(56)`		# tab[7]=a1^a2^a4
 	 xor	$a48,$a2		# a2^a4^a4^a8=a1^a8
 
-	mov	$a8,`$TAB+64`(%rsp)		# tab[8]=a8
+	mov	$a8,`tabslot(64)`		# tab[8]=a8
 	xor	$a48,$a12		# a1^a2^a4^a4^a8=a1^a2^a8
-	mov	$a1,`$TAB+72`(%rsp)		# tab[9]=a1^a8
+	mov	$a1,`tabslot(72)`		# tab[9]=a1^a8
 	 xor	$a4,$a1			# a1^a8^a4
-	mov	$a2,`$TAB+80`(%rsp)		# tab[10]=a2^a8
+	mov	$a2,`tabslot(80)`		# tab[10]=a2^a8
 	 xor	$a4,$a2			# a2^a8^a4
-	mov	$a12,`$TAB+88`(%rsp)		# tab[11]=a1^a2^a8
+	mov	$a12,`tabslot(88)`		# tab[11]=a1^a2^a8
 
 	xor	$a4,$a12		# a1^a2^a8^a4
-	mov	$a48,`$TAB+96`(%rsp)		# tab[12]=a4^a8
+	mov	$a48,`tabslot(96)`		# tab[12]=a4^a8
 	 mov	$mask,$i0
-	mov	$a1,`$TAB+104`(%rsp)		# tab[13]=a1^a4^a8
+	mov	$a1,`tabslot(104)`		# tab[13]=a1^a4^a8
 	 and	$b,$i0
-	mov	$a2,`$TAB+112`(%rsp)		# tab[14]=a2^a4^a8
+	mov	$a2,`tabslot(112)`		# tab[14]=a2^a4^a8
 	 shr	\$4,$b
-	mov	$a12,`$TAB+120`(%rsp)		# tab[15]=a1^a2^a4^a8
+	mov	$a12,`tabslot(120)`		# tab[15]=a1^a2^a4^a8
 	 mov	$mask,$i1
 	 and	$b,$i1
 	 shr	\$4,$b
 
-	movq	`$TAB`(%rsp,$i0,8),$R		# half of calculations is done in SSE2
+	movq	`tabidx('$i0')`,$R		# half of calculations is done in SSE2
 	mov	$mask,$i0
 	and	$b,$i0
 	shr	\$4,$b
 ___
     for ($n=1;$n<8;$n++) {
 	$code.=<<___;
-	mov	`$TAB`(%rsp,$i1,8),$t1
+	mov	`tabidx('$i1')`,$t1
 	mov	$mask,$i1
 	mov	$t1,$t0
 	shl	\$`8*$n-4`,$t1
 	and	$b,$i1
-	 movq	`$TAB`(%rsp,$i0,8),$Tx
+	 movq	`tabidx('$i0')`,$Tx
 	shr	\$`64-(8*$n-4)`,$t0
 	xor	$t1,$lo
 	 pslldq	\$$n,$Tx
@@ -162,7 +167,7 @@ ___
 ___
     }
 $code.=<<___;
-	mov	`$TAB`(%rsp,$i1,8),$t1
+	mov	`tabidx('$i1')`,$t1
 	mov	$t1,$t0
 	shl	\$`8*$n-4`,$t1
 	movq	$R,$i0
@@ -194,7 +199,7 @@ $code.=<<___;
 .globl	bn_GF2m_mul_2x2
 .type	bn_GF2m_mul_2x2,\@abi-omnipotent
 .align	16
-bn_GF2m_mul_2x2:
+bn_GF2m_mul_2x2: #! void(ptr,long,long,long,long)
 .cfi_startproc
 	mov	%rsp,%rax
 	mov	OPENSSL_ia32cap_P(%rip),%r10
@@ -235,10 +240,12 @@ $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
 	# Fixed region + parked entry %rsp (the balanced mid-function
-	# lea-alloc pair cannot be proven safe); region grows by 8 for the
-	# save slot plus 136 for _mul_1x1's tab (see $TAB above).
+	# lea-alloc pair cannot be proven safe); the 16-entry tab for
+	# _mul_1x1 lives in a GC-allocated buffer (see $TAB above), so the
+	# region only grows by 8 for the save slot.
 	$code.=<<___;
-	sub	\$8*17+8+136,%rsp	#! alloca result size=280
+	.alloca	\$128,\$8,%fil_gf2mtab
+	sub	\$8*17+8,%rsp
 	mov	%rax,8*17(%rsp)		# park entry %rsp in the region
 ___
 } else {
@@ -266,7 +273,7 @@ $code.=<<___;
 	mov	%rbx,8*14(%rsp)
 .cfi_rel_offset	%rbx,8*14
 .Lbody_mul_2x2:
-	mov	$rp,32(%rsp)		#! store ptr
+	mov	$rp,32(%rsp)
 	mov	$a1,40(%rsp)
 	mov	$a0,48(%rsp)
 	mov	$b1,56(%rsp)
@@ -297,7 +304,7 @@ $code.=<<___;
 	mov	8(%rsp),@r[1]
 	mov	16(%rsp),@r[2]
 	mov	24(%rsp),@r[3]
-	mov	32(%rsp),%rbp		#! load ptr
+	mov	32(%rsp),%rbp
 
 	xor	$hi,$lo
 	xor	@r[1],$hi

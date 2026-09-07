@@ -37,8 +37,43 @@ local SHIFT_OPS = {
 -- Registers ---------------------------------------------------------------
 
 -- Classify a bare register token. Returns a reg operand table, or nil.
+-- Pseudoregister number registry (see classifyReg).
+
+local PSEUDO_BASE = 2000
+local pseudoNums = {}
+local numPseudos = 0
+
 local function classifyReg(tok: string)
 	local low = string.lower(tok)
+	-- Pseudoregisters: `fil_<ident>`, where <ident> matches [0-9a-zA-Z_]+ and may
+	-- start with a digit. The <ident> is case-sensitive (`fil_FOO` and `fil_foo`
+	-- are distinct pseudos); only the `fil_` prefix itself matches
+	-- case-insensitively, like other register names. A pseudo is a 64-bit GPR with
+	-- no fixed physical register;
+	-- the register allocator colors it like any other virtual web (spilling across
+	-- calls as needed). Each distinct name maps to one register number in a
+	-- dedicated band (never colliding with physical GPRs 0-30 or the frame-slot
+	-- band); the mapping is allocated in source order, so identical input always
+	-- produces identical numbering. NOTE: match on the original `tok` (not the
+	-- lowered `low`) so the captured ident keeps its case. NOTE: a bare `fil_<ident>`
+	-- in operand position is ALWAYS a pseudo, never a symbol — do not name globals, functions, or
+	-- local labels with a `fil_` prefix (a branch/call to one would misparse).
+	local ident = string.match(tok, "^[Ff][Ii][Ll]_([0-9a-zA-Z_]+)$")
+	if ident then
+		-- Canonicalize the prefix to lowercase so `FIL_Foo` and `fil_Foo` share
+		-- one register; the ident keeps its case, so `FOO` vs `foo` stay distinct.
+		local canon = "fil_" .. ident
+		local n = pseudoNums[canon]
+		if not n then
+			numPseudos += 1
+			n = PSEUDO_BASE + numPseudos
+			pseudoNums[canon] = n
+		end
+		return { kind = "reg", name = canon, rc = "gpr", width = 64, num = n, pseudo = ident }
+	end
+	if string.match(low, "^fil_") or low == "fil" then
+		error("sarcasm: bad pseudoregister name `" .. tok .. "` (expected `fil_<ident>` with <ident> matching [0-9a-zA-Z_]+)")
+	end
 	if low == "sp" then
 		return { kind = "reg", name = "sp", rc = "sp", width = 64 }
 	end
@@ -502,6 +537,56 @@ local function cutCodeHash(s: string): string
 	return s
 end
 
+-- `.alloca size, alignment, result`: stack allocation without touching sp.
+-- Builds an ordinary insn statement (mnemonic "alloca", operands in WRITTEN order:
+-- [size, alignment, result]). size/alignment: an immediate (`#N` or bare `N`), a
+-- GPR (including a `fil_` pseudo), or a frame-relative spill-slot reference
+-- (`[sp, #off]` / `[x29, #off]`); result: a GPR, a pseudo, or a spill slot.
+-- A bare symbol is never a valid operand (rejected here, not as a global access).
+local function parseDotAlloca(rest, raw)
+	-- Split the three operands on top-level commas FIRST (a `[...]` field followed
+	-- by a comma is a separate `.alloca` operand, never a post-index address —
+	-- parseOperands would otherwise consume `[sp, #8], [sp, #16]` as one
+	-- post-indexed memory operand), then parse each field alone.
+	local fields = {}
+	do
+		local depth, cur = 0, {}
+		for k = 1, #rest do
+			local c = string.sub(rest, k, k)
+			if c == "[" then depth += 1; table.insert(cur, c)
+			elseif c == "]" then depth -= 1; table.insert(cur, c)
+			elseif c == "," and depth == 0 then
+				table.insert(fields, (string.gsub(table.concat(cur), "^%s*(.-)%s*$", "%1"))); cur = {}
+			else table.insert(cur, c) end
+		end
+		table.insert(fields, (string.gsub(table.concat(cur), "^%s*(.-)%s*$", "%1")))
+	end
+	if #fields ~= 3 or fields[1] == "" or fields[2] == "" or fields[3] == "" then
+		error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. raw)
+	end
+	local operands = {}
+	for k, f in fields do
+		local ops = parseOperands(f)
+		if #ops ~= 1 then
+			error("sarcasm: `.alloca` operand did not parse as one operand: `" .. f .. "` (" .. raw .. ")")
+		end
+		operands[k] = ops[1]
+	end
+	for _, op in operands do
+		if op.kind == "sym" then
+			error("sarcasm: `.alloca` operand is a symbol, but size/alignment must be a register, spill slot, or immediate"
+				.. " and result a register, pseudo-register, or spill slot: " .. raw)
+		end
+	end
+	return {
+		kind = "insn",
+		mnemonic = "alloca",
+		operands = operands,
+		raw = raw,
+		dotAlloca = true,
+	}
+end
+
 -- Parse one source line into zero or more statements, appending to `out`.
 local function parseLine(rawLine: string, out)
 	-- A `#` at the start of the code portion is a comment on arm64 (GAS `# note`,
@@ -558,14 +643,21 @@ local function parseLine(rawLine: string, out)
 	rest = trim(rest)
 
 	if string.sub(mnemonic, 1, 1) == "." then
-		table.insert(out, {
-			kind = "directive",
-			name = mnemonic,
-			args = rest,
-			raw = trimmed,
-			annotation = annotation,
-		})
-		return
+		if string.lower(mnemonic) == ".alloca" then
+			local ainsn = parseDotAlloca(rest, trimmed)
+			ainsn.annotation = annotation
+			table.insert(out, ainsn)
+			return
+		else
+			table.insert(out, {
+				kind = "directive",
+				name = mnemonic,
+				args = rest,
+				raw = trimmed,
+				annotation = annotation,
+			})
+			return
+		end
 	end
 
 	-- Instruction. Split optional condition suffix off branch mnemonics like b.hs.
@@ -589,6 +681,14 @@ local function parseLine(rawLine: string, out)
 end
 
 function parse.parseString(text: string)
+	-- Per-file pseudo-registry reset. pseudoNums/numPseudos live at module scope
+	-- (the require cache persists them across files in one process), so
+	-- reinitialize them here for deterministic per-file numbering from
+	-- PSEUDO_BASE+1 in source order — the same pattern as numlabel's call-local
+	-- state. Parsing is synchronous (no yields), so no interleaved parse can
+	-- observe a half-built table.
+	pseudoNums = {}
+	numPseudos = 0
 	local out = {}
 	-- normalize CRLF
 	text = (string.gsub(text, "\r\n", "\n"))

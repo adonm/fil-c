@@ -102,7 +102,7 @@ OUT_SHUFB:
 .globl    ${prefix}_set_key
 .type     ${prefix}_set_key,\@function,2
 .align    32
-${prefix}_set_key:
+${prefix}_set_key: #! int(ptr,ptr)
 .cfi_startproc
     endbranch
 # Prolog
@@ -152,7 +152,7 @@ ${prefix}_set_key:
 .globl    ${prefix}_encrypt
 .type     ${prefix}_encrypt,\@function,3
 .align    32
-${prefix}_encrypt:
+${prefix}_encrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
     endbranch
 # Prolog
@@ -189,7 +189,7 @@ ${prefix}_encrypt:
 .globl    ${prefix}_decrypt
 .type     ${prefix}_decrypt,\@function,3
 .align    32
-${prefix}_decrypt:
+${prefix}_decrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
     endbranch
 # Prolog
@@ -244,21 +244,21 @@ $code .= <<___;
 
 .globl    ${prefix}_set_key
 .type     ${prefix}_set_key,\@abi-omnipotent
-${prefix}_set_key:
+${prefix}_set_key: #! int(ptr,ptr)
     .byte   0x0f,0x0b    # ud2
     ret
 .size     ${prefix}_set_key, .-${prefix}_set_key
 
 .globl    ${prefix}_encrypt
 .type ${prefix}_encrypt,\@abi-omnipotent
-${prefix}_encrypt:
+${prefix}_encrypt: #! void(ptr,ptr,ptr)
     .byte   0x0f,0x0b    # ud2
     ret
 .size   ${prefix}_encrypt, .-${prefix}_encrypt
 
 .globl    ${prefix}_decrypt
 .type     ${prefix}_decrypt,\@abi-omnipotent
-${prefix}_decrypt:
+${prefix}_decrypt: #! void(ptr,ptr,ptr)
     .byte   0x0f,0x0b    # ud2
     ret
 .size     ${prefix}_decrypt, .-${prefix}_decrypt

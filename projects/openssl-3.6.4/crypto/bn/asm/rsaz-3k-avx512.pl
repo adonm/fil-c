@@ -379,7 +379,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x30_x1_ifma256
 .type   ossl_rsaz_amm52x30_x1_ifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x30_x1_ifma256:
+ossl_rsaz_amm52x30_x1_ifma256: #! void(ptr,ptr,ptr,ptr,long)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -550,7 +550,7 @@ $code.=<<___;
 .globl  ossl_rsaz_amm52x30_x2_ifma256
 .type   ossl_rsaz_amm52x30_x2_ifma256,\@function,5
 .align 32
-ossl_rsaz_amm52x30_x2_ifma256:
+ossl_rsaz_amm52x30_x2_ifma256: #! void(ptr,ptr,ptr,ptr,ptr)
 .cfi_startproc
     endbranch
     push    %rbx
@@ -741,7 +741,7 @@ $code.=<<___;
 .align 32
 .globl  ossl_extract_multiplier_2x30_win5
 .type   ossl_extract_multiplier_2x30_win5,\@abi-omnipotent
-ossl_extract_multiplier_2x30_win5:
+ossl_extract_multiplier_2x30_win5: #! void(ptr,ptr,int,int)
 .cfi_startproc
     endbranch
     vmovdqa64   .Lones(%rip), $ones         # broadcast ones

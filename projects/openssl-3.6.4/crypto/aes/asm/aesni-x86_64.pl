@@ -275,7 +275,7 @@ $code.=<<___;
 .globl	${PREFIX}_encrypt
 .type	${PREFIX}_encrypt,\@abi-omnipotent
 .align	16
-${PREFIX}_encrypt:
+${PREFIX}_encrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	movups	($inp),$inout0		# load input
@@ -294,7 +294,7 @@ $code.=<<___;
 .globl	${PREFIX}_decrypt
 .type	${PREFIX}_decrypt,\@abi-omnipotent
 .align	16
-${PREFIX}_decrypt:
+${PREFIX}_decrypt: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	movups	($inp),$inout0		# load input
@@ -615,7 +615,7 @@ $code.=<<___;
 .globl	aesni_ecb_encrypt
 .type	aesni_ecb_encrypt,\@function,5
 .align	16
-aesni_ecb_encrypt:
+aesni_ecb_encrypt: #! void(ptr,ptr,size_t,ptr,int)
 .cfi_startproc
 	endbranch
 ___
@@ -988,7 +988,7 @@ $code.=<<___;
 .globl	aesni_ccm64_encrypt_blocks
 .type	aesni_ccm64_encrypt_blocks,\@function,6
 .align	16
-aesni_ccm64_encrypt_blocks:
+aesni_ccm64_encrypt_blocks: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -1081,7 +1081,7 @@ $code.=<<___;
 .globl	aesni_ccm64_decrypt_blocks
 .type	aesni_ccm64_decrypt_blocks,\@function,6
 .align	16
-aesni_ccm64_decrypt_blocks:
+aesni_ccm64_decrypt_blocks: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 ___
@@ -1208,7 +1208,7 @@ $code.=<<___;
 .globl	aesni_ctr32_encrypt_blocks
 .type	aesni_ctr32_encrypt_blocks,\@function,5
 .align	16
-aesni_ctr32_encrypt_blocks:
+aesni_ctr32_encrypt_blocks: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_startproc
 	endbranch
 	cmp	\$1,$len
@@ -1236,8 +1236,15 @@ $code.=<<___;
 .cfi_def_cfa_register	$key_
 	push	%rbp
 .cfi_push	%rbp
-	sub	\$$frame_size,%rsp		#! alloca result size=128
+	sub	\$$frame_size,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8($key_)		# offload everything
@@ -1781,15 +1788,22 @@ $code.=<<___;
 .globl	aesni_xts_encrypt
 .type	aesni_xts_encrypt,\@function,6
 .align	16
-aesni_xts_encrypt:
+aesni_xts_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	lea	(%rsp),%r11			# frame pointer
 .cfi_def_cfa_register	%r11
 	push	%rbp
 .cfi_push	%rbp
-	sub	\$$frame_size,%rsp		#! alloca result size=112
+	sub	\$$frame_size,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8(%r11)		# offload everything
@@ -2265,15 +2279,22 @@ $code.=<<___;
 .globl	aesni_xts_decrypt
 .type	aesni_xts_decrypt,\@function,6
 .align	16
-aesni_xts_decrypt:
+aesni_xts_decrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	lea	(%rsp),%r11			# frame pointer
 .cfi_def_cfa_register	%r11
 	push	%rbp
 .cfi_push	%rbp
-	sub	\$$frame_size,%rsp		#! alloca result size=112
+	sub	\$$frame_size,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8(%r11)		# offload everything
@@ -2791,7 +2812,7 @@ $code.=<<___;
 .globl	aesni_ocb_encrypt
 .type	aesni_ocb_encrypt,\@function,6
 .align	32
-aesni_ocb_encrypt:
+aesni_ocb_encrypt: #! void(ptr,ptr,size_t,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	lea	(%rsp),%rax
@@ -3258,7 +3279,7 @@ __ocb_encrypt1:
 .globl	aesni_ocb_decrypt
 .type	aesni_ocb_decrypt,\@function,6
 .align	32
-aesni_ocb_decrypt:
+aesni_ocb_decrypt: #! void(ptr,ptr,size_t,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	lea	(%rsp),%rax
@@ -3747,7 +3768,7 @@ $code.=<<___;
 .globl	${PREFIX}_cbc_encrypt
 .type	${PREFIX}_cbc_encrypt,\@function,6
 .align	16
-${PREFIX}_cbc_encrypt:
+${PREFIX}_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 .cfi_startproc
 	endbranch
 	test	$len,$len		# check length
@@ -3895,8 +3916,15 @@ $code.=<<___;
 .cfi_def_cfa_register	%r11
 	push	%rbp
 .cfi_push	%rbp
-	sub	\$$frame_size,%rsp		#! alloca result size=16
+	sub	\$$frame_size,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,0x10(%rsp)
@@ -4305,6 +4333,26 @@ $code.=<<___;
 	pxor	$inout0,$inout0
 	jmp	.Lcbc_dec_ret
 .align	16
+___
+if ($ENV{SARCASM}) {
+	# SARCASM: no frame take (rejected); stream the partial bytes straight
+	# out of the XMM register with movd/psrldq (no frame temp needed).
+	$code.=<<___;
+.Lcbc_dec_tail_partial:
+	mov	$out,%rdi
+	mov	\$16,%rcx
+	sub	$len,%rcx
+.Lcbc_dec_tail_copy:
+	movd	$inout0,%eax
+	mov	%al,(%rdi)
+	lea	1(%rdi),%rdi
+	psrldq	\$1,$inout0
+	sub	\$1,%ecx
+	jnz	.Lcbc_dec_tail_copy
+	pxor	$inout0,$inout0
+___
+} else {
+	$code.=<<___;
 .Lcbc_dec_tail_partial:
 	movaps	$inout0,(%rsp)
 	pxor	$inout0,$inout0
@@ -4320,6 +4368,9 @@ $code.=<<___;
 	sub	\$1,%ecx
 	jnz	.Lcbc_dec_tail_copy
 	movdqa	$inout0,(%rsp)
+___
+}
+$code.=<<___;
 
 .Lcbc_dec_ret:
 	xorps	$rndkey0,$rndkey0	# %xmm0
@@ -4374,11 +4425,11 @@ $code.=<<___;
 .globl	${PREFIX}_set_decrypt_key
 .type	${PREFIX}_set_decrypt_key,\@abi-omnipotent
 .align	16
-${PREFIX}_set_decrypt_key:
+${PREFIX}_set_decrypt_key: #! int(ptr,int,ptr)
 .cfi_startproc
 	.byte	0x48,0x83,0xEC,0x08	# sub rsp,8
 .cfi_adjust_cfa_offset	8
-	call	aesni_set_encrypt_key	# (was the __aesni_set_encrypt_key alias)
+	call	aesni_set_encrypt_key #! int(ptr,int,ptr)	# (was the __aesni_set_encrypt_key alias)
 ___
 if ($ENV{SARCASM}) {
 	# A signatured call preserves only the %eax result: the %esi
@@ -4462,7 +4513,7 @@ $code.=<<___;
 .globl	${PREFIX}_set_encrypt_key
 .type	${PREFIX}_set_encrypt_key,\@abi-omnipotent
 .align	16
-${PREFIX}_set_encrypt_key:
+${PREFIX}_set_encrypt_key: #! int(ptr,int,ptr)
 __aesni_set_encrypt_key:
 .cfi_startproc
 	.byte	0x48,0x83,0xEC,0x08	# sub rsp,8

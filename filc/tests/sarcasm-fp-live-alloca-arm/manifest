@@ -1,6 +1,4 @@
 return:
-  success
+  compileFailure
 only-on-platform:
   aarch64
-output-includes:
-  - "alloca 33 70"

@@ -421,7 +421,7 @@ $code.=<<___;
 .globl	aesni_gcm_decrypt
 .type	aesni_gcm_decrypt,\@function,6
 .align	32
-aesni_gcm_decrypt:
+aesni_gcm_decrypt: #! size_t(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	xor	$ret,$ret
 	cmp	\$0x60,$len			# minimal accepted length
@@ -476,8 +476,8 @@ if ($ENV{SARCASM}) {
 	mov		0xf0-0x80($key),$rounds
 	vpshufb		$Ii,$Xi,$Xi
 
-	sub		\$128,%rsp		#! alloca size (gcm)
-	mov		%rsp,$end0		#! alloca result (gcm)
+	sub		\$128,%rsp
+	mov		%rsp,$end0
 .Ldec_no_key_aliasing:
 ___
 } else {
@@ -675,7 +675,7 @@ _aesni_ctr32_6x:
 .globl	aesni_gcm_encrypt
 .type	aesni_gcm_encrypt,\@function,6
 .align	32
-aesni_gcm_encrypt:
+aesni_gcm_encrypt: #! size_t(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	xor	$ret,$ret
 	cmp	\$0x60*3,$len			# minimal accepted length
@@ -724,8 +724,8 @@ if ($ENV{SARCASM}) {
 	vmovdqu		($const),$Ii		# borrow $Ii for .Lbswap_mask
 	mov		0xf0-0x80($key),$rounds
 
-	sub		\$128,%rsp		#! alloca size (gcm)
-	mov		%rsp,$end0		#! alloca result (gcm)
+	sub		\$128,%rsp
+	mov		%rsp,$end0
 .Lenc_no_key_aliasing:
 ___
 } else {
@@ -1141,7 +1141,7 @@ $code=<<___;	# assembler is too old
 
 .globl	aesni_gcm_encrypt
 .type	aesni_gcm_encrypt,\@abi-omnipotent
-aesni_gcm_encrypt:
+aesni_gcm_encrypt: #! size_t(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	xor	%eax,%eax
 	ret
@@ -1150,7 +1150,7 @@ aesni_gcm_encrypt:
 
 .globl	aesni_gcm_decrypt
 .type	aesni_gcm_decrypt,\@abi-omnipotent
-aesni_gcm_decrypt:
+aesni_gcm_decrypt: #! size_t(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	xor	%eax,%eax
 	ret

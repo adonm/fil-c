@@ -110,7 +110,7 @@ $code.=<<___;
 .globl	x25519_fe51_mul
 .type	x25519_fe51_mul,\@function,3
 .align	32
-x25519_fe51_mul:
+x25519_fe51_mul: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	push	%rbp
 .cfi_push	%rbp
@@ -261,7 +261,7 @@ x25519_fe51_mul:
 .globl	x25519_fe51_sqr
 .type	x25519_fe51_sqr,\@function,2
 .align	32
-x25519_fe51_sqr:
+x25519_fe51_sqr: #! void(ptr,ptr)
 .cfi_startproc
 	push	%rbp
 .cfi_push	%rbp
@@ -441,7 +441,7 @@ x25519_fe51_sqr:
 .globl	x25519_fe51_mul121666
 .type	x25519_fe51_mul121666,\@function,2
 .align	32
-x25519_fe51_mul121666:
+x25519_fe51_mul121666: #! void(ptr,ptr)
 .cfi_startproc
 	push	%rbp
 .cfi_push	%rbp
@@ -496,7 +496,7 @@ $code.=<<___;
 .globl	x25519_fe64_eligible
 .type	x25519_fe64_eligible,\@abi-omnipotent
 .align	32
-x25519_fe64_eligible:
+x25519_fe64_eligible: #! int()
 .cfi_startproc
 	mov	OPENSSL_ia32cap_P+8(%rip),%ecx
 	xor	%eax,%eax
@@ -510,7 +510,7 @@ x25519_fe64_eligible:
 .globl	x25519_fe64_mul
 .type	x25519_fe64_mul,\@function,3
 .align	32
-x25519_fe64_mul:
+x25519_fe64_mul: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	push	%rbp
 .cfi_push	%rbp
@@ -602,7 +602,7 @@ x25519_fe64_mul:
 .globl	x25519_fe64_sqr
 .type	x25519_fe64_sqr,\@function,2
 .align	32
-x25519_fe64_sqr:
+x25519_fe64_sqr: #! void(ptr,ptr)
 .cfi_startproc
 	push	%rbp
 .cfi_push	%rbp
@@ -731,7 +731,7 @@ x25519_fe64_sqr:
 .globl	x25519_fe64_mul121666
 .type	x25519_fe64_mul121666,\@function,2
 .align	32
-x25519_fe64_mul121666:
+x25519_fe64_mul121666: #! void(ptr,ptr)
 .Lfe64_mul121666_body:
 .cfi_startproc
 	mov	\$121666,%edx
@@ -768,7 +768,7 @@ x25519_fe64_mul121666:
 .globl	x25519_fe64_add
 .type	x25519_fe64_add,\@function,3
 .align	32
-x25519_fe64_add:
+x25519_fe64_add: #! void(ptr,ptr,ptr)
 .Lfe64_add_body:
 .cfi_startproc
 	mov	8*0(%rsi),$acc0
@@ -805,7 +805,7 @@ x25519_fe64_add:
 .globl	x25519_fe64_sub
 .type	x25519_fe64_sub,\@function,3
 .align	32
-x25519_fe64_sub:
+x25519_fe64_sub: #! void(ptr,ptr,ptr)
 .Lfe64_sub_body:
 .cfi_startproc
 	mov	8*0(%rsi),$acc0
@@ -842,7 +842,7 @@ x25519_fe64_sub:
 .globl	x25519_fe64_tobytes
 .type	x25519_fe64_tobytes,\@function,2
 .align	32
-x25519_fe64_tobytes:
+x25519_fe64_tobytes: #! void(ptr,ptr)
 .Lfe64_to_body:
 .cfi_startproc
 	mov	8*0(%rsi),$acc0
@@ -888,7 +888,7 @@ $code.=<<___;
 .globl	x25519_fe64_eligible
 .type	x25519_fe64_eligible,\@abi-omnipotent
 .align	32
-x25519_fe64_eligible:
+x25519_fe64_eligible: #! int()
 .cfi_startproc
 	xor	%eax,%eax
 	ret
@@ -902,12 +902,12 @@ x25519_fe64_eligible:
 .globl	x25519_fe64_add
 .globl	x25519_fe64_sub
 .globl	x25519_fe64_tobytes
-x25519_fe64_mul:
-x25519_fe64_sqr:
-x25519_fe64_mul121666:
-x25519_fe64_add:
-x25519_fe64_sub:
-x25519_fe64_tobytes:
+x25519_fe64_mul: #! void(ptr,ptr,ptr)
+x25519_fe64_sqr: #! void(ptr,ptr)
+x25519_fe64_mul121666: #! void(ptr,ptr)
+x25519_fe64_add: #! void(ptr,ptr,ptr)
+x25519_fe64_sub: #! void(ptr,ptr,ptr)
+x25519_fe64_tobytes: #! void(ptr,ptr)
 .cfi_startproc
 	.byte	0x0f,0x0b	# ud2
 	ret

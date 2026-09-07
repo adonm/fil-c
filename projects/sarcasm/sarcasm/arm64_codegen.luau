@@ -297,30 +297,6 @@ function M.accessSizeAlign(stmt)
 	return sz, (sz >= 16) and 8 or 1
 end
 
--- Fixed-size alloca base: `mov rd, sp` -> 0, `add rd, sp, #imm` -> imm. When x29 is
--- the frame pointer (fctx.usesFp; see arm64_frame.analyzeFrame), an x29-relative base
--- `add rd, x29, #imm` is normalized into the sp-relative coordinate space
--- (x29 = sp + fpOffset), mirroring x86_64's rbp handling — gcc -O0 with a frame
--- pointer materializes fixed buffer addresses off x29. Returns the sp-relative base
--- offset, or nil if the annotated instruction does not compute a stack-frame-relative
--- address.
-function M.allocaRegionBase(stmt, fctx)
-	local m = string.lower(stmt.mnemonic)
-	local ops = stmt.operands
-	if m == "mov" and ops[2] and ops[2].name == "sp" then return 0 end
-	if m == "add" and ops[3] and ops[3].kind == "imm" then
-		if ops[2] and ops[2].name == "sp" then
-			return ops[3].value or tonumber(ops[3].text)
-		end
-		if fctx and fctx.usesFp and ops[2] and ops[2].name == "x29" then
-			return fctx.fpOffset + (ops[3].value or tonumber(ops[3].text))
-		end
-	end
-	return nil
-end
-
--- `alloca size` size operand: `sub sp, sp, X` -> X is operands[3].
-function M.allocaSizeOperand(stmt) return stmt.operands[3] end
 -- store value operand: `str Xs, [mem]` -> Xs is operands[1] (source-first).
 -- The LSE RMWs and store-exclusives also write memory (whatever their mnemonic
 -- prefix — swp/ldadd/cas don't start with "st"), so they get the CanWrite check
@@ -664,6 +640,8 @@ function M.make(ctx)
 	function cg.addImm(dst, src, imm) emit(build.insn("add", { rt(dst), rt(src), build.imm(imm) }, { defs = {dst}, uses = {src} })) end
 	function cg.subImm(dst, src, imm) emit(build.insn("sub", { rt(dst), rt(src), build.imm(imm) }, { defs = {dst}, uses = {src} })) end
 	function cg.subReg(dst, a, b) emit(build.insn("sub", { rt(dst), rt(a), rt(b) }, { defs = {dst}, uses = {a, b} })) end
+	function cg.addReg(dst, a, b) emit(build.insn("add", { rt(dst), rt(a), rt(b) }, { defs = {dst}, uses = {a, b} })) end
+	function cg.andReg(dst, a, b) emit(build.insn("and", { rt(dst), rt(a), rt(b) }, { defs = {dst}, uses = {a, b} })) end
 	function cg.andImmInPlace(dst, mask)
 		local m = (mask == -2) and "0xfffffffffffffffe" or mask
 		emit(build.insn("and", { rt(dst), rt(dst), build.imm(m) }, { defs = {dst}, uses = {dst} }))
@@ -1381,6 +1359,12 @@ function M.make(ctx)
 		if mem.shift and not (mem.index and mem.index.kind == "reg") then
 			error("sarcasm: memory operand has a shift/extend but no index register: " .. node.stmt.raw)
 		end
+	end
+
+	-- Pure trap for a bad dynamic `.alloca` alignment: `brk #0` raises
+	-- deterministically in every build configuration.
+	function cg.trap()
+		emit(build.insn("brk", { build.imm(0) }, { control = "none", fallsThrough = false, noreturnCall = true }))
 	end
 
 	return cg

@@ -101,7 +101,7 @@ SHUFF_MASK:
 .globl	ossl_hwsm3_block_data_order
 .type	ossl_hwsm3_block_data_order,\@function,3
 .align	32
-ossl_hwsm3_block_data_order:
+ossl_hwsm3_block_data_order: #! void(ptr,ptr,size_t)
 .cfi_startproc
     endbranch
 # Prolog
@@ -275,7 +275,7 @@ $code .= <<___;
 
 .globl	ossl_hwsm3_block_data_order
 .type ossl_hwsm3_block_data_order,\@abi-omnipotent
-ossl_hwsm3_block_data_order:
+ossl_hwsm3_block_data_order: #! void(ptr,ptr,size_t)
     .byte   0x0f,0x0b    # ud2
     ret
 .size   ossl_hwsm3_block_data_order, .-ossl_hwsm3_block_data_order

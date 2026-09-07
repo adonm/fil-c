@@ -679,12 +679,6 @@ function localcall.augment(fnName, body, lc, userLabels, arch)
 			-- Mark clone membership: the frame pass applies the +8 rule (the
 			-- return-address compensation on rsp-relative accesses) from it.
 			cp.localClone = id
-			-- A cloned alloca annotation names a second allocation site with
-			-- the same tag: retag per clone (the size/result pairing inside
-			-- the clone is preserved — both retag identically).
-			if cp.annotation and annSuffix then
-				cp.annotation = tailcall.retagAlloca(cp.annotation, annSuffix)
-			end
 			return cp
 		end
 		return st   -- blanks/directives are never mutated downstream

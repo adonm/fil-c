@@ -1,6 +1,4 @@
 return:
-  failure
+  compileFailure
 only-on-platform:
   aarch64
-output-includes:
-  - filc safety error

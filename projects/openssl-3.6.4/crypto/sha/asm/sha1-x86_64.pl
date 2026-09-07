@@ -159,6 +159,15 @@ $E="%r13d";
 
 @V=($A,$B,$C,$D,$E);
 
+# Sarcasm rejects dynamic stack alignment (`and $-64/%-128,%rsp`), so the
+# aligned X[]+K[] transfer areas below are GC allocations addressed through
+# pseudo-registers (identical slot layout); gas keeps the rsp frames. The
+# vars render the frame base: $IALU for the ialu path (BODY_* subs),
+# $XFER for the shared ssse3/avx subs, $A2F for the avx2 path.
+my $IALU = $ENV{SARCASM} ? "%fil_ialuframe" : "%rsp";
+my $XFER = $ENV{SARCASM} ? "%fil_xfer" : "%rsp";
+my $A2F = $ENV{SARCASM} ? "%fil_avx2frame" : "%rsp";
+
 sub BODY_00_19 {
 my ($i,$a,$b,$c,$d,$e)=@_;
 my $j=$i+1;
@@ -169,7 +178,7 @@ ___
 $code.=<<___ if ($i<15);
 	mov	`4*$j`($inp),$xi[1]
 	mov	$d,$t0
-	mov	$xi[0],`4*$i`(%rsp)
+	mov	$xi[0],`4*$i`($IALU)
 	mov	$a,$t2
 	bswap	$xi[1]
 	xor	$c,$t0
@@ -182,14 +191,14 @@ $code.=<<___ if ($i<15);
 	add	$t0,$e
 ___
 $code.=<<___ if ($i>=15);
-	xor	`4*($j%16)`(%rsp),$xi[1]
+	xor	`4*($j%16)`($IALU),$xi[1]
 	mov	$d,$t0
-	mov	$xi[0],`4*($i%16)`(%rsp)
+	mov	$xi[0],`4*($i%16)`($IALU)
 	mov	$a,$t2
-	xor	`4*(($j+2)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+2)%16)`($IALU),$xi[1]
 	xor	$c,$t0
 	rol	\$5,$t2
-	xor	`4*(($j+8)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+8)%16)`($IALU),$xi[1]
 	and	$b,$t0
 	lea	0x5a827999($xi[0],$e),$e
 	rol	\$30,$b
@@ -206,14 +215,14 @@ my ($i,$a,$b,$c,$d,$e)=@_;
 my $j=$i+1;
 my $K=($i<40)?0x6ed9eba1:0xca62c1d6;
 $code.=<<___ if ($i<79);
-	xor	`4*($j%16)`(%rsp),$xi[1]
+	xor	`4*($j%16)`($IALU),$xi[1]
 	mov	$b,$t0
-	`"mov	$xi[0],".4*($i%16)."(%rsp)"	if ($i<72)`
+	`"mov	$xi[0],".4*($i%16)."($IALU)"	if ($i<72)`
 	mov	$a,$t2
-	xor	`4*(($j+2)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+2)%16)`($IALU),$xi[1]
 	xor	$d,$t0
 	rol	\$5,$t2
-	xor	`4*(($j+8)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+8)%16)`($IALU),$xi[1]
 	lea	$K($xi[0],$e),$e
 	xor	$c,$t0
 	add	$t2,$e
@@ -239,14 +248,14 @@ sub BODY_40_59 {
 my ($i,$a,$b,$c,$d,$e)=@_;
 my $j=$i+1;
 $code.=<<___;
-	xor	`4*($j%16)`(%rsp),$xi[1]
+	xor	`4*($j%16)`($IALU),$xi[1]
 	mov	$d,$t0
-	mov	$xi[0],`4*($i%16)`(%rsp)
+	mov	$xi[0],`4*($i%16)`($IALU)
 	mov	$d,$t1
-	xor	`4*(($j+2)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+2)%16)`($IALU),$xi[1]
 	and	$c,$t0
 	mov	$a,$t2
-	xor	`4*(($j+8)%16)`(%rsp),$xi[1]
+	xor	`4*(($j+8)%16)`($IALU),$xi[1]
 	lea	0x8f1bbcdc($xi[0],$e),$e
 	xor	$c,$t1
 	rol	\$5,$t2
@@ -267,7 +276,7 @@ $code.=<<___;
 .globl	sha1_block_data_order
 .type	sha1_block_data_order,\@function,3
 .align	16
-sha1_block_data_order:
+sha1_block_data_order: #! void(ptr,ptr,size_t)
 .cfi_startproc
 	mov	OPENSSL_ia32cap_P+0(%rip),%r9d
 	mov	OPENSSL_ia32cap_P+4(%rip),%r8d
@@ -296,7 +305,11 @@ $code.=<<___;
 
 .align	16
 .Lialu:
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rsp,%rax
+___
+$code.=<<___;
 .cfi_def_cfa_register	%rax
 	push	%rbx
 .cfi_push	%rbx
@@ -309,11 +322,26 @@ $code.=<<___;
 	push	%r14
 .cfi_push	%r14
 	mov	%rdi,$ctx	# reassigned argument
-	sub	\$`8+16*4`,%rsp		#! alloca result size=72
+___
+$code.=<<___ if ($ENV{SARCASM});
+	.alloca	\$72,\$64,%fil_ialuframe
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	sub	\$`8+16*4`,%rsp
+___
+$code.=<<___;
 	mov	%rsi,$inp	# reassigned argument
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	and	\$-64,%rsp
+___
+$code.=<<___;
 	mov	%rdx,$num	# reassigned argument
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rax,`16*4`(%rsp)
+___
+$code.=<<___;
 .cfi_cfa_expression	%rsp+64,deref,+8
 .Lprologue:
 
@@ -347,6 +375,8 @@ $code.=<<___;
 	lea	`16*4`($inp),$inp
 	jnz	.Lloop
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	`16*4`(%rsp),%rsi
 .cfi_def_cfa	%rsi,8
 	mov	-40(%rsi),%r14
@@ -361,6 +391,21 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	(%rsi),%rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___ if ($ENV{SARCASM});
+	# No rsp save/recovery: rsp never moved (frame is a GC allocation).
+	pop	%r14
+.cfi_pop	%r14
+	pop	%r13
+.cfi_pop	%r13
+	pop	%r12
+.cfi_pop	%r12
+	pop	%rbp
+.cfi_pop	%rbp
+	pop	%rbx
+.cfi_pop	%rbx
+___
+$code.=<<___;
 .Lepilogue:
 	ret
 .cfi_endproc
@@ -377,7 +422,7 @@ my @MSG=map("%xmm$_",(4..7));
 $code.=<<___;
 .type	sha1_block_data_order_shaext,\@function,3
 .align	32
-sha1_block_data_order_shaext:
+sha1_block_data_order_shaext: #! void(ptr,ptr,size_t)
 _shaext_shortcut:
 .cfi_startproc
 ___
@@ -511,10 +556,14 @@ ___
 $code.=<<___;
 .type	sha1_block_data_order_ssse3,\@function,3
 .align	16
-sha1_block_data_order_ssse3:
+sha1_block_data_order_ssse3: #! void(ptr,ptr,size_t)
 _ssse3_shortcut:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rsp,$fp	# frame pointer
+___
+$code.=<<___;
 .cfi_def_cfa_register	$fp
 	push	%rbx
 .cfi_push	%rbx
@@ -526,6 +575,8 @@ _ssse3_shortcut:
 .cfi_push	%r13
 	push	%r14
 .cfi_push	%r14
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	`-64-($win64?6*16:0)`(%rsp),%rsp
 ___
 $code.=<<___ if ($win64);
@@ -537,8 +588,13 @@ $code.=<<___ if ($win64);
 	movaps	%xmm11,-40-1*16($fp)
 .Lprologue_ssse3:
 ___
+$code.=<<___ if ($ENV{SARCASM});
+	.alloca	\$64,\$64,%fil_xfer
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	and	\$-64,%rsp
+___
 $code.=<<___;
-	and	\$-64,%rsp		#! alloca result size=64
 	mov	%rdi,$ctx	# reassigned argument
 	mov	%rsi,$inp	# reassigned argument
 	mov	%rdx,$num	# reassigned argument
@@ -571,11 +627,11 @@ $code.=<<___;
 	pshufb	@X[2],@X[-1&7]
 	paddd	@Tx[1],@X[-3&7]
 	paddd	@Tx[1],@X[-2&7]
-	movdqa	@X[-4&7],0(%rsp)	# X[]+K xfer to IALU
+	movdqa	@X[-4&7],0($XFER)	# X[]+K xfer to IALU
 	psubd	@Tx[1],@X[-4&7]		# restore X[]
-	movdqa	@X[-3&7],16(%rsp)
+	movdqa	@X[-3&7],16($XFER)
 	psubd	@Tx[1],@X[-3&7]
-	movdqa	@X[-2&7],32(%rsp)
+	movdqa	@X[-2&7],32($XFER)
 	psubd	@Tx[1],@X[-2&7]
 	jmp	.Loop_ssse3
 ___
@@ -620,7 +676,7 @@ sub Xupdate_ssse3_16_31()		# recall that $Xi starts with 4
 	&pxor	(@X[0],@Tx[0]);		# "X[0]"^="X[-3]"^"X[-8]"
 	 eval(shift(@insns));
 	 eval(shift(@insns));		# rol
-	  &movdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	  &movdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
@@ -708,7 +764,7 @@ sub Xupdate_ssse3_32_79()
 	&movdqa	(@Tx[0],@X[0]);
 	 eval(shift(@insns));
 	 eval(shift(@insns));
-	  &movdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	  &movdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));		# ror
 	 eval(shift(@insns));
 	 eval(shift(@insns));		# body_20_39
@@ -755,7 +811,7 @@ sub Xuplast_ssse3_80()
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
-	  &movdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer IALU
+	  &movdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer IALU
 
 	 foreach (@insns) { eval; }		# remaining instructions
 
@@ -795,7 +851,7 @@ sub Xloop_ssse3()
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 	 eval(shift(@insns));
-	&movdqa	(eval(16*$Xi)."(%rsp)",@X[($Xi-4)&7]);	# X[]+K xfer to IALU
+	&movdqa	(eval(16*$Xi)."($XFER)",@X[($Xi-4)&7]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 	 eval(shift(@insns));
@@ -824,7 +880,7 @@ sub body_00_19 () {	# ((c^d)&b)^d
 	'&xor	(@T[0],$d)',
 	'&mov	(@T[1],$a)',	# $b for next round
 
-	'&add	($e,eval(4*($j&15))."(%rsp)")',	# X[]+K xfer
+	'&add	($e,eval(4*($j&15))."($XFER)")',	# X[]+K xfer
 	'&xor	($b,$c)',	# $c^$d for next round
 
 	'&$_rol	($a,5)',
@@ -841,7 +897,7 @@ sub body_20_39 () {	# b^d^c
 	return &body_40_59() if ($rx==39); $rx++;
 	(
 	'($a,$b,$c,$d,$e)=@V;'.
-	'&add	($e,eval(4*($j&15))."(%rsp)")',	# X[]+K xfer
+	'&add	($e,eval(4*($j&15))."($XFER)")',	# X[]+K xfer
 	'&xor	(@T[0],$d)	if($j==19);'.
 	'&xor	(@T[0],$c)	if($j> 19)',	# ($b^$d^$c)
 	'&mov	(@T[1],$a)',	# $b for next round
@@ -860,7 +916,7 @@ sub body_40_59 () {	# ((b^c)&(c^d))^c
 	$rx++;
 	(
 	'($a,$b,$c,$d,$e)=@V;'.
-	'&add	($e,eval(4*($j&15))."(%rsp)")',	# X[]+K xfer
+	'&add	($e,eval(4*($j&15))."($XFER)")',	# X[]+K xfer
 	'&and	(@T[0],$c)	if ($j>=40)',	# (b^c)&(c^d)
 	'&xor	($c,$d)		if ($j>=40)',	# restore $c
 
@@ -951,7 +1007,20 @@ $code.=<<___ if ($win64);
 	movaps	-40-2*16($fp),%xmm10
 	movaps	-40-1*16($fp),%xmm11
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	# No fp save/recovery: rsp never moved (frame is a GC allocation).
+	pop	%r14
+.cfi_pop	%r14
+	pop	%r13
+.cfi_pop	%r13
+	pop	%r12
+.cfi_pop	%r12
+	pop	%rbp
+.cfi_pop	%rbp
+	pop	%rbx
+.cfi_pop	%rbx
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	-40($fp),%r14
 .cfi_restore	%r14
 	mov	-32($fp),%r13
@@ -964,6 +1033,8 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	($fp),%rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___;
 .Lepilogue_ssse3:
 	ret
 .cfi_endproc
@@ -985,10 +1056,14 @@ my $_ror=sub { &shrd(@_[0],@_) };
 $code.=<<___;
 .type	sha1_block_data_order_avx,\@function,3
 .align	16
-sha1_block_data_order_avx:
+sha1_block_data_order_avx: #! void(ptr,ptr,size_t)
 _avx_shortcut:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rsp,$fp
+___
+$code.=<<___;
 .cfi_def_cfa_register	$fp
 	push	%rbx
 .cfi_push	%rbx
@@ -1000,7 +1075,11 @@ _avx_shortcut:
 .cfi_push	%r13
 	push	%r14
 .cfi_push	%r14
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	`-64-($win64?6*16:0)`(%rsp),%rsp
+___
+$code.=<<___;
 	vzeroupper
 ___
 $code.=<<___ if ($win64);
@@ -1012,8 +1091,13 @@ $code.=<<___ if ($win64);
 	vmovaps	%xmm11,-40-1*16($fp)
 .Lprologue_avx:
 ___
+$code.=<<___ if ($ENV{SARCASM});
+	.alloca	\$64,\$64,%fil_xfer
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	and	\$-64,%rsp
+___
 $code.=<<___;
-	and	\$-64,%rsp		#! alloca result size=64
 	mov	%rdi,$ctx	# reassigned argument
 	mov	%rsi,$inp	# reassigned argument
 	mov	%rdx,$num	# reassigned argument
@@ -1046,9 +1130,9 @@ $code.=<<___;
 	vpaddd	$Kx,@X[-4&7],@X[0]	# add K_00_19
 	vpaddd	$Kx,@X[-3&7],@X[1]
 	vpaddd	$Kx,@X[-2&7],@X[2]
-	vmovdqa	@X[0],0(%rsp)		# X[]+K xfer to IALU
-	vmovdqa	@X[1],16(%rsp)
-	vmovdqa	@X[2],32(%rsp)
+	vmovdqa	@X[0],0($XFER)		# X[]+K xfer to IALU
+	vmovdqa	@X[1],16($XFER)
+	vmovdqa	@X[2],32($XFER)
 	jmp	.Loop_avx
 ___
 
@@ -1083,7 +1167,7 @@ sub Xupdate_avx_16_31()		# recall that $Xi starts with 4
 	&vpxor	(@X[0],@X[0],@Tx[0]);		# "X[0]"^="X[-3]"^"X[-8]"
 	 eval(shift(@insns));
 	 eval(shift(@insns));
-	  &vmovdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	  &vmovdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
@@ -1155,7 +1239,7 @@ sub Xupdate_avx_32_79()
 	 eval(shift(@insns));		# rol
 
 	&vpsrld	(@Tx[0],@X[0],30);
-	  &vmovdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	  &vmovdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 	 eval(shift(@insns));		# ror
@@ -1199,7 +1283,7 @@ sub Xuplast_avx_80()
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
-	  &vmovdqa	(eval(16*(($Xi-1)&3))."(%rsp)",@Tx[1]);	# X[]+K xfer IALU
+	  &vmovdqa	(eval(16*(($Xi-1)&3))."($XFER)",@Tx[1]);	# X[]+K xfer IALU
 
 	 foreach (@insns) { eval; }		# remaining instructions
 
@@ -1234,7 +1318,7 @@ sub Xloop_avx()
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 	 eval(shift(@insns));
-	&vmovdqa(eval(16*$Xi)."(%rsp)",@X[$Xi&7]);	# X[]+K xfer to IALU
+	&vmovdqa(eval(16*$Xi)."($XFER)",@X[$Xi&7]);	# X[]+K xfer to IALU
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
@@ -1327,7 +1411,20 @@ $code.=<<___ if ($win64);
 	movaps	-40-2*16($fp),%xmm10
 	movaps	-40-1*16($fp),%xmm11
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	# No fp save/recovery: rsp never moved (frame is a GC allocation).
+	pop	%r14
+.cfi_pop	%r14
+	pop	%r13
+.cfi_pop	%r13
+	pop	%r12
+.cfi_pop	%r12
+	pop	%rbp
+.cfi_pop	%rbp
+	pop	%rbx
+.cfi_pop	%rbx
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	-40($fp),%r14
 .cfi_restore	%r14
 	mov	-32($fp),%r13
@@ -1340,6 +1437,8 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	($fp),%rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___;
 .Lepilogue_avx:
 	ret
 .cfi_endproc
@@ -1364,10 +1463,14 @@ my $frame="%r13";
 $code.=<<___;
 .type	sha1_block_data_order_avx2,\@function,3
 .align	16
-sha1_block_data_order_avx2:
+sha1_block_data_order_avx2: #! void(ptr,ptr,size_t)
 _avx2_shortcut:
 .cfi_startproc
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%rsp,$fp
+___
+$code.=<<___;
 .cfi_def_cfa_register	$fp
 	push	%rbx
 .cfi_push	%rbx
@@ -1396,10 +1499,21 @@ $code.=<<___;
 	mov	%rsi,$inp		# reassigned argument
 	mov	%rdx,$num		# reassigned argument
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	-640(%rsp),%rsp
+___
+$code.=<<___;
 	shl	\$6,$num
 	 lea	64($inp),$frame
-	and	\$-128,%rsp		#! alloca result size=640
+___
+$code.=<<___ if ($ENV{SARCASM});
+	.alloca	\$640,\$128,%fil_avx2frame
+___
+$code.=<<___ if (!$ENV{SARCASM});
+	and	\$-128,%rsp
+___
+$code.=<<___;
 	add	$inp,$num
 	lea	K_XX_XX+64(%rip),$K_XX_XX
 
@@ -1429,12 +1543,12 @@ $code.=<<___;
 
 	vpaddd	$Kx,@X[-4&7],@X[0]	# add K_00_19
 	vpaddd	$Kx,@X[-3&7],@X[1]
-	vmovdqu	@X[0],0(%rsp)		# X[]+K xfer to IALU
+	vmovdqu	@X[0],0($A2F)		# X[]+K xfer to IALU
 	vpaddd	$Kx,@X[-2&7],@X[2]
-	vmovdqu	@X[1],32(%rsp)
+	vmovdqu	@X[1],32($A2F)
 	vpaddd	$Kx,@X[-1&7],@X[3]
-	vmovdqu	@X[2],64(%rsp)
-	vmovdqu	@X[3],96(%rsp)
+	vmovdqu	@X[2],64($A2F)
+	vmovdqu	@X[3],96($A2F)
 ___
 for (;$Xi<8;$Xi++) {	# Xupdate_avx2_16_31
     use integer;
@@ -1454,12 +1568,12 @@ for (;$Xi<8;$Xi++) {	# Xupdate_avx2_16_31
 	&vpxor	(@X[0],@X[0],@Tx[1]);
 	&vpxor	(@X[0],@X[0],@Tx[2]);		# "X[0]"^=("X[0]">>96)<<<2
 	&vpaddd	(@Tx[1],@X[0],$Kx);
-	&vmovdqu("32*$Xi(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	&vmovdqu("32*$Xi($A2F)",@Tx[1]);	# X[]+K xfer to IALU
 
 	push(@X,shift(@X));	# "rotate" X[]
 }
 $code.=<<___;
-	lea	128(%rsp),$frame
+	lea	128($A2F),$frame
 	jmp	.Loop_avx2
 .align	32
 .Loop_avx2:
@@ -1594,7 +1708,7 @@ sub Xupdate_avx2_16_31()		# recall that $Xi starts with 4
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 	 eval(shift(@insns));
-	&vmovdqu(eval(32*($Xi))."(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	&vmovdqu(eval(32*($Xi))."($A2F)",@Tx[1]);	# X[]+K xfer to IALU
 
 	 foreach (@insns) { eval; }	# remaining instructions [if any]
 
@@ -1647,7 +1761,7 @@ sub Xupdate_avx2_32_79()
 	 eval(shift(@insns));
 	 eval(shift(@insns));
 
-	&vmovdqu("32*$Xi(%rsp)",@Tx[1]);	# X[]+K xfer to IALU
+	&vmovdqu("32*$Xi($A2F)",@Tx[1]);	# X[]+K xfer to IALU
 
 	 foreach (@insns) { eval; }	# remaining instructions
 
@@ -1737,7 +1851,7 @@ $code.=<<___;
 
 .align	32
 .Last_avx2:
-	lea	128+16(%rsp),$frame
+	lea	128+16($A2F),$frame
 	rorx	\$2,$F,$B
 	andn	$D,$F,$t0
 	and	$C,$F
@@ -1758,20 +1872,20 @@ ___
 	  &vpshufb	(@X[-3&7],@X[-3&7],@X[2]);
 	  &vpaddd	(@Tx[0],@X[-4&7],$Kx);		# add K_00_19
 	&Xloop_avx2	(\&bodyx_20_39);
-	  &vmovdqu	("0(%rsp)",@Tx[0]);
+	  &vmovdqu	("0($A2F)",@Tx[0]);
 	  &vpshufb	(@X[-2&7],@X[-2&7],@X[2]);
 	  &vpaddd	(@Tx[1],@X[-3&7],$Kx);
 	&Xloop_avx2	(\&bodyx_20_39);
-	  &vmovdqu	("32(%rsp)",@Tx[1]);
+	  &vmovdqu	("32($A2F)",@Tx[1]);
 	  &vpshufb	(@X[-1&7],@X[-1&7],@X[2]);
 	  &vpaddd	(@X[2],@X[-2&7],$Kx);
 
 	&Xloop_avx2	(\&bodyx_40_59);
 	&align32	();
-	  &vmovdqu	("64(%rsp)",@X[2]);
+	  &vmovdqu	("64($A2F)",@X[2]);
 	  &vpaddd	(@X[3],@X[-1&7],$Kx);
 	&Xloop_avx2	(\&bodyx_40_59);
-	  &vmovdqu	("96(%rsp)",@X[3]);
+	  &vmovdqu	("96($A2F)",@X[3]);
 	&Xloop_avx2	(\&bodyx_40_59);
 	&Xupdate_avx2_16_31(\&bodyx_40_59);
 
@@ -1781,7 +1895,7 @@ ___
 	&Xloop_avx2	(\&bodyx_20_39);
 
 $code.=<<___;
-	lea	128(%rsp),$frame
+	lea	128($A2F),$frame
 
 	# output is d-e-[a]-f-b-c => A=d,F=e,C=f,D=b,E=c
 	add	0($ctx),@ROTX[0]		# update context
@@ -1818,7 +1932,20 @@ $code.=<<___ if ($win64);
 	movaps	-40-2*16($fp),%xmm10
 	movaps	-40-1*16($fp),%xmm11
 ___
-$code.=<<___;
+$code.=<<___ if ($ENV{SARCASM});
+	# No fp save/recovery: rsp never moved (frame is a GC allocation).
+	pop	%r14
+.cfi_pop	%r14
+	pop	%r13
+.cfi_pop	%r13
+	pop	%r12
+.cfi_pop	%r12
+	pop	%rbp
+.cfi_pop	%rbp
+	pop	%rbx
+.cfi_pop	%rbx
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	-40($fp),%r14
 .cfi_restore	%r14
 	mov	-32($fp),%r13
@@ -1831,6 +1958,8 @@ $code.=<<___;
 .cfi_restore	%rbx
 	lea	($fp),%rsp
 .cfi_def_cfa_register	%rsp
+___
+$code.=<<___;
 .Lepilogue_avx2:
 	ret
 .cfi_endproc

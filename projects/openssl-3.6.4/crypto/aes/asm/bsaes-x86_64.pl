@@ -1166,6 +1166,17 @@ ___
 my ($arg1,$arg2,$arg3,$arg4,$arg5,$arg6)=$win64	? ("%rcx","%rdx","%r8","%r9","%r10","%r11d")
 						: ("%rdi","%rsi","%rdx","%rcx","%r8","%r9d");
 my ($inp,$out,$len,$key)=("%r12","%r13","%r14","%r15");
+# SARCASM dynamic key-schedule frame: under sarcasm each variable-size
+# `sub %rax,%rsp` below becomes a GC `.alloca` (leaving %rsp on the fixed
+# frame), so the key-schedule/tweak buffer base is spelled via $KS_*
+# (`%fil_ks_*` under sarcasm, `%rsp` under gas, keeping gas output
+# byte-identical). The fixed frame stays %rsp/%rbp-addressed throughout.
+my $KS_ecb_enc = $ENV{SARCASM} ? "%fil_ks_ecb_enc" : "%rsp";
+my $KS_ecb_dec = $ENV{SARCASM} ? "%fil_ks_ecb_dec" : "%rsp";
+my $KS_cbc = $ENV{SARCASM} ? "%fil_ks_cbc" : "%rsp";
+my $KS_ctr = $ENV{SARCASM} ? "%fil_ks_ctr" : "%rsp";
+my $KS_xts_enc = $ENV{SARCASM} ? "%fil_ks_xts_enc" : "%rsp";
+my $KS_xts_dec = $ENV{SARCASM} ? "%fil_ks_xts_dec" : "%rsp";
 
 if ($ecb) {
 $code.=<<___;
@@ -1212,6 +1223,24 @@ $code.=<<___;
 	mov	$arg1,$inp		# backup arguments
 	mov	$arg2,$out
 	mov	$arg3,$len
+___
+if ($ENV{SARCASM}) {
+	# Size (and %ebx backup) hoisted above the short-path branch so the
+	# `.alloca` dominates the shared wipe below on both paths; the short
+	# path builds no key schedule but still reaches it.
+	$code.=<<___;
+	mov	$arg4,$key
+	mov	%eax,%ebx		# backup rounds
+	shl	\$7,%rax		# 128 bytes per inner round key
+	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
+	.alloca	%rax,\$16,%fil_ks_ecb_enc
+	cmp	\$8,$arg3
+	jb	.Lecb_enc_short
+
+	mov	%fil_ks_ecb_enc,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
 	mov	$arg4,$key
 	cmp	\$8,$arg3
 	jb	.Lecb_enc_short
@@ -1219,8 +1248,11 @@ $code.=<<___;
 	mov	%eax,%ebx		# backup rounds
 	shl	\$7,%rax		# 128 bytes per inner round key
 	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
-	sub	%rax,%rsp		#! alloca size (ks)
-	mov	%rsp,%rax		#! alloca result (ks)	# pass key schedule
+	sub	%rax,%rsp
+	mov	%rsp,%rax	# pass key schedule
+___
+}
+$code.=<<___;
 	mov	$key,%rcx		# pass key
 	mov	%ebx,%r10d		# pass rounds
 	call	_bsaes_key_convert
@@ -1235,7 +1267,7 @@ $code.=<<___;
 	movdqu	0x30($inp), @XMM[3]
 	movdqu	0x40($inp), @XMM[4]
 	movdqu	0x50($inp), @XMM[5]
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_ecb_enc, %rax		# pass key schedule
 	movdqu	0x60($inp), @XMM[6]
 	mov	%ebx,%r10d		# pass rounds
 	movdqu	0x70($inp), @XMM[7]
@@ -1259,7 +1291,7 @@ $code.=<<___;
 	jz	.Lecb_enc_done
 
 	movdqu	0x00($inp), @XMM[0]	# load input
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_ecb_enc, %rax		# pass key schedule
 	mov	%ebx,%r10d		# pass rounds
 	cmp	\$2,$len
 	jb	.Lecb_enc_one
@@ -1335,21 +1367,46 @@ $code.=<<___;
 	lea	($inp), $arg1
 	lea	($out), $arg2
 	lea	($key), $arg3
-	call	asm_AES_encrypt
+	call	asm_AES_encrypt #! void(ptr,ptr,ptr)
 	lea	16($inp), $inp
 	lea	16($out), $out
 	dec	$len
 	jnz	.Lecb_enc_short
 
 .Lecb_enc_done:
-	lea	(%rsp),%rax
+	lea	($KS_ecb_enc),%rax
 	pxor	%xmm0, %xmm0
+___
+if ($ENV{SARCASM}) {
+	# SARCASM: wipe the GC buffer (gas compares against %rbp, the fixed
+	# frame base, which is meaningless for a GC pointer). %ebx holds the
+	# round count on both paths (hoisted prologue above).
+	$code.=<<___;
+	mov	%ebx, %r11d
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
+	mov	%fil_ks_ecb_enc, %r10
+	add	%r10, %r11		# region end
+___
+}
+$code.=<<___;
 .Lecb_enc_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	cmp	%rax, %r11
+	ja	.Lecb_enc_bzero
+___
+} else {
+	$code.=<<___;
 	cmp	%rax, %rbp
 	jb	.Lecb_enc_bzero
+___
+}
+$code.=<<___;
 
 	lea	0x78(%rbp),%rax
 .cfi_def_cfa	%rax,8
@@ -1381,7 +1438,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lecb_enc_epilogue:
 	ret
@@ -1431,6 +1500,24 @@ $code.=<<___;
 	mov	$arg1,$inp		# backup arguments
 	mov	$arg2,$out
 	mov	$arg3,$len
+___
+if ($ENV{SARCASM}) {
+	# Size (and %ebx backup) hoisted above the short-path branch so the
+	# `.alloca` dominates the shared wipe below on both paths; the short
+	# path builds no key schedule but still reaches it.
+	$code.=<<___;
+	mov	$arg4,$key
+	mov	%eax,%ebx		# backup rounds
+	shl	\$7,%rax		# 128 bytes per inner round key
+	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
+	.alloca	%rax,\$16,%fil_ks_ecb_dec
+	cmp	\$8,$arg3
+	jb	.Lecb_dec_short
+
+	mov	%fil_ks_ecb_dec,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
 	mov	$arg4,$key
 	cmp	\$8,$arg3
 	jb	.Lecb_dec_short
@@ -1438,14 +1525,17 @@ $code.=<<___;
 	mov	%eax,%ebx		# backup rounds
 	shl	\$7,%rax		# 128 bytes per inner round key
 	sub	\$`128-32`,%rax		# size of bit-sliced key schedule
-	sub	%rax,%rsp		#! alloca size (ks)
-	mov	%rsp,%rax		#! alloca result (ks)	# pass key schedule
+	sub	%rax,%rsp
+	mov	%rsp,%rax	# pass key schedule
+___
+}
+$code.=<<___;
 	mov	$key,%rcx		# pass key
 	mov	%ebx,%r10d		# pass rounds
 	call	_bsaes_key_convert
-	pxor	(%rsp),%xmm7		# fix up 0 round key
+	pxor	($KS_ecb_dec),%xmm7		# fix up 0 round key
 	movdqa	%xmm6,(%rax)		# save last round key
-	movdqa	%xmm7,(%rsp)
+	movdqa	%xmm7,($KS_ecb_dec)
 
 	sub	\$8,$len
 .Lecb_dec_loop:
@@ -1455,7 +1545,7 @@ $code.=<<___;
 	movdqu	0x30($inp), @XMM[3]
 	movdqu	0x40($inp), @XMM[4]
 	movdqu	0x50($inp), @XMM[5]
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_ecb_dec, %rax		# pass key schedule
 	movdqu	0x60($inp), @XMM[6]
 	mov	%ebx,%r10d		# pass rounds
 	movdqu	0x70($inp), @XMM[7]
@@ -1479,7 +1569,7 @@ $code.=<<___;
 	jz	.Lecb_dec_done
 
 	movdqu	0x00($inp), @XMM[0]	# load input
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_ecb_dec, %rax		# pass key schedule
 	mov	%ebx,%r10d		# pass rounds
 	cmp	\$2,$len
 	jb	.Lecb_dec_one
@@ -1555,21 +1645,46 @@ $code.=<<___;
 	lea	($inp), $arg1
 	lea	($out), $arg2
 	lea	($key), $arg3
-	call	asm_AES_decrypt
+	call	asm_AES_decrypt #! void(ptr,ptr,ptr)
 	lea	16($inp), $inp
 	lea	16($out), $out
 	dec	$len
 	jnz	.Lecb_dec_short
 
 .Lecb_dec_done:
-	lea	(%rsp),%rax
+	lea	($KS_ecb_dec),%rax
 	pxor	%xmm0, %xmm0
+___
+if ($ENV{SARCASM}) {
+	# SARCASM: wipe the GC buffer (gas compares against %rbp, the fixed
+	# frame base, which is meaningless for a GC pointer). %ebx holds the
+	# round count on both paths (hoisted prologue above).
+	$code.=<<___;
+	mov	%ebx, %r11d
+	shl	\$7, %r11		# 128 bytes per inner round key
+	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
+	mov	%fil_ks_ecb_dec, %r10
+	add	%r10, %r11		# region end
+___
+}
+$code.=<<___;
 .Lecb_dec_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
 	movdqa	%xmm0, 0x10(%rax)
 	lea	0x20(%rax), %rax
+___
+if ($ENV{SARCASM}) {
+	$code.=<<___;
+	cmp	%rax, %r11
+	ja	.Lecb_dec_bzero
+___
+} else {
+	$code.=<<___;
 	cmp	%rax, %rbp
 	jb	.Lecb_dec_bzero
+___
+}
+$code.=<<___;
 
 	lea	0x78(%rbp),%rax
 .cfi_def_cfa	%rax,8
@@ -1601,7 +1716,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lecb_dec_epilogue:
 	ret
@@ -1614,7 +1741,7 @@ $code.=<<___;
 .globl	ossl_bsaes_cbc_encrypt
 .type	ossl_bsaes_cbc_encrypt,\@abi-omnipotent
 .align	16
-ossl_bsaes_cbc_encrypt:
+ossl_bsaes_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 .cfi_startproc
 	endbranch
 ___
@@ -1673,15 +1800,28 @@ $code.=<<___;
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp		#! alloca size (ks)
-
-	mov	%rsp, %rax		#! alloca result (ks)	# pass key schedule
+___
+if ($ENV{SARCASM}) {
+	# Dynamic key-schedule frame becomes a GC allocation; %rsp is
+	# untouched (fixed frame only). `%fil_ks_cbc` names the buffer for the
+	# $KS_* uses below; %rax keeps its ABI role for the calls.
+	$code.=<<___;
+	.alloca	%rax,\$16,%fil_ks_cbc
+	mov	%fil_ks_cbc,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
+	sub	%rax, %rsp
+	mov	%rsp, %rax	# pass key schedule
+___
+}
+$code.=<<___;
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
 	call	_bsaes_key_convert
-	pxor	(%rsp),%xmm7		# fix up 0 round key
+	pxor	($KS_cbc),%xmm7		# fix up 0 round key
 	movdqa	%xmm6,(%rax)		# save last round key
-	movdqa	%xmm7,(%rsp)
+	movdqa	%xmm7,($KS_cbc)
 
 	movdqu	(%rbx), @XMM[15]	# load IV
 	sub	\$8,$len
@@ -1692,7 +1832,7 @@ $code.=<<___;
 	movdqu	0x30($inp), @XMM[3]
 	movdqu	0x40($inp), @XMM[4]
 	movdqu	0x50($inp), @XMM[5]
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_cbc, %rax		# pass key schedule
 	movdqu	0x60($inp), @XMM[6]
 	mov	%edx,%r10d		# pass rounds
 	movdqu	0x70($inp), @XMM[7]
@@ -1733,7 +1873,7 @@ $code.=<<___;
 	jz	.Lcbc_dec_done
 
 	movdqu	0x00($inp), @XMM[0]	# load input
-	mov	%rsp, %rax		# pass key schedule
+	mov	$KS_cbc, %rax		# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 	cmp	\$2,$len
 	jb	.Lcbc_dec_one
@@ -1864,19 +2004,19 @@ $code.=<<___;
 	lea	($inp), $arg1
 	lea	0x20(%rbp), $arg2	# buffer output
 	lea	($key), $arg3
-	call	asm_AES_decrypt		# doesn't touch %xmm
+	call	asm_AES_decrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[15]	# ^= IV
 	movdqu	@XMM[15], ($out)	# write output
 	movdqa	@XMM[0], @XMM[15]	# IV
 
 .Lcbc_dec_done:
 	movdqu	@XMM[15], (%rbx)	# return IV
-	lea	(%rsp), %rax
+	lea	($KS_cbc), %rax
 	pxor	%xmm0, %xmm0
 	mov	240($key), %r11d	# rounds
 	shl	\$7, %r11		# 128 bytes per inner round key
 	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
-	mov	%rsp, %r10
+	mov	$KS_cbc, %r10
 	add	%r10, %r11		# key schedule end (== %rbp, sans frame-base read)
 .Lcbc_dec_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
@@ -1915,7 +2055,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lcbc_dec_epilogue:
 	ret
@@ -1925,7 +2077,7 @@ $code.=<<___;
 .globl	ossl_bsaes_ctr32_encrypt_blocks
 .type	ossl_bsaes_ctr32_encrypt_blocks,\@abi-omnipotent
 .align	16
-ossl_bsaes_ctr32_encrypt_blocks:
+ossl_bsaes_ctr32_encrypt_blocks: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_startproc
 	endbranch
 	mov	%rsp, %rax
@@ -1976,22 +2128,35 @@ $code.=<<___;
 	mov	%eax, %ebx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32`, %rax	# size of bit-sliced key schedule
-	sub	%rax, %rsp		#! alloca size (ks)
-
-	mov	%rsp, %rax		#! alloca result (ks)	# pass key schedule
+___
+if ($ENV{SARCASM}) {
+	# Dynamic key-schedule frame becomes a GC allocation; %rsp is
+	# untouched (fixed frame only). `%fil_ks_ctr` names the buffer for the
+	# $KS_* uses below; %rax keeps its ABI role for the calls.
+	$code.=<<___;
+	.alloca	%rax,\$16,%fil_ks_ctr
+	mov	%fil_ks_ctr,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
+	sub	%rax, %rsp
+	mov	%rsp, %rax	# pass key schedule
+___
+}
+$code.=<<___;
 	mov	$key, %rcx		# pass key
 	mov	%ebx, %r10d		# pass rounds
 	call	_bsaes_key_convert
 	pxor	%xmm6,%xmm7		# fix up last round key
 	movdqa	%xmm7,(%rax)		# save last round key
 
-	movdqa	(%rsp), @XMM[9]		# load round0 key
+	movdqa	($KS_ctr), @XMM[9]		# load round0 key
 	lea	.LADD1(%rip), %r11
 	movdqa	0x20(%rbp), @XMM[0]	# counter copy
 	movdqa	-0x20(%r11), @XMM[8]	# .LSWPUP
 	pshufb	@XMM[8], @XMM[9]	# byte swap upper part
 	pshufb	@XMM[8], @XMM[0]
-	movdqa	@XMM[9], (%rsp)		# save adjusted round0 key
+	movdqa	@XMM[9], ($KS_ctr)		# save adjusted round0 key
 	jmp	.Lctr_enc_loop
 .align	16
 .Lctr_enc_loop:
@@ -2013,8 +2178,8 @@ $code.=<<___;
 
 	# Borrow prologue from _bsaes_encrypt8 to use the opportunity
 	# to flip byte order in 32-bit counter
-	movdqa	(%rsp), @XMM[9]		# round 0 key
-	lea	0x10(%rsp), %rax	# pass key schedule
+	movdqa	($KS_ctr), @XMM[9]		# round 0 key
+	lea	0x10($KS_ctr), %rax	# pass key schedule
 	movdqa	-0x10(%r11), @XMM[8]	# .LSWPUPM0SR
 	pxor	@XMM[9], @XMM[0]	# xor with round0 key
 	pxor	@XMM[9], @XMM[1]
@@ -2112,7 +2277,7 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg1
 	lea	0x30(%rbp), $arg2
 	lea	($key), $arg3
-	call	asm_AES_encrypt
+	call	asm_AES_encrypt #! void(ptr,ptr,ptr)
 	movdqu	($inp), @XMM[1]
 	lea	16($inp), $inp
 	mov	0x2c(%rbp), %eax	# load 32-bit counter
@@ -2128,12 +2293,12 @@ $code.=<<___;
 	jmp	.Lctr_enc_wiped		# no key schedule was built on the short path
 
 .Lctr_enc_done:
-	lea	(%rsp), %rax
+	lea	($KS_ctr), %rax
 	pxor	%xmm0, %xmm0
 	mov	240($key), %r11d	# rounds
 	shl	\$7, %r11		# 128 bytes per inner round key
 	sub	\$`128-32`, %r11	# size of bit-sliced key schedule
-	mov	%rsp, %r10
+	mov	$KS_ctr, %r10
 	add	%r10, %r11		# key schedule end (== %rbp, sans frame-base read)
 .Lctr_enc_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
@@ -2173,7 +2338,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lctr_enc_epilogue:
 	ret
@@ -2192,7 +2369,7 @@ $code.=<<___;
 .globl	ossl_bsaes_xts_encrypt
 .type	ossl_bsaes_xts_encrypt,\@abi-omnipotent
 .align	16
-ossl_bsaes_xts_encrypt:
+ossl_bsaes_xts_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	mov	%rsp, %rax
@@ -2239,7 +2416,7 @@ $code.=<<___;
 	lea	($arg6), $arg1
 	lea	0x20(%rbp), $arg2
 	lea	($arg5), $arg3
-	call	asm_AES_encrypt		# generate initial tweak
+	call	asm_AES_encrypt		# generate initial tweak #! void(ptr,ptr,ptr)
 
 	mov	240($key), %eax		# rounds
 	mov	$len, %rbx		# backup $len
@@ -2247,9 +2424,22 @@ $code.=<<___;
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32-128`, %rax	# size of bit-sliced key schedule and tweak[8]
-	sub	%rax, %rsp		#! alloca size (ks)
-
-	mov	%rsp, %rax		#! alloca result (ks)
+___
+if ($ENV{SARCASM}) {
+	# Dynamic key-schedule frame becomes a GC allocation; %rsp is
+	# untouched (fixed frame only). `%fil_ks_xts_enc` names the buffer for the
+	# $KS_* uses below; %rax keeps its ABI role for the calls.
+	$code.=<<___;
+	.alloca	%rax,\$16,%fil_ks_xts_enc
+	mov	%fil_ks_xts_enc,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
+	sub	%rax, %rsp
+	mov	%rsp, %rax
+___
+}
+$code.=<<___;
 	lea	0x80(%rax), %rax	# pass key schedule (past tweak[8])
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
@@ -2276,7 +2466,7 @@ ___
 	pshufd	\$0x13, $twtmp, $twres
 	pxor	$twtmp, $twtmp
 	movdqa	@XMM[7], @XMM[$i]
-	movdqa	@XMM[7], `0x10*$i`(%rsp)# save tweak[$i]
+	movdqa	@XMM[7], `0x10*$i`($KS_xts_enc)# save tweak[$i]
 	paddq	@XMM[7], @XMM[7]	# psllq	1,$tweak
 	pand	$twmask, $twres		# isolate carry and residue
 	pcmpgtd	@XMM[7], $twtmp		# broadcast upper bits
@@ -2294,33 +2484,33 @@ $code.=<<___;
 	pxor	@XMM[8+5], @XMM[5]
 	movdqu	0x70($inp), @XMM[8+7]
 	lea	0x80($inp), $inp
-	movdqa	@XMM[7], 0x70(%rsp)
+	movdqa	@XMM[7], 0x70($KS_xts_enc)
 	pxor	@XMM[8+6], @XMM[6]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	pxor	@XMM[8+7], @XMM[7]
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[6]
+	pxor	0x30($KS_xts_enc), @XMM[6]
 	movdqu	@XMM[4], 0x20($out)
-	pxor	0x40(%rsp), @XMM[3]
+	pxor	0x40($KS_xts_enc), @XMM[3]
 	movdqu	@XMM[6], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_enc), @XMM[7]
 	movdqu	@XMM[3], 0x40($out)
-	pxor	0x60(%rsp), @XMM[2]
+	pxor	0x60($KS_xts_enc), @XMM[2]
 	movdqu	@XMM[7], 0x50($out)
-	pxor	0x70(%rsp), @XMM[5]
+	pxor	0x70($KS_xts_enc), @XMM[5]
 	movdqu	@XMM[2], 0x60($out)
 	movdqu	@XMM[5], 0x70($out)
 	lea	0x80($out), $out
 
-	movdqa	0x70(%rsp), @XMM[7]	# prepare next iteration tweak
+	movdqa	0x70($KS_xts_enc), @XMM[7]	# prepare next iteration tweak
 	pxor	$twtmp, $twtmp
 	movdqa	.Lxts_magic(%rip), $twmask
 	pcmpgtd	@XMM[7], $twtmp
@@ -2343,7 +2533,7 @@ ___
 	pshufd	\$0x13, $twtmp, $twres
 	pxor	$twtmp, $twtmp
 	movdqa	@XMM[7], @XMM[$i]
-	movdqa	@XMM[7], `0x10*$i`(%rsp)# save tweak[$i]
+	movdqa	@XMM[7], `0x10*$i`($KS_xts_enc)# save tweak[$i]
 	paddq	@XMM[7], @XMM[7]	# psllq	1,$tweak
 	pand	$twmask, $twres		# isolate carry and residue
 	pcmpgtd	@XMM[7], $twtmp		# broadcast upper bits
@@ -2361,141 +2551,141 @@ ___
 $code.=<<___;
 	movdqu	0x60($inp), @XMM[8+6]
 	pxor	@XMM[8+5], @XMM[5]
-	movdqa	@XMM[7], 0x70(%rsp)
+	movdqa	@XMM[7], 0x70($KS_xts_enc)
 	lea	0x70($inp), $inp
 	pxor	@XMM[8+6], @XMM[6]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[6]
+	pxor	0x30($KS_xts_enc), @XMM[6]
 	movdqu	@XMM[4], 0x20($out)
-	pxor	0x40(%rsp), @XMM[3]
+	pxor	0x40($KS_xts_enc), @XMM[3]
 	movdqu	@XMM[6], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_enc), @XMM[7]
 	movdqu	@XMM[3], 0x40($out)
-	pxor	0x60(%rsp), @XMM[2]
+	pxor	0x60($KS_xts_enc), @XMM[2]
 	movdqu	@XMM[7], 0x50($out)
 	movdqu	@XMM[2], 0x60($out)
 	lea	0x70($out), $out
 
-	movdqa	0x70(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x70($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_6:
 	pxor	@XMM[8+4], @XMM[4]
 	lea	0x60($inp), $inp
 	pxor	@XMM[8+5], @XMM[5]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[6]
+	pxor	0x30($KS_xts_enc), @XMM[6]
 	movdqu	@XMM[4], 0x20($out)
-	pxor	0x40(%rsp), @XMM[3]
+	pxor	0x40($KS_xts_enc), @XMM[3]
 	movdqu	@XMM[6], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_enc), @XMM[7]
 	movdqu	@XMM[3], 0x40($out)
 	movdqu	@XMM[7], 0x50($out)
 	lea	0x60($out), $out
 
-	movdqa	0x60(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x60($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_5:
 	pxor	@XMM[8+3], @XMM[3]
 	lea	0x50($inp), $inp
 	pxor	@XMM[8+4], @XMM[4]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[6]
+	pxor	0x30($KS_xts_enc), @XMM[6]
 	movdqu	@XMM[4], 0x20($out)
-	pxor	0x40(%rsp), @XMM[3]
+	pxor	0x40($KS_xts_enc), @XMM[3]
 	movdqu	@XMM[6], 0x30($out)
 	movdqu	@XMM[3], 0x40($out)
 	lea	0x50($out), $out
 
-	movdqa	0x50(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x50($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_4:
 	pxor	@XMM[8+2], @XMM[2]
 	lea	0x40($inp), $inp
 	pxor	@XMM[8+3], @XMM[3]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[6]
+	pxor	0x30($KS_xts_enc), @XMM[6]
 	movdqu	@XMM[4], 0x20($out)
 	movdqu	@XMM[6], 0x30($out)
 	lea	0x40($out), $out
 
-	movdqa	0x40(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x40($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_3:
 	pxor	@XMM[8+1], @XMM[1]
 	lea	0x30($inp), $inp
 	pxor	@XMM[8+2], @XMM[2]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[4]
+	pxor	0x20($KS_xts_enc), @XMM[4]
 	movdqu	@XMM[1], 0x10($out)
 	movdqu	@XMM[4], 0x20($out)
 	lea	0x30($out), $out
 
-	movdqa	0x30(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x30($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_2:
 	pxor	@XMM[8+0], @XMM[0]
 	lea	0x20($inp), $inp
 	pxor	@XMM[8+1], @XMM[1]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_enc), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_encrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_enc), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_enc), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
 	movdqu	@XMM[1], 0x10($out)
 	lea	0x20($out), $out
 
-	movdqa	0x20(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x20($KS_xts_enc), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_enc_done
 .align	16
 .Lxts_enc_1:
@@ -2505,7 +2695,7 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg1
 	lea	0x20(%rbp), $arg2
 	lea	($key), $arg3
-	call	asm_AES_encrypt		# doesn't touch %xmm
+	call	asm_AES_encrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[0]	# ^= tweak[]
 	#pxor	@XMM[8], @XMM[0]
 	#lea	0x80(%rsp), %rax	# pass key schedule
@@ -2515,7 +2705,7 @@ $code.=<<___;
 	movdqu	@XMM[0], 0x00($out)	# write output
 	lea	0x10($out), $out
 
-	movdqa	0x10(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x10($KS_xts_enc), @XMM[7]	# next iteration tweak
 
 .Lxts_enc_done:
 	and	\$15, %ebx
@@ -2538,17 +2728,17 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg2
 	movdqa	@XMM[0], 0x20(%rbp)
 	lea	($key), $arg3
-	call	asm_AES_encrypt		# doesn't touch %xmm
+	call	asm_AES_encrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[7]
 	movdqu	@XMM[7], -16($out)
 
 .Lxts_enc_ret:
-	lea	(%rsp), %rax
+	lea	($KS_xts_enc), %rax
 	pxor	%xmm0, %xmm0
 	mov	240($key), %r11d	# rounds
 	shl	\$7, %r11		# 128 bytes per inner round key
 	sub	\$`128-32-128`, %r11	# size of bit-sliced key schedule and tweak[8]
-	mov	%rsp, %r10
+	mov	$KS_xts_enc, %r10
 	add	%r10, %r11		# region end (== %rbp, sans frame-base read)
 .Lxts_enc_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
@@ -2587,7 +2777,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lxts_enc_epilogue:
 	ret
@@ -2597,7 +2799,7 @@ $code.=<<___;
 .globl	ossl_bsaes_xts_decrypt
 .type	ossl_bsaes_xts_decrypt,\@abi-omnipotent
 .align	16
-ossl_bsaes_xts_decrypt:
+ossl_bsaes_xts_decrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	mov	%rsp, %rax
@@ -2643,7 +2845,7 @@ $code.=<<___;
 	lea	($arg6), $arg1
 	lea	0x20(%rbp), $arg2
 	lea	($arg5), $arg3
-	call	asm_AES_encrypt		# generate initial tweak
+	call	asm_AES_encrypt		# generate initial tweak #! void(ptr,ptr,ptr)
 
 	mov	240($key), %eax		# rounds
 	mov	$len, %rbx		# backup $len
@@ -2651,16 +2853,29 @@ $code.=<<___;
 	mov	%eax, %edx		# rounds
 	shl	\$7, %rax		# 128 bytes per inner round key
 	sub	\$`128-32-128`, %rax	# size of bit-sliced key schedule and tweak[8]
-	sub	%rax, %rsp		#! alloca size (ks)
-
-	mov	%rsp, %rax		#! alloca result (ks)
+___
+if ($ENV{SARCASM}) {
+	# Dynamic key-schedule frame becomes a GC allocation; %rsp is
+	# untouched (fixed frame only). `%fil_ks_xts_dec` names the buffer for the
+	# $KS_* uses below; %rax keeps its ABI role for the calls.
+	$code.=<<___;
+	.alloca	%rax,\$16,%fil_ks_xts_dec
+	mov	%fil_ks_xts_dec,%rax	# pass key schedule
+___
+} else {
+	$code.=<<___;
+	sub	%rax, %rsp
+	mov	%rsp, %rax
+___
+}
+$code.=<<___;
 	lea	0x80(%rax), %rax	# pass key schedule (past tweak[8])
 	mov	$key, %rcx		# pass key
 	mov	%edx, %r10d		# pass rounds
 	call	_bsaes_key_convert
-	pxor	0x80(%rsp), %xmm7	# fix up round 0 key
+	pxor	0x80($KS_xts_dec), %xmm7	# fix up round 0 key
 	movdqa	%xmm6, (%rax)		# save last round key
-	movdqa	%xmm7, 0x80(%rsp)
+	movdqa	%xmm7, 0x80($KS_xts_dec)
 
 	xor	%eax, %eax		# if ($len%16) len-=16;
 	and	\$-16, $len
@@ -2687,7 +2902,7 @@ ___
 	pshufd	\$0x13, $twtmp, $twres
 	pxor	$twtmp, $twtmp
 	movdqa	@XMM[7], @XMM[$i]
-	movdqa	@XMM[7], `0x10*$i`(%rsp)# save tweak[$i]
+	movdqa	@XMM[7], `0x10*$i`($KS_xts_dec)# save tweak[$i]
 	paddq	@XMM[7], @XMM[7]	# psllq	1,$tweak
 	pand	$twmask, $twres		# isolate carry and residue
 	pcmpgtd	@XMM[7], $twtmp		# broadcast upper bits
@@ -2705,33 +2920,33 @@ $code.=<<___;
 	pxor	@XMM[8+5], @XMM[5]
 	movdqu	0x70($inp), @XMM[8+7]
 	lea	0x80($inp), $inp
-	movdqa	@XMM[7], 0x70(%rsp)
+	movdqa	@XMM[7], 0x70($KS_xts_dec)
 	pxor	@XMM[8+6], @XMM[6]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	pxor	@XMM[8+7], @XMM[7]
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[4]
+	pxor	0x30($KS_xts_dec), @XMM[4]
 	movdqu	@XMM[6], 0x20($out)
-	pxor	0x40(%rsp), @XMM[2]
+	pxor	0x40($KS_xts_dec), @XMM[2]
 	movdqu	@XMM[4], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_dec), @XMM[7]
 	movdqu	@XMM[2], 0x40($out)
-	pxor	0x60(%rsp), @XMM[3]
+	pxor	0x60($KS_xts_dec), @XMM[3]
 	movdqu	@XMM[7], 0x50($out)
-	pxor	0x70(%rsp), @XMM[5]
+	pxor	0x70($KS_xts_dec), @XMM[5]
 	movdqu	@XMM[3], 0x60($out)
 	movdqu	@XMM[5], 0x70($out)
 	lea	0x80($out), $out
 
-	movdqa	0x70(%rsp), @XMM[7]	# prepare next iteration tweak
+	movdqa	0x70($KS_xts_dec), @XMM[7]	# prepare next iteration tweak
 	pxor	$twtmp, $twtmp
 	movdqa	.Lxts_magic(%rip), $twmask
 	pcmpgtd	@XMM[7], $twtmp
@@ -2754,7 +2969,7 @@ ___
 	pshufd	\$0x13, $twtmp, $twres
 	pxor	$twtmp, $twtmp
 	movdqa	@XMM[7], @XMM[$i]
-	movdqa	@XMM[7], `0x10*$i`(%rsp)# save tweak[$i]
+	movdqa	@XMM[7], `0x10*$i`($KS_xts_dec)# save tweak[$i]
 	paddq	@XMM[7], @XMM[7]	# psllq	1,$tweak
 	pand	$twmask, $twres		# isolate carry and residue
 	pcmpgtd	@XMM[7], $twtmp		# broadcast upper bits
@@ -2772,141 +2987,141 @@ ___
 $code.=<<___;
 	movdqu	0x60($inp), @XMM[8+6]
 	pxor	@XMM[8+5], @XMM[5]
-	movdqa	@XMM[7], 0x70(%rsp)
+	movdqa	@XMM[7], 0x70($KS_xts_dec)
 	lea	0x70($inp), $inp
 	pxor	@XMM[8+6], @XMM[6]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[4]
+	pxor	0x30($KS_xts_dec), @XMM[4]
 	movdqu	@XMM[6], 0x20($out)
-	pxor	0x40(%rsp), @XMM[2]
+	pxor	0x40($KS_xts_dec), @XMM[2]
 	movdqu	@XMM[4], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_dec), @XMM[7]
 	movdqu	@XMM[2], 0x40($out)
-	pxor	0x60(%rsp), @XMM[3]
+	pxor	0x60($KS_xts_dec), @XMM[3]
 	movdqu	@XMM[7], 0x50($out)
 	movdqu	@XMM[3], 0x60($out)
 	lea	0x70($out), $out
 
-	movdqa	0x70(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x70($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_6:
 	pxor	@XMM[8+4], @XMM[4]
 	lea	0x60($inp), $inp
 	pxor	@XMM[8+5], @XMM[5]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[4]
+	pxor	0x30($KS_xts_dec), @XMM[4]
 	movdqu	@XMM[6], 0x20($out)
-	pxor	0x40(%rsp), @XMM[2]
+	pxor	0x40($KS_xts_dec), @XMM[2]
 	movdqu	@XMM[4], 0x30($out)
-	pxor	0x50(%rsp), @XMM[7]
+	pxor	0x50($KS_xts_dec), @XMM[7]
 	movdqu	@XMM[2], 0x40($out)
 	movdqu	@XMM[7], 0x50($out)
 	lea	0x60($out), $out
 
-	movdqa	0x60(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x60($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_5:
 	pxor	@XMM[8+3], @XMM[3]
 	lea	0x50($inp), $inp
 	pxor	@XMM[8+4], @XMM[4]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[4]
+	pxor	0x30($KS_xts_dec), @XMM[4]
 	movdqu	@XMM[6], 0x20($out)
-	pxor	0x40(%rsp), @XMM[2]
+	pxor	0x40($KS_xts_dec), @XMM[2]
 	movdqu	@XMM[4], 0x30($out)
 	movdqu	@XMM[2], 0x40($out)
 	lea	0x50($out), $out
 
-	movdqa	0x50(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x50($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_4:
 	pxor	@XMM[8+2], @XMM[2]
 	lea	0x40($inp), $inp
 	pxor	@XMM[8+3], @XMM[3]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
-	pxor	0x30(%rsp), @XMM[4]
+	pxor	0x30($KS_xts_dec), @XMM[4]
 	movdqu	@XMM[6], 0x20($out)
 	movdqu	@XMM[4], 0x30($out)
 	lea	0x40($out), $out
 
-	movdqa	0x40(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x40($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_3:
 	pxor	@XMM[8+1], @XMM[1]
 	lea	0x30($inp), $inp
 	pxor	@XMM[8+2], @XMM[2]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
-	pxor	0x20(%rsp), @XMM[6]
+	pxor	0x20($KS_xts_dec), @XMM[6]
 	movdqu	@XMM[1], 0x10($out)
 	movdqu	@XMM[6], 0x20($out)
 	lea	0x30($out), $out
 
-	movdqa	0x30(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x30($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_2:
 	pxor	@XMM[8+0], @XMM[0]
 	lea	0x20($inp), $inp
 	pxor	@XMM[8+1], @XMM[1]
-	lea	0x80(%rsp), %rax	# pass key schedule
+	lea	0x80($KS_xts_dec), %rax	# pass key schedule
 	mov	%edx, %r10d		# pass rounds
 
 	call	_bsaes_decrypt8
 
-	pxor	0x00(%rsp), @XMM[0]	# ^= tweak[]
-	pxor	0x10(%rsp), @XMM[1]
+	pxor	0x00($KS_xts_dec), @XMM[0]	# ^= tweak[]
+	pxor	0x10($KS_xts_dec), @XMM[1]
 	movdqu	@XMM[0], 0x00($out)	# write output
 	movdqu	@XMM[1], 0x10($out)
 	lea	0x20($out), $out
 
-	movdqa	0x20(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x20($KS_xts_dec), @XMM[7]	# next iteration tweak
 	jmp	.Lxts_dec_done
 .align	16
 .Lxts_dec_1:
@@ -2916,7 +3131,7 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg1
 	lea	0x20(%rbp), $arg2
 	lea	($key), $arg3
-	call	asm_AES_decrypt		# doesn't touch %xmm
+	call	asm_AES_decrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[0]	# ^= tweak[]
 	#pxor	@XMM[8], @XMM[0]
 	#lea	0x80(%rsp), %rax	# pass key schedule
@@ -2926,7 +3141,7 @@ $code.=<<___;
 	movdqu	@XMM[0], 0x00($out)	# write output
 	lea	0x10($out), $out
 
-	movdqa	0x10(%rsp), @XMM[7]	# next iteration tweak
+	movdqa	0x10($KS_xts_dec), @XMM[7]	# next iteration tweak
 
 .Lxts_dec_done:
 	and	\$15, %ebx
@@ -2947,7 +3162,7 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg2
 	movdqa	@XMM[0], 0x20(%rbp)
 	lea	($key), $arg3
-	call	asm_AES_decrypt		# doesn't touch %xmm
+	call	asm_AES_decrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[7]
 	mov	$out, %rdx
 	movdqu	@XMM[7], ($out)
@@ -2968,17 +3183,17 @@ $code.=<<___;
 	lea	0x20(%rbp), $arg2
 	movdqa	@XMM[0], 0x20(%rbp)
 	lea	($key), $arg3
-	call	asm_AES_decrypt		# doesn't touch %xmm
+	call	asm_AES_decrypt		# doesn't touch %xmm #! void(ptr,ptr,ptr)
 	pxor	0x20(%rbp), @XMM[6]
 	movdqu	@XMM[6], ($out)
 
 .Lxts_dec_ret:
-	lea	(%rsp), %rax
+	lea	($KS_xts_dec), %rax
 	pxor	%xmm0, %xmm0
 	mov	240($key), %r11d	# rounds
 	shl	\$7, %r11		# 128 bytes per inner round key
 	sub	\$`128-32-128`, %r11	# size of bit-sliced key schedule and tweak[8]
-	mov	%rsp, %r10
+	mov	$KS_xts_dec, %r10
 	add	%r10, %r11		# region end (== %rbp, sans frame-base read)
 .Lxts_dec_bzero:			# wipe key schedule [if any]
 	movdqa	%xmm0, 0x00(%rax)
@@ -3017,7 +3232,19 @@ $code.=<<___;
 .cfi_restore	%rbx
 	mov	-8(%rax), %rbp
 .cfi_restore	%rbp
+___
+if ($ENV{SARCASM}) {
+	# %rsp never moved for the key schedule (GC `.alloca`), so drop the
+	# fixed frame with a plain add reaching the ret (6 pushes + 0x48
+	# frame, plus 0xa0 on win64); the movs above already reloaded the
+	# callee-saved registers from their save slots.
+	$code .= 	"\tadd\t\$" . ($win64 ? "0x118" : "0x78") . ",%rsp\n";
+} else {
+	$code.=<<___;
 	lea	(%rax), %rsp		# restore %rsp
+___
+}
+$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lxts_dec_epilogue:
 	ret

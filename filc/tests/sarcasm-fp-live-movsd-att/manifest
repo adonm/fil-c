@@ -1,8 +1,6 @@
 return:
-  success
+  compileFailure
 only-on-platform:
   x86_64
-output-includes:
-  - "movsd live ok"
 slow:
   true

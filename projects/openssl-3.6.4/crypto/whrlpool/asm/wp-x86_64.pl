@@ -61,13 +61,18 @@ sub LL(){ $code.=".byte	".join(',',@_).",".join(',',@_)."\n"; }
 $func="whirlpool_block";
 $table=".Ltable";
 
+# Sarcasm rejects taking the frame's address (`lea 128(%rsp),%r10`), so the
+# parameter block below is spelled directly off %rsp; gas keeps the parked
+# pointer. PB($off,$base) renders the slot in the active spelling.
+sub PB { my ($o,$b)=@_; return $ENV{SARCASM} ? "128+$o(%rsp)" : "$o($b)"; }
+
 $code=<<___;
 .text
 
 .globl	$func
 .type	$func,\@function,3
 .align	16
-$func:
+$func: #! void(ptr,ptr,size_t)
 .cfi_startproc
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
@@ -84,18 +89,33 @@ $func:
 	push	%r15
 .cfi_push	%r15
 
-	sub	\$128+40,%rsp			#! alloca result size=168
+	sub	\$128+40,%rsp
+___
+# Sarcasm rejects the dynamic 64-byte alignment below (an `and` on %rsp is
+# not a provable frame shape); the frame traffic is all scalar (<=8 bytes)
+# at 8-aligned addresses, so the fixed frame is already naturally aligned.
+$code.=<<___ if (!$ENV{SARCASM});
 	and	\$-64,%rsp
+___
+$code.=<<___;
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	128(%rsp),%r10
-	mov	%rdi,0(%r10)		# save parameter block	#! store ptr
-	mov	%rsi,8(%r10)			#! store ptr
-	mov	%rdx,16(%r10)
-	mov	%rax,32(%r10)		# saved stack pointer
+___
+$code.=<<___;
+	mov	%rdi,`&PB(0,"%r10")`		# save parameter block
+	mov	%rsi,`&PB(8,"%r10")`
+	mov	%rdx,`&PB(16,"%r10")`
+	mov	%rax,`&PB(32,"%r10")`		# saved stack pointer
 .cfi_cfa_expression	%rsp+`128+32`,deref,+8
 .Lprologue:
 
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	%r10,%rbx
+___
+$code.=<<___;
 	lea	$table(%rip),%rbp
 
 	xor	%rcx,%rcx
@@ -108,13 +128,27 @@ for($i=0;$i<8;$i++) { $code.="xor $i*8(%rsi),@mm[$i]\n"; }	# L^=inp
 for($i=0;$i<8;$i++) { $code.="mov @mm[$i],64+$i*8(%rsp)\n"; }	# S=L
 $code.=<<___;
 	xor	%rsi,%rsi
-	mov	%rsi,24(%rbx)		# zero round counter
+	mov	%rsi,`&PB(24,"%rbx")`		# zero round counter
 	jmp	.Lround
 .align	16
 .Lround:
 	mov	4096(%rbp,%rsi,8),@mm[0]	# rc[r]
 	mov	0(%rsp),%eax
+___
+# Sarcasm miscompiles 4-byte loads from the high half of an 8-byte
+# virtualized frame slot (the low-half load is fine), so under SARCASM
+# the odd-half loads below are spelled as an 8-byte load plus shr $32
+# (value-identical: shr zeroes the top like the movl zero-extend;
+# flag-safe: no live flags in the straight-line round body). Gas keeps
+# the original movl pairs byte-identical.
+$code.=<<___ if ($ENV{SARCASM});
+	movq	0(%rsp),%rbx
+	shrq	\$32,%rbx
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	4(%rsp),%ebx
+___
+$code.=<<___;
 	movz	%al,%ecx
 	movz	%ah,%edx
 ___
@@ -142,7 +176,15 @@ for($i=0;$i<8;$i++) {
 	movz	%bh,%edx
 	$func	4(%rbp,%rsi,8),@mm[4]
 	$func	3(%rbp,%rdi,8),@mm[5]
+___
+$code.=<<___ if ($ENV{SARCASM});
+	movq	$i*8+8(%rsp),%rbx
+	shrq	\$32,%rbx
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	mov	$i*8+8+4(%rsp),%ebx		# ($i+1)*8+4
+___
+$code.=<<___;
 	lea	(%rcx,%rcx),%rsi
 	movz	%al,%ecx
 	lea	(%rdx,%rdx),%rdi
@@ -176,7 +218,14 @@ for($i=0;$i<8;$i++) {
 	movz	%bh,%edx
 	xor	4(%rbp,%rsi,8),@mm[4]
 	xor	3(%rbp,%rdi,8),@mm[5]
+___
+$code.=<<___ if ($ENV{SARCASM});
+	`"movq	64+$i*8+8(%rsp),%rbx\n\tshrq	\\\$32,%rbx"	if($i<7);`
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	`"mov	64+$i*8+8+4(%rsp),%ebx"	if($i<7);`	# 64+($i+1)*8+4
+___
+$code.=<<___;
 	lea	(%rcx,%rcx),%rsi
 	movz	%al,%ecx
 	lea	(%rdx,%rdx),%rdi
@@ -187,22 +236,26 @@ ___
     push(@mm,shift(@mm));
 }
 $code.=<<___;
+___
+$code.=<<___ if (!$ENV{SARCASM});
 	lea	128(%rsp),%rbx
-	mov	24(%rbx),%rsi		# pull round counter
+___
+$code.=<<___;
+	mov	`&PB(24,"%rbx")`,%rsi		# pull round counter
 	add	\$1,%rsi
 	cmp	\$10,%rsi
 	je	.Lroundsdone
 
-	mov	%rsi,24(%rbx)		# update round counter
+	mov	%rsi,`&PB(24,"%rbx")`		# update round counter
 ___
 for($i=0;$i<8;$i++) { $code.="mov @mm[$i],64+$i*8(%rsp)\n"; }	# S=L
 $code.=<<___;
 	jmp	.Lround
 .align	16
 .Lroundsdone:
-	mov	0(%rbx),%rdi		# reload argument block	#! load ptr
-	mov	8(%rbx),%rsi			#! load ptr
-	mov	16(%rbx),%rax
+	mov	`&PB(0,"%rbx")`,%rdi		# reload argument block
+	mov	`&PB(8,"%rbx")`,%rsi
+	mov	`&PB(16,"%rbx")`,%rax
 ___
 for($i=0;$i<8;$i++) { $code.="xor $i*8(%rsi),@mm[$i]\n"; }	# L^=inp
 for($i=0;$i<8;$i++) { $code.="xor $i*8(%rdi),@mm[$i]\n"; }	# L^=H
@@ -211,11 +264,11 @@ $code.=<<___;
 	lea	64(%rsi),%rsi		# inp+=64
 	sub	\$1,%rax		# num--
 	jz	.Lalldone
-	mov	%rsi,8(%rbx)		# update parameter block	#! store ptr
-	mov	%rax,16(%rbx)
+	mov	%rsi,`&PB(8,"%rbx")`		# update parameter block
+	mov	%rax,`&PB(16,"%rbx")`
 	jmp	.Louterloop
 .Lalldone:
-	mov	32(%rbx),%rsi		# restore saved pointer
+	mov	`&PB(32,"%rbx")`,%rsi		# restore saved pointer
 .cfi_def_cfa	%rsi,8
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -615,23 +668,6 @@ se_handler:
 ___
 }
 
-if ($ENV{SARCASM}) {
-    ######################################################################
-    # Sarcasm (Fil-C memory-safe assembler) enforces natural alignment on
-    # every memory access. The T-table reads at offsets +1..+7 within each
-    # duplicated 16-byte slot are deliberately misaligned: slot = [V,V],
-    # so an 8-byte read at +k yields rol(V,(8-k)*8), which is how tables
-    # C1..C7 are synthesized from C0. Rewrite each misaligned read as an
-    # aligned read of the slot base plus an explicit rotate -- the produced
-    # value is byte-identical by construction. The index register (%rsi or
-    # %rdi) is dead immediately after its single use in each group (it is
-    # unconditionally redefined by the following `lea (%rcx,%rcx),%rsi` /
-    # `lea (%rdx,%rdx),%rdi` pair before any other use), so it doubles as
-    # the scratch register. Only generated under SARCASM; the stock output
-    # keeps the original (misaligned) form.
-    $code =~ s/\t(mov|xor)\t([1-7])\(%rbp,%(rsi|rdi),8\),(%r\d+)\n
-               /"\tmov\t0(%rbp,%$3,8),%$3\n\trol\t\$".((8-$2)*8).",%$3\n\t$1\t%$3,$4\n"/gex;
-}
 
 $code =~ s/\`([^\`]*)\`/eval $1/gem;
 print $code;

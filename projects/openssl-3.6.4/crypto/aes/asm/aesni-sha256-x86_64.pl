@@ -131,7 +131,7 @@ $code=<<___;
 .globl	$func
 .type	$func,\@abi-omnipotent
 .align	16
-$func:
+$func: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 ___
 						if ($avx) {
@@ -369,7 +369,7 @@ if ($avx) {{
 $code.=<<___;
 .type	${func}_xop,\@function,6
 .align	64
-${func}_xop:
+${func}_xop: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 .Lxop_shortcut:
 	mov	`($win64?56:8)`(%rsp),$in0	# load 7th parameter
@@ -387,8 +387,15 @@ ${func}_xop:
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$`$framesz+$win64*16*10`,%rsp	#! alloca result size=128
+	sub	\$`$framesz+$win64*16*10`,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-64,%rsp		# align stack frame
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 
 	shl	\$6,$len
 	sub	$inp,$out		# re-bias
@@ -396,11 +403,11 @@ ${func}_xop:
 	add	$inp,$len		# end of input
 
 	#mov	$inp,$_inp		# saved later
-	mov	$out,$_out	#! store ptr
+	mov	$out,$_out
 	mov	$len,$_end
 	#mov	$key,$_key		# remains resident in $inp register
-	mov	$ivp,$_ivp	#! store ptr
-	mov	$ctx,$_ctx	#! store ptr
+	mov	$ivp,$_ivp
+	mov	$ctx,$_ctx
 	mov	$in0,$_in0
 	mov	%rax,$_rsp
 .cfi_cfa_expression	$_rsp,deref,+8
@@ -480,7 +487,7 @@ $code.=<<___;
 .Lxop_00_47:
 	sub	\$-16*2*$SZ,$Tbl	# size optimization
 	vmovdqu	(%r12),$inout		# $a4
-	mov	%r12,$_inp	#! store ptr	# $a4
+	mov	%r12,$_inp	# $a4
 ___
 sub XOP_256_00_47 () {
 my $j = shift;
@@ -587,9 +594,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&XOP_256_00_47($j,\&body_00_15,@X);
 	push(@X,shift(@X));			# rotate(@X)
     }
-    	&mov		("%r12 #! load ptr",$_inp);	# borrow $a4
+    	&mov		("%r12",$_inp);	# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-	&mov		("%r15 #! load ptr",$_out);	# borrow $a2
+	&mov		("%r15",$_out);	# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -598,7 +605,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lxop_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-	&mov		($_inp." #! store ptr","%r12");
+	&mov		($_inp."","%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -606,9 +613,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
     }
 					}
 $code.=<<___;
-	mov	$_inp,%r12	#! load ptr	# borrow $a4
-	mov	$_out,%r13	#! load ptr	# borrow $a0
-	mov	$_ctx,%r15	#! load ptr	# borrow $a2
+	mov	$_inp,%r12	# borrow $a4
+	mov	$_out,%r13	# borrow $a0
+	mov	$_ctx,%r15	# borrow $a2
 	mov	$_in0,%rsi		# borrow $a3
 
 	vpand	$mask14,$temp,$temp
@@ -649,7 +656,7 @@ $code.=<<___;
 
 	jb	.Lloop_xop
 
-	mov	$_ivp,$ivp	#! load ptr
+	mov	$_ivp,$ivp
 	mov	$_rsp,%rsi
 .cfi_def_cfa	%rsi,8
 	vmovdqu	$iv,($ivp)		# output IV
@@ -695,7 +702,7 @@ local *ror = sub { &shrd(@_[0],@_) };
 $code.=<<___;
 .type	${func}_avx,\@function,6
 .align	64
-${func}_avx:
+${func}_avx: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 .Lavx_shortcut:
 	mov	`($win64?56:8)`(%rsp),$in0	# load 7th parameter
@@ -713,8 +720,15 @@ ${func}_avx:
 .cfi_push	%r14
 	push	%r15
 .cfi_push	%r15
-	sub	\$`$framesz+$win64*16*10`,%rsp	#! alloca result size=128
+	sub	\$`$framesz+$win64*16*10`,%rsp
+___
+if (!$ENV{SARCASM}) {
+	$code.=<<___;
 	and	\$-64,%rsp		# align stack frame
+___
+}
+$code.=<<___;
+	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 
 	shl	\$6,$len
 	sub	$inp,$out		# re-bias
@@ -722,11 +736,11 @@ ${func}_avx:
 	add	$inp,$len		# end of input
 
 	#mov	$inp,$_inp		# saved later
-	mov	$out,$_out	#! store ptr
+	mov	$out,$_out
 	mov	$len,$_end
 	#mov	$key,$_key		# remains resident in $inp register
-	mov	$ivp,$_ivp	#! store ptr
-	mov	$ctx,$_ctx	#! store ptr
+	mov	$ivp,$_ivp
+	mov	$ctx,$_ctx
 	mov	$in0,$_in0
 	mov	%rax,$_rsp
 .cfi_cfa_expression	$_rsp,deref,+8
@@ -806,7 +820,7 @@ $code.=<<___;
 .Lavx_00_47:
 	sub	\$-16*2*$SZ,$Tbl	# size optimization
 	vmovdqu	(%r12),$inout		# $a4
-	mov	%r12,$_inp	#! store ptr	# $a4
+	mov	%r12,$_inp	# $a4
 ___
 sub Xupdate_256_AVX () {
 	(
@@ -866,9 +880,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&AVX_256_00_47($j,\&body_00_15,@X);
 	push(@X,shift(@X));			# rotate(@X)
     }
-    	&mov		("%r12 #! load ptr",$_inp);	# borrow $a4
+    	&mov		("%r12",$_inp);	# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-	&mov		("%r15 #! load ptr",$_out);	# borrow $a2
+	&mov		("%r15",$_out);	# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -877,7 +891,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lavx_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-	&mov		($_inp." #! store ptr","%r12");
+	&mov		($_inp."","%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -886,9 +900,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 
 					}
 $code.=<<___;
-	mov	$_inp,%r12	#! load ptr	# borrow $a4
-	mov	$_out,%r13	#! load ptr	# borrow $a0
-	mov	$_ctx,%r15	#! load ptr	# borrow $a2
+	mov	$_inp,%r12	# borrow $a4
+	mov	$_out,%r13	# borrow $a0
+	mov	$_ctx,%r15	# borrow $a2
 	mov	$_in0,%rsi		# borrow $a3
 
 	vpand	$mask14,$temp,$temp
@@ -928,7 +942,7 @@ $code.=<<___;
 	mov	$H,$SZ*7(%r15)
 	jb	.Lloop_avx
 
-	mov	$_ivp,$ivp	#! load ptr
+	mov	$_ivp,$ivp
 	mov	$_rsp,%rsi
 .cfi_def_cfa	%rsi,8
 	vmovdqu	$iv,($ivp)		# output IV
@@ -981,7 +995,7 @@ if ($ENV{SARCASM}) {
 	$code.=<<___;
 .type	${func}_avx2,\@function,6
 .align	64
-${func}_avx2:
+${func}_avx2: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 	jmp	${func}_avx
 .cfi_endproc
@@ -1036,7 +1050,7 @@ sub bodyx_00_15 () {
 $code.=<<___;
 .type	${func}_avx2,\@function,6
 .align	64
-${func}_avx2:
+${func}_avx2: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 .Lavx2_shortcut:
 	mov	`($win64?56:8)`(%rsp),$in0	# load 7th parameter
@@ -1432,7 +1446,7 @@ my $Tbl="%rax";
 $code.=<<___;
 .type	${func}_shaext,\@function,6
 .align	32
-${func}_shaext:
+${func}_shaext: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
 ___

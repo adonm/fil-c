@@ -62,8 +62,46 @@ end
 -- order-dependent).
 local SEG = { es = 0, cs = 1, ss = 2, ds = 3, fs = 4, gs = 5 }
 
+-- Pseudoregister number registry (see classifyReg).
+
+local PSEUDO_BASE = 2000
+local pseudoNums = {}
+local numPseudos = 0
+
 local function classifyReg(name)
 	local low = string.lower(name)
+	-- Pseudoregisters: `%fil_<ident>` (in Intel-syntax files the `%` prefix is
+	-- still required, so a bare `fil_<ident>` keeps its plain-symbol reading and
+	-- can never shadow a same-named global). <ident> matches [0-9a-zA-Z_]+ and may
+	-- start with a digit. The <ident> is case-sensitive (`%fil_FOO` and `%fil_foo`
+	-- are distinct pseudos); only the `fil_` prefix itself matches
+	-- case-insensitively, like other register names. A pseudo is a 64-bit GPR:
+	-- it has no fixed physical
+	-- register and the register allocator colors it like any other virtual web
+	-- (spilling across calls as needed). Each distinct name maps to one register
+	-- number in a dedicated band (never colliding with physical GPRs 0-15, the
+	-- yolo-argument band, or the frame-slot band); the mapping is allocated in
+	-- source order, so identical input always produces identical numbering.
+	-- NOTE: match on the original `name` (not the lowered `low`) so the captured
+	-- ident keeps its case.
+	local stripped = string.match(name, "^%%?[Ff][Ii][Ll]_(.*)$")
+	if stripped ~= nil then
+		if not string.match(stripped, "^[0-9a-zA-Z_]+$") then
+			error("sarcasm: bad pseudoregister name `" .. name .. "` (expected `%fil_<ident>` with <ident> matching [0-9a-zA-Z_]+)")
+		end
+		-- Canonicalize the Intel `%`-spelling (and any prefix-case spelling) to
+		-- the bare lowercase-prefix name so all spellings share one register (a
+		-- file uses one syntax, but the rendering and messages stay clean). The
+		-- ident itself keeps its case, so `FOO` vs `foo` stay distinct.
+		local canon = "fil_" .. stripped
+		local n = pseudoNums[canon]
+		if not n then
+			numPseudos += 1
+			n = PSEUDO_BASE + numPseudos
+			pseudoNums[canon] = n
+		end
+		return { kind = "reg", rc = "gpr", num = n, width = 64, name = canon, pseudo = stripped }
+	end
 	if low == "rip" then return { kind = "reg", rc = "rip", name = "rip", width = 64 } end
 	local segNum = SEG[low]
 	if segNum then
@@ -778,7 +816,45 @@ local function parseInsnText(t, syntax)
 		opsize = opsize, raw = t, syntax = syntax, lockPrefix = lockPrefix or nil }
 end
 
+-- `.alloca size, alignment, result`: stack allocation without touching %rsp.
+-- Parses the three comma-separated operands with the file's syntax parsers and
+-- builds an ordinary insn statement (mnemonic "alloca", operands in WRITTEN order:
+-- [size, alignment, result] — unlike AT&T instructions, nothing is reversed).
+-- size/alignment: an immediate (AT&T `$N` or bare `N`), a GPR (including a
+-- `%fil_` pseudo), or a frame-relative spill-slot reference; result: a GPR, a
+-- pseudo, or a spill slot. A bare AT&T number parses as an absolute-address
+-- immediate elsewhere — here it is a size, so the absAddr tag is cleared; a
+-- bare symbol is never a valid operand (rejected here, not as a global access).
+local function parseDotAlloca(rest, syntax, t)
+	local fields = splitOperands(rest)
+	if #fields ~= 3 then
+		error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
+	end
+	local ops = {}
+	for k, f in fields do
+		if f == "" then
+			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
+		end
+		local op = syntax == "att" and parseAttOperand(f) or parseIntelOperand(f)
+		if op.kind == "imm" then op.absAddr = nil end
+		if op.kind == "sym" or op.kind == "numref" then
+			error("sarcasm: `.alloca` operand is a symbol, but size/alignment must be a register, spill slot, or immediate"
+				.. " and result a register, pseudo-register, or spill slot: " .. t)
+		end
+		ops[k] = op
+	end
+	return { kind = "insn", mnemonic = "alloca", operands = ops, raw = t, syntax = syntax, dotAlloca = true }
+end
+
 function x86parse.parseString(text, syntax)
+	-- Per-file pseudo-registry reset. pseudoNums/numPseudos live at module scope
+	-- (the require cache persists them across files in one process), so
+	-- reinitialize them here for deterministic per-file numbering from
+	-- PSEUDO_BASE+1 in source order — the same pattern as numlabel's call-local
+	-- state. Parsing is synchronous (no yields), so no interleaved parse can
+	-- observe a half-built table.
+	pseudoNums = {}
+	numPseudos = 0
 	local out = {}
 	text = (string.gsub(text, "\r\n", "\n"))
 	local lineNo = 0
@@ -823,8 +899,12 @@ function x86parse.parseString(text, syntax)
 					error("sarcasm: cannot parse line: " .. t)
 				end
 				rest = trim(rest or "")
-				if string.sub(mnem, 1, 1) == "." then
-					table.insert(out, { kind = "directive", name = mnem, args = rest, raw = t })
+					if string.sub(mnem, 1, 1) == "." then
+						if string.lower(mnem) == ".alloca" then
+							table.insert(out, parseDotAlloca(rest, syntax, t))
+						else
+							table.insert(out, { kind = "directive", name = mnem, args = rest, raw = t })
+						end
 				else
 					table.insert(out, parseInsnText(t, syntax))
 				end

@@ -176,7 +176,7 @@ $code.=<<___;
 
 .type	poly1305_init,\@function,3
 .align	32
-poly1305_init:
+poly1305_init: #! int(ptr,ptr,ptr)
 .cfi_startproc
 	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
@@ -241,7 +241,7 @@ $code.=<<___;
 
 .type	poly1305_blocks,\@function,4
 .align	32
-poly1305_blocks:
+poly1305_blocks: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	endbranch
 .Lblocks:
@@ -276,15 +276,6 @@ poly1305_blocks:
 	mov	$r1,%rax
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the input
-	# here is a byte stream of arbitrary alignment; use a byte-wise
-	# accumulate loop when it is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$inp
-	jnz	.Loop_unal
-___
-}
 $code.=<<___;
 	jmp	.Loop
 
@@ -301,68 +292,6 @@ $code.=<<___;
 	dec	%r15			# len-=16
 	jnz	.Loop
 ___
-if ($ENV{SARCASM}) {
-	$code.=<<___;
-	jmp	.Loop_done
-.Loop_unal:
-	movzbl	0($inp),%rax
-	movzbl	1($inp),%rdx
-	shl	\$8,%rdx
-	or	%rdx,%rax
-	movzbl	2($inp),%rdx
-	shl	\$16,%rdx
-	or	%rdx,%rax
-	movzbl	3($inp),%rdx
-	shl	\$24,%rdx
-	or	%rdx,%rax
-	movzbl	4($inp),%rdx
-	shl	\$32,%rdx
-	or	%rdx,%rax
-	movzbl	5($inp),%rdx
-	shl	\$40,%rdx
-	or	%rdx,%rax
-	movzbl	6($inp),%rdx
-	shl	\$48,%rdx
-	or	%rdx,%rax
-	movzbl	7($inp),%rdx
-	shl	\$56,%rdx
-	or	%rdx,%rax
-	add	%rax,$h0
-	adc	\$0,$h1
-	movzbl	8($inp),%rdx
-	movzbl	9($inp),%rax
-	shl	\$8,%rax
-	or	%rax,%rdx
-	movzbl	10($inp),%rax
-	shl	\$16,%rax
-	or	%rax,%rdx
-	movzbl	11($inp),%rax
-	shl	\$24,%rax
-	or	%rax,%rdx
-	movzbl	12($inp),%rax
-	shl	\$32,%rax
-	or	%rax,%rdx
-	movzbl	13($inp),%rax
-	shl	\$40,%rax
-	or	%rax,%rdx
-	movzbl	14($inp),%rax
-	shl	\$48,%rax
-	or	%rax,%rdx
-	movzbl	15($inp),%rax
-	shl	\$56,%rax
-	or	%rax,%rdx
-	add	%rdx,$h1
-	lea	16($inp),$inp
-	adc	$padbit,$h2
-	mov	$r1,%rax
-___
-	&poly1305_iteration();
-$code.=<<___;
-	dec	%r15			# len-=16
-	jnz	.Loop_unal
-.Loop_done:
-___
-}
 $code.=<<___;
 
 	mov	$h0,0($ctx)		# store hash value
@@ -391,7 +320,7 @@ $code.=<<___;
 
 .type	poly1305_emit,\@function,3
 .align	32
-poly1305_emit:
+poly1305_emit: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 .Lemit:
@@ -409,110 +338,12 @@ poly1305_emit:
 	cmovnz	%r9,%rcx
 
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the
-	# MAC output (and in principle the nonce) are byte buffers of
-	# arbitrary alignment; do the final accumulate/store byte-wise
-	# when either is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$mac
-	jnz	.Lemit_unal
-	test	\$7,$nonce
-	jnz	.Lemit_unal
-___
-}
 $code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lemit_done
-.Lemit_unal:
-	movzbl	0($nonce),%r8
-	movzbl	1($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	2($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	3($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	4($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	5($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	6($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	7($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rax
-	adc	\$0,%rcx
-	movzbl	8($nonce),%r8
-	movzbl	9($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	10($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	11($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	12($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	13($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	14($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	15($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rcx
-	mov	%rax,%r9
-	mov	%r9b,0($mac)
-	shr	\$8,%r9
-	mov	%r9b,1($mac)
-	shr	\$8,%r9
-	mov	%r9b,2($mac)
-	shr	\$8,%r9
-	mov	%r9b,3($mac)
-	shr	\$8,%r9
-	mov	%r9b,4($mac)
-	shr	\$8,%r9
-	mov	%r9b,5($mac)
-	shr	\$8,%r9
-	mov	%r9b,6($mac)
-	shr	\$8,%r9
-	mov	%r9b,7($mac)
-	mov	%rcx,%r9
-	mov	%r9b,8($mac)
-	shr	\$8,%r9
-	mov	%r9b,9($mac)
-	shr	\$8,%r9
-	mov	%r9b,10($mac)
-	shr	\$8,%r9
-	mov	%r9b,11($mac)
-	shr	\$8,%r9
-	mov	%r9b,12($mac)
-	shr	\$8,%r9
-	mov	%r9b,13($mac)
-	shr	\$8,%r9
-	mov	%r9b,14($mac)
-	shr	\$8,%r9
-	mov	%r9b,15($mac)
-.Lemit_done:
-___
-}
 $code.=<<___;
 
 	ret
@@ -715,7 +546,7 @@ __poly1305_init_avx:
 
 .type	poly1305_blocks_avx,\@function,4
 .align	32
-poly1305_blocks_avx:
+poly1305_blocks_avx: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	endbranch
 	mov	20($ctx),%r8d		# is_base2_26
@@ -796,76 +627,12 @@ poly1305_blocks_avx:
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
 ___
-if ($ENV{SARCASM}) {
-	# input is a byte stream of arbitrary alignment; byte-wise
-	# accumulate when it is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$inp
-	jnz	.Lavx_pre1_unal
-___
-}
 $code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lavx_pre1_done
-.Lavx_pre1_unal:
-	movzbl	0($inp),%rax
-	movzbl	1($inp),%rdx
-	shl	\$8,%rdx
-	or	%rdx,%rax
-	movzbl	2($inp),%rdx
-	shl	\$16,%rdx
-	or	%rdx,%rax
-	movzbl	3($inp),%rdx
-	shl	\$24,%rdx
-	or	%rdx,%rax
-	movzbl	4($inp),%rdx
-	shl	\$32,%rdx
-	or	%rdx,%rax
-	movzbl	5($inp),%rdx
-	shl	\$40,%rdx
-	or	%rdx,%rax
-	movzbl	6($inp),%rdx
-	shl	\$48,%rdx
-	or	%rdx,%rax
-	movzbl	7($inp),%rdx
-	shl	\$56,%rdx
-	or	%rdx,%rax
-	add	%rax,$h0
-	adc	\$0,$h1
-	movzbl	8($inp),%rdx
-	movzbl	9($inp),%rax
-	shl	\$8,%rax
-	or	%rax,%rdx
-	movzbl	10($inp),%rax
-	shl	\$16,%rax
-	or	%rax,%rdx
-	movzbl	11($inp),%rax
-	shl	\$24,%rax
-	or	%rax,%rdx
-	movzbl	12($inp),%rax
-	shl	\$32,%rax
-	or	%rax,%rdx
-	movzbl	13($inp),%rax
-	shl	\$40,%rax
-	or	%rax,%rdx
-	movzbl	14($inp),%rax
-	shl	\$48,%rax
-	or	%rax,%rdx
-	movzbl	15($inp),%rax
-	shl	\$56,%rax
-	or	%rax,%rdx
-	add	%rdx,$h1
-	lea	16($inp),$inp
-	adc	$padbit,$h2
-.Lavx_pre1_done:
-___
-}
 $code.=<<___;
 
 	call	__poly1305_block
@@ -971,76 +738,12 @@ $code.=<<___;
 	jz	.Linit_avx
 
 ___
-if ($ENV{SARCASM}) {
-	# input is a byte stream of arbitrary alignment; byte-wise
-	# accumulate when it is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$inp
-	jnz	.Lavx_pre2_unal
-___
-}
 $code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lavx_pre2_done
-.Lavx_pre2_unal:
-	movzbl	0($inp),%rax
-	movzbl	1($inp),%rdx
-	shl	\$8,%rdx
-	or	%rdx,%rax
-	movzbl	2($inp),%rdx
-	shl	\$16,%rdx
-	or	%rdx,%rax
-	movzbl	3($inp),%rdx
-	shl	\$24,%rdx
-	or	%rdx,%rax
-	movzbl	4($inp),%rdx
-	shl	\$32,%rdx
-	or	%rdx,%rax
-	movzbl	5($inp),%rdx
-	shl	\$40,%rdx
-	or	%rdx,%rax
-	movzbl	6($inp),%rdx
-	shl	\$48,%rdx
-	or	%rdx,%rax
-	movzbl	7($inp),%rdx
-	shl	\$56,%rdx
-	or	%rdx,%rax
-	add	%rax,$h0
-	adc	\$0,$h1
-	movzbl	8($inp),%rdx
-	movzbl	9($inp),%rax
-	shl	\$8,%rax
-	or	%rax,%rdx
-	movzbl	10($inp),%rax
-	shl	\$16,%rax
-	or	%rax,%rdx
-	movzbl	11($inp),%rax
-	shl	\$24,%rax
-	or	%rax,%rdx
-	movzbl	12($inp),%rax
-	shl	\$32,%rax
-	or	%rax,%rdx
-	movzbl	13($inp),%rax
-	shl	\$40,%rax
-	or	%rax,%rdx
-	movzbl	14($inp),%rax
-	shl	\$48,%rax
-	or	%rax,%rdx
-	movzbl	15($inp),%rax
-	shl	\$56,%rax
-	or	%rax,%rdx
-	add	%rdx,$h1
-	lea	16($inp),$inp
-	adc	$padbit,$h2
-.Lavx_pre2_done:
-___
-}
 $code.=<<___;
 	sub	\$16,%r15
 
@@ -1093,6 +796,8 @@ $code.=<<___;
 	lea	48(%rsp),%rsp
 .cfi_adjust_cfa_offset	-48
 .Lbase2_64_avx_epilogue:
+___
+$code.=<<___;
 	jmp	.Ldo_avx
 .cfi_endproc
 
@@ -1104,13 +809,14 @@ $code.=<<___;
 	vmovd		4*2($ctx),$H2
 	vmovd		4*3($ctx),$H3
 	vmovd		4*4($ctx),$H4
-
+___
+$code.=<<___;
 .Ldo_avx:
 ___
 $code.=<<___	if (!$win64);
 	lea		-0x58(%rsp),%r11
 .cfi_def_cfa		%r11,0x60
-	sub		\$0x178,%rsp		#! alloca result size=376
+	sub		\$0x178,%rsp
 ___
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11
@@ -1712,7 +1418,7 @@ $code.=<<___;
 
 .type	poly1305_emit_avx,\@function,3
 .align	32
-poly1305_emit_avx:
+poly1305_emit_avx: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	cmpl	\$0,20($ctx)	# is_base2_26?
@@ -1760,110 +1466,12 @@ poly1305_emit_avx:
 	cmovnz	%r9,%rcx
 
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the
-	# MAC output (and in principle the nonce) are byte buffers of
-	# arbitrary alignment; do the final accumulate/store byte-wise
-	# when either is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$mac
-	jnz	.Lemit_avx_unal
-	test	\$7,$nonce
-	jnz	.Lemit_avx_unal
-___
-}
 $code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lemit_avx_done
-.Lemit_avx_unal:
-	movzbl	0($nonce),%r8
-	movzbl	1($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	2($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	3($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	4($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	5($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	6($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	7($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rax
-	adc	\$0,%rcx
-	movzbl	8($nonce),%r8
-	movzbl	9($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	10($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	11($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	12($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	13($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	14($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	15($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rcx
-	mov	%rax,%r9
-	mov	%r9b,0($mac)
-	shr	\$8,%r9
-	mov	%r9b,1($mac)
-	shr	\$8,%r9
-	mov	%r9b,2($mac)
-	shr	\$8,%r9
-	mov	%r9b,3($mac)
-	shr	\$8,%r9
-	mov	%r9b,4($mac)
-	shr	\$8,%r9
-	mov	%r9b,5($mac)
-	shr	\$8,%r9
-	mov	%r9b,6($mac)
-	shr	\$8,%r9
-	mov	%r9b,7($mac)
-	mov	%rcx,%r9
-	mov	%r9b,8($mac)
-	shr	\$8,%r9
-	mov	%r9b,9($mac)
-	shr	\$8,%r9
-	mov	%r9b,10($mac)
-	shr	\$8,%r9
-	mov	%r9b,11($mac)
-	shr	\$8,%r9
-	mov	%r9b,12($mac)
-	shr	\$8,%r9
-	mov	%r9b,13($mac)
-	shr	\$8,%r9
-	mov	%r9b,14($mac)
-	shr	\$8,%r9
-	mov	%r9b,15($mac)
-.Lemit_avx_done:
-___
-}
 $code.=<<___;
 
 	ret
@@ -1879,7 +1487,7 @@ my $S4=$MASK;
 $code.=<<___;
 .type	poly1305_blocks_avx2,\@function,4
 .align	32
-poly1305_blocks_avx2:
+poly1305_blocks_avx2: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	endbranch
 	mov	20($ctx),%r8d		# is_base2_26
@@ -1960,14 +1568,6 @@ poly1305_blocks_avx2:
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
 ___
-if ($ENV{SARCASM}) {
-	# input is a byte stream of arbitrary alignment; byte-wise
-	# accumulate when it is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$inp
-	jnz	.Lb226pre_unal
-___
-}
 $code.=<<___;
 .Lbase2_26_pre_avx2:
 	add	0($inp),$h0		# accumulate input
@@ -1982,69 +1582,6 @@ $code.=<<___;
 	test	\$63,%r15
 	jnz	.Lbase2_26_pre_avx2
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lb226pre_done
-.Lb226pre_unal:
-	movzbl	0($inp),%rax
-	movzbl	1($inp),%rdx
-	shl	\$8,%rdx
-	or	%rdx,%rax
-	movzbl	2($inp),%rdx
-	shl	\$16,%rdx
-	or	%rdx,%rax
-	movzbl	3($inp),%rdx
-	shl	\$24,%rdx
-	or	%rdx,%rax
-	movzbl	4($inp),%rdx
-	shl	\$32,%rdx
-	or	%rdx,%rax
-	movzbl	5($inp),%rdx
-	shl	\$40,%rdx
-	or	%rdx,%rax
-	movzbl	6($inp),%rdx
-	shl	\$48,%rdx
-	or	%rdx,%rax
-	movzbl	7($inp),%rdx
-	shl	\$56,%rdx
-	or	%rdx,%rax
-	add	%rax,$h0
-	adc	\$0,$h1
-	movzbl	8($inp),%rdx
-	movzbl	9($inp),%rax
-	shl	\$8,%rax
-	or	%rax,%rdx
-	movzbl	10($inp),%rax
-	shl	\$16,%rax
-	or	%rax,%rdx
-	movzbl	11($inp),%rax
-	shl	\$24,%rax
-	or	%rax,%rdx
-	movzbl	12($inp),%rax
-	shl	\$32,%rax
-	or	%rax,%rdx
-	movzbl	13($inp),%rax
-	shl	\$40,%rax
-	or	%rax,%rdx
-	movzbl	14($inp),%rax
-	shl	\$48,%rax
-	or	%rax,%rdx
-	movzbl	15($inp),%rax
-	shl	\$56,%rax
-	or	%rax,%rdx
-	add	%rdx,$h1
-	lea	16($inp),$inp
-	adc	$padbit,$h2
-	sub	\$16,%r15
-
-	call	__poly1305_block
-	mov	$r1,%rax
-
-	test	\$63,%r15
-	jnz	.Lb226pre_unal
-.Lb226pre_done:
-___
-}
 $code.=<<___;
 
 	test	$padbit,$padbit		# if $padbit is zero,
@@ -2148,14 +1685,6 @@ $code.=<<___;
 	jz	.Linit_avx2
 
 ___
-if ($ENV{SARCASM}) {
-	# input is a byte stream of arbitrary alignment; byte-wise
-	# accumulate when it is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$inp
-	jnz	.Lb264pre_unal
-___
-}
 $code.=<<___;
 .Lbase2_64_pre_avx2:
 	add	0($inp),$h0		# accumulate input
@@ -2170,69 +1699,6 @@ $code.=<<___;
 	test	\$63,%r15
 	jnz	.Lbase2_64_pre_avx2
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lb264pre_done
-.Lb264pre_unal:
-	movzbl	0($inp),%rax
-	movzbl	1($inp),%rdx
-	shl	\$8,%rdx
-	or	%rdx,%rax
-	movzbl	2($inp),%rdx
-	shl	\$16,%rdx
-	or	%rdx,%rax
-	movzbl	3($inp),%rdx
-	shl	\$24,%rdx
-	or	%rdx,%rax
-	movzbl	4($inp),%rdx
-	shl	\$32,%rdx
-	or	%rdx,%rax
-	movzbl	5($inp),%rdx
-	shl	\$40,%rdx
-	or	%rdx,%rax
-	movzbl	6($inp),%rdx
-	shl	\$48,%rdx
-	or	%rdx,%rax
-	movzbl	7($inp),%rdx
-	shl	\$56,%rdx
-	or	%rdx,%rax
-	add	%rax,$h0
-	adc	\$0,$h1
-	movzbl	8($inp),%rdx
-	movzbl	9($inp),%rax
-	shl	\$8,%rax
-	or	%rax,%rdx
-	movzbl	10($inp),%rax
-	shl	\$16,%rax
-	or	%rax,%rdx
-	movzbl	11($inp),%rax
-	shl	\$24,%rax
-	or	%rax,%rdx
-	movzbl	12($inp),%rax
-	shl	\$32,%rax
-	or	%rax,%rdx
-	movzbl	13($inp),%rax
-	shl	\$40,%rax
-	or	%rax,%rdx
-	movzbl	14($inp),%rax
-	shl	\$48,%rax
-	or	%rax,%rdx
-	movzbl	15($inp),%rax
-	shl	\$56,%rax
-	or	%rax,%rdx
-	add	%rdx,$h1
-	lea	16($inp),$inp
-	adc	$padbit,$h2
-	sub	\$16,%r15
-
-	call	__poly1305_block
-	mov	$r1,%rax
-
-	test	\$63,%r15
-	jnz	.Lb264pre_unal
-.Lb264pre_done:
-___
-}
 $code.=<<___;
 
 .Linit_avx2:
@@ -2284,6 +1750,8 @@ $code.=<<___;
 	lea	48(%rsp),%rsp
 .cfi_adjust_cfa_offset	-48
 .Lbase2_64_avx2_epilogue:
+___
+$code.=<<___;
 	jmp	.Ldo_avx2
 .cfi_endproc
 
@@ -2296,9 +1764,16 @@ $code.=<<___;
 	vmovd		4*2($ctx),%x#$H2
 	vmovd		4*3($ctx),%x#$H3
 	vmovd		4*4($ctx),%x#$H4
-
+___
+$code.=<<___;
 .Ldo_avx2:
 ___
+if ($ENV{SARCASM}) {
+    # No AVX512 delegation under sarcasm (perf-only: the AVX2 body is
+    # correct for every length): the cross-function join into
+    # blocks_avx512's mid-body cannot be modeled with a static frame,
+    # so always run the AVX2 body. The gas path keeps the delegation.
+} else {
 $code.=<<___		if ($avx>2);
 	cmp		\$512,$len
 	jb		.Lskip_avx512
@@ -2307,10 +1782,11 @@ $code.=<<___		if ($avx>2);
 	jnz		.Lblocks_avx512
 .Lskip_avx512:
 ___
+}
 $code.=<<___	if (!$win64);
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
-	sub		\$0x128,%rsp		#! alloca result size=296
+	sub		\$0x128,%rsp
 ___
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11
@@ -2726,18 +2202,31 @@ map(s/%y/%z/,($MASK));
 $code.=<<___;
 .type	poly1305_blocks_avx512,\@function,4
 .align	32
-poly1305_blocks_avx512:
+poly1305_blocks_avx512: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	endbranch
 .Lblocks_avx512:
 	mov		\$15,%eax
 	kmovw		%eax,%k2
 ___
+if ($ENV{SARCASM}) {
+    # SARCASM-only: the AVX512 table spills reach 0x100(%rsp)+64
+    # (320 bytes) but the gas frame (0x128) relied on the
+    # `and $-512,%rsp` slack below it. Extend statically; the gas
+    # path keeps sub $0x128. No (%r11) memory traffic on unix, so the
+    # +0x120 rebase below is unaffected (only the lea save moves).
+    $code.=<<___	if (!$win64);
+	lea		-8(%rsp),%r11
+.cfi_def_cfa		%r11,16
+	sub		\$0x140,%rsp
+___
+} else {
 $code.=<<___	if (!$win64);
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
-	sub		\$0x128,%rsp		#! alloca result size=296
+	sub		\$0x128,%rsp
 ___
+}
 $code.=<<___	if ($win64);
 	lea		-0xf8(%rsp),%r11
 	sub		\$0x1c8,%rsp
@@ -3337,7 +2826,7 @@ if ($avx>3 && !$win64) {
 $code.=<<___;
 .type	poly1305_init_base2_44,\@function,3
 .align	32
-poly1305_init_base2_44:
+poly1305_init_base2_44: #! int(ptr,ptr,ptr)
 .cfi_startproc
 	xor	%rax,%rax
 	mov	%rax,0($ctx)		# initialize hash value
@@ -3391,7 +2880,7 @@ my ($reduc_mask,$reduc_rght,$reduc_left) = map("%ymm$_",(22..25));
 $code.=<<___;
 .type	poly1305_blocks_vpmadd52,\@function,4
 .align	32
-poly1305_blocks_vpmadd52:
+poly1305_blocks_vpmadd52: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	endbranch
 	shr	\$4,$len
@@ -3413,7 +2902,17 @@ poly1305_blocks_vpmadd52:
 	cmovns	%r10,%rax
 
 	and	$len,%rax			# is input of favourable length?
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only: entry-based tail dispatch (see .Lvpmadd52_to_4x
+    # below); the gas path keeps the mid-body join.
+    $code .= "\tjz\t.Lvpmadd52_to_4x\n";
+} else {
+$code.=<<___;
 	jz	.Lblocks_vpmadd52_4x
+___
+}
+$code.=<<___;
 
 	sub		%rax,$len
 	mov		\$7,%r10d
@@ -3496,10 +2995,34 @@ poly1305_blocks_vpmadd52:
 	vmovdqu64	$Dlo,0($ctx){%k7}	# store hash value
 
 	test		$len,$len
+___
+if ($ENV{SARCASM}) {
+    $code .= "\tjnz\t.Lvpmadd52_to_4x\n";
+} else {
+$code.=<<___;
 	jnz		.Lblocks_vpmadd52_4x
+___
+}
+$code.=<<___;
 
 .Lno_data_vpmadd52:
 	ret
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only trampoline: nested shared-tail joins are not
+    # supported, so dispatch to the 4x ENTRY as a tail call instead of
+    # joining its mid-body. State compensation (exact): $len arrives in
+    # blocks (the entry re-shifts by 4) and $padbit shifted by 40 (the
+    # entry re-shifts); rdi/rsi are untouched, r8/masks/hash are
+    # reloaded by the entry. The gas path keeps the pristine jumps.
+    $code.=<<___;
+.Lvpmadd52_to_4x:
+	shl		\$4,$len
+	shr		\$40,$padbit
+	jmp		poly1305_blocks_vpmadd52_4x #! void(ptr,ptr,size_t,unsigned)
+___
+}
+$code.=<<___;
 .cfi_endproc
 .size	poly1305_blocks_vpmadd52,.-poly1305_blocks_vpmadd52
 ___
@@ -3517,7 +3040,7 @@ my ($T0,$T1,$T2,$T3,$mask44,$mask42,$tmp,$PAD) = map("%ymm$_",(24..31));
 $code.=<<___;
 .type	poly1305_blocks_vpmadd52_4x,\@function,4
 .align	32
-poly1305_blocks_vpmadd52_4x:
+poly1305_blocks_vpmadd52_4x: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	shr	\$4,$len
 	jz	.Lno_data_vpmadd52_4x		# too short
@@ -3555,7 +3078,17 @@ poly1305_blocks_vpmadd52_4x:
 	vpsllq		\$2,$S2,$S2
 
 	test		\$7,$len		# is len 8*n?
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only: entry-based tail dispatch (see .L4x_to_8x below);
+    # the gas path keeps the mid-body join.
+    $code .= "\tjz\t.L4x_to_8x\n";
+} else {
+$code.=<<___;
 	jz		.Lblocks_vpmadd52_8x
+___
+}
+$code.=<<___;
 
 	vmovdqu64	16*0($inp),$T2		# load data
 	vmovdqu64	16*2($inp),$T3
@@ -3943,6 +3476,19 @@ poly1305_blocks_vpmadd52_4x:
 
 .Lno_data_vpmadd52_4x:
 	ret
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only trampoline: dispatch to the 8x ENTRY as a tail call
+    # (state compensation is exact, as for .Lvpmadd52_to_4x above).
+    # The gas path keeps the pristine mid-body join.
+    $code.=<<___;
+.L4x_to_8x:
+	shl		\$4,$len
+	shr		\$40,$padbit
+	jmp		poly1305_blocks_vpmadd52_8x #! void(ptr,ptr,size_t,unsigned)
+___
+}
+$code.=<<___;
 .cfi_endproc
 .size	poly1305_blocks_vpmadd52_4x,.-poly1305_blocks_vpmadd52_4x
 ___
@@ -3961,7 +3507,7 @@ my ($RR0,$RR1,$RR2,$SS1,$SS2) = map("%ymm$_",(6..10));
 $code.=<<___;
 .type	poly1305_blocks_vpmadd52_8x,\@function,4
 .align	32
-poly1305_blocks_vpmadd52_8x:
+poly1305_blocks_vpmadd52_8x: #! void(ptr,ptr,size_t,unsigned)
 .cfi_startproc
 	shr	\$4,$len
 	jz	.Lno_data_vpmadd52_8x		# too short
@@ -3973,7 +3519,17 @@ poly1305_blocks_vpmadd52_8x:
 	vmovdqa64	.Lx_mask42(%rip),$mask42
 
 	test	%r8,%r8				# is power value impossible?
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only: entry-based tail dispatch (see .L8x_to_4x below);
+    # the gas path keeps the mid-body join into shared init code.
+    $code .= "\tjs\t.L8x_to_4x\n";
+} else {
+$code.=<<___;
 	js	.Linit_vpmadd52			# if it is, then init R[4]
+___
+}
+$code.=<<___;
 
 	vmovq	0($ctx),%x#$H0			# load current hash value
 	vmovq	8($ctx),%x#$H1
@@ -4318,6 +3874,20 @@ $code.=<<___;
 
 .Lno_data_vpmadd52_8x:
 	ret
+___
+if ($ENV{SARCASM}) {
+    # SARCASM-only trampoline: run the shared init through the 4x
+    # ENTRY as a tail call (state compensation is exact, as above);
+    # after init the 4x body redispatches here with powers ready.
+    # The gas path keeps the pristine mid-body join.
+    $code.=<<___;
+.L8x_to_4x:
+	shl		\$4,$len
+	shr		\$40,$padbit
+	jmp		poly1305_blocks_vpmadd52_4x #! void(ptr,ptr,size_t,unsigned)
+___
+}
+$code.=<<___;
 .cfi_endproc
 .size	poly1305_blocks_vpmadd52_8x,.-poly1305_blocks_vpmadd52_8x
 ___
@@ -4325,7 +3895,7 @@ ___
 $code.=<<___;
 .type	poly1305_emit_base2_44,\@function,3
 .align	32
-poly1305_emit_base2_44:
+poly1305_emit_base2_44: #! void(ptr,ptr,ptr)
 .cfi_startproc
 	endbranch
 	mov	0($ctx),%r8	# load hash value
@@ -4353,110 +3923,12 @@ poly1305_emit_base2_44:
 	cmovnz	%r9,%rcx
 
 ___
-if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every access, but the
-	# MAC output (and in principle the nonce) are byte buffers of
-	# arbitrary alignment; do the final accumulate/store byte-wise
-	# when either is not 8-aligned.
-	$code.=<<___;
-	test	\$7,$mac
-	jnz	.Lemit44_unal
-	test	\$7,$nonce
-	jnz	.Lemit44_unal
-___
-}
 $code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
 ___
-if ($ENV{SARCASM}) {
-$code.=<<___;
-	jmp	.Lemit44_done
-.Lemit44_unal:
-	movzbl	0($nonce),%r8
-	movzbl	1($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	2($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	3($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	4($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	5($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	6($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	7($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rax
-	adc	\$0,%rcx
-	movzbl	8($nonce),%r8
-	movzbl	9($nonce),%r9
-	shl	\$8,%r9
-	or	%r9,%r8
-	movzbl	10($nonce),%r9
-	shl	\$16,%r9
-	or	%r9,%r8
-	movzbl	11($nonce),%r9
-	shl	\$24,%r9
-	or	%r9,%r8
-	movzbl	12($nonce),%r9
-	shl	\$32,%r9
-	or	%r9,%r8
-	movzbl	13($nonce),%r9
-	shl	\$40,%r9
-	or	%r9,%r8
-	movzbl	14($nonce),%r9
-	shl	\$48,%r9
-	or	%r9,%r8
-	movzbl	15($nonce),%r9
-	shl	\$56,%r9
-	or	%r9,%r8
-	add	%r8,%rcx
-	mov	%rax,%r9
-	mov	%r9b,0($mac)
-	shr	\$8,%r9
-	mov	%r9b,1($mac)
-	shr	\$8,%r9
-	mov	%r9b,2($mac)
-	shr	\$8,%r9
-	mov	%r9b,3($mac)
-	shr	\$8,%r9
-	mov	%r9b,4($mac)
-	shr	\$8,%r9
-	mov	%r9b,5($mac)
-	shr	\$8,%r9
-	mov	%r9b,6($mac)
-	shr	\$8,%r9
-	mov	%r9b,7($mac)
-	mov	%rcx,%r9
-	mov	%r9b,8($mac)
-	shr	\$8,%r9
-	mov	%r9b,9($mac)
-	shr	\$8,%r9
-	mov	%r9b,10($mac)
-	shr	\$8,%r9
-	mov	%r9b,11($mac)
-	shr	\$8,%r9
-	mov	%r9b,12($mac)
-	shr	\$8,%r9
-	mov	%r9b,13($mac)
-	shr	\$8,%r9
-	mov	%r9b,14($mac)
-	shr	\$8,%r9
-	mov	%r9b,15($mac)
-.Lemit44_done:
-___
-}
 $code.=<<___;
 
 	ret
@@ -4512,7 +3984,7 @@ $code.=<<___;
 .globl	xor128_encrypt_n_pad
 .type	xor128_encrypt_n_pad,\@abi-omnipotent
 .align	16
-xor128_encrypt_n_pad:
+xor128_encrypt_n_pad: #! ptr(ptr,ptr,ptr,size_t)
 .cfi_startproc
 	sub	$otp,$inp
 	sub	$otp,$out
@@ -4561,7 +4033,7 @@ xor128_encrypt_n_pad:
 .globl	xor128_decrypt_n_pad
 .type	xor128_decrypt_n_pad,\@abi-omnipotent
 .align	16
-xor128_decrypt_n_pad:
+xor128_decrypt_n_pad: #! ptr(ptr,ptr,ptr,size_t)
 .cfi_startproc
 	sub	$otp,$inp
 	sub	$otp,$out
@@ -4866,10 +4338,58 @@ ___
 }
 
 foreach (split('\n',$code)) {
+	if ($ENV{SARCASM}) {
+	    # Rebase the 0x90-based frame addresses to plain rsp ones
+	    # (address-preserving: EXPR-0x90(%rax) == EXPR(%rsp), since
+	    # %rax = %rsp+0x90); applied before backtick evaluation so
+	    # the arithmetic stays symbolic. The bodies above stay
+	    # untouched for the gas path.
+	    s/`([^`]*?)-0x90`\(%rax\)/`$1`(%rsp)/g;
+	    # Bare (non-backticked) form used by the AVX2 table stores
+	    # (e.g. 0x20-0x90(%rax)): same rebase, keeping the leading
+	    # displacement (the -0x90 cancels the deleted lea's +0x90).
+	    s/\b0x([0-9a-fA-F]+)-0x90\(%rax\)/0x$1(%rsp)/g;
+	    next if (/^\tlea\t\t0x90\(%rsp\),%rax/);
+	    # SARCASM-only: the `and $-512,%rsp` dynamic realignment of
+	    # the vector bodies takes the frame's address and is
+	    # rejected. Drop it (chacha-x86_64.pl precedent) and use the
+	    # unaligned vector forms on frame slots instead (same
+	    # semantics; the virtualized frame keeps 16-byte SysV
+	    # alignment for the plain movdqa traffic).
+	    next if (/^\tand\t\t\$-512,%rsp$/);
+	}
 	s/\`([^\`]*)\`/eval($1)/ge;
 	s/%r([a-z]+)#d/%e$1/g;
 	s/%r([0-9]+)#d/%r$1d/g;
 	s/%x#%[yz]/%x/g or s/%y#%z/%y/g or s/%z#%[yz]/%z/g;
+
+	if ($ENV{SARCASM}) {
+	    # Rebase r11-frame accesses to plain rsp ones (address-
+	    # preserving on unix: %r11 = %rsp+0x120 in all three vector
+	    # bodies). The lea saves and the lea-recovery epilogues stay
+	    # untouched (sarcasm models those); only memory operands are
+	    # rewritten, so pointer-typed carriers are unaffected.
+	    unless (/^\s*lea\s.*\(%r11\),%rsp$/) {
+	        s/(-?)0x([0-9a-fA-F]+)\(%r11\)/"0x" . sprintf("%x", ($1 ? -hex($2) : hex($2)) + 0x120) . "(%rsp)"/ge;
+	    }
+	    # Unaligned vector forms on frame slots (see above): same
+	    # semantics, no 32-byte alignment requirement.
+	    s/vmovdqa/vmovdqu/g if (/\(%rsp\)/);
+	    # SARCASM-only: the AVX512 table spills use masked stores to
+	    # the frame (vmovdqa64 ...(%rsp){%k2}), which sarcasm rejects
+	    # (masked-off lanes may not touch memory), plus dynamic frame
+	    # indexing (DISP(%rsp,%rax) with %rax=0x20). The slots are
+	    # written but never lane-dependently reloaded, so store them
+	    # unmasked at folded offsets (same addresses, all lanes
+	    # written; the virtualized frame keeps them mapped).
+	    # The bodies above stay untouched for the gas path.
+	    s/0x00\(%rsp,%rax\)/0x20(%rsp)/g;
+	    s/0x40\(%rsp,%rax\)/0x60(%rsp)/g;
+	    s/0x80\(%rsp,%rax\)/0xa0(%rsp)/g;
+	    s/0xc0\(%rsp,%rax\)/0xe0(%rsp)/g;
+	    s/\{%k2\}//g if (/\(%rsp/);
+	    s/vmovdqa64/vmovdqu64/g if (/\(%rsp\)/);
+	}
 
 	print $_,"\n";
 }

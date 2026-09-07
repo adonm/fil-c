@@ -224,6 +224,61 @@ function arm64.classify(insn)
 	local control, targets, fallsThrough = "none", nil, true
 	local isMove = nil
 
+	-- `.alloca size, alignment, result` (the `.alloca` directive): operands are in
+	-- WRITTEN order. size/alignment: an immediate, a 32/64-bit GPR (including
+	-- `fil_` pseudos and frame-slot webs), or a frame-relative spill-slot memory
+	-- reference (converted to a slot web by the frame rewrite — provisionally
+	-- unmodeled here). result: a 64-bit GPR, a pseudo, or a spill slot. Anything
+	-- else (NEON/SVE/zr/sp registers, symbols, heap memory, shifted or writeback
+	-- operands, non-64-bit result widths) is a clean rejection.
+	if m == "alloca" then
+		if not insn.dotAlloca then
+			error("sarcasm: `alloca` is only supported as the `.alloca size, alignment, result` directive: " .. (insn.raw or m))
+		end
+		if #ops ~= 3 then
+			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. (insn.raw or m))
+		end
+		local function allocaUse(o, what)
+			if o.shift then
+				error("sarcasm: `.alloca` " .. what .. " has a shift/extend, which is not supported: " .. (insn.raw or m))
+			end
+			if o.kind == "imm" then return end
+			if isGpr(o) then
+				if o.width ~= 64 and o.width ~= 32 then
+					error("sarcasm: `.alloca` " .. what .. " must be a 32/64-bit register: " .. (insn.raw or m))
+				end
+				table.insert(uses, o)
+				return
+			end
+			if o.kind == "mem" and not o.writeback and not o.shift and not o.postShift
+				and o.base and (o.base.name == "sp" or o.base.name == "x29")
+				and (not o.index or o.index.kind == "imm") then return end
+			error("sarcasm: `.alloca` " .. what .. " must be an immediate, a GPR (including a pseudoregister), or a frame spill slot: " .. (insn.raw or m))
+		end
+		allocaUse(ops[1], "size")
+		allocaUse(ops[2], "alignment")
+		do
+			local o = ops[3]
+			if o.shift then
+				error("sarcasm: `.alloca` result has a shift/extend, which is not supported: " .. (insn.raw or m))
+			end
+			if isGpr(o) then
+				if o.width ~= 64 then
+					error("sarcasm: `.alloca` result must be a 64-bit register (a narrower destination would truncate the pointer): " .. (insn.raw or m))
+				end
+				table.insert(defs, o)
+			elseif o.kind == "mem" and not o.writeback and not o.shift and not o.postShift
+				and o.base and (o.base.name == "sp" or o.base.name == "x29")
+				and (not o.index or o.index.kind == "imm") then
+			-- spill-slot result: converted by the frame rewrite; provisionally unmodeled.
+			else
+				error("sarcasm: `.alloca` result must be a 64-bit register, a pseudoregister, or a frame spill slot: " .. (insn.raw or m))
+			end
+		end
+		return { defs = defs, uses = uses, rmw = rmw, control = "none",
+			targets = targets, fallsThrough = fallsThrough }
+	end
+
 	-- Control flow first. A branch whose TARGET is not a label (`br xN`, `b xN`,
 	-- `cbz xN, xM`, `tbz xN, #i, xM`, `b.eq xM`, ...) is an INDIRECT branch: its
 	-- target is not a provable label, so it classifies exactly like `br` and the

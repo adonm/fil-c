@@ -31,7 +31,7 @@ print<<___;
 .extern		OPENSSL_cpuid_setup
 .hidden		OPENSSL_cpuid_setup
 .section	.init
-	call	OPENSSL_cpuid_setup
+	call	OPENSSL_cpuid_setup #! void()
 
 .hidden	OPENSSL_ia32cap_P
 .comm	OPENSSL_ia32cap_P,40,4	# <--Should match with internal/cryptlib.h OPENSSL_IA32CAP_P_MAX_INDEXES
@@ -40,7 +40,7 @@ print<<___;
 .globl	OPENSSL_atomic_add
 .type	OPENSSL_atomic_add,\@abi-omnipotent
 .align	16
-OPENSSL_atomic_add:
+OPENSSL_atomic_add: #! int(ptr,int)
 .cfi_startproc
 	endbranch
 	movl	($arg1),%eax
@@ -57,7 +57,7 @@ OPENSSL_atomic_add:
 .globl	OPENSSL_rdtsc
 .type	OPENSSL_rdtsc,\@abi-omnipotent
 .align	16
-OPENSSL_rdtsc:
+OPENSSL_rdtsc: #! unsigned()
 .cfi_startproc
 	endbranch
 	rdtsc
@@ -70,7 +70,7 @@ OPENSSL_rdtsc:
 .globl	OPENSSL_ia32_cpuid
 .type	OPENSSL_ia32_cpuid,\@function,1
 .align	16
-OPENSSL_ia32_cpuid:
+OPENSSL_ia32_cpuid: #! unsigned(ptr)
 .cfi_startproc
 	endbranch
 	mov	%rbx,%r8		# save %rbx
@@ -266,7 +266,7 @@ OPENSSL_ia32_cpuid:
 .globl  OPENSSL_cleanse
 .type   OPENSSL_cleanse,\@abi-omnipotent
 .align  16
-OPENSSL_cleanse:
+OPENSSL_cleanse: #! void(ptr,size_t)
 .cfi_startproc
 	endbranch
 	xor	%rax,%rax
@@ -304,7 +304,7 @@ OPENSSL_cleanse:
 .globl  CRYPTO_memcmp
 .type   CRYPTO_memcmp,\@abi-omnipotent
 .align  16
-CRYPTO_memcmp:
+CRYPTO_memcmp: #! int(ptr,ptr,size_t)
 .cfi_startproc
 	endbranch
 	xor	%rax,%rax
@@ -314,17 +314,6 @@ CRYPTO_memcmp:
 	cmp	\$16,$arg3
 	jne	.Loop_cmp
 ___
-if ($ENV{SARCASM}) {
-# Fil-C requires natural alignment for every access, but CRYPTO_memcmp's
-# contract (like the C code) accepts arbitrarily aligned buffers. Fall
-# back to a byte-wise compare when either pointer is not 8-aligned.
-print<<___;
-	test	\$7,$arg1
-	jnz	.Lcmp16_unal
-	test	\$7,$arg2
-	jnz	.Lcmp16_unal
-___
-}
 print<<___;
 	mov	($arg1),%r10
 	mov	8($arg1),%r11
@@ -335,63 +324,6 @@ print<<___;
 	cmovnz	$arg3,%rax
 	ret
 ___
-if ($ENV{SARCASM}) {
-print<<___;
-.align	16
-.Lcmp16_unal:
-	mov	\$1,$arg3
-	movzbl	($arg1),%r11d
-	xor	($arg2),%r11b
-	or	%r11,%r10
-	movzbl	1($arg1),%r11d
-	xor	1($arg2),%r11b
-	or	%r11,%r10
-	movzbl	2($arg1),%r11d
-	xor	2($arg2),%r11b
-	or	%r11,%r10
-	movzbl	3($arg1),%r11d
-	xor	3($arg2),%r11b
-	or	%r11,%r10
-	movzbl	4($arg1),%r11d
-	xor	4($arg2),%r11b
-	or	%r11,%r10
-	movzbl	5($arg1),%r11d
-	xor	5($arg2),%r11b
-	or	%r11,%r10
-	movzbl	6($arg1),%r11d
-	xor	6($arg2),%r11b
-	or	%r11,%r10
-	movzbl	7($arg1),%r11d
-	xor	7($arg2),%r11b
-	or	%r11,%r10
-	movzbl	8($arg1),%r11d
-	xor	8($arg2),%r11b
-	or	%r11,%r10
-	movzbl	9($arg1),%r11d
-	xor	9($arg2),%r11b
-	or	%r11,%r10
-	movzbl	10($arg1),%r11d
-	xor	10($arg2),%r11b
-	or	%r11,%r10
-	movzbl	11($arg1),%r11d
-	xor	11($arg2),%r11b
-	or	%r11,%r10
-	movzbl	12($arg1),%r11d
-	xor	12($arg2),%r11b
-	or	%r11,%r10
-	movzbl	13($arg1),%r11d
-	xor	13($arg2),%r11b
-	or	%r11,%r10
-	movzbl	14($arg1),%r11d
-	xor	14($arg2),%r11b
-	or	%r11,%r10
-	movzbl	15($arg1),%r11d
-	xor	15($arg2),%r11b
-	or	%r11,%r10
-	cmovnz	$arg3,%rax
-	ret
-___
-}
 print<<___;
 
 .align	16
@@ -423,7 +355,7 @@ print<<___;
 .globl	OPENSSL_instrument_bus
 .type	OPENSSL_instrument_bus,\@abi-omnipotent
 .align	16
-OPENSSL_instrument_bus:
+OPENSSL_instrument_bus: #! size_t(ptr,size_t)
 .cfi_startproc
 	endbranch
 	mov	$arg1,$out	# tribute to Win64
@@ -458,7 +390,7 @@ OPENSSL_instrument_bus:
 .globl	OPENSSL_instrument_bus2
 .type	OPENSSL_instrument_bus2,\@abi-omnipotent
 .align	16
-OPENSSL_instrument_bus2:
+OPENSSL_instrument_bus2: #! size_t(ptr,size_t,size_t)
 .cfi_startproc
 	endbranch
 	mov	$arg1,$out	# tribute to Win64
@@ -468,7 +400,7 @@ ___
 if ($ENV{SARCASM}) {
 	# The outgoing-args-area spill (8(%rsp)) is outside the frame; give
 	# the function a small real frame and spill there instead.
-	print "\tsub	\$24,%rsp		#! alloca result size=24\n";
+	print "\tsub	\$24,%rsp\n";
 	print "\tmov	$cnt,0(%rsp)\n";
 } else {
 	print "\tmov	$cnt,$redzone(%rsp)\n";
@@ -531,7 +463,7 @@ print<<___;
 .globl	OPENSSL_ia32_${rdop}_bytes
 .type	OPENSSL_ia32_${rdop}_bytes,\@abi-omnipotent
 .align	16
-OPENSSL_ia32_${rdop}_bytes:
+OPENSSL_ia32_${rdop}_bytes: #! size_t(ptr,size_t)
 .cfi_startproc
 	endbranch
 	xor	%rax, %rax	# return value

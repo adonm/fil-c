@@ -195,8 +195,15 @@ Exactly two external programs (no shell, no `system()`/`popen()` anywhere
   archive's ownership/permission bits never leak onto the workdir) and to
   list archives (`-tf` for top-dir discovery, `-tvf` for the
   symlink/hardlink-escape audit). Before unpacking, projeny hard-errors on
-  absolute member paths, `..` components, and symlink/hardlink members
-  whose target is absolute or contains `..`.
+  absolute member paths, `..` member components, and symlink/hardlink
+  members whose target does not stay inside the tree: absolute targets are
+  refused, and relative targets are resolved lexically against the member's
+  directory (a symlink's target is member-directory-relative; a hardlink's
+  target is archive-root-relative, matching how tar links) — a target like
+  `b3sum/LICENSE_A2 -> ../LICENSE_A2` resolves back inside the tree and is
+  kept, while any target that climbs above the tree root is refused. The
+  same resolve-based check applies to the links `commit` collects from the
+  workdir and to the links a patch or merge creates.
 - `cp -a` for whole-tree copies (moving trees across filesystems when
   `rename(2)` returns `EXDEV` — scratch dirs live in the system temp dir,
   never inside the workdir — and snapshotting files for three-way merges).
@@ -273,7 +280,8 @@ conflicting merges, and diff/patch roundtrips),
 executable-bit preservation (including content-only changes on `+x` files),
 new executable files, rename-with-modification, manual delete+add rename
 detection, plain `a/`/`b/` and hand-written `p0` patch forms, shifted hunk
-offsets (fuzz), symlinks (preserve/retarget/dotdot-escape rejection),
+offsets (fuzz), symlinks (preserve/retarget/escape rejection, with in-tree
+`..` targets resolving inside the tree and kept),
 long single-line files, tabs, quote/tab filenames, extra-header
 preservation, no-change commits, and CLI error paths — plus optional
 `git apply --check` / `patch -p1 --dry-run` compatibility spot-checks that

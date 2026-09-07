@@ -544,6 +544,78 @@ std::string normalize_lexical(const std::string& p)
     return out;
 }
 
+LinkResolve resolve_link_target(const std::string& base_dir,
+                                const std::string& target,
+                                std::string* resolved)
+{
+    resolved->clear();
+    if (target.empty())
+        return LinkResolve::Inside;
+    if (target[0] == '/') {
+        *resolved = target;
+        return LinkResolve::Absolute;
+    }
+    // Normalize the member's directory first so the target is resolved
+    // against a clean tree-relative base. Bases are validated upstream (no
+    // "..", never absolute), but normalize them anyway so a malformed base
+    // can never make a target look shallower than it is.
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i <= base_dir.size()) {
+        size_t j = base_dir.find('/', i);
+        std::string comp = (j == std::string::npos)
+                               ? base_dir.substr(i)
+                               : base_dir.substr(i, j - i);
+        if (j == std::string::npos)
+            i = base_dir.size() + 1;
+        else
+            i = j + 1;
+        if (comp.empty() || comp == ".")
+            continue;
+        if (comp == "..") {
+            if (!parts.empty())
+                parts.pop_back();
+            continue;
+        }
+        parts.push_back(comp);
+    }
+    // Now fold in the target: "." is skipped and ".." pops; popping past the
+    // tree root is the escape we refuse.
+    bool escapes = false;
+    i = 0;
+    while (i <= target.size()) {
+        size_t j = target.find('/', i);
+        std::string comp = (j == std::string::npos) ? target.substr(i)
+                                                    : target.substr(i, j - i);
+        if (j == std::string::npos)
+            i = target.size() + 1;
+        else
+            i = j + 1;
+        if (comp.empty() || comp == ".")
+            continue;
+        if (comp == "..") {
+            if (!parts.empty() && parts.back() != "..") {
+                parts.pop_back();
+            } else {
+                escapes = true;
+                parts.push_back("..");
+            }
+            continue;
+        }
+        parts.push_back(comp);
+    }
+    std::string out;
+    for (size_t k = 0; k < parts.size(); ++k) {
+        if (k > 0)
+            out += "/";
+        out += parts[k];
+    }
+    if (out.empty())
+        out = ".";
+    *resolved = out;
+    return escapes ? LinkResolve::Escapes : LinkResolve::Inside;
+}
+
 std::string system_scratch_parent()
 {
     const char* tmp = getenv("TMPDIR");

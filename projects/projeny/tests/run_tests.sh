@@ -1172,14 +1172,63 @@ if [ -L "$T36/w/link" ] && [ "$(readlink "$T36/w/link")" = "other.txt" ]; then
 else
     fail "retargeted symlink survives re-setup" "ls: $(ls -l "$T36/w" 2>&1)"
 fi
-# Dot-dot link targets are rejected at unpack.
+# In-tree ".." link targets are kept: the check resolves the target against
+# the tree instead of string-matching "..", so "sub/../f.c" (which resolves
+# back inside e-1.0) unpacks fine.
 T36B="$ROOT/t36b"
-mkdir -p "$T36B/e-1.0"
+mkdir -p "$T36B/e-1.0/sub"
 printf 'x\n' > "$T36B/e-1.0/f.c"
 ln -s sub/../f.c "$T36B/e-1.0/esc"
 (cd "$T36B" && tar -czf e-1.0.tar.gz e-1.0)
 printf 'Archive: e-1.0.tar.gz\nOrigname: e-1.0\nName: e\n\n    Escape.\n' > "$T36B/e.projeny"
-run_in "$T36B" expect_fail "dotdot symlink target hard-errors" "$PROJENY" setup e.projeny
+run_in "$T36B" expect_ok "in-tree dotdot symlink target unpacks" "$PROJENY" setup e.projeny
+if [ -L "$T36B/e/esc" ] && [ "$(readlink "$T36B/e/esc")" = "sub/../f.c" ] && \
+   [ "$(cat "$T36B/e/esc")" = "x" ]; then
+    ok "in-tree dotdot link unpacked with target intact"
+else
+    fail "in-tree dotdot link unpacked with target intact" "$(ls -l "$T36B/e" 2>&1)"
+fi
+# A true escape (resolving above the tree root) is still rejected at unpack.
+T36D="$ROOT/t36d"
+mkdir -p "$T36D/f-1.0"
+printf 'x\n' > "$T36D/f-1.0/f.c"
+ln -s ../../escape "$T36D/f-1.0/esc"
+(cd "$T36D" && tar -czf f-1.0.tar.gz f-1.0)
+printf 'Archive: f-1.0.tar.gz\nOrigname: f-1.0\nName: f\n\n    Escape.\n' > "$T36D/f.projeny"
+run_in "$T36D" expect_fail "escaping dotdot symlink target hard-errors" "$PROJENY" setup f.projeny
+
+# An archive symlink whose ".." target resolves inside the tree survives the
+# whole setup -> commit -> package -> extract roundtrip with the link intact.
+T36C="$ROOT/t36c"
+mkdir -p "$T36C/s-1.0/sub"
+printf 'root\n' > "$T36C/s-1.0/rootfile"
+ln -s ../rootfile "$T36C/s-1.0/sub/link"
+(cd "$T36C" && tar -czf s-1.0.tar.gz s-1.0)
+printf 'Archive: s-1.0.tar.gz\nOrigname: s-1.0\nName: s\n\n    Dotdot roundtrip.\n' > "$T36C/s.projeny"
+run_in "$T36C" expect_ok "dotdot link archive setup" "$PROJENY" setup s.projeny
+if [ -L "$T36C/s/sub/link" ] && [ "$(readlink "$T36C/s/sub/link")" = "../rootfile" ]; then
+    ok "dotdot link unpacked with target intact"
+else
+    fail "dotdot link unpacked with target intact" "$(ls -l "$T36C/s/sub" 2>&1)"
+fi
+run_in "$T36C" expect_ok "commit collects dotdot link" "$PROJENY" commit s.projeny
+run_in "$T36C" expect_ok "package dotdot link tree" "$PROJENY" package s.projeny s-out.tar.gz
+mkdir -p "$T36C/unpack" && (cd "$T36C/unpack" && tar -xzf ../s-out.tar.gz)
+if [ -L "$T36C/unpack/s-out/sub/link" ] && \
+   [ "$(readlink "$T36C/unpack/s-out/sub/link")" = "../rootfile" ] && \
+   [ "$(cat "$T36C/unpack/s-out/sub/link")" = "root" ]; then
+    ok "dotdot link survives package roundtrip"
+else
+    fail "dotdot link survives package roundtrip" "$(ls -l "$T36C/unpack/s-out/sub" 2>&1)"
+fi
+run_in "$T36C" expect_ok "extract dotdot link tree" "$PROJENY" extract s.projeny extracted
+if [ -L "$T36C/extracted/sub/link" ] && \
+   [ "$(readlink "$T36C/extracted/sub/link")" = "../rootfile" ] && \
+   [ "$(cat "$T36C/extracted/sub/link")" = "root" ]; then
+    ok "dotdot link survives extract"
+else
+    fail "dotdot link survives extract" "$(ls -l "$T36C/extracted/sub" 2>&1)"
+fi
 
 # ----------------------------------------- 37. adjacent hunks stay exact
 T37="$ROOT/t37"
@@ -1656,7 +1705,8 @@ fi
 
 # ----------------------------------------- 46. patch symlink escape
 
-# Patch symlinks with absolute or .. targets must hard-error like tar.
+# Patch symlinks with absolute or tree-escaping targets must hard-error
+# like tar.
 
 T46="$ROOT/t46"
 
@@ -1851,7 +1901,7 @@ expect_file_contains "symlink-vs-file leaves markers" "$T50/w/f.c" "<<<<<<<"
 # ----------------------------------------- 50. symlink merge: escape rejected
 
 # Any link placed via merge is validated like patch/tar links: absolute and
-# .. targets are rejected, never created.
+# tree-escaping targets are rejected, never created.
 
 T51="$ROOT/t51"
 mkdir -p "$T51/w-1.0"
@@ -2140,7 +2190,8 @@ fi
 
 # ----------------------------------------- 58. symlinks: dangling, loop, subdir
 # Relative links that stay inside the tree roundtrip even when dangling or
-# self-referential; links with ".." are refused like tar escapes.
+# self-referential (including ".." targets that resolve back inside);
+# targets that resolve outside the tree are refused like tar escapes.
 T60="$ROOT/t60"
 mkdir -p "$T60/w-1.0/sub"
 printf 'base\n' > "$T60/w-1.0/base.c"

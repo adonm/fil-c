@@ -83,6 +83,26 @@ std::string absolutize(const std::string& p); // lexical, based on get_cwd()
 // Lexically normalize: collapse ".", duplicate slashes; ".." pops textually.
 std::string normalize_lexical(const std::string& p);
 
+// Outcome of lexically resolving a symlink/hardlink target against a tree
+// root.
+enum class LinkResolve {
+    Inside,   // resolves to a path inside the tree
+    Absolute, // the target itself is absolute
+    Escapes,  // normalization climbs above the tree root
+};
+
+// Lexically resolve a link target for a member whose directory (relative to
+// the tree root) is base_dir ("" or "." for the root itself). Absolute
+// targets report Absolute. Otherwise base_dir/target is normalized
+// component-wise: empty and "." components are dropped and ".." pops the
+// component stack; popping an empty stack means the target climbs above the
+// tree root and reports Escapes. *resolved always receives the target's path
+// relative to the tree root (with leading ".." components when it escapes),
+// for use in diagnostics.
+LinkResolve resolve_link_target(const std::string& base_dir,
+                                const std::string& target,
+                                std::string* resolved);
+
 // Create a unique temp dir parent/prefixXXXXXX (mkdtemp). Dies on failure.
 std::string make_tempdir(const std::string& parent, const std::string& prefix);
 // System scratch parent for temp dirs/files that must never live inside a

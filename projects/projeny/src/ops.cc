@@ -198,7 +198,8 @@ void merge_user_diff_onto(const std::string& base_tree, const std::string& fresh
                 snapshot = join_path(one.path, "theirs");
                 copy_recursive(tf, snapshot);
             }
-            bool clean = merge_one_file(bf, of, had_theirs ? snapshot : tf, dst);
+            bool clean = merge_one_file(bf, of, had_theirs ? snapshot : tf, dst,
+                                        workdir);
             if (!clean)
                 conflicts->push_back(rel);
         }
@@ -1656,7 +1657,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                 bool clean = merge_one_file(join_path(old_tree, rel),
                                             join_path(tree, rel),
                                             join_path(workdir, rel),
-                                            join_path(tree, rel));
+                                            join_path(tree, rel), tree);
                 if (!clean)
                     conflicts.push_back(rel);
             }

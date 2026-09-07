@@ -20,15 +20,15 @@ cd ..
 rm -rf pizlonated-patchelf
 hash -r
 
-tar -xf libunistring-1.2.tar.xz
-cd libunistring-1.2
+tar -xf libunistring-1.4.2.tar.xz
+cd libunistring-1.4.2
 ./configure --prefix=/usr    \
             --disable-static \
-            --docdir=/usr/share/doc/libunistring-1.2
+            --docdir=/usr/share/doc/libunistring-1.4.2
 make
 make install
 cd ..
-rm -rf libunistring-1.2
+rm -rf libunistring-1.4.2
 hash -r
 
 ./build_postlc2_chroot_project_libidn2.sh

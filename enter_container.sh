@@ -227,8 +227,8 @@ echo "Generating Dockerfile at ${DOCKERFILE_PATH}..."
 # NOTE: We're using the single-quote here document, so that things like $(nproc) are literal.
 cat > "${DOCKERFILE_PATH}" <<'DOCKERFILE_END'
 # A Docker image for Fil-C development and compilation.
-# Using Ubuntu 22.04 LTS for maximum binary compatibility across Linux distributions.
-FROM ubuntu:22.04
+# Using Ubuntu 24.04 LTS for maximum binary compatibility across Linux distributions.
+FROM ubuntu:24.04
 
 # Set non-interactive mode to avoid tzdata and other prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -307,9 +307,7 @@ RUN apt-get install -y \
     python3 python3-pip python3-setuptools \
     wget rsync file less sudo \
     libncurses-dev libssl-dev zlib1g-dev \
-    xz-utils bzip2 gzip gdb lldb mg screen tmux
-
-RUN pip install meson
+    xz-utils bzip2 gzip gdb lldb mg screen tmux meson
 
 DOCKERFILE_END
 

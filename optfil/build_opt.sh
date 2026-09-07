@@ -57,8 +57,8 @@ test -d $FILCSRC/pizfix/lib
 test -d $FILCSRC/build/bin
 test -e $FILCSRC/pizfix/$FILCLIB/libpizlo.so
 test -e $FILCSRC/build/bin/clang-20
-test -e $FILCSRC/projects/yolo-glibc-2.40/pizlonated-yolo-glibc.tar.gz
-test -e $FILCSRC/projects/user-glibc-2.40/pizlonated-user-glibc.tar.gz
+test -e $FILCSRC/projects/yolo-glibc-2.44/pizlonated-yolo-glibc.tar.gz
+test -e $FILCSRC/projects/user-glibc-2.44/pizlonated-user-glibc.tar.gz
 
 cd /opt/fil
 find . -mindepth 1 -maxdepth 1 -exec rm -rf {} \;
@@ -68,7 +68,7 @@ cp -r $FILCSRC/optfil/kernel-include include
 mkdir -v build
 cd build
 
-tar -xf $FILCSRC/projects/yolo-glibc-2.40/pizlonated-yolo-glibc.tar.gz
+tar -xf $FILCSRC/projects/yolo-glibc-2.44/pizlonated-yolo-glibc.tar.gz
 cd pizlonated-yolo-glibc
 mkdir -v build
 cd build
@@ -160,7 +160,7 @@ test ../fil
 rm -rf build
 mkdir -v build
 cd build
-tar -xf $FILCSRC/projects/user-glibc-2.40/pizlonated-user-glibc.tar.gz
+tar -xf $FILCSRC/projects/user-glibc-2.44/pizlonated-user-glibc.tar.gz
 cd pizlonated-user-glibc
 mkdir -v build
 cd build

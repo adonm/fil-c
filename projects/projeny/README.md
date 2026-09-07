@@ -44,16 +44,17 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
 - `setup`: unpacks `Archive:` next to the `.projeny` file, requires it to
   produce exactly one top-level directory named by `Origname:` (hard error
   otherwise), renames it to `Name:`, applies the patch, and writes
-  `<f>.projeny.status`. If the workdir already exists, the status file is
-  required; projeny reconstructs the expected tree from the status copy,
-  diffs it against the workdir to find your uncommitted changes, and merges
-  them onto a fresh setup of the *current* `.projeny` (which may name a
-  different `Archive:` — e.g. upstream moved to a newer tarball). Merge
-  failures leave conflict markers in the workdir and record the files in
-  the status file. A setup that leaves conflicts still finishes (workdir,
-  `.projeny` file, and status are all updated) but exits 1, so scripts
-  under `set -e` stop instead of building from a conflicted tree; fix the
-  files, `resolve` each one, and `commit`.
+  `<f>.projeny.status`. It also maintains a snapshot copy of the archive
+  (see "Archive snapshots" below). If the workdir already exists, the
+  status file is required; projeny reconstructs the expected tree from the
+  status copy, diffs it against the workdir to find your uncommitted
+  changes, and merges them onto a fresh setup of the *current* `.projeny`
+  (which may name a different `Archive:` — e.g. upstream moved to a newer
+  tarball). Merge failures leave conflict markers in the workdir and record
+  the files in the status file. A setup that leaves conflicts still finishes
+  (workdir, `.projeny` file, and status are all updated) but exits 1, so
+  scripts under `set -e` stop instead of building from a conflicted tree;
+  fix the files, `resolve` each one, and `commit`.
 - `commit`: requires the `.projeny` file to match the status copy exactly
   (else hard error: run `setup` to merge first) and refuses when conflicts
   are pending. Otherwise it diffs the workdir against the base archive and
@@ -185,6 +186,23 @@ Renamed: src/a.c -> src/b.c   (repeatable, optional)
 `setup` reconstruct the expected tree later (even across `Archive:`
 changes); conflicts and pending add/rm/mv operations are listed above the
 delimiter.
+
+## Archive snapshots
+
+Every status-file write also maintains `<Archive>.snapshot` — a byte-exact
+copy of the tarball — next to the archive itself (e.g.
+`lua-5.5.4.tar.gz.snapshot`). Trees are reconstructed from the status
+file's embedded `.projeny` copy (and from the local side of a
+git-conflicted `.projeny`), so their archives may no longer exist: setup
+and `status` prefer the snapshot over the archive and fall back to the
+archive for checkouts set up by older projenies. This keeps `projeny
+setup` (and therefore `package`/`extract` and every build script) working
+after the archive was deleted from git — typically because an upstream
+rebase to a newer tarball did `git rm` on the old one. Snapshots are plain
+untracked files, safe to delete at any time (the next setup recreates
+them); when both the archive and its snapshot are missing, setup fails
+with recovery guidance. Snapshots left behind by a tarball that no longer
+exists are not auto-cleaned.
 
 ## Runtime dependencies
 

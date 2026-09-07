@@ -5580,6 +5580,204 @@ else
     ok "pkgconf roundtrip skipped (no real project files)"
 fi
 
+# ------------------------------------- 127. setup maintains <Archive>.snapshot
+# setup records a byte-exact snapshot copy of the tarball it used, so a
+# later setup can still reconstruct the status-recorded tree after git
+# deletes the archive (e.g. an upstream rebase removes the old tarball).
+T127="$ROOT/t127"
+make_tarballs "$T127" fake
+write_projeny "$T127" fake 1.0 fake
+run_in "$T127" expect_ok "snapshot setup exits 0" "$PROJENY" setup fake.projeny
+if [ -f "$T127/fake-1.0.tar.gz.snapshot" ]; then
+    ok "setup writes snapshot next to archive"
+else
+    fail "setup writes snapshot next to archive" "ls: $(ls "$T127" 2>&1)"
+fi
+if [ -f "$T127/fake-1.0.tar.gz.snapshot" ] && \
+   cmp -s "$T127/fake-1.0.tar.gz.snapshot" "$T127/fake-1.0.tar.gz"; then
+    ok "snapshot is byte-exact copy of archive"
+else
+    fail "snapshot is byte-exact copy of archive" "sizes: $(wc -c < "$T127/fake-1.0.tar.gz.snapshot" 2>&1) vs $(wc -c < "$T127/fake-1.0.tar.gz" 2>&1)"
+fi
+run_in "$T127" expect_ok "snapshot setup-again exits 0" "$PROJENY" setup fake.projeny
+if [ -f "$T127/fake-1.0.tar.gz.snapshot" ] && \
+   cmp -s "$T127/fake-1.0.tar.gz.snapshot" "$T127/fake-1.0.tar.gz"; then
+    ok "setup-again keeps snapshot byte-exact"
+else
+    fail "setup-again keeps snapshot byte-exact"
+fi
+
+# ----------------------------- 128. setup after status archive deleted (clean)
+# The pulled upstream rebase rewrote the .projeny file to the new tarball and
+# git deleted the old one; setup must still work (snapshot-based E tree).
+T128="$ROOT/t128"
+make_tarballs "$T128" fake
+write_projeny "$T128" fake 1.0 fake
+(cd "$T128" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+rm "$T128/fake-1.0.tar.gz"
+write_projeny "$T128" fake 2.0 fake
+run_in "$T128" expect_ok "setup with deleted status archive exits 0" "$PROJENY" setup fake.projeny
+expect_file_contains "deleted-archive setup checks out v2" "$T128/fake/README" "hello v2"
+expect_file_contains "deleted-archive setup embeds new archive" "$T128/fake.projeny.status" "Archive: fake-2.0.tar.gz"
+if [ -f "$T128/fake-2.0.tar.gz.snapshot" ] && \
+   cmp -s "$T128/fake-2.0.tar.gz.snapshot" "$T128/fake-2.0.tar.gz"; then
+    ok "deleted-archive setup snapshots the new archive"
+else
+    fail "deleted-archive setup snapshots the new archive"
+fi
+
+# ------------------------------ 129. setup merge after status archive deleted
+# THE bug: uncommitted local changes must still merge onto the new tarball
+# even after the status-recorded archive was deleted from git.
+T129="$ROOT/t129"
+make_tarballs "$T129" fake
+write_projeny "$T129" fake 1.0 fake
+(cd "$T129" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T129/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+rm "$T129/fake-1.0.tar.gz"
+write_projeny "$T129" fake 2.0 fake
+run_in "$T129" expect_ok "merge setup with deleted status archive exits 0" "$PROJENY" setup fake.projeny
+expect_file_contains "deleted-archive merge keeps local edit" "$T129/fake/src/a.c" "delta = 100"
+expect_file_contains "deleted-archive merge takes v2 content" "$T129/fake/src/a.c" "alpha = 2"
+expect_file_not_contains "deleted-archive merge has no markers" "$T129/fake/src/a.c" "<<<<<<<"
+expect_file_contains "deleted-archive merge embeds new archive" "$T129/fake.projeny.status" "Archive: fake-2.0.tar.gz"
+
+# -------------------- 130. conflicting setup merge after archive deleted
+# Same scenario, but the local edit conflicts with the new tarball: setup
+# must still produce the usual markers + status conflict (not die on the
+# missing archive), and resolve/commit/setup recover normally.
+T130="$ROOT/t130"
+make_tarballs "$T130" fake
+write_projeny "$T130" fake 1.0 fake
+(cd "$T130" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T130/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int alpha = 1;", "int alpha = 999;")
+open(p, "w").write(s)
+EOF
+rm "$T130/fake-1.0.tar.gz"
+write_projeny "$T130" fake 2.0 fake
+run_in "$T130" expect_fail "conflicting setup with deleted archive exits nonzero" "$PROJENY" setup fake.projeny
+expect_file_contains "deleted-archive conflict leaves markers" "$T130/fake/src/a.c" "<<<<<<<"
+expect_file_contains "deleted-archive conflict lists conflict in status" "$T130/fake.projeny.status" "Conflict: src/a.c"
+printf 'int alpha = 777;\n\nint beta = 1;\n\nint gamma = 1;\n\nint delta = 1;\n' > "$T130/fake/src/a.c"
+run_in "$T130" expect_ok "deleted-archive conflict resolves" "$PROJENY" resolve fake.projeny fake/src/a.c
+run_in "$T130" expect_ok "deleted-archive conflict commits" "$PROJENY" commit fake.projeny
+run_in "$T130" expect_ok "setup after deleted-archive conflict resolution exits 0" "$PROJENY" setup fake.projeny
+expect_file_contains "post-resolution workdir keeps resolved content" "$T130/fake/src/a.c" "alpha = 777"
+expect_file_contains "post-resolution workdir keeps v2 content" "$T130/fake/README" "hello v2"
+
+# ------------------- 131. hard error when archive AND snapshot are both gone
+# Legacy checkouts set up before snapshots existed have neither file; setup
+# must still fail, but with an actionable message that mentions snapshots.
+T131="$ROOT/t131"
+make_tarballs "$T131" fake
+write_projeny "$T131" fake 1.0 fake
+(cd "$T131" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+rm "$T131/fake-1.0.tar.gz" "$T131/fake-1.0.tar.gz.snapshot"
+write_projeny "$T131" fake 2.0 fake
+out="$(cd "$T131" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "missing archive and snapshot fails setup"
+else
+    fail "missing archive and snapshot fails setup" "out: $out"
+fi
+case "$out" in
+*snapshot*)
+    ok "missing archive and snapshot error mentions snapshot"
+    ;;
+*)
+    fail "missing archive and snapshot error mentions snapshot" "out: $out"
+    ;;
+esac
+
+# --------------------------------- 132. snapshot refreshed on in-place change
+# A tarball rewritten in place (same name, new bytes) must refresh the
+# snapshot and be picked up by the next setup.
+T132="$ROOT/t132"
+make_tarballs "$T132" fake
+write_projeny "$T132" fake 1.0 fake
+(cd "$T132" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+T132NEW="$ROOT/t132-new"
+mkdir -p "$T132NEW/fake-1.0/src"
+cat > "$T132NEW/fake-1.0/src/a.c" <<'EOF'
+int alpha = 42;
+
+int beta = 1;
+
+int gamma = 1;
+
+int delta = 1;
+EOF
+printf 'hello v1\n' > "$T132NEW/fake-1.0/README"
+printf 'line one v1\n' > "$T132NEW/fake-1.0/src/b.c"
+(cd "$T132NEW" && tar -czf "$T132/fake-1.0.tar.gz" fake-1.0)
+run_in "$T132" expect_ok "in-place tarball change setup exits 0" "$PROJENY" setup fake.projeny
+if [ -f "$T132/fake-1.0.tar.gz.snapshot" ] && \
+   cmp -s "$T132/fake-1.0.tar.gz.snapshot" "$T132/fake-1.0.tar.gz"; then
+    ok "in-place tarball change refreshes snapshot"
+else
+    fail "in-place tarball change refreshes snapshot"
+fi
+expect_file_contains "in-place tarball change reaches workdir" "$T132/fake/src/a.c" "alpha = 42"
+
+# --------------------------- 133. status works after status archive deleted
+# status diffs the workdir against the status-recorded tree; it must prefer
+# the snapshot and still report local modifications after git deleted the
+# archive.
+T133="$ROOT/t133"
+make_tarballs "$T133" fake
+write_projeny "$T133" fake 1.0 fake
+(cd "$T133" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T133/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+rm "$T133/fake-1.0.tar.gz"
+out="$(cd "$T133" && "$PROJENY" status fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "status after deleted archive exits 0"
+else
+    fail "status after deleted archive exits 0" "rc=$rc out: $out"
+fi
+case "$out" in
+*Modified:\ src/a.c*)
+    ok "status after deleted archive lists modified file"
+    ;;
+*)
+    fail "status after deleted archive lists modified file" "out: $out"
+    ;;
+esac
+
+# --------------------------- 134. extract works after status archive deleted
+# End-to-end build-script flow: `projeny extract` runs setup internally, so
+# it must survive the deleted status archive and carry v2 plus local edits.
+T134="$ROOT/t134"
+make_tarballs "$T134" fake
+write_projeny "$T134" fake 1.0 fake
+(cd "$T134" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T134/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+rm "$T134/fake-1.0.tar.gz"
+write_projeny "$T134" fake 2.0 fake
+run_in "$T134" expect_ok "extract with deleted status archive exits 0" "$PROJENY" extract fake.projeny extracted
+expect_file_contains "deleted-archive extract carries v2 content" "$T134/extracted/src/a.c" "alpha = 2"
+expect_file_contains "deleted-archive extract carries local edit" "$T134/extracted/src/a.c" "delta = 100"
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

@@ -32,6 +32,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -108,6 +109,112 @@ std::string scratch_parent_for(const std::string& pdir)
     // readability.)
     (void)pdir;
     return system_scratch_parent();
+}
+
+// Snapshot path for an archive: the archive path plus ".snapshot"
+// (foo-1.2.3.tar.gz -> foo-1.2.3.tar.gz.snapshot). write_status maintains
+// the snapshot as a byte-exact copy of the archive, so a later setup can
+// reconstruct the tree recorded by the status file even after the archive
+// itself is deleted from git (e.g. an upstream rebase removes the old
+// tarball).
+std::string snapshot_path_for(const std::string& archive)
+{
+    return archive + ".snapshot";
+}
+
+// Byte-equality of two regular files: sizes first, then a chunked content
+// compare (tarballs can be tens of megabytes, so neither file is ever
+// loaded whole into memory). A missing file is equal to nothing.
+bool files_equal(const std::string& a, const std::string& b)
+{
+    struct stat sta, stb;
+    if (stat(a.c_str(), &sta) != 0 || stat(b.c_str(), &stb) != 0)
+        return false;
+    if (!S_ISREG(sta.st_mode) || !S_ISREG(stb.st_mode))
+        return false;
+    if (sta.st_size != stb.st_size)
+        return false;
+    std::ifstream fa(a.c_str(), std::ios::binary);
+    std::ifstream fb(b.c_str(), std::ios::binary);
+    if (!fa || !fb)
+        return false;
+    // Sizes match, so the two streams advance in lockstep and the loop
+    // ends when both hit EOF.
+    char bufa[65536], bufb[65536];
+    for (;;) {
+        fa.read(bufa, sizeof(bufa));
+        fb.read(bufb, sizeof(bufb));
+        std::streamsize na = fa.gcount();
+        std::streamsize nb = fb.gcount();
+        if (na != nb)
+            return false;
+        if (na == 0)
+            return true;
+        if (memcmp(bufa, bufb, (size_t)na) != 0)
+            return false;
+    }
+}
+
+// Make sure `archive` has a snapshot copy (see snapshot_path_for): a no-op
+// when the snapshot already matches the archive (the hot path: every
+// build's re-setup lands here), a rewrite when it does not, and a kept
+// snapshot when only the snapshot survives. Called from write_status —
+// i.e. exactly when setup/commit/rebase records what it used — so the
+// snapshot is never refreshed before the trees derived from the OLD
+// snapshot were built, and never left stale relative to the status file.
+void ensure_snapshot(const std::string& archive)
+{
+    std::string snap = snapshot_path_for(archive);
+    if (!path_exists(archive)) {
+        // The archive is gone (git deleted it): the snapshot, if any, is
+        // now the only record of what the last setup used, so keep it.
+        if (path_exists(snap))
+            return;
+        die("archive '" + archive +
+            "' does not exist and neither does its snapshot '" + snap +
+            "'; it is needed to record which archive this setup used in the "
+            "status file. This usually means the archive was deleted from "
+            "git (for example by a rebase to a newer tarball) and this "
+            "checkout was last set up by a projeny that did not keep "
+            "snapshots. Restore the archive (for example 'git checkout "
+            "<commit> -- <archive>') and run 'projeny setup' again");
+    }
+    if (path_exists(snap) && files_equal(archive, snap))
+        return;
+    // write_file_bytes is temp file + fsync + rename, so the snapshot
+    // switches atomically and a crash never leaves a half-written copy.
+    // It is byte-exact for regular files, which tarballs are.
+    write_file_bytes(snap, read_file_bytes(archive));
+}
+
+// Resolve which file to read when reconstructing what the LAST setup used
+// (a tree referred to by the status file or by one side of a git-conflicted
+// .projeny): prefer the snapshot — it is the byte-exact copy of what that
+// setup actually unpacked, so an in-place rewritten tarball does not corrupt
+// the reconstruction either — and fall back to the archive itself for
+// checkouts set up before snapshots existed. `what` is a human-readable
+// phrase for the error (e.g. "reconstruct the tree recorded by '<file>'").
+// Dies with recovery guidance when neither file exists. Archives named by
+// the CURRENT .projeny file must not go through here: those files must
+// exist, and unpack_single_top's plain error is the right one.
+std::string resolve_status_archive(const std::string& archive,
+                                   const std::string& what)
+{
+    std::string snap = snapshot_path_for(archive);
+    if (path_exists(snap))
+        return snap;
+    if (path_exists(archive))
+        return archive;
+    die("archive '" + archive +
+        "' does not exist and neither does its snapshot '" + snap +
+        "'; it is needed to " + what +
+        ". This usually means the archive was deleted from git (for example "
+        "by a rebase to a newer tarball) and this checkout was last set up "
+        "by a projeny that did not keep snapshots. If the workdir has no "
+        "local changes, remove the status file and the workdir and run "
+        "'projeny setup' again; otherwise restore the archive (for example "
+        "'git checkout <commit> -- <archive>') and run 'projeny setup' "
+        "again");
 }
 
 // Unpack `archive` expecting top dir `origname`, then apply `patch_wid`
@@ -281,6 +388,19 @@ void reconcile_binaries(const std::string& workdir,
 
 void write_status(const Ctx& ctx, const StatusData& sd)
 {
+    // Maintain the archive snapshot (see snapshot_path_for) so later setups
+    // can reconstruct the tree this status file records even after git
+    // deletes the archive. This is the single funnel for every status-file
+    // write in the codebase, and it runs only AFTER all tree work is done,
+    // so a setup's E-tree always sees the snapshot of the archive the
+    // PREVIOUS status recorded — a snapshot for the new .projeny is never
+    // written too early. The parse is safe: every caller of write_status
+    // just obtained sd.embedded from a .projeny that already parsed.
+    if (!trim(sd.embedded).empty()) {
+        ProjenyFile pf = ProjenyFile::parse_bytes(
+            sd.embedded, "embedded copy for '" + ctx.statusfile + "'");
+        ensure_snapshot(join_path(ctx.pdir, pf.archive));
+    }
     write_file_bytes(ctx.statusfile, sd.serialize());
 }
 
@@ -829,8 +949,13 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     std::string Etree;
     bool harder = false;
     if (have_workdir && harder_base != nullptr) {
+        // harder_base is status- or journal-derived, so its archive may
+        // have been deleted from git since the last setup: use the
+        // snapshot when it exists.
         Etree = build_tree_from_patch(
-            tE, join_path(ctx.pdir, harder_base->archive),
+            tE, resolve_status_archive(join_path(ctx.pdir, harder_base->archive),
+                                       "reconstruct the base tree for '" +
+                                           ctx.projeny_arg + "'"),
             harder_base->origname, harder_base->name, harder_base->patch,
             "embedded patch in '" + ctx.statusfile + "'");
         U_unc = diff_trees(Etree, actual_workdir, harder_base->name);
@@ -853,13 +978,19 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         }
     }
 
-    // Fresh upstream (theirs) and local (ours) trees.
+    // Fresh upstream (theirs) and local (ours) trees. The local side comes
+    // from a git-conflicted .projeny (or the setup journal), so git may
+    // have just deleted its archive (upstream rebase to a new tarball):
+    // read the snapshot when it exists.
     std::string Ntree = build_tree_from_patch(
         tN, join_path(ctx.pdir, cur.archive), cur.origname, cur.name, cur.patch,
         "upstream side of '" + ctx.projeny_arg + "'");
     std::string Otree = build_tree_from_patch(
-        tO, join_path(ctx.pdir, local.archive), local.origname, local.name,
-        local.patch, "local side of '" + ctx.projeny_arg + "'");
+        tO, resolve_status_archive(join_path(ctx.pdir, local.archive),
+                                   "reconstruct the local side of '" +
+                                       ctx.projeny_arg + "'"),
+        local.origname, local.name, local.patch,
+        "local side of '" + ctx.projeny_arg + "'");
 
     // Merge base: the shared base archive when both sides name the same
     // tarball and top dir (the common git-conflict case). Otherwise there
@@ -868,8 +999,11 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     // silently picking a side. No data loss either way.
     std::string Btree = tB.path;
     if (local.archive == cur.archive && local.origname == cur.origname) {
-        unpack_single_top(join_path(ctx.pdir, local.archive), tB.path,
-                          local.origname);
+        unpack_single_top(resolve_status_archive(join_path(ctx.pdir, local.archive),
+                                                 "reconstruct the merge base "
+                                                 "for '" + ctx.projeny_arg +
+                                                 "'"),
+                          tB.path, local.origname);
         Btree = join_path(tB.path, local.origname);
     }
 
@@ -1048,12 +1182,17 @@ int cmd_setup(const std::string& projeny_arg)
         ProjenyFile::parse_bytes(old.embedded, "embedded copy in '" + ctx.statusfile + "'");
     std::string old_workdir = join_path(ctx.pdir, oldpf.name);
 
-    // Reconstruct the expected tree E from the statusfile's copy.
+    // Reconstruct the expected tree E from the statusfile's copy. The
+    // archive comes from the status file, so it may have been deleted from
+    // git since (upstream rebase): read the snapshot copy when it exists.
     TempDir tE(scratch_parent_for(ctx.pdir), "projeny-E-");
     TempDir tN(scratch_parent_for(ctx.pdir), "projeny-N-");
     std::string Etree = build_tree_from_patch(
-        tE, join_path(ctx.pdir, oldpf.archive), oldpf.origname, oldpf.name,
-        oldpf.patch, "embedded patch in '" + ctx.statusfile + "'");
+        tE, resolve_status_archive(join_path(ctx.pdir, oldpf.archive),
+                                   "reconstruct the tree recorded by '" +
+                                       ctx.statusfile + "'"),
+        oldpf.origname, oldpf.name, oldpf.patch,
+        "embedded patch in '" + ctx.statusfile + "'");
 
     // User diff U = workdir vs E. Note diff direction: diff_trees(base,
     // workdir) so applying U to a fresh tree reproduces the workdir.
@@ -1784,8 +1923,16 @@ int cmd_status(const std::string& projeny_arg)
         }
         if (!is_dir(workdir))
             break;
+        // Snapshot-aware and fully tolerant: prefer the snapshot (the
+        // byte-exact copy of what the last setup actually used, which
+        // survives git deleting the archive), fall back to the archive
+        // itself (checkouts set up before snapshots existed), and skip the
+        // live-diff section entirely when neither exists.
         std::string archive_path = join_path(ctx.pdir, emb.archive);
-        if (!path_exists(archive_path))
+        std::string snap = snapshot_path_for(archive_path);
+        if (path_exists(snap))
+            archive_path = snap;
+        else if (!path_exists(archive_path))
             break;
         TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-status-");
         std::string Etree = build_tree_from_patch(
@@ -2424,6 +2571,13 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "updated) but exits 1, so scripts running under `set -e`\n"
                "(like `projeny package`) stop instead of building from a\n"
                "conflicted tree.\n"
+               "\n"
+               "setup also maintains <Archive>.snapshot, a byte-exact copy\n"
+               "of the tarball it used, next to the archive; the status\n"
+               "copy's tree is later reconstructed from that snapshot, so\n"
+               "setup keeps working after git deleted the archive (e.g. an\n"
+               "upstream rebase to a newer tarball). Snapshots are plain\n"
+               "untracked files, safe to delete.\n"
                "\n"
                "Files that vanished from the workdir without an explicit\n"
                "`projeny rm` (or rename) are treated as accidental loss, not\n"

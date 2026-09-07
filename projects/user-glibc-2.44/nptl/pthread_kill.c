@@ -21,6 +21,7 @@
 #include <pthreadP.h>
 #include <shlib-compat.h>
 #include <pizlonated_runtime.h>
+#include <pizlonated_syscalls.h>
 
 /* Sends SIGNO to THREADID.  If the thread is about to exit or has
    already exited on the kernel side, return NO_TID.  Otherwise return
@@ -63,9 +64,11 @@ __pthread_kill_implementation (pthread_t threadid, int signo, int no_tid)
 int
 __pthread_raise_internal (int signo)
 {
-  /* Use the gettid syscall so it works after vfork.  */
-  int ret = INTERNAL_SYSCALL_CALL (tgkill, __getpid (), __gettid(), signo);
-  return INTERNAL_SYSCALL_ERROR_P (ret) ? INTERNAL_SYSCALL_ERRNO (ret) : 0;
+  /* Use zsys_raise, which raises the signal in the calling thread (the host
+     raise(3) is implemented with tgkill), so it works after vfork.  A raw
+     tgkill syscall is not an option under Fil-C.  */
+  int ret = zsys_raise (signo);
+  return ret < 0 ? errno : 0;
 }
 
 int

@@ -16,11 +16,12 @@
    <https://www.gnu.org/licenses/>.  */
 
 #include <termios_internals.h>
+#include <pizlonated_syscalls.h>
 
 /* Return 1 if FD is a terminal, 0 if not, without changing errno  */
 int
 __isatty_nostatus (int fd)
 {
   struct termios2 k_termios;
-  return INTERNAL_SYSCALL_CALL (ioctl, fd, TCGETS2, &k_termios) == 0;
+  return zsys_ioctl (fd, TCGETS2, &k_termios) == 0;
 }

@@ -293,9 +293,10 @@ start_thread (void *arg)
 	goto out;
     }
 
-  if (__glibc_unlikely (GLRO (dl_debug_mask) & DL_DEBUG_TLS))
-    GLRO (dl_debug_printf) ("tls: thread starting; TID=%ld, TCB=0x%lx\n",
-			    (long int) pd->tid, (unsigned long int) pd);
+  /* Fil-C: removed the upstream TLS debug print that uses GLRO
+     (dl_debug_mask) and GLRO (dl_debug_printf); those live in ld.so and the
+     pizlonated libc cannot reference them (the pizlonated_ getters would be
+     undefined at link time).  */
 
   /* Initialize resolver state pointer.  */
   __resp = &pd->res;

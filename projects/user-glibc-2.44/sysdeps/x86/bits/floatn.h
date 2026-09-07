@@ -30,10 +30,12 @@
   */
 #if (defined __x86_64__							\
      ? __GNUC_PREREQ (4, 3)						\
-     : (defined __GNU__ ? __GNUC_PREREQ (4, 5) : __GNUC_PREREQ (4, 4))) \
-    || (__glibc_clang_prereq (3, 9)					\
-	&& (!defined __INTEL_LLVM_COMPILER				\
-	    || !defined SYCL_LANGUAGE_VERSION))
+     : (defined __GNU__ ? __GNUC_PREREQ (4, 5) : __GNUC_PREREQ (4, 4)))
+/* Fil-C: unlike the upstream 2.44 version of this file, we do not enable
+   _Float128 for Clang.  The Fil-C port does not build the float128 API (the
+   sysdeps/ieee754/float128 directory is not in the sysdep dirs), and
+   enabling __HAVE_FLOAT128 would make headers like stdio-common/
+   printf_fphex.c expect it to exist.  This matches user-glibc-2.40.  */
 # define __HAVE_FLOAT128 1
 #else
 # define __HAVE_FLOAT128 0

@@ -19,7 +19,30 @@
 #include <sysdep.h>
 #include <pthreadP.h>
 
-#warning "This implementation should be use just as reference or for bootstrapping"
+/* Fil-C: this is the generic version of the cancellable syscall code.  We
+   always use it for x86_64 (the arch-specific syscall_cancel.S is removed
+   because it is raw, non-pizlonated assembly whose symbols cannot bind to
+   the pizlonated_ getters that pizlonated C code references).
+
+   The upstream implementation marks the syscall window with assembler
+   labels (__syscall_cancel_arch_start/end).  Under Fil-C, references to
+   those labels from pizlonated code become pizlonated_ getters, which can
+   only bind to pizlonated (C) definitions, so we instead define them as
+   plain C marker functions and call them around the cancellation check and
+   the syscall.  This preserves the shape of the upstream contract (the
+   SIGCANCEL handler checks whether the interrupted PC is between the two
+   markers), though the markers are separate functions rather than labels
+   inside __syscall_cancel_arch.  */
+
+void
+__syscall_cancel_arch_start (void)
+{
+}
+
+void
+__syscall_cancel_arch_end (void)
+{
+}
 
 /* This is the generic version of the cancellable syscall code which
    adds the label guards (__syscall_cancel_arch_{start,end}) used on SIGCANCEL
@@ -55,18 +78,13 @@ __syscall_cancel_arch (volatile int *ch, __syscall_arg_t nr,
 		       __syscall_arg_t a5, __syscall_arg_t a6
 		       __SYSCALL_CANCEL7_ARG_DEF)
 {
-#define ADD_LABEL(__label)		\
-  asm volatile (			\
-    ".global " __label "\t\n"		\
-    __label ":\n");
-
-  ADD_LABEL ("__syscall_cancel_arch_start");
+  __syscall_cancel_arch_start ();
   if (__glibc_unlikely (*ch & CANCELED_BITMASK))
     __syscall_do_cancel();
 
   long int result = INTERNAL_SYSCALL_NCS_CALL (nr, a1, a2, a3, a4, a5, a6
 					       __SYSCALL_CANCEL7_ARG7);
-  ADD_LABEL ("__syscall_cancel_arch_end");
+  __syscall_cancel_arch_end ();
   if (__glibc_unlikely (INTERNAL_SYSCALL_ERROR_P (result)))
     return -INTERNAL_SYSCALL_ERRNO (result);
   return result;

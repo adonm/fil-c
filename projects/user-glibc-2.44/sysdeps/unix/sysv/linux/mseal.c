@@ -1,4 +1,5 @@
-/* Copyright (C) 2004-2026 Free Software Foundation, Inc.
+/* Linux mseal syscall implementation.
+   Copyright (C) 2024-2026 Free Software Foundation, Inc.
    This file is part of the GNU C Library.
 
    The GNU C Library is free software; you can redistribute it and/or
@@ -15,14 +16,15 @@
    License along with the GNU C Library; if not, see
    <https://www.gnu.org/licenses/>.  */
 
-#include <stdlib.h>
-#include <ldsodefs.h>
+#include <sys/mman.h>
+#include <stdfil.h>
 
-enum readonly_error_type
-__readonly_area (const void *ptr, size_t size)
+/* Seal pages to prevent further permission changes.  Fil-C does not
+   support this syscall; the pizlonated runtime has no zsys_mseal
+   forwarder, so fail loudly, just like other unimplemented syscalls.  */
+int
+mseal (void *__addr, size_t __len, unsigned long flags)
 {
-  /* Fil-C: the upstream implementation first asks the dynamic loader via
-     GLRO (dl_readonly_area); the pizlonated libc cannot reference ld.so
-     internals, so go straight to the /proc-based fallback.  */
-  return __readonly_area_fallback (ptr, size);
+  zerror("mseal not implemented.");
+  return -1;
 }

@@ -39,7 +39,8 @@ mlockall	-	mlockall	i:i	mlockall
 mount		EXTRA	mount		i:sssUp	__mount	mount
 mount_setattr	EXTRA	mount_setattr	i:isUpU	mount_setattr
 move_mount	EXTRA	move_mount	i:isisU	move_mount
-mseal		EXTRA	mseal		i:bUU	__mseal	mseal
+# Fil-C: mseal is not supported by the pizlonated runtime; it is implemented
+# as a zerror stub in mseal.c instead of a generated syscall wrapper.
 munlock		-	munlock		i:aU	munlock
 munlockall	-	munlockall	i:	munlockall
 nfsservctl	EXTRA	nfsservctl	i:ipp	__compat_nfsservctl	nfsservctl@GLIBC_2.0:GLIBC_2.28

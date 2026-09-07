@@ -319,7 +319,11 @@ __tunables_init (char **envp, char **argv)
   if (MALLOC_DEFAULT_THP_PAGESIZE > 0)
     TUNABLE_SET (glibc, malloc, hugetlb, 1);
 
-#if defined(SHARED) && defined (USE_LDCONFIG)
+#if 0 /* Fil-C: disabled.  The upstream tunables-from-ld.so.cache feature
+	 calls _dl_load_cache_tunables, which is provided by ld.so; the
+	 pizlonated libc cannot reference it (the pizlonated_ getter would be
+	 undefined at link time).  Tunables from GLIBC_TUNABLES in the
+	 environment still work.  */
   const char *prog_name = (argv && argv[0]) ? argv[0] : "";
   int prog_name_len = -1;
   const char *base_name = NULL;
@@ -466,7 +470,7 @@ __tunables_init (char **envp, char **argv)
 	skip_due_to_filter:;
 	}
     }
-#endif /* defined(SHARED) && defined (USE_LDCONFIG) */
+#endif /* Fil-C: disabled tunables-from-ld.so.cache block. */
 
   /* Ignore tunables for AT_SECURE programs.  */
   if (__libc_enable_secure)

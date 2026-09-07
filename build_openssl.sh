@@ -28,8 +28,15 @@
 set -e
 set -x
 
-cd projects/openssl-3.5.7
-extract_source
+cd projects
+# Extract the projeny source OUTSIDE the projeny workdir (projects/openssl):
+# the configured build tree has to stay behind after this script finishes
+# (build_perl.sh regenerates der_digests.h from it with pizfix perl), and
+# keeping the projeny workdir pristine keeps `projeny rebase` usable.
+rm -rf openssl-build/extracted-source
+mkdir -p openssl-build
+../filc/projeny extract openssl.projeny openssl-build/extracted-source
+cd openssl-build/extracted-source
 OPENSSL_ARGS="zlib"
 if [ "$ARCH" = aarch64 ]; then
     # The aarch64 assembly is yolo asm that pizlonated C cannot call, and

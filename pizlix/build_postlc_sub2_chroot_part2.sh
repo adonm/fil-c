@@ -132,8 +132,8 @@ CC="cc -yolo-assembler" ./config --prefix=/usr \
 make
 sed -i '/INSTALL_LIBS/s/libcrypto.a libssl.a//' Makefile
 make MANSUFFIX=ssl install
-mv -v /usr/share/doc/openssl /usr/share/doc/openssl-3.5.7
-cp -vfr doc/* /usr/share/doc/openssl-3.5.7
+mv -v /usr/share/doc/openssl /usr/share/doc/openssl-3.6.4
+cp -vfr doc/* /usr/share/doc/openssl-3.6.4
 cd ..
 rm -rf pizlonated-openssl
 hash -r

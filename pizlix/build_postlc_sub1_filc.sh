@@ -34,7 +34,7 @@ filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/perl-5.40.0 pizlonated-perl
 ./package-source.sh projects/XML-Parser-2.47 pizlonated-xml-parser
-./package-source.sh projects/openssl-3.5.7 pizlonated-openssl
+filc/projeny package projects/openssl.projeny projects/openssl/pizlonated-openssl.tar.gz
 ./package-source.sh projects/elfutils-0.191 pizlonated-elfutils
 filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/Python-3.12.5 pizlonated-cpython

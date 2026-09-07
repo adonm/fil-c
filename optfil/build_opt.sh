@@ -476,7 +476,7 @@ cd ..
 rm -rf pizlonated-zsh
 hash -r
 
-tar -xf $FILCSRC/projects/openssl-3.5.7/pizlonated-openssl.tar.gz
+tar -xf $FILCSRC/projects/openssl/pizlonated-openssl.tar.gz
 cd pizlonated-openssl
 CC='/opt/fil/bin/filcc -yolo-assembler' CXX=/opt/fil/bin/fil++ ./config --prefix=/opt/fil \
     --openssldir=/etc/ssl \
@@ -486,8 +486,8 @@ CC='/opt/fil/bin/filcc -yolo-assembler' CXX=/opt/fil/bin/fil++ ./config --prefix
 make -j `nproc`
 sed -i '/INSTALL_LIBS/s/libcrypto.a libssl.a//' Makefile
 make -j `nproc` MANSUFFIX=ssl install
-mv -v /opt/fil/share/doc/openssl /opt/fil/share/doc/openssl-3.5.7
-cp -vfr doc/* /opt/fil/share/doc/openssl-3.5.7
+mv -v /opt/fil/share/doc/openssl /opt/fil/share/doc/openssl-3.6.4
+cp -vfr doc/* /opt/fil/share/doc/openssl-3.6.4
 cd ..
 rm -rf pizlonated-openssl
 hash -r

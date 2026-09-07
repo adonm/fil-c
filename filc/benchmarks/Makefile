@@ -34,6 +34,17 @@ all: \
 	../../pizfix/benchmarks/spectralnorm \
 	../../pizfix/benchmarks/reversecomplement
 
+# The x86 SIMD benchmarks are compiled with the ISA flags that their x86
+# intrinsic code needs.  On other architectures (e.g. aarch64) the sources use
+# their portable emulation paths instead and don't need any ISA flags.
+ifeq ($(shell uname -m),aarch64)
+N_BODY_X86_FLAGS =
+SPECTRALNORM_X86_FLAGS =
+else
+N_BODY_X86_FLAGS = -march=ivybridge
+SPECTRALNORM_X86_FLAGS = -mavx
+endif
+
 clean:
 	rm -f ../../pizfix/benchmarks/stepanov_container
 	rm -f ../../pizfix/benchmarks/richards
@@ -85,7 +96,7 @@ clean:
 ../../pizfix/benchmarks/n-body: n-body.c
 	../../build/bin/clang \
 	    -o ../../pizfix/benchmarks/n-body \
-	    n-body.c -O3 -g -march=ivybridge
+	    n-body.c -O3 -g $(N_BODY_X86_FLAGS)
 
 ../../pizfix/benchmarks/n-body-2: n-body-2.c
 	../../build/bin/clang \
@@ -95,7 +106,7 @@ clean:
 ../../pizfix/benchmarks/spectralnorm: spectralnorm.c
 	../../build/bin/clang \
 	    -o ../../pizfix/benchmarks/spectralnorm \
-	    spectralnorm.c -O3 -g -mavx
+	    spectralnorm.c -O3 -g $(SPECTRALNORM_X86_FLAGS)
 
 ../../pizfix/benchmarks/reversecomplement: reversecomplement.c
 	../../build/bin/clang \

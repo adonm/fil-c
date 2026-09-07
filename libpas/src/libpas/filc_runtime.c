@@ -13034,6 +13034,35 @@ ssize_t filc_native_zsys_tee(filc_thread* my_thread, int fd_in, int fd_out, size
     return FILC_SYSCALL(my_thread, tee(fd_in, fd_out, len, flags));
 }
 
+ssize_t filc_native_zsys_vmsplice(filc_thread* my_thread, int fd, filc_ptr user_iov, size_t cnt,
+                                  unsigned flags)
+{
+    check_fd(fd);
+    ssize_t result;
+    /* vmsplice either transfers user memory into a pipe, or pipe data into user memory.  The
+       kernel picks the direction based on the fd's file mode: if the fd is writable then the
+       kernel reads the iovec buffers (vmsplice_to_pipe); if the fd is read-only then the kernel
+       writes the iovec buffers (vmsplice_to_user).  If the fd is not a pipe then the syscall
+       fails with EINVAL before any user memory is touched.  So, check the iovec buffers for the
+       kind of access that the kernel will actually perform. */
+    filc_extended_access_kind kind = filc_extended_no_access;
+    struct stat st;
+    filc_exit(my_thread);
+    if (!fstat(fd, &st) && S_ISFIFO(st.st_mode)) {
+        int accmode = fcntl(fd, F_GETFL) & O_ACCMODE;
+        kind = accmode == O_RDONLY ? filc_extended_write_access : filc_extended_read_access;
+    }
+    filc_enter(my_thread);
+    struct iovec* iov = filc_prepare_iovec(my_thread, user_iov, cnt, kind);
+    filc_exit(my_thread);
+    result = vmsplice(fd, iov, cnt, flags);
+    int my_errno = errno;
+    filc_enter(my_thread);
+    if (result < 0)
+        filc_set_errno(my_errno);
+    return result;
+}
+
 int filc_native_zsys_mknod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode,
                            unsigned long dev)
 {
@@ -13069,7 +13098,10 @@ struct ksigevent {
 int filc_native_zsys_timer_create(filc_thread* my_thread, int clockid, filc_ptr ksev_ptr,
                                   filc_ptr timer_ptr)
 {
-    filc_check_write(ksev_ptr, sizeof(struct ksigevent)); /* Maybe this could be check read? */
+    /* POSIX allows a null ksevp; in that case the kernel creates a timer that delivers SIGALRM
+       with default semantics. */
+    if (filc_ptr_ptr(ksev_ptr))
+        filc_check_write(ksev_ptr, sizeof(struct ksigevent)); /* Maybe this could be check read? */
     filc_check_write(timer_ptr, sizeof(int));
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_create, clockid,
                                            (struct ksigevent*)filc_ptr_ptr(ksev_ptr),

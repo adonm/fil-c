@@ -15,7 +15,118 @@
 #include <stdint.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdlib.h>
+#if defined(__x86_64__) || defined(__i386__)
 #include <smmintrin.h>  /* SSE 4.1 */
+#elif defined(__aarch64__)
+#include <arm_neon.h>
+
+/*
+ * ARM64 (NEON) equivalents for the handful of SSE intrinsics that this
+ * program uses.  Everything here is byte-granular.  The only subtle one is
+ * _mm_shuffle_epi8: pshufb zeroes a result byte when the control byte has the
+ * high bit set, while vqtbl1q zeroes it when the control byte is not in
+ * 0..15.  These agree for all control bytes used in this file (shuffles are
+ * only ever fed control bytes below 16 in lanes whose results are consumed,
+ * and negative control bytes zero the lane in both cases).
+ */
+typedef int8x16_t __m128i;
+
+static inline __m128i _mm_setr_epi8(signed char b0, signed char b1,
+    signed char b2, signed char b3, signed char b4, signed char b5,
+    signed char b6, signed char b7, signed char b8, signed char b9,
+    signed char b10, signed char b11, signed char b12, signed char b13,
+    signed char b14, signed char b15)
+{
+  signed char buf[16] = { b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11,
+    b12, b13, b14, b15 };
+  return vld1q_s8(buf);
+}
+
+static inline __m128i _mm_setzero_si128(void)
+{
+  return vdupq_n_s8(0);
+}
+
+static inline __m128i _mm_set1_epi8(signed char x)
+{
+  return vdupq_n_s8(x);
+}
+
+static inline __m128i _mm_add_epi8(__m128i a, __m128i b)
+{
+  return vaddq_s8(a, b);
+}
+
+static inline __m128i _mm_sub_epi8(__m128i a, __m128i b)
+{
+  return vsubq_s8(a, b);
+}
+
+/* Selects b's byte where mask's byte has the high bit set, a's byte where it
+ * does not.  (vshrq_n_s8 is an arithmetic shift, so it replicates each sign
+ * bit into a full 0x00/0xff byte selector for vbslq.) */
+static inline __m128i _mm_blendv_epi8(__m128i a, __m128i b, __m128i mask)
+{
+  return vbslq_s8(vreinterpretq_u8_s8(vshrq_n_s8(mask, 7)), b, a);
+}
+
+static inline __m128i _mm_shuffle_epi8(__m128i a, __m128i ctrl)
+{
+  return vreinterpretq_s8_u8(
+      vqtbl1q_u8(vreinterpretq_u8_s8(a), vreinterpretq_u8_s8(ctrl)));
+}
+
+/* PALIGNR concatenates a (high 16 bytes) with b (low 16 bytes), shifts right
+ * by n bytes, and keeps the low 16 bytes.  VEXT computes exactly that. */
+#define _mm_alignr_epi8(a, b, n) vextq_s8((b), (a), (n))
+
+/* Byte-shift right with zero fill. */
+#define _mm_bsrli_si128(a, n) vextq_s8((a), vdupq_n_s8(0), (n))
+
+static inline int _mm_cvtsi128_si32(__m128i a)
+{
+  /* movd extracts the low 32 bits (not the sign-extended low byte). */
+  return vgetq_lane_s32(vreinterpretq_s32_s8(a), 0);
+}
+
+/* bit k of the result is the high bit of byte k. */
+static inline int _mm_movemask_epi8(__m128i a)
+{
+  uint16x8_t w = vandq_u16(vreinterpretq_u16_s8(a), vdupq_n_u16(0x8080));
+  uint8x8_t even = vshrn_n_u16(w, 7);
+  uint8x8_t odd = vshr_n_u8(vshrn_n_u16(w, 8), 7);
+  uint16x8_t pair = vaddl_u8(even, vshl_n_u8(odd, 1));
+  uint32x4_t q = vorrq_u32(vandq_u32(vreinterpretq_u32_u16(pair),
+          vdupq_n_u32(0xffff)),
+      vshrq_n_u32(vreinterpretq_u32_u16(pair), 14));
+  uint64x2_t f = vreinterpretq_u64_u32(q);
+  uint64_t l = vgetq_lane_u64(f, 0);
+  uint64_t h = vgetq_lane_u64(f, 1);
+  l = (l & 0xffffffffu) | (l >> 28);
+  h = (h & 0xffffffffu) | (h >> 28);
+  return (int)(uint32_t)(l | (h << 8));
+}
+
+/* ~a & b */
+static inline __m128i _mm_andnot_si128(__m128i a, __m128i b)
+{
+  return vreinterpretq_s8_u8(vbicq_u8(vreinterpretq_u8_s8(b),
+      vreinterpretq_u8_s8(a)));
+}
+
+static inline __m128i _mm_cmpgt_epi8(__m128i a, __m128i b)
+{
+  return vcgtq_s8(a, b);
+}
+
+static inline __m128i _mm_cmpeq_epi8(__m128i a, __m128i b)
+{
+  return vceqq_s8(a, b);
+}
+#else
+#error "Unsupported architecture"
+#endif
 
 #define MAX_N 16
 #define MAX_BLOCKS 24

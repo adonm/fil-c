@@ -21,6 +21,7 @@
 #include <pthreadP.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdfil.h>
 
 /* Try to get a machine dependent instruction which will make the
    program crash.  This is used in case everything else fails.  */
@@ -74,26 +75,12 @@ __abort_lock_unlock (const internal_sigset_t *set)
 _Noreturn void
 abort (void)
 {
-  raise (SIGABRT);
+  zerror ("abort(3) called.");
 
-  /* There is a SIGABRT handle installed and it returned, or SIGABRT was
-     blocked or ignored.  In this case use a AS-safe lock to prevent sigaction
-     to change the signal disposition again, set the handle to default
-     disposition, and re-raise the signal.  Even if POSIX state this step is
-     optional, this a QoI by forcing the process termination through the
-     signal handler.  */
-  __abort_lock_wrlock (NULL);
-
-  struct sigaction act = {.sa_handler = SIG_DFL, .sa_flags = 0 };
-  __sigfillset (&act.sa_mask);
-  __libc_sigaction (SIGABRT, &act, NULL);
-  __pthread_raise_internal (SIGABRT);
-  internal_signal_unblock_signal (SIGABRT);
-
-  /* This code should be unreachable, try the arch-specific code and the
-     syscall fallback.  */
-  ABORT_INSTRUCTION;
-
-  _exit (127);
+  /* If even this fails try to use the provided instruction to crash
+     or otherwise make sure we never return.  */
+  while (1)
+    /* Try for ever and ever.  */
+    ABORT_INSTRUCTION;
 }
 libc_hidden_def (abort)

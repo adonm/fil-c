@@ -17,12 +17,20 @@
 
 #include <errno.h>
 #include <ucontext.h>
+#include <pizlonated_runtime.h>
+#include <stdlib.h>
 
 int
 getcontext (ucontext_t *ucp)
 {
-  __set_errno (ENOSYS);
-  return -1;
+  ucp->__uc_fiber_context = zfiber_context_new ();
+  zfiber_context_bind_sigset (ucp->__uc_fiber_context, &ucp->uc_sigmask);
+  zfiber_context_getcontext (ucp->__uc_fiber_context);
+  ucp->uc_link = NULL;
+  ucp->uc_stack.ss_sp = NULL;
+  ucp->uc_stack.ss_flags = 0;
+  ucp->uc_stack.ss_size = 0;
+  return 0;
 }
 
 

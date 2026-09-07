@@ -104,6 +104,8 @@
 #ifndef _OBSTACK_H
 #define _OBSTACK_H 1
 
+#include <stdfil.h>
+
 /* We need the type of a pointer subtraction.  If __PTRDIFF_TYPE__ is
    defined, as with GNU C, use that; that way we don't pollute the
    namespace with <stddef.h>'s symbols.  Otherwise, include <stddef.h>
@@ -120,7 +122,10 @@
    aligning P to the next multiple of A + 1.  B and P must be of type
    char *.  A + 1 must be a power of 2.  */
 
-#define __BPTR_ALIGN(B, P, A) ((B) + (((P) - (B) + (A)) & ~(A)))
+#define __BPTR_ALIGN(B, P, A)                                            \
+  __extension__                                                          \
+    ({ char *__P = (char *) (P);                                         \
+       zmkptr(__P, (PTR_INT_TYPE)((B) + ((__P - (B) + (A)) & ~(A)))); })
 
 /* Similar to _BPTR_ALIGN (B, P, A), except optimize the common case
    where pointers can be converted to integers, aligned as integers,
@@ -360,8 +365,7 @@ extern int obstack_exit_failure;
   __extension__								      \
     ({ struct obstack *__o = (OBSTACK);					      \
        int __len = (length);						      \
-       if (__o->chunk_limit - __o->next_free < __len)			      \
-	 _obstack_newchunk (__o, __len);				      \
+	   _obstack_newchunk (__o, __len);				      \
        obstack_blank_fast (__o, __len);					      \
        (void) 0; })
 
@@ -471,8 +475,7 @@ extern int obstack_exit_failure;
 
 # define obstack_blank(h, length)					      \
   ((h)->temp.tempint = (length),					      \
-   (((h)->chunk_limit - (h)->next_free < (h)->temp.tempint)		      \
-   ? (_obstack_newchunk ((h), (h)->temp.tempint), 0) : 0),		      \
+   _obstack_newchunk ((h), (h)->temp.tempint),		      \
    obstack_blank_fast (h, (h)->temp.tempint))
 
 # define obstack_alloc(h, length)					      \

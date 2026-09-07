@@ -30,7 +30,6 @@ headers	:= execinfo.h
 # build, its _FORTIFY_SOURCE support will be too.
 routines = \
   $(static-only-routines) \
-  ____longjmp_chk \
   asprintf_chk \
   backtrace \
   backtracesyms \
@@ -57,14 +56,9 @@ routines = \
   getwd_chk \
   inet_ntop_chk \
   inet_pton_chk \
-  longjmp_chk \
   mbsnrtowcs_chk \
   mbsrtowcs_chk \
   mbstowcs_chk \
-  memcpy_chk \
-  memmove_chk \
-  mempcpy_chk \
-  memset_chk \
   memset_explicit_chk \
   noophooks \
   obprintf_chk \
@@ -120,7 +114,6 @@ routines = \
   wmemcpy_chk \
   wmemmove_chk \
   wmempcpy_chk \
-  wmemset_chk \
   wprintf_chk \
   # routines
 static-only-routines := stack_chk_fail_local

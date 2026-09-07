@@ -17,12 +17,13 @@
 
 #include <errno.h>
 #include <ucontext.h>
+#include <pizlonated_runtime.h>
 
 int
 setcontext (const ucontext_t *ucp)
 {
-  __set_errno (ENOSYS);
-  return -1;
+  zfiber_context_setcontext (ucp->__uc_fiber_context);
+  return 0;
 }
 
 

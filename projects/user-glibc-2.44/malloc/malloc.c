@@ -3065,6 +3065,9 @@ tcache_thread_shutdown (void)
 static void * __attribute_noinline__
 __libc_malloc2 (size_t bytes)
 {
+  if ((true))
+    return zgc_alloc(bytes);
+  
   mstate ar_ptr;
   void *victim;
 
@@ -3135,6 +3138,11 @@ tcache_free_init (void *mem)
 void
 __libc_free (void *mem)
 {
+  if ((true)) {
+    zgc_free(mem);
+    return;
+  }
+  
   mchunkptr p;                          /* chunk corresponding to mem */
 
   if (mem == NULL)                              /* free(0) has no effect */
@@ -3188,6 +3196,9 @@ libc_hidden_def (__libc_free)
 void *
 __libc_realloc (void *oldmem, size_t bytes)
 {
+  if ((true))
+    return zgc_realloc(oldmem, bytes);
+  
   mstate ar_ptr;
   INTERNAL_SIZE_T nb;         /* padded request size */
 
@@ -3299,6 +3310,9 @@ libc_hidden_def (__libc_realloc)
 void *
 __libc_memalign (size_t alignment, size_t bytes)
 {
+  if ((true))
+    return zgc_aligned_alloc(alignment, bytes);
+  
   /* Round the alignment up to a power of 2.  Reject alignments that overflow
      when rounded up.  Zero alignment is handled by _mid_memalign.  */
   if (__glibc_unlikely (!powerof2 (alignment)))
@@ -3321,6 +3335,9 @@ void *
 weak_function
 aligned_alloc (size_t alignment, size_t bytes)
 {
+  if ((true))
+    return zgc_aligned_alloc(alignment, bytes);
+  
 /* Starting with ISO C17 the standard requires an error for alignments
    that are not supported.  Only integral powers of 2 are valid.  */
   if (!stdc_has_single_bit (alignment))
@@ -3404,13 +3421,22 @@ _mid_memalign (size_t alignment, size_t bytes)
 void *
 __libc_valloc (size_t bytes)
 {
-  return _mid_memalign (GLRO (dl_pagesize), bytes);
+  size_t pagesize = GLRO (dl_pagesize);
+
+  if ((true))
+    return zgc_aligned_alloc(pagesize, bytes);
+  
+  return _mid_memalign (pagesize, bytes);
 }
 
 void *
 __libc_pvalloc (size_t bytes)
 {
   size_t pagesize = GLRO (dl_pagesize);
+
+  if ((true))
+    return zgc_aligned_alloc(pagesize, bytes);
+  
   size_t rounded_bytes;
   /* ALIGN_UP with overflow check.  */
   if (__glibc_unlikely (__builtin_add_overflow (bytes,
@@ -3520,6 +3546,9 @@ __libc_calloc (size_t n, size_t elem_size)
        __set_errno (ENOMEM);
        return NULL;
     }
+
+  if ((true))
+    return zgc_alloc(bytes);
 
 #if USE_TCACHE
   size_t nb = checked_request2size (bytes);
@@ -4506,6 +4535,12 @@ mtrim (mstate av, size_t pad)
 int
 __malloc_trim (size_t s)
 {
+  if ((true)) {
+    zgc_request_and_wait();
+    zscavenge_synchronously();
+    return 1;
+  }
+  
   int result = 0;
 
   mstate ar_ptr = &main_arena;
@@ -4544,6 +4579,11 @@ musable (void *mem)
 size_t
 __malloc_usable_size (void *m)
 {
+  if ((true)) {
+    if (!zhasvalidcap(m) || !zinbounds(m))
+      return 0;
+    return (char*)zgetupper(m) - (char*)m;
+  }
   if (m == NULL)
     return 0;
   return musable (m);
@@ -4644,6 +4684,9 @@ __libc_mallinfo (void)
 void
 __malloc_stats (void)
 {
+  if ((true))
+    return;
+  
   int i;
   mstate ar_ptr;
   unsigned int in_use_b = mp_.mmapped_mem, system_b = in_use_b;
@@ -4884,6 +4927,9 @@ do_set_hugetlb (size_t value)
 int
 __libc_mallopt (int param_number, int value)
 {
+  if ((true))
+    return 1;
+  
   mstate av = &main_arena;
   int res = 1;
 
@@ -5116,6 +5162,11 @@ malloc_printerr_tail (const char *str)
 int
 __posix_memalign (void **memptr, size_t alignment, size_t size)
 {
+  if ((true)) {
+    *memptr = zgc_aligned_alloc(alignment, size);
+    return 0;
+  }
+  
   /* Test whether the SIZE argument is valid.  It must be a power of
      two multiple of sizeof (void *) (which must be either 4 or 8).  */
   if (alignment < sizeof (void *) || !powerof2 (alignment))
@@ -5135,6 +5186,9 @@ __posix_memalign (void **memptr, size_t alignment, size_t size)
 int
 __malloc_info (int options, FILE *fp)
 {
+  if ((true))
+    return 0;
+  
   /* For now, at least.  */
   if (options != 0)
     return EINVAL;

@@ -685,11 +685,9 @@ sysdep-rtld-routines += \
   # sysdep-rtld-routines
 
 others += \
-  pldd \
   # others
 
 install-bin += \
-  pldd \
   # install-bin
 
 $(objpfx)pldd: $(objpfx)xmalloc.o

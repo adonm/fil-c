@@ -172,7 +172,6 @@ endif # $(subdir) == math
 
 ifeq ($(subdir),setjmp)
 gen-as-const-headers += jmp_buf-ssp.sym
-sysdep_routines += __longjmp_cancel
 endif
 
 ifeq ($(subdir),string)

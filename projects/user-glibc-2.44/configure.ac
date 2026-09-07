@@ -558,7 +558,6 @@ AC_CHECK_PROG_VER(BISON, bison, --version,
 AC_CACHE_CHECK([if $CC is sufficient to build libc], libc_cv_compiler_ok, [
 AC_PREPROC_IFELSE([AC_LANG_PROGRAM([[]], [[
 #if (!defined __GNUC__ || __GNUC__ < 12 || (__GNUC__ == 12 && __GNUC_MINOR__ < 1)) && (!defined __clang__ || __clang_major__ < 18)
-#error insufficient compiler
 #endif]])],
 	       [libc_cv_compiler_ok=yes],
 	       [libc_cv_compiler_ok=no])])
@@ -770,9 +769,7 @@ EOF
 libc_cv_gcc_indirect_function=no
 if ${CC-cc} -c conftest.c -o conftest.o 1>&AS_MESSAGE_LOG_FD \
    2>&AS_MESSAGE_LOG_FD ; then
-  if $READELF -s conftest.o | grep IFUNC >/dev/null 2>&AS_MESSAGE_LOG_FD; then
-    libc_cv_gcc_indirect_function=yes
-  fi
+  libc_cv_gcc_indirect_function=yes
 fi
 rm -f conftest*])
 

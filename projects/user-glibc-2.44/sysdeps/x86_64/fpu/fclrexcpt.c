@@ -17,37 +17,12 @@
    <https://www.gnu.org/licenses/>.  */
 
 #include <fenv.h>
-#include <math-inline-asm.h>
+#include <pizlonated_math.h>
 
 int
 __feclearexcept (int excepts)
 {
-  fenv_t temp;
-  unsigned int mxcsr;
-
-  /* Mask out unsupported bits/exceptions.  */
-  excepts &= FE_ALL_EXCEPT;
-
-  /* Bah, we have to clear selected exceptions.  Since there is no
-     `fldsw' instruction we have to do it the hard way.  */
-  __asm__ ("fnstenv %0" : "=m" (temp));
-
-  /* Clear the relevant bits.  */
-  temp.__status_word &= excepts ^ FE_ALL_EXCEPT;
-
-  /* Put the new data in effect.  */
-  __asm__ ("fldenv %0" : : "m" (temp));
-
-  /* And the same procedure for SSE.  */
-  stmxcsr_inline_asm (&mxcsr);
-
-  /* Clear the relevant bits.  */
-  mxcsr &= ~excepts;
-
-  /* And put them into effect.  */
-  ldmxcsr_inline_asm (&mxcsr);
-
-  /* Success.  */
+  zmath_feclearexcept(excepts);
   return 0;
 }
 libm_hidden_def (__feclearexcept)

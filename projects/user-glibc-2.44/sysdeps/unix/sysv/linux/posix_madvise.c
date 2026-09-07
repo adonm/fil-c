@@ -17,6 +17,7 @@
 
 #include <sysdep.h>
 #include <sys/mman.h>
+#include <pizlonated_syscalls.h>
 
 
 int
@@ -31,6 +32,5 @@ posix_madvise (void *addr, size_t len, int advice)
   if (advice == POSIX_MADV_DONTNEED)
     return 0;
 
-  int result = INTERNAL_SYSCALL_CALL (madvise, addr, len, advice);
-  return INTERNAL_SYSCALL_ERRNO (result);
+  return zsys_madvise (addr, len, advice);
 }

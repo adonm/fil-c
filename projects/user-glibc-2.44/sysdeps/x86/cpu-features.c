@@ -25,15 +25,12 @@
 #include <dl-minsigstacksize.h>
 #include <dl-hwcap2.h>
 #include <gcc-macros.h>
+#include <stdfil.h>
 
 extern void TUNABLE_CALLBACK (set_hwcaps) (tunable_val_t *)
   attribute_hidden;
 
 #if defined SHARED
-extern void _dl_tlsdesc_dynamic_fxsave (void) attribute_hidden;
-extern void _dl_tlsdesc_dynamic_xsave (void) attribute_hidden;
-extern void _dl_tlsdesc_dynamic_xsavec (void) attribute_hidden;
-
 # ifdef __x86_64__
 #  include <dl-plt-rewrite.h>
 
@@ -54,15 +51,7 @@ TUNABLE_CALLBACK (set_plt_rewrite) (tunable_val_t *valp)
 		 : plt_rewrite_jmp);
     }
 }
-# else
-extern void _dl_tlsdesc_dynamic_fnsave (void) attribute_hidden;
 # endif
-#endif
-
-#ifdef __x86_64__
-extern void _dl_runtime_resolve_fxsave (void) attribute_hidden;
-extern void _dl_runtime_resolve_xsave (void) attribute_hidden;
-extern void _dl_runtime_resolve_xsavec (void) attribute_hidden;
 #endif
 
 #ifdef __LP64__
@@ -165,9 +154,8 @@ update_active (struct cpu_features *cpu_features)
   if (CPU_FEATURES_CPU_P (cpu_features, OSXSAVE))
     {
       unsigned int xcrlow;
-      unsigned int xcrhigh;
       CPU_FEATURE_SET_ACTIVE (cpu_features, AVX10);
-      asm ("xgetbv" : "=a" (xcrlow), "=d" (xcrhigh) : "c" (0));
+      xcrlow = (unsigned)zxgetbv();
       /* Is YMM and XMM state usable?  */
       if ((xcrlow & (bit_YMM_state | bit_XMM_state))
 	  == (bit_YMM_state | bit_XMM_state))
@@ -1291,52 +1279,12 @@ no_cpuid:
 	       TUNABLE_CALLBACK (set_x86_shstk));
 #endif
 
-  if (MINIMUM_X86_ISA_LEVEL >= AVX_X86_ISA_LEVEL
-      || cpu_features->xsave_state_size != 0)
-    {
-      if (CPU_FEATURE_USABLE_P (cpu_features, XSAVEC))
-	{
-#ifdef __x86_64__
-	  GLRO(dl_x86_64_runtime_resolve) = _dl_runtime_resolve_xsavec;
-#endif
-#ifdef SHARED
-	  GLRO(dl_x86_tlsdesc_dynamic) = _dl_tlsdesc_dynamic_xsavec;
-#endif
-	}
-      else
-	{
-#ifdef __x86_64__
-	  GLRO(dl_x86_64_runtime_resolve) = _dl_runtime_resolve_xsave;
-#endif
-#ifdef SHARED
-	  GLRO(dl_x86_tlsdesc_dynamic) = _dl_tlsdesc_dynamic_xsave;
-#endif
-	}
-    }
-  else
-    {
-#ifdef __x86_64__
-      GLRO(dl_x86_64_runtime_resolve) = _dl_runtime_resolve_fxsave;
-# ifdef SHARED
-      GLRO(dl_x86_tlsdesc_dynamic) = _dl_tlsdesc_dynamic_fxsave;
-# endif
-#else
-# ifdef SHARED
-      if (CPU_FEATURE_USABLE_P (cpu_features, FXSR))
-	GLRO(dl_x86_tlsdesc_dynamic) = _dl_tlsdesc_dynamic_fxsave;
-      else
-	GLRO(dl_x86_tlsdesc_dynamic) = _dl_tlsdesc_dynamic_fnsave;
-# endif
-#endif
-    }
-
 #ifdef SHARED
 # ifdef __x86_64__
   TUNABLE_GET (plt_rewrite, tunable_val_t *,
 	       TUNABLE_CALLBACK (set_plt_rewrite));
 # endif
-#else
+#endif
   /* NB: In libc.a, call init_cacheinfo.  */
   init_cacheinfo ();
-#endif
 }

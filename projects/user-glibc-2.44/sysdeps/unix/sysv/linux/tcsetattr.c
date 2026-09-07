@@ -16,6 +16,7 @@
    <https://www.gnu.org/licenses/>.  */
 
 #include <termios_internals.h>
+#include <pizlonated_syscalls.h>
 
 #define static_assert_equal(x,y) _Static_assert ((x) == (y), #x " != " #y)
 
@@ -75,7 +76,7 @@ __tcsetattr (int fd, int optional_actions, const struct termios *termios_p)
   else
     cmd += TCSETS;
 
-  return INLINE_SYSCALL_CALL (ioctl, fd, cmd, &k_termios);
+  return zsys_ioctl (fd, cmd, &k_termios);
 }
 libc_hidden_def (__tcsetattr)
 

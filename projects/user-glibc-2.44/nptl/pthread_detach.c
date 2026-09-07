@@ -32,7 +32,12 @@ ___pthread_detach (pthread_t th)
      undefined to call pthread_detach if TH refers to a non-joinable thread.
 
      In the case the thread is being terminated (THREAD_STATE_EXITING),
-     pthread_detach will be responsible for cleaning up the stack.  */
+     pthread_detach will be responsible for cleaning up the stack.
+
+     In Fil-C, joiners keep track of their claim in PD->joinid and the
+     exiting thread flips PD->joinid from NULL to 1 (for a joinable thread)
+     or from PD to PD + 1 (for a detached thread), so PD->joinid is marked
+     as detached here as well.  */
 
   unsigned int prevstate = atomic_load_relaxed (&pd->joinstate);
   do
@@ -50,6 +55,11 @@ ___pthread_detach (pthread_t th)
     }
   while (!atomic_compare_exchange_weak_acquire (&pd->joinstate, &prevstate,
 						THREAD_STATE_DETACHED));
+
+  /* Mark the thread as detached in PD->joinid too.  If somebody is already
+     joining the thread, the compare-and-exchange fails and the joiner will
+     reap the thread as usual.  */
+  atomic_compare_and_exchange_bool_acq (&pd->joinid, pd, NULL);
   return 0;
 }
 versioned_symbol (libc, ___pthread_detach, pthread_detach, GLIBC_2_34);

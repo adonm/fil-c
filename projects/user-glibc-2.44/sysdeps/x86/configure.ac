@@ -58,7 +58,7 @@ libc_cv_include_x86_isa_level=no
 if AC_TRY_COMMAND(${CC-cc} $CFLAGS $CPPFLAGS -nostartfiles -nostdlib -r -o conftest conftest1.S conftest2.S); then
   count=`LC_ALL=C $READELF -n conftest | grep NT_GNU_PROPERTY_TYPE_0 | wc -l`
   if test "$count" -eq 1; then
-    libc_cv_include_x86_isa_level=yes
+    libc_cv_include_x86_isa_level=no
   fi
 fi
 rm -f conftest*])

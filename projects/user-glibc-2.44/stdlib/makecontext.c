@@ -17,11 +17,34 @@
 
 #include <errno.h>
 #include <ucontext.h>
+#include <pizlonated_runtime.h>
+#include <stdlib.h>
+
+struct makecontext_args
+{
+  ucontext_t *ucp;
+  void (*func) (void);
+  int argc;
+  void* first_real_arg;
+};
+
+static void
+makecontext_trampoline(void)
+{
+  struct makecontext_args *args = (struct makecontext_args *) zcallee_closure_data();
+  zcall (args->func, &args->first_real_arg);
+  ucontext_t* link = args->ucp->uc_link;
+  if (!link)
+    exit(0);
+  setcontext (link);
+}
 
 void
 makecontext (ucontext_t *ucp, void (*func) (void), int argc, ...)
 {
-  __set_errno (ENOSYS);
+  zfiber_context_makecontext (ucp->__uc_fiber_context,
+                              ucp->uc_stack.ss_size,
+                              zclosure_new (makecontext_trampoline, zargs ()));
 }
 
 

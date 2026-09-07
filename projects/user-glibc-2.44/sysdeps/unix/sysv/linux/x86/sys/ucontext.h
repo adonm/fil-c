@@ -138,6 +138,8 @@ typedef struct
     __extension__ unsigned long long __reserved1 [8];
 } mcontext_t;
 
+typedef struct zfiber_context zfiber_context;
+
 /* Userlevel context.  */
 typedef struct ucontext_t
   {
@@ -147,6 +149,7 @@ typedef struct ucontext_t
     mcontext_t uc_mcontext;
     sigset_t uc_sigmask;
     struct _libc_fpstate __fpregs_mem;
+    zfiber_context* __uc_fiber_context;
     __extension__ unsigned long long int __ssp[4];
   } ucontext_t;
 

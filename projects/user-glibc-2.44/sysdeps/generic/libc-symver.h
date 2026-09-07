@@ -63,9 +63,8 @@
   .symver alias, name_version
 # else
 #  define _set_symbol_version_2(real, alias, name_version) \
-  __asm__ (".globl " #alias "\n\t"                         \
-           ".equiv " #alias ", " #real "\n\t"              \
-           ".symver " #alias "," name_version)
+  __asm__ (".filc_alias " #real ", " #alias "\n\t"         \
+           ".symver " #alias ", " name_version)
 # endif
 # define _set_symbol_version_1(real, alias, name_version) \
   _set_symbol_version_2 (real, alias, name_version)

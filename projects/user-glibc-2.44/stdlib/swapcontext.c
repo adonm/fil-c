@@ -17,12 +17,18 @@
 
 #include <errno.h>
 #include <ucontext.h>
+#include <pizlonated_runtime.h>
 
 int
 swapcontext (ucontext_t *oucp, const ucontext_t *ucp)
 {
-  __set_errno (ENOSYS);
-  return -1;
+  if (!oucp->__uc_fiber_context)
+    {
+      oucp->__uc_fiber_context = zfiber_context_new ();
+      zfiber_context_bind_sigset (oucp->__uc_fiber_context, &oucp->uc_sigmask);
+    }
+  zfiber_context_swapcontext (oucp->__uc_fiber_context, ucp->__uc_fiber_context);
+  return 0;
 }
 
 

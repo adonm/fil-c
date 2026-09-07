@@ -182,10 +182,6 @@ __libc_freeres (void)
 
       call_function_static_weak (__libc_dlerror_result_free);
 
-#ifdef SHARED
-      GLRO (dl_libc_freeres) ();
-#endif
-
       call_free_static_weak (__libc_fgetgrent_freemem_ptr);
       call_free_static_weak (__libc_fgetsgent_freeres_ptr);
       call_free_static_weak (__libc_getnetgrent_freemem_ptr);

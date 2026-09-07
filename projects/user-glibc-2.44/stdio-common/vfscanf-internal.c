@@ -1642,7 +1642,6 @@ __vfscanf_internal (FILE *s, const char *format, va_list argptr,
 			 above, but the test for "map != NULL" is done
 			 inside the loop here and outside the loop there.  */
 		      DIAG_PUSH_NEEDS_COMMENT;
-		      DIAG_IGNORE_NEEDS_COMMENT_GCC (4.7, "-Wmaybe-uninitialized");
 
 		      if (__glibc_unlikely (map != NULL))
 			wcdigits[n] = digits_extended[n];

@@ -17,19 +17,12 @@
    <https://www.gnu.org/licenses/>.  */
 
 #include <fenv.h>
-#include <math-inline-asm.h>
+#include <pizlonated_math.h>
 
 int
 __fetestexcept (int excepts)
 {
-  int temp;
-  unsigned int mxscr;
-
-  /* Get current exceptions.  */
-  asm volatile ("fnstsw %0" : "=m" (temp));
-  stmxcsr_inline_asm (&mxscr);
-
-  return (temp | mxscr) & excepts & FE_ALL_EXCEPT;
+  return zmath_fetestexcept (excepts);
 }
 libm_hidden_def (__fetestexcept)
 static_weak_alias (__fetestexcept, fetestexcept)

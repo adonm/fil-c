@@ -19,11 +19,6 @@
 #include <ldsodefs.h>
 
 void
-__tls_pre_init_tp (void)
-{
-}
-
-void
 __tls_init_tp (void)
 {
 }

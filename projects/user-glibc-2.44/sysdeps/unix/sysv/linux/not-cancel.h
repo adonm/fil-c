@@ -28,6 +28,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <sys/random.h>
+#include <pizlonated_syscalls.h>
 
 /* Non cancellable open syscall.  */
 extern int __open_nocancel (const char *, int, ...);
@@ -77,13 +78,15 @@ hidden_proto (__fcntl64_nocancel)
 static inline void
 __writev_nocancel_nostatus (int fd, const struct iovec *iov, int iovcnt)
 {
-  INTERNAL_SYSCALL_CALL (writev, fd, iov, iovcnt);
+  int old_errno = errno;
+  zsys_writev (fd, iov, iovcnt);
+  errno = old_errno;
 }
 
 static inline ssize_t
 __getrandom_nocancel_direct (void *buf, size_t buflen, unsigned int flags)
 {
-  return INLINE_SYSCALL_CALL (getrandom, buf, buflen, flags);
+  return zsys_getrandom (buf, buflen, flags);
 }
 
 __typeof (getrandom) __getrandom_nocancel attribute_hidden;
@@ -93,13 +96,16 @@ __typeof (getrandom) __getrandom_nocancel attribute_hidden;
 static inline ssize_t
 __getrandom_nocancel_nostatus_direct (void *buf, size_t buflen, unsigned int flags)
 {
-  return INTERNAL_SYSCALL_CALL (getrandom, buf, buflen, flags);
+  int old_errno = errno;
+  ssize_t result = zsys_getrandom (buf, buflen, flags);
+  errno = old_errno;
+  return result;
 }
 
 static inline int
 __poll_infinity_nocancel (struct pollfd *fds, nfds_t nfds)
 {
-  return INLINE_SYSCALL_CALL (ppoll, fds, nfds, NULL, NULL, 0);
+  return zsys_ppoll (fds, nfds, NULL, NULL);
 }
 
 #endif /* NOT_CANCEL_H  */

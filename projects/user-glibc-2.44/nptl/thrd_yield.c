@@ -17,9 +17,10 @@
    <https://www.gnu.org/licenses/>.  */
 
 #include "thrd_priv.h"
+#include <pizlonated_syscalls.h>
 
 void
 thrd_yield (void)
 {
-  INTERNAL_SYSCALL_CALL (sched_yield);
+  zsys_sched_yield ();
 }

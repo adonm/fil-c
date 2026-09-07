@@ -22,6 +22,7 @@
 #ifndef __ASSEMBLER__
 # include <sysdep.h>
 # include <kernel-features.h>
+# include <pizlonated_syscalls.h>
 #endif
 
 #define FUTEX_WAIT		0
@@ -53,6 +54,12 @@
 # define __lll_private_flag(fl, private) \
   (((fl) | FUTEX_PRIVATE_FLAG) ^ (private))
 
+# define __lll_zsys_private_arg(private)                        \
+  ({                                                            \
+    ZASSERT(private == LLL_PRIVATE || private == LLL_SHARED);   \
+    (private == LLL_PRIVATE ? 1 : 0);                           \
+  })
+
 # define lll_futex_syscall(nargs, futexp, op, ...)                      \
   ({                                                                    \
     long int __ret = INTERNAL_SYSCALL (futex, nargs, futexp, op, 	\
@@ -69,8 +76,12 @@
 
 
 /* Wait while *FUTEXP == VAL for an lll_futex_wake call on FUTEXP.  */
-# define lll_futex_wait(futexp, val, private) \
-  lll_futex_timed_wait (futexp, val, NULL, private)
+# define lll_futex_wait(futexp, val, private)           \
+  ({                                                    \
+    zsys_futex_wait ((volatile int *) futexp, val,      \
+                     __lll_zsys_private_arg (private)); \
+    0;                                                  \
+  })
 
 # define lll_futex_timed_wait(futexp, val, timeout, private)     \
   lll_futex_syscall (4, futexp,                                 \
@@ -83,9 +94,12 @@
   ((clockid) == CLOCK_REALTIME || (clockid) == CLOCK_MONOTONIC)
 
 /* Wake up up to NR waiters on FUTEXP.  */
-# define lll_futex_wake(futexp, nr, private)                             \
-  lll_futex_syscall (4, futexp,                                         \
-		     __lll_private_flag (FUTEX_WAKE, private), nr, 0)
+# define lll_futex_wake(futexp, nr, private)            \
+  ({                                                    \
+    zsys_futex_wake ((volatile int *) futexp, nr,       \
+                     __lll_zsys_private_arg (private)); \
+    0;                                                  \
+  })
 
 /* Wake up up to NR_WAKE waiters on FUTEXP.  Move up to NR_MOVE of the
    rest from waiting on FUTEXP to waiting on MUTEX (a different futex).
@@ -105,9 +119,8 @@
 
 
 #define lll_futex_timed_unlock_pi(futexp, private) 			\
-  lll_futex_syscall (4, futexp,						\
-		     __lll_private_flag (FUTEX_UNLOCK_PI, private),	\
-		     0, 0)
+  zsys_futex_unlock_pi ((volatile int *) futexp,                        \
+                        __lll_zsys_private_arg (private))
 
 /* Like lll_futex_requeue, but pairs with lll_futex_wait_requeue_pi
    and inherits priority from the waiter.  */

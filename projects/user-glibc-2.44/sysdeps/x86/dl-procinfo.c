@@ -39,33 +39,10 @@
   */
 
 #if !IS_IN (ldconfig)
-# if !defined PROCINFO_DECL && defined SHARED
-  ._dl_x86_cpu_features
-# else
 PROCINFO_CLASS struct cpu_features _dl_x86_cpu_features
-# endif
 # ifndef PROCINFO_DECL
 = { }
 # endif
-# if !defined SHARED || defined PROCINFO_DECL
 ;
-# else
-,
-# endif
 #endif
 
-#if defined SHARED && !IS_IN (ldconfig)
-# if !defined PROCINFO_DECL
-  ._dl_x86_tlsdesc_dynamic
-# else
-PROCINFO_CLASS void * _dl_x86_tlsdesc_dynamic
-# endif
-# ifndef PROCINFO_DECL
-= NULL
-# endif
-# ifdef PROCINFO_DECL
-;
-# else
-,
-# endif
-#endif

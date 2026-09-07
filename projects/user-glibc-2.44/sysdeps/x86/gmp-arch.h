@@ -16,35 +16,9 @@
    License along with the GNU C Library; if not, see
    <https://www.gnu.org/licenses/>.  */
 
-#ifndef __GMP_X64_ARCH_H
-#define __GMP_X64_ARCH_H
-
-#include <gmp.h>
-
-static __always_inline void
-udiv_qrnnd_x86 (mp_limb_t *q, mp_limb_t *r, mp_limb_t n1, mp_limb_t n0,
-		mp_limb_t d)
-{
-#ifdef __x86_64__
-  asm ("div{q} %4"
-       : "=a" (*q),
-         "=d" (*r)
-       : "0" (n0),
-	 "1" (n1),
-	 "rm" (d));
-#else
-  asm ("div{l} %4"
-       : "=a" (*q),
-         "=d" (*r)
-       : "0" (n0),
-	 "1" (n1),
-	 "rm" (d));
-#endif
-}
-#define UDIV_NEEDS_NORMALIZATION 0
-#define udiv_qrnnd(__q, __r, __n1, __n0, __d) \
-  udiv_qrnnd_x86 (&__q, &__r, __n1, __n0, __d)
+/* Fil-C: the upstream x86 version of this file implements udiv_qrnnd
+   using inline assembly ("div{q}" with an "rm" constraint), which the
+   Fil-C compiler cannot compile safely.  Just use the generic C
+   implementation from sysdeps/generic/gmp-arch.h instead.  */
 
 #include <sysdeps/generic/gmp-arch.h>
-
-#endif

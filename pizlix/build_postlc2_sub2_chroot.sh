@@ -221,7 +221,7 @@ rm -rf pizlonated-libuv
 hash -r
 
 tar -xf pizlonated-icu.tar.gz
-cd pizlonated-icu/icu4c/source
+cd pizlonated-icu/source
 ./configure --prefix=/usr
 make
 make install

@@ -19,10 +19,11 @@
 #include <unistd.h>
 #include <sysdep-cancel.h>
 #include <not-cancel.h>
+#include <pizlonated_syscalls.h>
 
 void
 __close_nocancel_nostatus (int fd)
 {
-  INTERNAL_SYSCALL_CALL (close, fd);
+  zsys_close (fd);
 }
 libc_hidden_def (__close_nocancel_nostatus)

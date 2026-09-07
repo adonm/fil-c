@@ -126,8 +126,8 @@ my $power5_pass_n0 = $ENV{SARCASM} ? "\tmov\t32(%fil_mont5frame),%r8\t# n0 value
 # every site: each downstream consumer re-establishes flags explicitly
 # (`xor`/`shr`/`adox` chains all set their own flags first).
 my $rewind_tptr = $ENV{SARCASM}
-	? "\txor\t%edi,%edi\n\tlea\t48(%fil_mont5frame,%rdi,1),%rdi"
-	: "\tlea\t48+8(%rsp),%rdi";
+  ? "\txor\t%edi,%edi\n\tlea\t48(%fil_mont5frame,%rdi,1),%rdi"
+  : "\tlea\t48+8(%rsp),%rdi";
 
 # Sarcasm: bn_powerx5's header is fully occupied (saved $num, &t[2*$num],
 # two carry bits, saved *n0, saved %rsp), leaving no free fixed slots to
@@ -140,8 +140,8 @@ my $rewind_tptr = $ENV{SARCASM}
 # consumers re-establish flags explicitly). Single-step indexed lea is
 # equivalent to two-step mov+lea, so direct single-step form is used.
 my $rewind_tptr_sqrx = $ENV{SARCASM}
-	? "\txor\t%edi,%edi\n\tlea\t80(%fil_mont5frame,%rdi,1),%rdi"
-	: "\tlea\t48+8(%rsp),%rdi";
+  ? "\txor\t%edi,%edi\n\tlea\t80(%fil_mont5frame,%rdi,1),%rdi"
+  : "\tlea\t48+8(%rsp),%rdi";
 
 # Sarcasm: tp[0] displacement inside the sqrx8x clones, matching the
 # shifted tp[] base (see $rewind_tptr_sqrx above). Plain gas keeps 48+8.
@@ -216,14 +216,14 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-	# Sarcasm turns the whole dynamic frame into a GC allocation, so
-	# the page-walking probe is pointless and the stack-size computation
-	# collapses to a plain byte size. The region covers the tp[num+2]
-	# buffer plus the 256-byte power mask; tp[]/mask rebase 1:1 onto the
-	# '.alloca' buffer via $FR. No %rsp save is kept: %rsp never moves,
-	# so the epilogue reloads the pushed registers from the frame and
-	# drops it with one add (like aes-x86_64.pl's .Lcbc_exit).
-	$code.=<<___;
+  # Sarcasm turns the whole dynamic frame into a GC allocation, so
+  # the page-walking probe is pointless and the stack-size computation
+  # collapses to a plain byte size. The region covers the tp[num+2]
+  # buffer plus the 256-byte power mask; tp[]/mask rebase 1:1 onto the
+  # '.alloca' buffer via $FR. No %rsp save is kept: %rsp never moves,
+  # so the epilogue reloads the pushed registers from the frame and
+  # drops it with one add (like aes-x86_64.pl's .Lcbc_exit).
+  $code.=<<___;
 	lea	640(,$num,8),%r10	# region size: 8*(num+2)+256+8 buffer + slack + 256 headroom
 	.alloca	%r10,\$16,$FRraw
 	lea	256($FRraw),$FR		# working base with headroom below
@@ -232,7 +232,7 @@ if ($ENV{SARCASM}) {
 .Lmul_body:
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	neg	$num
 	mov	%rsp,%r11
 	lea	-280(%rsp,$num,8),%r10	# future alloca(8*(num+2)+256+8)
@@ -642,11 +642,11 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-	# Under sarcasm the dynamic frame is a GC allocation (see the
-	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
-	# The original %rsp parks in a tiny fixed frame slot (a prologue
-	# `%rsp` save may only spill to the frame, not to the region).
-	$code.=<<___;
+  # Under sarcasm the dynamic frame is a GC allocation (see the
+  # .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+  # The original %rsp parks in a tiny fixed frame slot (a prologue
+  # `%rsp` save may only spill to the frame, not to the region).
+  $code.=<<___;
 	.byte	0x67
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
@@ -657,7 +657,7 @@ if ($ENV{SARCASM}) {
 .Lmul4x_body:
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	.byte	0x67
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
@@ -1320,13 +1320,13 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-	# Under sarcasm the dynamic frame is a GC allocation (see the
-	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
-	# (+8 bytes for the table-pointer slot at the clean top word.)
-	# Header slots (0-32) and t[2*$num] rebase 1:1 onto the buffer via
-	# $FR; the original %rsp parks in a tiny fixed frame slot (a prologue
-	# `%rsp` save may only spill to the frame, not to the region).
-	$code.=<<___;
+  # Under sarcasm the dynamic frame is a GC allocation (see the
+  # .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+  # (+8 bytes for the table-pointer slot at the clean top word.)
+  # Header slots (0-32) and t[2*$num] rebase 1:1 onto the buffer via
+  # $FR; the original %rsp parks in a tiny fixed frame slot (a prologue
+  # `%rsp` save may only spill to the frame, not to the region).
+  $code.=<<___;
 	sub	\$16,%rsp		# fixed save slot for original %rsp
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
@@ -1353,7 +1353,7 @@ if ($ENV{SARCASM}) {
 .Lpower5_body:
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10d	# 3*$num
 	neg	$num
@@ -1421,13 +1421,13 @@ ___
 ___
 }
 if ($ENV{SARCASM}) {
-	# Sarcasm: rp/np/table must survive the sqr8x/post4x calls, but all
-	# GPRs are clobbered and xmm pointer parking loses the capability
-	# (aux). Park the pointers in region slots: rp/np in the free header
-	# slots 16/24 (read inside the +8-convention clones as N+8(%rsp)),
-	# table in the slack right after tp[] (num-indexed, main function
-	# only). -$num stays in xmm3 (integer, no capability).
-	$code.=<<___;
+  # Sarcasm: rp/np/table must survive the sqr8x/post4x calls, but all
+  # GPRs are clobbered and xmm pointer parking loses the capability
+  # (aux). Park the pointers in region slots: rp/np in the free header
+  # slots 16/24 (read inside the +8-convention clones as N+8(%rsp)),
+  # table in the slack right after tp[] (num-indexed, main function
+  # only). -$num stays in xmm3 (integer, no capability).
+  $code.=<<___;
 	movq	$rptr,16($FR)		#! store ptr
 	movq	$nptr,24($FR)		#! store ptr
 	movq	%r10, %xmm3		# -$num, used in sqr8x
@@ -1439,7 +1439,7 @@ if ($ENV{SARCASM}) {
 					# data after the sqr8x calls
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	movq	$rptr,%xmm1		# save $rptr, used in sqr8x
 	movq	$nptr,%xmm2		# save $nptr
 	movq	%r10, %xmm3		# -$num, used in sqr8x
@@ -1461,7 +1461,7 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-	$code.=<<___;
+  $code.=<<___;
 	movq	24($FR),$nptr		#! load ptr
 	movq	%xmm3,%rax		# -$num
 	neg	%rax			# $num in bytes
@@ -1469,7 +1469,7 @@ if ($ENV{SARCASM}) {
 	movq	0(%rax),$bptr		#! load ptr
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	movq	%xmm2,$nptr
 	movq	%xmm4,$bptr
 ___
@@ -2440,9 +2440,9 @@ bn_mulx4x_mont_gather5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 
 ___
 if ($ENV{SARCASM}) {
-	# Under sarcasm the dynamic frame is a GC allocation (see the
-	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
-	$code.=<<___;
+  # Under sarcasm the dynamic frame is a GC allocation (see the
+  # .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+  $code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
 	lea	896($num,$num),%r11	# region size: 16*num + 640 + 256 headroom
@@ -2466,7 +2466,7 @@ if ($ENV{SARCASM}) {
 .Lmulx4x_body:
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
 	neg	$num			# -$num
@@ -2985,11 +2985,11 @@ bn_powerx5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 
 ___
 if ($ENV{SARCASM}) {
-	# Under sarcasm the dynamic frame is a GC allocation (see the
-	# .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
-	# Grown by 32: tp[] shifted to +80 (16-aligned for movdqa) so
-	# +48/+56/+64 can park rp/np/table.
-	$code.=<<___;
+  # Under sarcasm the dynamic frame is a GC allocation (see the
+  # .Lmul_enter frame): size = frame 320 + 2*$num*8 + 256 + slack.
+  # Grown by 32: tp[] shifted to +80 (16-aligned for movdqa) so
+  # +48/+56/+64 can park rp/np/table.
+  $code.=<<___;
 	sub	\$16,%rsp		# fixed save slot for original %rsp
 	shl	\$3,${num}d		# convert $num to bytes
 	mov	($n0),$n0		# *n0
@@ -3031,7 +3031,7 @@ if ($ENV{SARCASM}) {
 .Lpowerx5_body:
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	shl	\$3,${num}d		# convert $num to bytes
 	lea	($num,$num,2),%r10	# 3*$num in bytes
 	neg	$num
@@ -3969,17 +3969,17 @@ bn_gather5: #! void(ptr,size_t,ptr,size_t)
 .cfi_startproc
 ___
 if ($ENV{SARCASM}) {
-	# Sarcasm virtualizes the fixed frame, so the entry-rsp save and the
-	# align-down masking (which sarcasm cannot model on %rsp) go away: a
-	# plain 0x108 sub suffices (0x108 is 8 mod 16, so with the standard
-	# 8-mod-16 entry alignment the frame is 16-aligned for the movdqa
-	# mask traffic below), torn down with one add. No %rsp save is kept.
-	$code.=<<___;
+  # Sarcasm virtualizes the fixed frame, so the entry-rsp save and the
+  # align-down masking (which sarcasm cannot model on %rsp) go away: a
+  # plain 0x108 sub suffices (0x108 is 8 mod 16, so with the standard
+  # 8-mod-16 entry alignment the frame is 16-aligned for the movdqa
+  # mask traffic below), torn down with one add. No %rsp save is kept.
+  $code.=<<___;
 	sub	\$0x108,%rsp
 	lea	.Linc(%rip),%rax
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	lea	(%rsp),%r10
 	sub	\$0x108,%rsp
 	lea	.Linc(%rip),%rax

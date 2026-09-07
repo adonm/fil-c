@@ -1482,8 +1482,8 @@ end
 
 -- ---------------------------------------------------------------------------
 -- unsafe-instruction rejection (consulted for EVERY mnemonic, FP or not, at the
--- top of x86.classify before baseMnemonic mapping, so e.g. `movsq` is seen
--- before it maps to `mov`). Returns a reason string or nil.
+-- top of x86.classify before baseMnemonic mapping, so e.g. `lodsq` is seen
+-- before anything could normalize it). Returns a reason string or nil.
 
 local REASON_SYSCALL = "system-call instructions cannot be bounds-checked (their effect on memory safety is unknowable)"
 local REASON_PORTIO = "port-I/O instructions cannot be bounds-checked (they transfer data the checker cannot see)"
@@ -1594,24 +1594,28 @@ local UNSAFE = {
 	addr32 = REASON_ADDRSIZE, addr16 = REASON_ADDRSIZE,
 }
 
--- string ops: implicit rsi/rdi memory the checker cannot see. (The Intel dword
--- forms lodsd/stosd/scasd are unambiguous; movsd/cmpsd are FP instructions when
--- they have operands, so those reject only in their zero-operand string form.)
+-- string ops: implicit rsi/rdi memory the checker cannot see. Only the
+-- read/write-compare shapes stay rejected here (lods/scas/cmps in every
+-- size, plus the zero-operand movsd/cmpsd ambiguity — movsd/cmpsd are FP
+-- instructions when they have operands, so those reject only in their
+-- zero-operand string form). The movs/stos family (rep-prefixed or bare
+-- single-step) is modeled by x86_64_isa.classify's stringop branch and
+-- lowered with capability range checks by the transform.
 local STRINGOPS = {
-	movs = true, movsb = true, movsw = true, movsl = true, movsq = true,
-	stos = true, stosb = true, stosw = true, stosl = true, stosq = true, stosd = true,
 	lods = true, lodsb = true, lodsw = true, lodsl = true, lodsq = true, lodsd = true,
 	scas = true, scasb = true, scasw = true, scasl = true, scasq = true, scasd = true,
 	cmps = true, cmpsb = true, cmpsw = true, cmpsl = true, cmpsq = true,
 }
 local STRINGOPS_ZERO_OPERAND = { movsd = true, cmpsd = true }
 
--- prefixes that still reach here as mnemonics (the real instruction trails as
--- operands). `lock` is parsed as a prefix TAG by the parser (x86_64_parse) and
--- validated in x86_64_isa.classify — a "lock" mnemonic only survives here when
--- the input stacks prefixes (`lock lock xadd`), which stays rejected.
+-- prefixes that still reach here as mnemonics. `lock` is parsed as a prefix
+-- TAG by the parser (x86_64_parse) and validated in x86_64_isa.classify — a
+-- "lock" mnemonic only survives here when the input stacks prefixes
+-- (`lock lock xadd`), which stays rejected. `rep`/`repe`/`repne`/`repz`/
+-- `repnz` are likewise parsed as a repPrefix tag (x86_64_parse) and validated
+-- in x86_64_isa.classify — rep movs*/stos* lower to checked copies/fills,
+-- `rep ret` keeps its branch-prediction hint.
 local PREFIXES = {
-	rep = true, repe = true, repne = true, repz = true, repnz = true,
 	lock = true, xacquire = true, xrelease = true,
 }
 

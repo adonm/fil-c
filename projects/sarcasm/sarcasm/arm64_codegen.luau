@@ -891,7 +891,12 @@ function M.make(ctx)
 				.. (node.stmt and node.stmt.raw or "?"))
 		end
 		local capLo
-		if baseTemp and pf.isPtr[baseTemp] then capLo = pf.lowerTemp[baseTemp]
+		-- `//! new capability xN` (stashed on the node by the transform):
+		-- the access is guarded by the NAMED register's capability, not the
+		-- base-first default (validated: the named web carries a capability).
+		if node.newCapTemp and pf.lowerTemp[node.newCapTemp] then
+			capLo = pf.lowerTemp[node.newCapTemp]
+		elseif baseTemp and pf.isPtr[baseTemp] then capLo = pf.lowerTemp[baseTemp]
 		elseif indexTemp and pf.isPtr[indexTemp] then capLo = pf.lowerTemp[indexTemp] end
 		local effTemp = baseTemp
 		if mem.writeback == "post" then

@@ -1769,10 +1769,10 @@ $code.=<<___;
 .Ldo_avx2:
 ___
 if ($ENV{SARCASM}) {
-    # No AVX512 delegation under sarcasm (perf-only: the AVX2 body is
-    # correct for every length): the cross-function join into
-    # blocks_avx512's mid-body cannot be modeled with a static frame,
-    # so always run the AVX2 body. The gas path keeps the delegation.
+  # No AVX512 delegation under sarcasm (perf-only: the AVX2 body is
+  # correct for every length): the cross-function join into
+  # blocks_avx512's mid-body cannot be modeled with a static frame,
+  # so always run the AVX2 body. The gas path keeps the delegation.
 } else {
 $code.=<<___		if ($avx>2);
 	cmp		\$512,$len
@@ -2210,12 +2210,12 @@ poly1305_blocks_avx512: #! void(ptr,ptr,size_t,unsigned)
 	kmovw		%eax,%k2
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only: the AVX512 table spills reach 0x100(%rsp)+64
-    # (320 bytes) but the gas frame (0x128) relied on the
-    # `and $-512,%rsp` slack below it. Extend statically; the gas
-    # path keeps sub $0x128. No (%r11) memory traffic on unix, so the
-    # +0x120 rebase below is unaffected (only the lea save moves).
-    $code.=<<___	if (!$win64);
+  # SARCASM-only: the AVX512 table spills reach 0x100(%rsp)+64
+  # (320 bytes) but the gas frame (0x128) relied on the
+  # `and $-512,%rsp` slack below it. Extend statically; the gas
+  # path keeps sub $0x128. No (%r11) memory traffic on unix, so the
+  # +0x120 rebase below is unaffected (only the lea save moves).
+  $code.=<<___	if (!$win64);
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
 	sub		\$0x140,%rsp
@@ -2904,9 +2904,9 @@ poly1305_blocks_vpmadd52: #! void(ptr,ptr,size_t,unsigned)
 	and	$len,%rax			# is input of favourable length?
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only: entry-based tail dispatch (see .Lvpmadd52_to_4x
-    # below); the gas path keeps the mid-body join.
-    $code .= "\tjz\t.Lvpmadd52_to_4x\n";
+  # SARCASM-only: entry-based tail dispatch (see .Lvpmadd52_to_4x
+  # below); the gas path keeps the mid-body join.
+  $code .= "\tjz\t.Lvpmadd52_to_4x\n";
 } else {
 $code.=<<___;
 	jz	.Lblocks_vpmadd52_4x
@@ -2997,7 +2997,7 @@ $code.=<<___;
 	test		$len,$len
 ___
 if ($ENV{SARCASM}) {
-    $code .= "\tjnz\t.Lvpmadd52_to_4x\n";
+  $code .= "\tjnz\t.Lvpmadd52_to_4x\n";
 } else {
 $code.=<<___;
 	jnz		.Lblocks_vpmadd52_4x
@@ -3009,13 +3009,13 @@ $code.=<<___;
 	ret
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only trampoline: nested shared-tail joins are not
-    # supported, so dispatch to the 4x ENTRY as a tail call instead of
-    # joining its mid-body. State compensation (exact): $len arrives in
-    # blocks (the entry re-shifts by 4) and $padbit shifted by 40 (the
-    # entry re-shifts); rdi/rsi are untouched, r8/masks/hash are
-    # reloaded by the entry. The gas path keeps the pristine jumps.
-    $code.=<<___;
+  # SARCASM-only trampoline: nested shared-tail joins are not
+  # supported, so dispatch to the 4x ENTRY as a tail call instead of
+  # joining its mid-body. State compensation (exact): $len arrives in
+  # blocks (the entry re-shifts by 4) and $padbit shifted by 40 (the
+  # entry re-shifts); rdi/rsi are untouched, r8/masks/hash are
+  # reloaded by the entry. The gas path keeps the pristine jumps.
+  $code.=<<___;
 .Lvpmadd52_to_4x:
 	shl		\$4,$len
 	shr		\$40,$padbit
@@ -3080,9 +3080,9 @@ poly1305_blocks_vpmadd52_4x: #! void(ptr,ptr,size_t,unsigned)
 	test		\$7,$len		# is len 8*n?
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only: entry-based tail dispatch (see .L4x_to_8x below);
-    # the gas path keeps the mid-body join.
-    $code .= "\tjz\t.L4x_to_8x\n";
+  # SARCASM-only: entry-based tail dispatch (see .L4x_to_8x below);
+  # the gas path keeps the mid-body join.
+  $code .= "\tjz\t.L4x_to_8x\n";
 } else {
 $code.=<<___;
 	jz		.Lblocks_vpmadd52_8x
@@ -3478,10 +3478,10 @@ $code.=<<___;
 	ret
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only trampoline: dispatch to the 8x ENTRY as a tail call
-    # (state compensation is exact, as for .Lvpmadd52_to_4x above).
-    # The gas path keeps the pristine mid-body join.
-    $code.=<<___;
+  # SARCASM-only trampoline: dispatch to the 8x ENTRY as a tail call
+  # (state compensation is exact, as for .Lvpmadd52_to_4x above).
+  # The gas path keeps the pristine mid-body join.
+  $code.=<<___;
 .L4x_to_8x:
 	shl		\$4,$len
 	shr		\$40,$padbit
@@ -3521,9 +3521,9 @@ poly1305_blocks_vpmadd52_8x: #! void(ptr,ptr,size_t,unsigned)
 	test	%r8,%r8				# is power value impossible?
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only: entry-based tail dispatch (see .L8x_to_4x below);
-    # the gas path keeps the mid-body join into shared init code.
-    $code .= "\tjs\t.L8x_to_4x\n";
+  # SARCASM-only: entry-based tail dispatch (see .L8x_to_4x below);
+  # the gas path keeps the mid-body join into shared init code.
+  $code .= "\tjs\t.L8x_to_4x\n";
 } else {
 $code.=<<___;
 	js	.Linit_vpmadd52			# if it is, then init R[4]
@@ -3876,11 +3876,11 @@ $code.=<<___;
 	ret
 ___
 if ($ENV{SARCASM}) {
-    # SARCASM-only trampoline: run the shared init through the 4x
-    # ENTRY as a tail call (state compensation is exact, as above);
-    # after init the 4x body redispatches here with powers ready.
-    # The gas path keeps the pristine mid-body join.
-    $code.=<<___;
+  # SARCASM-only trampoline: run the shared init through the 4x
+  # ENTRY as a tail call (state compensation is exact, as above);
+  # after init the 4x body redispatches here with powers ready.
+  # The gas path keeps the pristine mid-body join.
+  $code.=<<___;
 .L8x_to_4x:
 	shl		\$4,$len
 	shr		\$40,$padbit
@@ -4338,58 +4338,58 @@ ___
 }
 
 foreach (split('\n',$code)) {
-	if ($ENV{SARCASM}) {
-	    # Rebase the 0x90-based frame addresses to plain rsp ones
-	    # (address-preserving: EXPR-0x90(%rax) == EXPR(%rsp), since
-	    # %rax = %rsp+0x90); applied before backtick evaluation so
-	    # the arithmetic stays symbolic. The bodies above stay
-	    # untouched for the gas path.
-	    s/`([^`]*?)-0x90`\(%rax\)/`$1`(%rsp)/g;
-	    # Bare (non-backticked) form used by the AVX2 table stores
-	    # (e.g. 0x20-0x90(%rax)): same rebase, keeping the leading
-	    # displacement (the -0x90 cancels the deleted lea's +0x90).
-	    s/\b0x([0-9a-fA-F]+)-0x90\(%rax\)/0x$1(%rsp)/g;
-	    next if (/^\tlea\t\t0x90\(%rsp\),%rax/);
-	    # SARCASM-only: the `and $-512,%rsp` dynamic realignment of
-	    # the vector bodies takes the frame's address and is
-	    # rejected. Drop it (chacha-x86_64.pl precedent) and use the
-	    # unaligned vector forms on frame slots instead (same
-	    # semantics; the virtualized frame keeps 16-byte SysV
-	    # alignment for the plain movdqa traffic).
-	    next if (/^\tand\t\t\$-512,%rsp$/);
-	}
+  if ($ENV{SARCASM}) {
+    # Rebase the 0x90-based frame addresses to plain rsp ones
+    # (address-preserving: EXPR-0x90(%rax) == EXPR(%rsp), since
+    # %rax = %rsp+0x90); applied before backtick evaluation so
+    # the arithmetic stays symbolic. The bodies above stay
+    # untouched for the gas path.
+    s/`([^`]*?)-0x90`\(%rax\)/`$1`(%rsp)/g;
+    # Bare (non-backticked) form used by the AVX2 table stores
+    # (e.g. 0x20-0x90(%rax)): same rebase, keeping the leading
+    # displacement (the -0x90 cancels the deleted lea's +0x90).
+    s/\b0x([0-9a-fA-F]+)-0x90\(%rax\)/0x$1(%rsp)/g;
+    next if (/^\tlea\t\t0x90\(%rsp\),%rax/);
+    # SARCASM-only: the `and $-512,%rsp` dynamic realignment of
+    # the vector bodies takes the frame's address and is
+    # rejected. Drop it (chacha-x86_64.pl precedent) and use the
+    # unaligned vector forms on frame slots instead (same
+    # semantics; the virtualized frame keeps 16-byte SysV
+    # alignment for the plain movdqa traffic).
+    next if (/^\tand\t\t\$-512,%rsp$/);
+  }
 	s/\`([^\`]*)\`/eval($1)/ge;
 	s/%r([a-z]+)#d/%e$1/g;
 	s/%r([0-9]+)#d/%r$1d/g;
 	s/%x#%[yz]/%x/g or s/%y#%z/%y/g or s/%z#%[yz]/%z/g;
 
-	if ($ENV{SARCASM}) {
-	    # Rebase r11-frame accesses to plain rsp ones (address-
-	    # preserving on unix: %r11 = %rsp+0x120 in all three vector
-	    # bodies). The lea saves and the lea-recovery epilogues stay
-	    # untouched (sarcasm models those); only memory operands are
-	    # rewritten, so pointer-typed carriers are unaffected.
-	    unless (/^\s*lea\s.*\(%r11\),%rsp$/) {
-	        s/(-?)0x([0-9a-fA-F]+)\(%r11\)/"0x" . sprintf("%x", ($1 ? -hex($2) : hex($2)) + 0x120) . "(%rsp)"/ge;
-	    }
-	    # Unaligned vector forms on frame slots (see above): same
-	    # semantics, no 32-byte alignment requirement.
-	    s/vmovdqa/vmovdqu/g if (/\(%rsp\)/);
-	    # SARCASM-only: the AVX512 table spills use masked stores to
-	    # the frame (vmovdqa64 ...(%rsp){%k2}), which sarcasm rejects
-	    # (masked-off lanes may not touch memory), plus dynamic frame
-	    # indexing (DISP(%rsp,%rax) with %rax=0x20). The slots are
-	    # written but never lane-dependently reloaded, so store them
-	    # unmasked at folded offsets (same addresses, all lanes
-	    # written; the virtualized frame keeps them mapped).
-	    # The bodies above stay untouched for the gas path.
-	    s/0x00\(%rsp,%rax\)/0x20(%rsp)/g;
-	    s/0x40\(%rsp,%rax\)/0x60(%rsp)/g;
-	    s/0x80\(%rsp,%rax\)/0xa0(%rsp)/g;
-	    s/0xc0\(%rsp,%rax\)/0xe0(%rsp)/g;
-	    s/\{%k2\}//g if (/\(%rsp/);
-	    s/vmovdqa64/vmovdqu64/g if (/\(%rsp\)/);
-	}
+  if ($ENV{SARCASM}) {
+    # Rebase r11-frame accesses to plain rsp ones (address-
+    # preserving on unix: %r11 = %rsp+0x120 in all three vector
+    # bodies). The lea saves and the lea-recovery epilogues stay
+    # untouched (sarcasm models those); only memory operands are
+    # rewritten, so pointer-typed carriers are unaffected.
+    unless (/^\s*lea\s.*\(%r11\),%rsp$/) {
+      s/(-?)0x([0-9a-fA-F]+)\(%r11\)/"0x" . sprintf("%x", ($1 ? -hex($2) : hex($2)) + 0x120) . "(%rsp)"/ge;
+    }
+    # Unaligned vector forms on frame slots (see above): same
+    # semantics, no 32-byte alignment requirement.
+    s/vmovdqa/vmovdqu/g if (/\(%rsp\)/);
+    # SARCASM-only: the AVX512 table spills use masked stores to
+    # the frame (vmovdqa64 ...(%rsp){%k2}), which sarcasm rejects
+    # (masked-off lanes may not touch memory), plus dynamic frame
+    # indexing (DISP(%rsp,%rax) with %rax=0x20). The slots are
+    # written but never lane-dependently reloaded, so store them
+    # unmasked at folded offsets (same addresses, all lanes
+    # written; the virtualized frame keeps them mapped).
+    # The bodies above stay untouched for the gas path.
+    s/0x00\(%rsp,%rax\)/0x20(%rsp)/g;
+    s/0x40\(%rsp,%rax\)/0x60(%rsp)/g;
+    s/0x80\(%rsp,%rax\)/0xa0(%rsp)/g;
+    s/0xc0\(%rsp,%rax\)/0xe0(%rsp)/g;
+    s/\{%k2\}//g if (/\(%rsp/);
+    s/vmovdqa64/vmovdqu64/g if (/\(%rsp\)/);
+  }
 
 	print $_,"\n";
 }

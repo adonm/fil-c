@@ -980,6 +980,25 @@ the per-arch codegen module (arm64_codegen / x86_64_codegen):
   (use `;! atomic ptr`); shifts/rotates/imul are rejected (not
   capability-preserving); all five ptr-family annotations are rejected on
   cmpxchg8b/cmpxchg16b (x86_64) and casb/cash/casp (arm64).
+- rep movs*/stos* and bare movs*/stos* (x86_64): a checked block copy / fill
+  over the implicit registers. Element widths b/w/l/d/q (the dword is
+  `movsl`/`stosl` in AT&T, `movsd`/`stosd` in Intel — each assembler rejects
+  the other's spelling, and the renderer normalizes Intel input to AT&T
+  output); bare `movs`/`stos` are rejected as width-ambiguous, as are
+  explicit operands, repne/repnz on movs/stos, and any annotation (none is
+  needed). classify models the implicit rsi/rdi/rcx(/rax) effects with RMW-
+  shared occurrences for the advanced pointers (so their capabilities flow
+  through with no ptrflow rule) and a fresh scalar-0 rcx-def web; the
+  transform emits a DF trap (ud2 — a set direction flag would copy/fill
+  backwards, which is not modeled), a read check over [%rsi, %rsi+%rcx*elem)
+  for movs and a write check over [%rdi, ...) for both (null, CanWrite for
+  writes, lower, upper, then the overflow-free N > upper-ptr length test —
+  all skipped when %rcx == 0, exactly like hardware, and one element for the
+  bare form), then pins the webs through the physical registers around the
+  verbatim instruction. Range failures panic through
+  filc_check_aligned_access_fail with the dynamic byte count (a fixed-size
+  optimized origin could not attribute them). `rep ret` / `rep nop` keep
+  their hint; every other rep-prefixed instruction is rejected.
 - ARM64 atomics. Non-pointer atomics are modeled directly as single
   checked memory accesses, needing no annotation (like x86_64's lock-prefixed
   RMWs on non-pointers): the LSE family (swp/ldadd/ldclr/ldeor/ldset/ldsmax/
@@ -1549,8 +1568,10 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
     segment-QUALIFIED memory operands (`%fs:0x28`) keep the symbolic-address
     rejection.
   * UNMODELABLE IMPLICIT MEMORY OR CONTROL FLOW: string instructions
-    (movs/stos/lods/scas/cmps) and the rep/repe/repne/xacquire/xrelease
-    prefixes (implicit rsi/rdi memory the checker cannot see),
+    (lods/scas/cmps in every size — movs/stos ARE modeled, see below) and the
+    repne/repnz prefixes, rep*/repe/repz on anything but movs*/stos*, and the
+    xacquire/xrelease prefixes (implicit rsi/rdi memory the checker cannot
+    see),
     gather/scatter, maskmovdqu/maskmovq (implicit DS:rdi destination),
     umonitor (arms monitoring on a range whose extent cannot be
     bounds-checked), clzero/xlatb (implicit rax / rbx+al memory), lcall/ljmp

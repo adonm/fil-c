@@ -143,18 +143,18 @@ $code.=<<___;
 	mov	0(%r11),%eax
 ___
 if ($ENV{SARCASM}) {
-	# sarcasm: Fil-C requires the access width to match the alignment,
-	# and OPENSSL_ia32cap_P is only 4-aligned, so the 64-bit load at +4
-	# traps; recompose the qword from two 32-bit loads (%r11's pointer
-	# value is dead after the second load).
-	$code.=<<___;
+  # sarcasm: Fil-C requires the access width to match the alignment,
+  # and OPENSSL_ia32cap_P is only 4-aligned, so the 64-bit load at +4
+  # traps; recompose the qword from two 32-bit loads (%r11's pointer
+  # value is dead after the second load).
+  $code.=<<___;
 	mov	4(%r11),%r10d
 	mov	8(%r11),%r11d
 	shl	\$32,%r11
 	or	%r11,%r10
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	mov	4(%r11),%r10
 ___
 }
@@ -390,7 +390,7 @@ ${func}_xop: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 	sub	\$`$framesz+$win64*16*10`,%rsp
 ___
 if (!$ENV{SARCASM}) {
-	$code.=<<___;
+  $code.=<<___;
 	and	\$-64,%rsp		# align stack frame
 ___
 }
@@ -596,7 +596,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
     }
     	&mov		("%r12",$_inp);	# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-	&mov		("%r15",$_out);	# borrow $a2
+  &mov		("%r15",$_out);	# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -605,7 +605,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lxop_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-	&mov		($_inp."","%r12");
+  &mov		($_inp."","%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -723,7 +723,7 @@ ${func}_avx: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 	sub	\$`$framesz+$win64*16*10`,%rsp
 ___
 if (!$ENV{SARCASM}) {
-	$code.=<<___;
+  $code.=<<___;
 	and	\$-64,%rsp		# align stack frame
 ___
 }
@@ -882,7 +882,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
     }
     	&mov		("%r12",$_inp);	# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-	&mov		("%r15",$_out);	# borrow $a2
+  &mov		("%r15",$_out);	# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -891,7 +891,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lavx_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-	&mov		($_inp."","%r12");
+  &mov		($_inp."","%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -986,13 +986,13 @@ if ($avx>1) {{
 # AVX2+BMI code path
 #
 if ($ENV{SARCASM}) {
-	# sarcasm: the AVX2 rolling-window stack dance below (an andq-anchored
-	# frame whose %rsp is then re-rolled with mid-function writes every 16
-	# rounds, with the frame pointer chased through the red zone) cannot be
-	# proven safe — no constant frame geometry exists. Tail-branch to the
-	# AVX body, which computes the same function (a B1 cross-function jump:
-	# the seven incoming arguments pass through untouched).
-	$code.=<<___;
+  # sarcasm: the AVX2 rolling-window stack dance below (an andq-anchored
+  # frame whose %rsp is then re-rolled with mid-function writes every 16
+  # rounds, with the frame pointer chased through the red zone) cannot be
+  # proven safe — no constant frame geometry exists. Tail-branch to the
+  # AVX body, which computes the same function (a B1 cross-function jump:
+  # the seven incoming arguments pass through untouched).
+  $code.=<<___;
 .type	${func}_avx2,\@function,6
 .align	64
 ${func}_avx2: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)

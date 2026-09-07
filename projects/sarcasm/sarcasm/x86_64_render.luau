@@ -502,6 +502,12 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 			.. s .. ":"
 	end
 
+	-- A validated `rep`/`repe`/`repz` prefix (parser tag; x86_64_isa.classify
+	-- allows it only on the modeled string ops plus `rep ret`/`rep nop`)
+	-- re-emits ahead of the mnemonic, normalized to `rep` (the flavors are
+	-- semantically identical where they are accepted).
+	local repPfx = ((node.stmt and node.stmt.repPrefix) or node.repPrefix) and "rep " or ""
+
 	-- A validated `lock` prefix (parser tag; x86_64_isa.classify allows it only
 	-- on exactly-modeled memory-destination RMWs) re-emits ahead of the mnemonic.
 	local lockPfx = ((node.stmt and node.stmt.lockPrefix) or node.lockPrefix) and "lock " or ""
@@ -615,14 +621,26 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 		end
 		table.insert(rendered, s)
 	end
-	if #rendered == 0 then return "\t" .. lockPfx .. outMnem end
+	if #rendered == 0 then
+		-- Zero-operand string ops render in the OUTPUT syntax (x86 output is
+		-- always AT&T): the Intel dword spellings `movsd`/`stosd` become the
+		-- AT&T `movsl`/`stosl` (a rendered `stosd` would die in `as` — it is
+		-- not an AT&T form at all — and `movsd` is canonically `movsl`
+		-- there). An `movsd` WITH operands is the FP scalar-double move and
+		-- never reaches this branch.
+		if syntax == "att" then
+			if low == "stosd" then outMnem = "stosl"
+			elseif low == "movsd" then outMnem = "movsl" end
+		end
+		return "\t" .. repPfx .. lockPfx .. outMnem
+	end
 	-- Operands are stored destination-first (Intel order). AT&T lists them source-first.
 	if syntax == "att" and #rendered >= 2 then
 		local rev = {}
 		for k = #rendered, 1, -1 do table.insert(rev, rendered[k]) end
 		rendered = rev
 	end
-	return "\t" .. lockPfx .. outMnem .. "\t" .. table.concat(rendered, ", ")
+	return "\t" .. repPfx .. lockPfx .. outMnem .. "\t" .. table.concat(rendered, ", ")
 end
 
 function x86_64_render.isSelfMove(node, colorNum)

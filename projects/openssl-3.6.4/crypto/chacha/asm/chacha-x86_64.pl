@@ -122,24 +122,24 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
 # falls through to (for most tails the .Ldone* label itself; for the
 # tails with post-loop clears a dedicated label placed before them).
 sub chacha_tail_sarcasm {
-    my ($tag, $done, $len_reg, $ctr_reg) = @_;
-    my $s = "";
-    for (my $off = 0; $off < 64; $off += 8) {
-        $s .= "\tmov\t$off(%rsp),%rcx\n";
-        $s .= "\tmov\t\$8,$ctr_reg\n";
-        $s .= ".Ltail_sarc_${tag}_${off}:\n";
-        $s .= "\tmovzb\t(%rsi),%eax\n";
-        $s .= "\txor\t%cl,%al\n";
-        $s .= "\tmov\t%al,(%rdi)\n";
-        $s .= "\tshr\t\$8,%rcx\n";
-        $s .= "\tlea\t1(%rsi),%rsi\n";
-        $s .= "\tlea\t1(%rdi),%rdi\n";
-        $s .= "\tdec\t$len_reg\n";
-        $s .= "\tjz\t$done\n";
-        $s .= "\tdec\t$ctr_reg\n";
-        $s .= "\tjnz\t.Ltail_sarc_${tag}_${off}\n";
-    }
-    return $s;
+  my ($tag, $done, $len_reg, $ctr_reg) = @_;
+  my $s = "";
+  for (my $off = 0; $off < 64; $off += 8) {
+    $s .= "\tmov\t$off(%rsp),%rcx\n";
+    $s .= "\tmov\t\$8,$ctr_reg\n";
+    $s .= ".Ltail_sarc_${tag}_${off}:\n";
+    $s .= "\tmovzb\t(%rsi),%eax\n";
+    $s .= "\txor\t%cl,%al\n";
+    $s .= "\tmov\t%al,(%rdi)\n";
+    $s .= "\tshr\t\$8,%rcx\n";
+    $s .= "\tlea\t1(%rsi),%rsi\n";
+    $s .= "\tlea\t1(%rdi),%rdi\n";
+    $s .= "\tdec\t$len_reg\n";
+    $s .= "\tjz\t$done\n";
+    $s .= "\tdec\t$ctr_reg\n";
+    $s .= "\tjnz\t.Ltail_sarc_${tag}_${off}\n";
+  }
+  return $s;
 }
 
 $code.=<<___;
@@ -322,12 +322,12 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-    # phantom-sp prologue: preserve the original %rsp inside the alloca
-    # region so the epilogue can restore the pushed registers through it
-    # (the pristine lea 64+24+48(%rsp) form computes an out-of-region
-    # address). The region grows by 16 bytes to host the saved stack
-    # pointer while keeping %rsp 16-byte aligned for the movdqa traffic.
-    $code.=<<___;
+  # phantom-sp prologue: preserve the original %rsp inside the alloca
+  # region so the epilogue can restore the pushed registers through it
+  # (the pristine lea 64+24+48(%rsp) form computes an out-of-region
+  # address). The region grows by 16 bytes to host the saved stack
+  # pointer while keeping %rsp 16-byte aligned for the movdqa traffic.
+  $code.=<<___;
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
 	push	%rbx
@@ -348,7 +348,7 @@ if ($ENV{SARCASM}) {
 .Lctr32_body:
 ___
 } else {
-    $code.=<<___;
+  $code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -498,8 +498,8 @@ $code.=<<___;
 .Loop_tail:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm): %rbp counts down.
-    $code .= chacha_tail_sarcasm("ctr32", ".Ldone", "%rbp", "%ebx");
+  # Static-window tail (see chacha_tail_sarcasm): %rbp counts down.
+  $code .= chacha_tail_sarcasm("ctr32", ".Ldone", "%rbp", "%ebx");
 } else {
 $code.=<<___;
 	movzb	($inp,%rbx),%eax
@@ -515,14 +515,14 @@ $code.=<<___;
 .Ldone:
 ___
 if ($ENV{SARCASM}) {
-    # phantom-sp epilogue: reload the saved %rsp and restore the pushed
-    # registers through it (the lea 64+24+48(%rsp) form computes an
-    # out-of-region address).
-    $code.=<<___;
+  # phantom-sp epilogue: reload the saved %rsp and restore the pushed
+  # registers through it (the lea 64+24+48(%rsp) form computes an
+  # out-of-region address).
+  $code.=<<___;
 	mov	64+24(%rsp),%rsi	# restore saved stack pointer
 ___
 } else {
-    $code.=<<___;
+  $code.=<<___;
 	lea	64+24+48(%rsp),%rsi
 ___
 }
@@ -589,22 +589,22 @@ ChaCha20_ssse3: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_def_cfa_register	%r9
 ___
 if ($avx) {
-    if ($ENV{SARCASM}) {
-	# sarcasm rewrites the cross-function branch to this entry as a
-	# signature-marshalled tail call, which does not carry the capability
-	# words in %r10/%r11; reload them (4-byte load: an 8-byte load at
-	# +4 can never be 8-aligned under Fil-C).
-	$code.=<<___;
+  if ($ENV{SARCASM}) {
+    # sarcasm rewrites the cross-function branch to this entry as a
+    # signature-marshalled tail call, which does not carry the capability
+    # words in %r10/%r11; reload them (4-byte load: an 8-byte load at
+    # +4 can never be 8-aligned under Fil-C).
+    $code.=<<___;
 	mov	OPENSSL_ia32cap_P+4(%rip),%r10d
 	test	\$`1<<(43-32)`,%r10d
 	jnz	.LChaCha20_4xop		# XOP is fastest even if we use 1/4
 ___
-    } else {
-	$code.=<<___;
+  } else {
+    $code.=<<___;
 	test	\$`1<<(43-32)`,%r10d
 	jnz	.LChaCha20_4xop		# XOP is fastest even if we use 1/4
 ___
-    }
+  }
 }
 $code.=<<___;
 	cmp	\$128,$len		# we might throw away some data,
@@ -703,8 +703,8 @@ $code.=<<___;
 .Loop_tail_ssse3:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm).
-    $code .= chacha_tail_sarcasm("ssse3", ".Ldone_ssse3", $len, "%r8d");
+  # Static-window tail (see chacha_tail_sarcasm).
+  $code .= chacha_tail_sarcasm("ssse3", ".Ldone_ssse3", $len, "%r8d");
 } else {
 $code.=<<___;
 	movzb	($inp,$counter),%eax
@@ -1042,43 +1042,43 @@ ChaCha20_4x: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_def_cfa_register	%r9
 ___
 if ($ENV{SARCASM}) {
-    # sarcasm rewrites the cross-function branches to this entry as
-    # signature-marshalled tail calls, which do not carry the capability
-    # words in %r10/%r11; reload them (two 4-byte loads: an 8-byte load
-    # at +4 can never be 8-aligned under Fil-C).
-    $code.=<<___;
+  # sarcasm rewrites the cross-function branches to this entry as
+  # signature-marshalled tail calls, which do not carry the capability
+  # words in %r10/%r11; reload them (two 4-byte loads: an 8-byte load
+  # at +4 can never be 8-aligned under Fil-C).
+  $code.=<<___;
 	mov		OPENSSL_ia32cap_P+4(%rip),%r11d
 ___
-    if ($avx>1) {
-	$code.=<<___;
+  if ($avx>1) {
+  $code.=<<___;
 	mov		OPENSSL_ia32cap_P+8(%rip),%r10d
 	test		\$`1<<5`,%r10d		# test AVX2
 	jnz		.LChaCha20_8x
 ___
-    }
+  }
 } else {
-    $code.=<<___;
+  $code.=<<___;
 	mov		%r10,%r11
 ___
-    if ($avx>1) {
-	$code.=<<___;
+  if ($avx>1) {
+  $code.=<<___;
 	shr		\$32,%r10		# OPENSSL_ia32cap_P+8
 	test		\$`1<<5`,%r10		# test AVX2
 	jnz		.LChaCha20_8x
 ___
-    }
+  }
 }
 $code.=<<___;
 	cmp		\$192,$len
 	ja		.Lproceed4x
 ___
 if ($ENV{SARCASM}) {
-    # No Atom early-exit under sarcasm (perf-only: the 4x SSSE3 body is
-    # correct everywhere, just slower on in-order Atoms): the
-    # cross-function join into ssse3's tail cannot be modeled with a
-    # static frame, so always run the 4x body. The gas path keeps the
-    # pristine bail.
-    $code .= ".Lproceed4x:\n";
+  # No Atom early-exit under sarcasm (perf-only: the 4x SSSE3 body is
+  # correct everywhere, just slower on in-order Atoms): the
+  # cross-function join into ssse3's tail cannot be modeled with a
+  # static frame, so always run the 4x body. The gas path keeps the
+  # pristine bail.
+  $code .= ".Lproceed4x:\n";
 } else {
 $code.=<<___;
 
@@ -1491,8 +1491,8 @@ $code.=<<___;
 .Loop_tail4x:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm).
-    $code .= chacha_tail_sarcasm("4x", ".Ldone4x", $len, "%r10d");
+  # Static-window tail (see chacha_tail_sarcasm).
+  $code .= chacha_tail_sarcasm("4x", ".Ldone4x", $len, "%r10d");
 } else {
 $code.=<<___;
 	movzb		($inp,%r10),%eax
@@ -1954,8 +1954,8 @@ $code.=<<___;
 .Loop_tail4xop:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm).
-    $code .= chacha_tail_sarcasm("4xop", ".Ldone4xop", $len, "%r10d");
+  # Static-window tail (see chacha_tail_sarcasm).
+  $code .= chacha_tail_sarcasm("4xop", ".Ldone4xop", $len, "%r10d");
 } else {
 $code.=<<___;
 	movzb		($inp,%r10),%eax
@@ -2607,8 +2607,8 @@ $code.=<<___;
 .Loop_tail8x:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm).
-    $code .= chacha_tail_sarcasm("8x", ".Ldone8x", $len, "%r10d");
+  # Static-window tail (see chacha_tail_sarcasm).
+  $code .= chacha_tail_sarcasm("8x", ".Ldone8x", $len, "%r10d");
 } else {
 $code.=<<___;
 	movzb		($inp,%r10),%eax
@@ -2865,10 +2865,10 @@ $code.=<<___;
 .Loop_tail_avx512:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
-    # the post-loop state restore below.
-    $code .= chacha_tail_sarcasm("avx512", ".Ltail_avx512_sarcdone", $len, "%r8d");
-    $code .= ".Ltail_avx512_sarcdone:\n";
+  # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
+  # the post-loop state restore below.
+  $code .= chacha_tail_sarcasm("avx512", ".Ltail_avx512_sarcdone", $len, "%r8d");
+  $code .= ".Ltail_avx512_sarcdone:\n";
 } else {
 $code.=<<___;
 	movzb		($inp,$counter),%eax
@@ -3043,10 +3043,10 @@ $code.=<<___;
 .Loop_tail_avx512vl:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
-    # the post-loop state restore below.
-    $code .= chacha_tail_sarcasm("avx512vl", ".Ltail_avx512vl_sarcdone", $len, "%r8d");
-    $code .= ".Ltail_avx512vl_sarcdone:\n";
+  # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
+  # the post-loop state restore below.
+  $code .= chacha_tail_sarcasm("avx512vl", ".Ltail_avx512vl_sarcdone", $len, "%r8d");
+  $code .= ".Ltail_avx512vl_sarcdone:\n";
 } else {
 $code.=<<___;
 	movzb		($inp,$counter),%eax
@@ -3559,10 +3559,10 @@ $code.=<<___;
 .Loop_tail16x:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
-    # the post-loop state clear below.
-    $code .= chacha_tail_sarcasm("16x", ".Ltail_16x_sarcdone", $len, "%r10d");
-    $code .= ".Ltail_16x_sarcdone:\n";
+  # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
+  # the post-loop state clear below.
+  $code .= chacha_tail_sarcasm("16x", ".Ltail_16x_sarcdone", $len, "%r10d");
+  $code .= ".Ltail_16x_sarcdone:\n";
 } else {
 $code.=<<___;
 	movzb		($inp,%r10),%eax
@@ -3958,10 +3958,10 @@ $code.=<<___;
 .Loop_tail8xvl:
 ___
 if ($ENV{SARCASM}) {
-    # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
-    # the post-loop state clear below.
-    $code .= chacha_tail_sarcasm("8xvl", ".Ltail_8xvl_sarcdone", $len, "%r10d");
-    $code .= ".Ltail_8xvl_sarcdone:\n";
+  # Static-window tail (see chacha_tail_sarcasm); exits rejoin before
+  # the post-loop state clear below.
+  $code .= chacha_tail_sarcasm("8xvl", ".Ltail_8xvl_sarcdone", $len, "%r10d");
+  $code .= ".Ltail_8xvl_sarcdone:\n";
 } else {
 $code.=<<___;
 	movzb		($inp,%r10),%eax
@@ -4257,50 +4257,50 @@ foreach (split("\n",$code)) {
 
 	s/%x#%[yz]/%x/g;	# "down-shift"
 
-	# SARCASM-only: the 4x/4xop/8x bodies address the frame through
-	# offload bases (%rcx = %rsp+0x100, %rax = %rsp+0x200, a size
-	# optimization for shorter encodings), but taking the frame's
-	# address is rejected, so use plain %rsp-relative accesses instead
-	# (address-preserving: D-0x100(%rcx) == D(%rsp)). Applied here so
-	# the bodies above stay untouched for the gas path.
-	if ($ENV{SARCASM}) {
-	    s/-0x100\(%rcx\)/(%rsp)/g;
-	    s/-0x200\(%rax\)/(%rsp)/g;
-	    next if (/^\tlea\t\t0x100\(%rsp\),%rcx\t# size optimization$/);
-	    next if (/^\tlea\t\t0x200\(%rsp\),%rax\t# size optimization$/);
-	    # SARCASM-only: cross-variant dispatch jumps target mid-body
-	    # .L labels (shared-tail joins), which cannot be modeled with
-	    # a static frame once the bodies carry explicit signatures.
-	    # Retarget them to the sig-annotated entries (the entry and
-	    # the .L label are adjacent with no code between, so this is
-	    # behavior-preserving); sarcasm models these as tail calls.
-	    # The gas path keeps the pristine mid-body jumps.
-	    s/\.LChaCha20_avx512vl\b(?!:)/ChaCha20_avx512vl/g;
-	    s/\.LChaCha20_avx512\b(?!:)/ChaCha20_avx512/g;
-	    s/\.LChaCha20_ssse3\b(?!:)/ChaCha20_ssse3/g;
-	    s/\.LChaCha20_128\b(?!:)/ChaCha20_128/g;
-	    s/\.LChaCha20_4xop\b(?!:)/ChaCha20_4xop/g;
-	    s/\.LChaCha20_4x\b(?!:)/ChaCha20_4x/g;
-	    s/\.LChaCha20_8xvl\b(?!:)/ChaCha20_8xvl/g;
-	    s/\.LChaCha20_8x\b(?!:)/ChaCha20_8x/g;
-	    s/\.LChaCha20_16x\b(?!:)/ChaCha20_16x/g;
-	    # SARCASM-only: 4x's `ja .Lproceed4x` targets the label
-	    # immediately before the frame setup, which ends the prologue
-	    # scan and orphans the sub into a "mid-function" adjustment.
-	    # The Atom early-exit it used to skip is already gone above,
-	    # so the jump is over an empty range: drop it (the surviving
-	    # `cmp` sets flags no consumer reads).
-	    next if (/^\tja\t\t\.Lproceed4x$/);
-	    # SARCASM-only: the 8x/16x/8xvl `and $-32/%rsp` (dynamic
-	    # realignment for aligned vector spills) takes the frame's
-	    # address and is rejected. Drop it and use the unaligned
-	    # vector forms on frame slots instead (same semantics, no
-	    # alignment requirement; the virtualized frame keeps 16-byte
-	    # SysV alignment for the plain movdqa traffic).
-	    next if (/^\tand\t\t\$-32,%rsp$/);
-	    next if (/^\tand\t\t\$-64,%rsp$/);
-	    s/vmovdqa/vmovdqu/g if (/\(%rsp\)/);
-	}
+  # SARCASM-only: the 4x/4xop/8x bodies address the frame through
+  # offload bases (%rcx = %rsp+0x100, %rax = %rsp+0x200, a size
+  # optimization for shorter encodings), but taking the frame's
+  # address is rejected, so use plain %rsp-relative accesses instead
+  # (address-preserving: D-0x100(%rcx) == D(%rsp)). Applied here so
+  # the bodies above stay untouched for the gas path.
+  if ($ENV{SARCASM}) {
+    s/-0x100\(%rcx\)/(%rsp)/g;
+    s/-0x200\(%rax\)/(%rsp)/g;
+    next if (/^\tlea\t\t0x100\(%rsp\),%rcx\t# size optimization$/);
+    next if (/^\tlea\t\t0x200\(%rsp\),%rax\t# size optimization$/);
+    # SARCASM-only: cross-variant dispatch jumps target mid-body
+    # .L labels (shared-tail joins), which cannot be modeled with
+    # a static frame once the bodies carry explicit signatures.
+    # Retarget them to the sig-annotated entries (the entry and
+    # the .L label are adjacent with no code between, so this is
+    # behavior-preserving); sarcasm models these as tail calls.
+    # The gas path keeps the pristine mid-body jumps.
+    s/\.LChaCha20_avx512vl\b(?!:)/ChaCha20_avx512vl/g;
+    s/\.LChaCha20_avx512\b(?!:)/ChaCha20_avx512/g;
+    s/\.LChaCha20_ssse3\b(?!:)/ChaCha20_ssse3/g;
+    s/\.LChaCha20_128\b(?!:)/ChaCha20_128/g;
+    s/\.LChaCha20_4xop\b(?!:)/ChaCha20_4xop/g;
+    s/\.LChaCha20_4x\b(?!:)/ChaCha20_4x/g;
+    s/\.LChaCha20_8xvl\b(?!:)/ChaCha20_8xvl/g;
+    s/\.LChaCha20_8x\b(?!:)/ChaCha20_8x/g;
+    s/\.LChaCha20_16x\b(?!:)/ChaCha20_16x/g;
+    # SARCASM-only: 4x's `ja .Lproceed4x` targets the label
+    # immediately before the frame setup, which ends the prologue
+    # scan and orphans the sub into a "mid-function" adjustment.
+    # The Atom early-exit it used to skip is already gone above,
+    # so the jump is over an empty range: drop it (the surviving
+    # `cmp` sets flags no consumer reads).
+    next if (/^\tja\t\t\.Lproceed4x$/);
+    # SARCASM-only: the 8x/16x/8xvl `and $-32/%rsp` (dynamic
+    # realignment for aligned vector spills) takes the frame's
+    # address and is rejected. Drop it and use the unaligned
+    # vector forms on frame slots instead (same semantics, no
+    # alignment requirement; the virtualized frame keeps 16-byte
+    # SysV alignment for the plain movdqa traffic).
+    next if (/^\tand\t\t\$-32,%rsp$/);
+    next if (/^\tand\t\t\$-64,%rsp$/);
+    s/vmovdqa/vmovdqu/g if (/\(%rsp\)/);
+  }
 
 	print $_,"\n";
 }

@@ -466,14 +466,147 @@ local function classifyHighByte(insn, m, ops)
 		pin = { uses = pinUses, defs = pinDefs } }
 end
 
+-- String ops with implicit rsi/rdi memory (rep movs*, rep stos*, and their
+-- bare single-step forms): element byte width by mnemonic (`movs`/`stos`
+-- without a size letter are ambiguous and rejected in classifyStringOp).
+local STRING_ELEM = {
+	movsb = 1, movsw = 2, movsl = 4, movsd = 4, movsq = 8,
+	stosb = 1, stosw = 2, stosl = 4, stosd = 4, stosq = 8,
+}
+
+-- Classify a stringop- or rep-prefixed instruction. Returns a classify result
+-- for the supported shapes (rep movs*, rep stos*, bare movs*/stos*), nil for
+-- anything this does not own (including `rep ret` / `rep nop`, which keep
+-- their hint and classify normally downstream), and raises a clean rejection
+-- otherwise. Runs BEFORE fp.unsafeReject in x86.classify so the supported
+-- shapes never reach the string-op rejection (and so the zero-operand
+-- `movsd` string form is claimed before the FP table could see it — `movsd`
+-- WITH operands is an FP instruction and stays untouched here).
+function x86.classifyStringOp(insn)
+	local rawMnem = string.lower(insn.mnemonic)
+	local raw = insn.raw or rawMnem
+	local rep = insn.repPrefix  -- nil | "rep"/"repe"/"repne"/"repz"/"repnz"
+	local ops = insn.operands or {}
+	local kind, elem = nil, nil
+	if rawMnem == "movsd" then
+		-- ambiguous mnemonic: with operands it is the FP scalar-double move;
+		-- with none it is the dword string move.
+		if #ops == 0 then kind, elem = "movs", 4 end
+	elseif STRING_ELEM[rawMnem] then
+		elem = STRING_ELEM[rawMnem]
+		kind = (string.sub(rawMnem, 1, 4) == "movs") and "movs" or "stos"
+	elseif rawMnem == "movs" or rawMnem == "stos" then
+		kind = rawMnem  -- elem stays nil: ambiguous width, rejected below
+	end
+	if kind then
+		if #ops > 0 then
+			local regs = (insn.syntax == "intel") and "rsi/rdi" or "%rsi/%rdi"
+			error("sarcasm: '" .. rawMnem .. "' takes no explicit operands (its"
+				.. " source and destination are the implicit " .. regs .. " registers;"
+				.. " write the bare form): "
+				.. raw)
+		end
+		-- The dword string move is spelled `movsl`/`stosl` in AT&T but
+		-- `movsd`/`stosd` in Intel (each assembler rejects the other's
+		-- spelling, so the check must run here — the re-emitted mnemonic
+		-- would otherwise die in `as` with a cryptic message).
+		if insn.syntax == "intel" then
+			if rawMnem == "movsl" or rawMnem == "stosl" then
+				error("sarcasm: '" .. rawMnem .. "' is not encodable in Intel syntax"
+					.. " (use " .. string.gsub(rawMnem, "l$", "d") .. " for the dword"
+					.. " string move): " .. raw)
+			end
+		elseif rawMnem == "stosd" then
+			error("sarcasm: 'stosd' is not encodable in AT&T syntax"
+				.. " (use stosl for the dword string store): " .. raw)
+		end
+		if not elem then
+			error("sarcasm: cannot determine the element width of '" .. rawMnem
+				.. "' (use an explicit size form: movsb/movsw/movsl/movsq or"
+				.. " stosb/stosw/stosl/stosq): " .. raw)
+		end
+		if rep == "repne" or rep == "repnz" then
+			error("sarcasm: `" .. rep .. "` prefix is not supported on '" .. rawMnem
+				.. "' (only `rep`/`repe`/`repz`, which repeat while %rcx != 0): " .. raw)
+		end
+		if insn.annotation then
+			error("sarcasm: annotation `" .. insn.annotation .. "` is not supported on '"
+				.. rawMnem .. "' (string instructions need no annotation — their"
+				.. " accesses are capability-checked against %rsi/%rdi): " .. raw)
+		end
+		if insn.lockPrefix then
+			error("sarcasm: `lock` prefix is not supported on '" .. rawMnem
+				.. "' (lock requires a memory-destination read-modify-write"
+				.. " instruction sarcasm models exactly): " .. raw)
+		end
+		-- The hardware reads and advances the implicit registers. The rsi/rdi
+		-- occurrences are SHARED between uses and defs (one table, RMW) so the
+		-- pointer webs — and their capabilities — flow through the copy/fill
+		-- unchanged (no ptrflow rule needed). The rcx def is a FRESH web (the
+		-- hardware zeroes %rcx): a scalar 0. The transform routes the webs
+		-- through the physical registers with explicit pin moves around the
+		-- instruction (no fixedReg precoloring: the fail-stub marshalling also
+		-- needs rdi/rsi, so pinned webs would be uncolorable).
+		local defs, uses, rmw = {}, {}, {}
+		local repInfo = { kind = kind, elem = elem, repPrefix = rep }
+		local function imp(num, nm)
+			return { kind = "reg", rc = "gpr", num = num, width = 64,
+				name = nm, implicit = true }
+		end
+		local function rmwReg(num, nm)
+			local r = imp(num, nm)
+			table.insert(uses, r); table.insert(defs, r); table.insert(rmw, num)
+			return r
+		end
+		if kind == "movs" then
+			repInfo.rsi = rmwReg(6, "rsi")
+			repInfo.rdi = rmwReg(7, "rdi")
+		else
+			repInfo.rdi = rmwReg(7, "rdi")
+			local rax = imp(0, "rax")
+			table.insert(uses, rax); repInfo.rax = rax
+		end
+		local rcxUse = imp(1, "rcx")
+		table.insert(uses, rcxUse); repInfo.rcxUse = rcxUse
+		local rcxDef = imp(1, "rcx")
+		table.insert(defs, rcxDef); repInfo.rcxDef = rcxDef
+		return { defs = defs, uses = uses, rmw = rmw, control = "none",
+			fallsThrough = true, rep = repInfo }
+	end
+	-- Not a movs/stos shape: validate the rep prefix. `rep ret` (the AMD
+	-- branch-prediction hint) and `rep nop` (pause) keep their prefix and
+	-- classify normally; the renderer re-emits it. Anything else cannot be
+	-- modeled — rejecting here keeps a meaningless prefix from being silently
+	-- dropped (e.g. `rep addq` is NOT an add).
+	if rep then
+		if rawMnem == "ret" or rawMnem == "nop" then return nil end
+		error("sarcasm: `" .. rep .. "` prefix is not supported on '" .. rawMnem
+			.. "' (only rep movs* / rep stos* — including movsb/movsw/movsl/movsq"
+			.. " and stosb/stosw/stosl/stosq — plus `rep ret`): " .. raw)
+	end
+	return nil
+end
+
 -- Classify. Returns { defs, uses, rmw, control, targets, fallsThrough }.
 function x86.classify(insn)
-	-- Unsafe instructions (syscall/privileged/port-I/O/string-ops/prefixes/cr-dr
-	-- moves) are rejected here, BEFORE baseMnemonic mapping (e.g. `movsq` would
-	-- otherwise map to `mov`), and FP/SIMD/x87 instructions get their def/use
+	-- Unsafe instructions (syscall/privileged/port-I/O/unmodeled-string-ops/
+	-- stray-prefixes/cr-dr moves) are rejected here, BEFORE baseMnemonic
+	-- mapping, and FP/SIMD/x87 instructions get their def/use
 	-- modeling from the fp knowledge module (GPR operands only; xmm-class
 	-- registers are deliberately never modeled).
 	local rawMnem = string.lower(insn.mnemonic)
+
+	-- String ops with implicit rsi/rdi memory (rep movs*, rep stos*, and
+	-- their bare single-step forms): modeled with implicit register effects
+	-- for the transform's checked lowering (see classifyStringOp). Every
+	-- other rep-prefixed instruction is validated here too (`rep ret` keeps
+	-- its hint; anything else is rejected). Runs before unsafeReject so the
+	-- supported shapes (including the zero-operand `movsd` string form) never
+	-- reach the string-op rejection.
+	do
+		local rep = x86.classifyStringOp(insn)
+		if rep then return rep end
+	end
 	local why = fp.unsafeReject(rawMnem, insn)
 	if why then error("sarcasm: " .. why .. ": " .. (insn.raw or rawMnem)) end
 

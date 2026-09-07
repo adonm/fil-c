@@ -139,7 +139,7 @@ $code.=<<___;
 .globl	rsaz_1024_sqr_avx2
 .type	rsaz_1024_sqr_avx2,\@function,5
 .align	64
-rsaz_1024_sqr_avx2:		# 702 cycles, 14% faster than rsaz_1024_mul_avx2 #! void(ptr,ptr,ptr,long,int)
+rsaz_1024_sqr_avx2:		#! void(ptr,ptr,ptr,long,int) # 702 cycles, 14% faster than rsaz_1024_mul_avx2
 .cfi_startproc
 	lea	(%rsp), %rax
 .cfi_def_cfa_register	%rax
@@ -177,20 +177,20 @@ $code.=<<___;
 	mov	%rdx, $np			# reassigned argument
 ___
 if ($ENV{SARCASM}) {
-	# Merged alloca + anchor: 896 used bytes + 1024 alignment slack.
-	# The conditional n-copy sub/and dance below is a page-crossing
-	# performance workaround that cannot be proven safe (mid-function
-	# andq on an anchored %rsp) and is pointless for a GC allocation.
-	# The andq $-1024,%rsp alignment itself is likewise perf-only: the
-	# frame is virtualized, so all slots stay addressable without it.
-	$code.=<<___;
+  # Merged alloca + anchor: 896 used bytes + 1024 alignment slack.
+  # The conditional n-copy sub/and dance below is a page-crossing
+  # performance workaround that cannot be proven safe (mid-function
+  # andq on an anchored %rsp) and is pointless for a GC allocation.
+  # The andq $-1024,%rsp alignment itself is likewise perf-only: the
+  # frame is virtualized, so all slots stay addressable without it.
+  $code.=<<___;
 	sub	\$1920,%rsp
 	sub	\$-128, $rp			# size optimization
 	sub	\$-128, $ap
 	sub	\$-128, $np
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	sub	\$$FrameSize, %rsp
 	mov	$np, $tmp
 	sub	\$-128, $rp			# size optimization
@@ -972,14 +972,14 @@ $code.=<<___;
 	mov	%rdx, $bp	# reassigned argument
 ___
 if ($ENV{SARCASM}) {
-	# Merged alloca + anchor: 64 used bytes + 64 alignment slack (see
-	# the sqr frame above for why the n-copy dance is dropped). The
-	# andq $-64,%rsp alignment is perf-only and dropped the same way.
-	$code.=<<___;
+  # Merged alloca + anchor: 64 used bytes + 64 alignment slack (see
+  # the sqr frame above for why the n-copy dance is dropped). The
+  # andq $-64,%rsp alignment is perf-only and dropped the same way.
+  $code.=<<___;
 	sub	\$128,%rsp
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	sub	\$64,%rsp
 ___
 }
@@ -1005,7 +1005,7 @@ $code.=<<___;
 	sub	\$-128,$rp
 ___
 if (!$ENV{SARCASM}) {
-	$code.=<<___;
+  $code.=<<___;
 
 	and	\$4095, $tmp	# see if $np crosses page
 	add	\$32*10, $tmp
@@ -1727,14 +1727,14 @@ ___
 $code.=<<___;
 ___
 if ($ENV{SARCASM}) {
-	# andq-anchored region: 256 used bytes + 32 alignment slack (one
-	# merged allocation; the lea-and two-step cannot be proven safe).
-	# The andq $-32,%rsp alignment itself is perf-only and dropped.
-	$code.=<<___;
+  # andq-anchored region: 256 used bytes + 32 alignment slack (one
+  # merged allocation; the lea-and two-step cannot be proven safe).
+  # The andq $-32,%rsp alignment itself is perf-only and dropped.
+  $code.=<<___;
 	sub	\$288,%rsp
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	lea	-0x100(%rsp),%rsp
 	and	\$-32, %rsp
 ___

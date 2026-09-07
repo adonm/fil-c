@@ -721,13 +721,13 @@ Camellia_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 	je	.Lcbc_abort
 ___
 if ($ENV{SARCASM}) {
-	# Fil-C requires natural alignment for every memory access, while
-	# Camellia_cbc_encrypt's contract (like the C code) accepts
-	# arbitrarily aligned buffers. The CBC loops use word-sized
-	# loads/stores that cannot prove that, so forward to the
-	# always-compiled C CBC implementations (memcpy-based, hence
-	# alignment-safe) with the block functions passed as capabilities.
-	$code.=<<___;
+  # Fil-C requires natural alignment for every memory access, while
+  # Camellia_cbc_encrypt's contract (like the C code) accepts
+  # arbitrarily aligned buffers. The CBC loops use word-sized
+  # loads/stores that cannot prove that, so forward to the
+  # always-compiled C CBC implementations (memcpy-based, hence
+  # alignment-safe) with the block functions passed as capabilities.
+  $code.=<<___;
 	test	%r9d,%r9d
 	jz	.Lcbc_fwd_dec
 	push	%rax
@@ -767,7 +767,7 @@ $code.=<<___;
 ___
 # The CBC body below runs only under gas (SARCASM forwards to the C
 # CBC in Camellia_cbc_encrypt above); the dynamic anti-aliasing frame stays.
-	$code.=<<___;
+  $code.=<<___;
 	mov	%rsp,%rbp
 .cfi_def_cfa_register	%rbp
 	sub	\$64,%rsp
@@ -846,7 +846,7 @@ $code.=<<___;
 
 	call	_x86_64_Camellia_encrypt
 
-	mov	$_key,$key		# "rewind" the key	#! load ptr
+	mov	$_key,$key		#! load ptr # "rewind" the key
 	bswap	@S[0]
 	mov	$_end,%rdx
 	bswap	@S[1]
@@ -884,13 +884,7 @@ $code.=<<___;
 	cld
 	mov	$inp,%rsi
 	lea	8+$ivec,%rdi
-.Lcbc_enc_tail_copy:			# explicit loop (was rep movsb;
-	mov	(%rsi),%al		# string ops are not memory-safe)
-	mov	%al,(%rdi)
-	lea	1(%rsi),%rsi
-	lea	1(%rdi),%rdi
-	sub	\$1,%ecx
-	jnz	.Lcbc_enc_tail_copy
+	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
 	popfq
 .Lcbc_enc_popf:
 
@@ -928,7 +922,7 @@ $code.=<<___;
 
 	call	_x86_64_Camellia_decrypt
 
-	mov	$_key,$key		# "rewind" the key	#! load ptr
+	mov	$_key,$key		#! load ptr # "rewind" the key
 	mov	$_end,%rdx
 	mov	$_res,%rcx
 
@@ -980,13 +974,7 @@ $code.=<<___;
 	cld
 	lea	8+$ivec,%rsi
 	lea	($out),%rdi
-.Lcbc_dec_tail_copy:			# explicit loop (was rep movsb);
-	mov	(%rsi),%r10b		# %rax holds the IV residue here
-	mov	%r10b,(%rdi)
-	lea	1(%rsi),%rsi
-	lea	1(%rdi),%rdi
-	sub	\$1,%ecx
-	jnz	.Lcbc_dec_tail_copy
+	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
 	popfq
 .Lcbc_dec_popf:
 

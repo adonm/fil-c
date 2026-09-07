@@ -239,17 +239,17 @@ $code.=<<___;
 .Lvanilla_mul_2x2:
 ___
 if ($ENV{SARCASM}) {
-	# Fixed region + parked entry %rsp (the balanced mid-function
-	# lea-alloc pair cannot be proven safe); the 16-entry tab for
-	# _mul_1x1 lives in a GC-allocated buffer (see $TAB above), so the
-	# region only grows by 8 for the save slot.
-	$code.=<<___;
+  # Fixed region + parked entry %rsp (the balanced mid-function
+  # lea-alloc pair cannot be proven safe); the 16-entry tab for
+  # _mul_1x1 lives in a GC-allocated buffer (see $TAB above), so the
+  # region only grows by 8 for the save slot.
+  $code.=<<___;
 	.alloca	\$128,\$8,%fil_gf2mtab
 	sub	\$8*17+8,%rsp
 	mov	%rax,8*17(%rsp)		# park entry %rsp in the region
 ___
 } else {
-	$code.=<<___;
+  $code.=<<___;
 	lea	-8*17(%rsp),%rsp
 ___
 }

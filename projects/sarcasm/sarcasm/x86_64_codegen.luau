@@ -786,7 +786,14 @@ function M.make(ctx)
 		local baseTemp = mem.base and node.opTemp[mem.base] or nil
 		local indexTemp = (mem.index and mem.index.kind == "reg") and node.opTemp[mem.index] or nil
 		local capLo
-		if baseTemp and pf.isPtr[baseTemp] then capLo = pf.lowerTemp[baseTemp]
+		-- `#! new capability %reg` (stashed on the node by the transform):
+		-- the access is guarded by the NAMED register's capability, not the
+		-- base-first default (validated: the named web carries a capability).
+		-- The effective address is still computed from base+index+disp as
+		-- written — only the capability source changes.
+		if node.newCapTemp and pf.lowerTemp[node.newCapTemp] then
+			capLo = pf.lowerTemp[node.newCapTemp]
+		elseif baseTemp and pf.isPtr[baseTemp] then capLo = pf.lowerTemp[baseTemp]
 		elseif indexTemp and pf.isPtr[indexTemp] then capLo = pf.lowerTemp[indexTemp] end
 		local disp = mem.dispVal or 0
 		local effTemp = baseTemp

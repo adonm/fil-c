@@ -110,5 +110,6 @@ filc/projeny package projects/blake3.projeny projects/blake3/pizlonated-blake3.t
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip
 filc/projeny package projects/dash.projeny projects/dash/pizlonated-dash.tar.gz
+filc/projeny package projects/mg.projeny projects/mg/pizlonated-mg.tar.gz
 ./package-source.sh projects/zsh-5.9.2 pizlonated-zsh
 

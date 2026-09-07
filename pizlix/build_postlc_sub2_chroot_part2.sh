@@ -409,13 +409,14 @@ cd ..
 rm -rf pizlonated-vim
 hash -r
 
-tar -xf mg-3.7.tar.gz 
-cd mg-3.7
+rm -rf pizlonated-mg
+tar -xf pizlonated-mg.tar.gz
+cd pizlonated-mg
 ./configure --prefix=/usr
 make
 make install
 cd ..
-rm -rf mg-3.7
+rm -rf pizlonated-mg
 hash -r
 
 tar -xf MarkupSafe-2.1.5.tar.gz

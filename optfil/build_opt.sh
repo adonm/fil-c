@@ -504,13 +504,13 @@ cd ..
 rm -rf pizlonated-libffi
 hash -r
 
-tar -xf $FILCSRC/pizlix/mg-3.7.tar.gz 
-cd mg-3.7
+tar -xf $FILCSRC/projects/mg/pizlonated-mg.tar.gz
+cd pizlonated-mg
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf mg-3.7
+rm -rf pizlonated-mg
 hash -r
 
 tar -xf $FILCSRC/projects/libuv-1.52.1/pizlonated-libuv.tar.gz

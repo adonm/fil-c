@@ -83,7 +83,6 @@ cp -v \
     man-db-2.12.1.tar.xz \
     man-pages-6.9.1.tar.xz \
     MarkupSafe-2.1.5.tar.gz \
-    mg-3.7.tar.gz \
     mpc-1.3.1.tar.gz \
     mpfr-4.2.1.tar.xz \
     ncurses-6.6.tar.gz \

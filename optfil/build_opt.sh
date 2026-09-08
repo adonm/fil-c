@@ -781,7 +781,9 @@ cd pizlonated-icu/source
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
-cd ../../../
+# pizlonated-icu unpacks to pizlonated-icu/source, so two ups gets us back to
+# /opt/fil/build (the old icu4c/source layout needed three).
+cd ../..
 rm -rf pizlonated-icu
 hash -r
 

@@ -110,7 +110,6 @@ cp -v \
     texinfo-7.1.tar.xz \
     tzdata2024a.tar.gz \
     udev-lfs-20230818.tar.xz \
-    util-linux-2.40.2.tar.xz \
     vim-9.1.0660.tar.gz \
     wheel-0.44.0.tar.gz \
     XML-Parser-2.47.tar.gz \
@@ -129,6 +128,9 @@ cp -v \
     linux-config-6.10.5 \
     preserve-yolo.txt \
     $LFS/sources
+
+(cd $FILCSRC && filc/projeny package projects/yolo-util-linux.projeny projects/yolo-util-linux/pizlonated-yolo-util-linux.tar.gz)
+cp -v $FILCSRC/projects/yolo-util-linux/pizlonated-yolo-util-linux.tar.gz $LFS/sources
 
 chown root:root $LFS/sources/*
 

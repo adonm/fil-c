@@ -57,8 +57,8 @@ cp -v \
     gcc-14.2.0.tar.xz \
     gdbm-1.24.tar.gz \
     gettext-0.22.5.tar.xz \
-    glibc-2.40-fhs-1.patch \
-    glibc-2.40.tar.xz \
+    glibc-2.44-fhs-1.patch \
+    glibc-2.44.tar.xz \
     gmp-6.3.0.tar.xz \
     gperf-3.1.tar.gz \
     grep-3.12.tar.xz \

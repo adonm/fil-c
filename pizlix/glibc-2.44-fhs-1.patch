@@ -7,9 +7,9 @@ Description:             This patch removes references to /var/db directory whic
                          of FHS and replaces them with more suitable directories in /var
                          hierarchy - /var/cache/nscd for nscd and /var/lib/nss_db for nss_db.
 
---- a/Makeconfig	2012-12-25 04:02:13.000000000 +0100
-+++ b/Makeconfig	2013-02-11 01:32:32.500667439 +0100
-@@ -250,7 +250,7 @@
+--- a/Makeconfig	2026-09-08 00:16:34.000000000 +0000
++++ b/Makeconfig	2026-09-08 00:16:55.813019385 +0000
+@@ -262,7 +262,7 @@
  
  # Directory for the database files and Makefile for nss_db.
  ifndef vardbdir
@@ -18,9 +18,9 @@ Description:             This patch removes references to /var/db directory whic
  endif
  inst_vardbdir = $(install_root)$(vardbdir)
  
---- a/nscd/nscd.h	2012-12-25 04:02:13.000000000 +0100
-+++ b/nscd/nscd.h	2013-02-11 01:32:32.500667439 +0100
-@@ -112,11 +112,11 @@
+--- a/nscd/nscd.h	2026-09-08 00:16:34.000000000 +0000
++++ b/nscd/nscd.h	2026-09-08 00:16:55.813431308 +0000
+@@ -160,11 +160,11 @@
  
  
  /* Paths of the file for the persistent storage.  */
@@ -37,9 +37,9 @@ Description:             This patch removes references to /var/db directory whic
  
  /* Path used when not using persistent storage.  */
  #define _PATH_NSCD_XYZ_DB_TMP	"/var/run/nscd/dbXXXXXX"
---- a/nss/db-Makefile	2012-12-25 04:02:13.000000000 +0100
-+++ b/nss/db-Makefile	2013-02-11 01:32:32.500667439 +0100
-@@ -22,7 +22,7 @@
+--- a/nss/db-Makefile	2026-09-08 00:16:34.000000000 +0000
++++ b/nss/db-Makefile	2026-09-08 00:16:55.813515264 +0000
+@@ -21,7 +21,7 @@
  		       /etc/rpc /etc/services /etc/shadow /etc/gshadow \
  		       /etc/netgroup)
  
@@ -48,8 +48,8 @@ Description:             This patch removes references to /var/db directory whic
  
  AWK = awk
  MAKEDB = makedb --quiet
---- a/sysdeps/generic/paths.h	2012-12-25 04:02:13.000000000 +0100
-+++ b/sysdeps/generic/paths.h	2013-02-11 01:32:32.500667439 +0100
+--- a/sysdeps/generic/paths.h	2026-09-08 00:16:34.000000000 +0000
++++ b/sysdeps/generic/paths.h	2026-09-08 00:16:55.813620070 +0000
 @@ -68,7 +68,7 @@
  /* Provide trailing slash, since mostly used for building pathnames. */
  #define	_PATH_DEV	"/dev/"
@@ -59,8 +59,8 @@ Description:             This patch removes references to /var/db directory whic
  #define	_PATH_VARRUN	"/var/run/"
  #define	_PATH_VARTMP	"/var/tmp/"
  
---- a/sysdeps/unix/sysv/linux/paths.h	2012-12-25 04:02:13.000000000 +0100
-+++ b/sysdeps/unix/sysv/linux/paths.h	2013-02-11 01:32:32.504000831 +0100
+--- a/sysdeps/unix/sysv/linux/paths.h	2026-09-08 00:16:34.000000000 +0000
++++ b/sysdeps/unix/sysv/linux/paths.h	2026-09-08 00:16:55.813723806 +0000
 @@ -68,7 +68,7 @@
  /* Provide trailing slash, since mostly used for building pathnames. */
  #define	_PATH_DEV	"/dev/"

@@ -53,7 +53,7 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 	-- later killing ops on the same RMW web merely reuse the register as
 	-- scratch. Keeping the seed's capability is the long-standing behavior
 	-- everything relies on (it also keeps entry unpacking's root stores and
-	-- the `use/new capability` validations well-formed, which assume seeded
+	-- the `use capability` validations well-formed, which assume seeded
 	-- webs always carry lowers). Kills apply only to mov/ALU-derived
 	-- scratch webs (the AES_decrypt `mov $key,%rbp` shape), which no seed
 	-- roots. Web identities are lift-fixed, so this set is stable for the
@@ -75,7 +75,7 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 	-- never killed either: a later killing op on the same RMW web merely
 	-- reuses the register as scratch, but the pre-kill range addresses
 	-- memory through it — sha1's `sub $in0,$out` feeds `disp($out,$in0)`
-	-- stores (guarded by an explicit `#! new capability $out`), and vpaes's
+	-- stores (guarded by an explicit `#! use capability $out`), and vpaes's
 	-- `subq %rdi,%rsi` feeds the `(%rsi,%rdi,1)` loop under the base's
 	-- capability — so a null capability there would trap legitimate
 	-- accesses. Kills apply only to pure-integer scratch that never
@@ -496,15 +496,15 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 							-- (Source selection lives in capAluSrc above, shared with
 							-- the save snapshot.)
 							--
-							-- Explicit capability directives stashed on the node by the
-							-- transform (`#! use capability %reg` on any of these ops,
-							-- `#! new capability %reg` on a lea): the result draws from
-							-- the NAMED source, bypassing the scan and (for sub) the
-							-- ptr-ptr guard. The annotation is an explicit, validated,
-							-- bounds-checked user choice for the AMBIGUOUS case where
-							-- several inputs carry capabilities; a wrong choice can only
-							-- trap (its bounds check still guards every access), never
-							-- access out of bounds.
+							-- Explicit capability directive stashed on the node by the
+							-- transform (`#! use capability %reg` on any of these ops;
+							-- `#! new capability %reg` is a deprecated alias): the
+							-- result draws from the NAMED source, bypassing the scan
+							-- and (for sub) the ptr-ptr guard. The annotation is an
+							-- explicit, validated, bounds-checked user choice for the
+							-- AMBIGUOUS case where several inputs carry capabilities;
+							-- a wrong choice can only trap (its bounds check still
+							-- guards every access), never access out of bounds.
 							--
 							-- `sub` of two pointers is an integer difference, not a
 							-- pointer: when every value source carries a capability
@@ -515,7 +515,7 @@ function ptrflow.analyze(lf, seeds, allocTemp, opts)
 							-- is shared with the pointer input, so merely skipping
 							-- propagation would leave the input's capability on the
 							-- integer (the AES_decrypt `sub $sbox,%rbp` poison).
-							local ov = node.useCapTemp or (m == "lea" and node.newCapTemp or nil)
+							local ov = node.useCapTemp or node.newCapTemp
 							if ov then
 								markFrom(d, ov)
 							elseif m == "sub" then

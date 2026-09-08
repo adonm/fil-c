@@ -91,55 +91,69 @@ local function parseCapAnnot(ann)
 	return { save = save, restore = restore }
 end
 
--- `use capability %reg` / `new capability %reg` annotations
--- (architecture-independent; `;!` on both architectures, `#!`/`//!` also
--- accepted on x86_64/arm64 respectively).
+-- `use capability %reg` annotation (architecture-independent; `;!` on both
+-- architectures, `#!`/`//!` also accepted on x86_64/arm64 respectively).
 --
---   `use capability %reg` goes on an address-arithmetic instruction
---   (add/sub/lea/and/or) whose inputs carry MORE THAN ONE capability: the
---   result draws its capability from the NAMED register instead of the
---   pointer-flow scan's (arbitrary) pick. With zero or one capability
---   sources the annotation is unnecessary but harmless (it must still name
---   a capability-carrying use). Example: `add %rax,%r11` where both hold
---   pointers — `#! use capability %r11` keeps %r11's capability.
+--   The single unified capability-source selector. It goes on either:
+--   (a) an address-arithmetic instruction (add/sub/lea/and/or) whose inputs
+--   carry MORE THAN ONE capability: the result draws its capability from
+--   the NAMED register instead of the pointer-flow scan's (arbitrary)
+--   pick. With zero or one capability sources the annotation is unnecessary
+--   but harmless (it must still name a capability-carrying use). Example:
+--   `add %rax,%r11` where both hold pointers — `#! use capability %r11`
+--   keeps %r11's capability; or
+--   (b) any instruction with a memory operand (loads, stores, vector moves
+--   like `vmovdqu`, ...): the memory access is guarded by the NAMED
+--   register's capability, which must be the memory operand's base or
+--   index. It covers the case where the assembler moved the logical base
+--   out of base position (x86_64-xlate.pl flips `disp(%r13,%rdi)` to
+--   `disp(%rdi,%r13)` for performance when the base is %rbp/%r13 — the
+--   address is unchanged, but the base-first capability selection would
+--   then pick the wrong object; `vmovdqu %ymm,(%a,%b) #! use capability %a`
+--   keeps the annotation on the written base), and stale-base shapes
+--   (`xor %rdi,%rdi` leaves a zero-valued scalar on a stale pointer web;
+--   naming the live index overrides it). The effective address is still
+--   computed from base+index+disp as written — only the capability source
+--   changes. On a lea (which is both arithmetic and memory-shaped) the
+--   annotation selects the computed value's pointer source.
 --
---   `new capability %reg` goes on an instruction with a memory operand and
---   selects which register's capability guards THAT access: the named
---   register must be the memory operand's base or index. It covers the
---   case where the assembler moved the logical base out of base position
---   (x86_64-xlate.pl flips `disp(%r13,%rdi)` to `disp(%rdi,%r13)` for
---   performance when the base is %rbp/%r13 — the address is unchanged, but
---   the base-first capability selection would then pick the wrong object),
---   and stale-base shapes (`xor %rdi,%rdi` leaves a zero-valued scalar on
---   a stale pointer web; naming the live index overrides it). On a lea the
---   annotation instead selects the computed value's pointer source.
+--   An arithmetic instruction with a memory operand (e.g. `add (%rdi),%rax`)
+--   gets both effects: the result draws from the named source and the
+--   access is guarded by it.
 --
--- Both clauses must stand ALONE as the whole annotation (like save/restore:
+-- The clause must stand ALONE as the whole annotation (like save/restore:
 -- combine with nothing). The register is spelled as an ordinary operand
 -- (`%r11` in AT&T, `r11` in Intel — the `%` is optional); `%fil_` pseudos
--- may be named too. `new capabiltiy` (the historical typo spelling) is
--- accepted for compatibility.
+-- may be named too. `new capability` (and the historical typo spellings
+-- `new capabiltiy` / `use capabiltiy`) are accepted as deprecated aliases
+-- for compatibility and behave identically.
 --
--- Returns nil when `ann` carries no use/new clause, else
--- { kind = "use"|"new", reg = <register text> }. Malformed capability-ish
--- text is NOT an error here (parseCapAnnot reports it); a use/new clause
+-- Returns nil when `ann` carries no capability-selector clause, else
+-- { kind = "use", reg = <register text> }. Malformed capability-ish
+-- text is NOT an error here (parseCapAnnot reports it); a clause
 -- that fails shape validation in the caller is a clean error there.
 local function parseUseNewCapAnnot(ann)
 	if not ann then return nil end
 	if not string.find(ann, "capab", 1, true) then return nil end
+	-- The unified selector is spelled `use capability`; `new capability`
+	-- (and the historical typo spellings `new capabiltiy` / `use capabiltiy`)
+	-- are deprecated aliases. All spellings normalize to kind "use".
+	-- (Lua patterns have no alternation, so each spelling is matched
+	-- explicitly.)
 	local kind, rest = nil, nil
 	rest = string.match(ann, "^%s*use%s+capability%s+(.-)%s*$")
 	if rest then kind = "use" end
 	if not kind then
-		-- `new capabiltiy` is the historical typo spelling; accept it.
-		-- (Lua patterns have no alternation, so the two spellings are
-		-- matched explicitly.)
 		rest = string.match(ann, "^%s*new%s+capability%s+(.-)%s*$")
-		if rest then kind = "new" end
+		if rest then kind = "use" end
 	end
 	if not kind then
 		rest = string.match(ann, "^%s*new%s+capabiltiy%s+(.-)%s*$")
-		if rest then kind = "new" end
+		if rest then kind = "use" end
+	end
+	if not kind then
+		rest = string.match(ann, "^%s*use%s+capabiltiy%s+(.-)%s*$")
+		if rest then kind = "use" end
 	end
 	if not kind then return nil end
 	-- optional surrounding parens (`use capability(%r11)`).
@@ -149,7 +163,7 @@ local function parseUseNewCapAnnot(ann)
 	return { kind = kind, reg = rest }
 end
 
--- Resolve the register named by a use/new-capability clause to a GPR use
+-- Resolve the register named by a `use capability` clause to a GPR use
 -- occurrence of the classified instruction `c` (for temp resolution the
 -- caller re-resolves against its own classify result and reads opTemp).
 -- Physical names compare case-insensitively (the parsers lowercase them)
@@ -351,41 +365,77 @@ local function validateBody(body, cgm, funcName)
 				local cap = nil
 				if not useNew then cap = parseCapAnnot(ann) end
 				if useNew then
-					-- `use/new capability` (standalone only — enforced by the
-					-- full-match in parseUseNewCapAnnot): shape-check now (the
-					-- lifted-web check in the annotation walk below re-resolves
-					-- against the actual use temps).
-					if useNew.kind == "use" then
+					-- `use capability` (standalone only — enforced by the
+					-- full-match in parseUseNewCapAnnot; `new capability`
+					-- and the typo spellings are deprecated aliases):
+					-- shape-check now (the lifted-web check in the
+					-- annotation walk below re-resolves against the actual
+					-- use temps). On address arithmetic (add/sub/lea/and/or)
+					-- the named register must be a general-register use
+					-- (it selects the result's capability); otherwise the
+					-- instruction must have a memory operand and the named
+					-- register must be its base or index (it guards the
+					-- access). An arithmetic instruction with a memory
+					-- operand gets both effects.
+					do
 						local bm = cgm.baseMnemonic(string.lower(st.mnemonic))
-						if bm ~= "add" and bm ~= "sub" and bm ~= "lea"
-							and bm ~= "and" and bm ~= "or" and bm ~= "orr" then
-							error("sarcasm: `use capability` requires an address-arithmetic"
+						local isArith = bm == "add" or bm == "sub" or bm == "lea"
+							or bm == "and" or bm == "or" or bm == "orr"
+						if isArith then
+							local occ = resolveCapRegUse(c, useNew.reg)
+							if not occ then
+								error("sarcasm: `use capability " .. useNew.reg .. "` names"
 
-								.. " instruction (add/sub/lea/and/or; got '" .. st.mnemonic .. "'): " .. raw)
-						end
-						if not resolveCapRegUse(c, useNew.reg) then
-							error("sarcasm: `use capability " .. useNew.reg .. "` names"
+									.. " a register that is not a general-register use of this"
 
-								.. " a register that is not a general-register use of this"
+									.. " instruction: " .. raw)
+							end
+							-- An arithmetic instruction with a memory operand
+							-- gets BOTH effects (the ALU result draws from the
+							-- named source AND the access is guarded by it),
+							-- so the named register must ALSO be the memory
+							-- operand's base or index. Otherwise the access
+							-- would be guarded with the wrong capability
+							-- (e.g. `add (%rdi),%rax #! use capability %rax`
+							-- would guard the (%rdi) access with %rax's
+							-- capability).
+							local mem = cgm.memOperand(st)
+							if mem then
+								local isBase = mem.base and mem.base.rc == occ.rc
+									and mem.base.num == occ.num
+								local isIndex = mem.index and mem.index.rc == occ.rc
+									and mem.index.num == occ.num
+								if not (isBase or isIndex) then
+									error("sarcasm: `use capability " .. useNew.reg .. "` must"
 
-								.. " instruction: " .. raw)
-						end
-					else
-						local mem = cgm.memOperand(st)
-						if not mem then
-							error("sarcasm: `new capability` requires an instruction"
+										.. " name the memory operand's base or index register"
 
-								.. " with a memory operand: " .. raw)
-						end
-						local occ = resolveCapRegUse(c, useNew.reg)
-						local isBase = mem.base and occ and mem.base.rc == occ.rc
-							and mem.base.num == occ.num
-						local isIndex = mem.index and occ and mem.index.rc == occ.rc
-							and mem.index.num == occ.num
-						if not (occ and (isBase or isIndex)) then
-							error("sarcasm: `new capability " .. useNew.reg .. "` must"
+										.. " (this address-arithmetic instruction has a memory"
 
-								.. " name the memory operand's base or index register: " .. raw)
+										.. " operand, so the named register also guards the"
+
+										.. " access): " .. raw)
+								end
+							end
+						else
+							local mem = cgm.memOperand(st)
+							if not mem then
+								error("sarcasm: `use capability` requires an address-arithmetic"
+
+									.. " instruction (add/sub/lea/and/or) or an instruction"
+
+									.. " with a memory operand (got '" .. st.mnemonic .. "'): " .. raw)
+							end
+							local occ = resolveCapRegUse(c, useNew.reg)
+							local isBase = mem.base and occ and mem.base.rc == occ.rc
+								and mem.base.num == occ.num
+							local isIndex = mem.index and occ and mem.index.rc == occ.rc
+								and mem.index.num == occ.num
+							if not (occ and (isBase or isIndex)) then
+								error("sarcasm: `use capability " .. useNew.reg .. "` must"
+
+									.. " name the memory operand's base or index register: " .. raw)
+							end
 						end
 					end
 				elseif cap then
@@ -990,10 +1040,15 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- capSaveVars maps var -> save node, capSaveNodes maps save node -> var,
 	-- capRestoreNodes maps restore node -> var.
 	local capSaveVars, capSaveNodes, capRestoreNodes = {}, {}, {}
-	-- `use/new capability` directives (node -> register text as written; the
+	-- `use capability` directives (node -> register text as written; the
 	-- resolved use temp rides on the node itself as node.useCapTemp /
 	-- node.newCapTemp for pointer flow and the access lowering).
-	local useCapNodes, newCapNodes = {}, {}
+	-- Both temps carry the same web: useCapTemp feeds pointer flow's ALU
+	-- result selection, newCapTemp feeds computeAddr's access guard, so one
+	-- annotation drives whichever effect(s) apply. (`new capability` and the
+	-- typo spellings are deprecated aliases normalized to `use` by
+	-- parseUseNewCapAnnot, so a single map covers every spelling.)
+	local useCapNodes = {}
 	-- Annotated register-indirect calls (`call *%reg ;! sig(...)` on x86_64,
 	-- `blr xN ;! sig(...)` on arm64).
 	local indcallNodes = {}
@@ -1074,31 +1129,31 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			local capClause = nil
 			if not useNewClause then capClause = parseCapAnnot(ann) end
 			if useNewClause then
-				-- `use/new capability` (standalone only — enforced by the
-				-- full-match; shape-validated by validateBody): resolve the
+				-- `use capability` (standalone only — enforced by the
+				-- full-match; shape-validated by validateBody; `new capability`
+				-- and the typo spellings are deprecated aliases): resolve the
 				-- named register's use temp and stash it on the node for
-				-- pointer flow (`use`: all ALU ops; `new`: leas) and the access
-				-- lowering (`new`: computeAddr). The transform validates after
-				-- pointer flow that the named web actually carries a capability.
+				-- pointer flow (ALU result selection on address arithmetic)
+				-- and the access lowering (computeAddr's guard on memory
+				-- operands). Both temps ride the same web so whichever
+				-- effect(s) apply draw from the named source. The transform
+				-- validates after pointer flow that the named web actually
+				-- carries a capability.
 				local occ = resolveCapRegUse(node.c, useNewClause.reg)
 				if not occ then
-					error("sarcasm: `" .. useNewClause.kind .. " capability "
+					error("sarcasm: `use capability "
 						.. useNewClause.reg .. "` names a register that is not a"
 
 						.. " general-register use of this instruction: " .. raw)
 				end
 				local t = node.opTemp and node.opTemp[occ] or nil
 				if not t then
-					error("sarcasm: internal error: `" .. useNewClause.kind .. " capability "
+					error("sarcasm: internal error: `use capability "
 						.. useNewClause.reg .. "` has no lifted web temp: " .. raw)
 				end
-				if useNewClause.kind == "use" then
-					node.useCapTemp = t
-					useCapNodes[node] = useNewClause.reg
-				else
-					node.newCapTemp = t
-					newCapNodes[node] = useNewClause.reg
-				end
+				node.useCapTemp = t
+				node.newCapTemp = t
+				useCapNodes[node] = useNewClause.reg
 			elseif capClause then
 				-- Capability save/restore (standalone only — enforced by
 				-- parseCapAnnot): record for pointer flow. The instruction
@@ -1497,13 +1552,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		allocTemp, { baseMnemonic = cgm.baseMnemonic, widenSwaps = backend.arch == "x86_64" })
 	prof.mark("  [" .. name .. "] ptrflow")
 
-	-- `use/new capability` validation. Pointer flow already honored each
+	-- `use capability` validation. Pointer flow already honored each
 	-- directive (selecting the named source); what remains is checking the
 	-- contract: the named register must actually carry a capability at
 	-- convergence, otherwise the annotation is a lie (it would silently
 	-- produce a null-capability check or a capability-free web). Scanned in
 	-- statement order for deterministic diagnostics.
-	if next(useCapNodes) ~= nil or next(newCapNodes) ~= nil then
+	if next(useCapNodes) ~= nil then
 		for _, node in lf.nodes do
 			if node.kind == "insn" then
 				local uv = useCapNodes[node]
@@ -1515,19 +1570,6 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 							.. " that does not carry a capability (only a"
 
 							.. " pointer-carrying register can source one): "
-
-							.. (node.stmt.raw or node.stmt.mnemonic or "?"))
-					end
-				end
-				local nv = newCapNodes[node]
-				if nv then
-					local t = node.newCapTemp
-					if not (t and pf.isPtr[t] and pf.lowerTemp[t]) then
-						error("sarcasm: `new capability " .. nv .. "` names a register"
-
-							.. " that carries no capability (only a"
-
-							.. " pointer-carrying register can guard an access): "
 
 							.. (node.stmt.raw or node.stmt.mnemonic or "?"))
 					end

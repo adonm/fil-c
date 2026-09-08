@@ -294,13 +294,8 @@ my $aesenc=sub {
 	movups		`16*$n`($in0),$in		# load input
 	xorps		$rndkey0,$in
 ___
-      $code.=<<___ if ($n && !$ENV{SARCASM});
-	movups		$iv,`16*($n-1)`($out,$in0)	# write output
-___
-  # sarcasm: xlate flips a zero-displacement $out base out of base position
-  # when it is %r13, so guard the store with $out's capability explicitly.
-      $code.=<<___ if ($n && $ENV{SARCASM});
-	movups		$iv,`16*($n-1)`($out,$in0)	#! new capability $out # write output
+      $code.=<<___ if ($n);
+	movups		$iv,`16*($n-1)`($out,$in0)	#! use capability $out # write output
 ___
       $code.=<<___;
 	xorps		$in,$iv
@@ -1198,12 +1193,8 @@ my $aesenc=sub {
 	vmovdqu		`16*$n`($in0),$in		# load input
 	vpxor		$rndkey[1],$in,$in
 ___
-      $code.=<<___ if ($n && !$ENV{SARCASM});
-	vmovups		$iv,`16*($n-1)`($out,$in0)	# write output
-___
-  # sarcasm: see the ssse3 $aesenc note above — guard with $out's capability.
-      $code.=<<___ if ($n && $ENV{SARCASM});
-	vmovups		$iv,`16*($n-1)`($out,$in0)	#! new capability $out # write output
+      $code.=<<___ if ($n);
+	vmovups		$iv,`16*($n-1)`($out,$in0)	#! use capability $out # write output
 ___
       $code.=<<___;
 	vpxor		$in,$iv,$iv

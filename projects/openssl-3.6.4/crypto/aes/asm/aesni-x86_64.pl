@@ -5300,8 +5300,8 @@ sub aesni {
 }
 
 sub movbe {
-  # any modern gas (>=2.22) assembles movbe, and sarcasm models it
-  "movbe	%eax,".shift."(%rsp)";
+	# any modern gas (>=2.22) assembles movbe, and sarcasm models it
+	"movbe	%eax,".shift."(%rsp)";
 }
 
 $code =~ s/\`([^\`]*)\`/eval($1)/gem;

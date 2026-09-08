@@ -84,6 +84,7 @@ if (!$avx && `$ENV{CC} -x c /dev/null -dM -E|grep __clang_major__`
 
 $shaext=$avx;	### set to zero if compiling for 1.0.1
 $avx=1		if (!$shaext && $avx);
+$avx=1 if $ENV{SARCASM};	# sarcasm: no AVX2 rolling-window frame; use AVX path
 
 open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
     or die "can't call $xlate: $!";
@@ -141,23 +142,8 @@ $code.=<<___;
 	cmp	\$0,`$win64?"%rcx":"%rdi"`
 	je	.Lprobe
 	mov	0(%r11),%eax
-___
-if ($ENV{SARCASM}) {
-  # sarcasm: Fil-C requires the access width to match the alignment,
-  # and OPENSSL_ia32cap_P is only 4-aligned, so the 64-bit load at +4
-  # traps; recompose the qword from two 32-bit loads (%r11's pointer
-  # value is dead after the second load).
-  $code.=<<___;
-	mov	4(%r11),%r10d
-	mov	8(%r11),%r11d
-	shl	\$32,%r11
-	or	%r11,%r10
-___
-} else {
-  $code.=<<___;
 	mov	4(%r11),%r10
 ___
-}
 $code.=<<___ if ($shaext);
 	bt	\$61,%r10			# check for SHA
 	jc	${func}_shaext
@@ -621,17 +607,7 @@ $code.=<<___;
 	vpand	$mask14,$temp,$temp
 	mov	$a1,$A
 	vpor	$temp,$iv,$iv
-___
-$code.=<<___ if (!$ENV{SARCASM});
-	vmovdqu	$iv,(%r13,%r12)		# write output
-___
-$code.=<<___ if ($ENV{SARCASM});
-	# sarcasm: keep the disp syntactically nonzero so xlate does not
-	# flip the %r13 base (the store must be checked against $out's
-	# object, not $inp's).
-	vmovdqu	$iv,1-1(%r13,%r12)	# write output
-___
-$code.=<<___;
+	vmovdqu	$iv,(%r13,%r12)	#! use capability %r13 # write output
 	lea	16(%r12),%r12		# inp++
 
 	add	$SZ*0(%r15),$A
@@ -908,17 +884,7 @@ $code.=<<___;
 	vpand	$mask14,$temp,$temp
 	mov	$a1,$A
 	vpor	$temp,$iv,$iv
-___
-$code.=<<___ if (!$ENV{SARCASM});
-	vmovdqu	$iv,(%r13,%r12)		# write output
-___
-$code.=<<___ if ($ENV{SARCASM});
-	# sarcasm: keep the disp syntactically nonzero so xlate does not
-	# flip the %r13 base (the store must be checked against $out's
-	# object, not $inp's).
-	vmovdqu	$iv,1-1(%r13,%r12)	# write output
-___
-$code.=<<___;
+	vmovdqu	$iv,(%r13,%r12)	#! use capability %r13 # write output
 	lea	16(%r12),%r12		# inp++
 
 	add	$SZ*0(%r15),$A
@@ -985,23 +951,6 @@ if ($avx>1) {{
 ######################################################################
 # AVX2+BMI code path
 #
-if ($ENV{SARCASM}) {
-  # sarcasm: the AVX2 rolling-window stack dance below (an andq-anchored
-  # frame whose %rsp is then re-rolled with mid-function writes every 16
-  # rounds, with the frame pointer chased through the red zone) cannot be
-  # proven safe — no constant frame geometry exists. Tail-branch to the
-  # AVX body, which computes the same function (a B1 cross-function jump:
-  # the seven incoming arguments pass through untouched).
-  $code.=<<___;
-.type	${func}_avx2,\@function,6
-.align	64
-${func}_avx2: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
-.cfi_startproc
-	jmp	${func}_avx
-.cfi_endproc
-.size	${func}_avx2,.-${func}_avx2
-___
-} else {
 my $a5=$SZ==4?"%esi":"%rsi";	# zap $inp
 my $PUSH8=8*2*$SZ;
 use integer;
@@ -1381,7 +1330,6 @@ $code.=<<___;
 .size	${func}_avx2,.-${func}_avx2
 ___
 }}
-}
 }}
 {{
 my ($in0,$out,$len,$key,$ivp,$ctx,$inp)=("%rdi","%rsi","%rdx","%rcx","%r8","%r9","%r10");

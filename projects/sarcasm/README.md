@@ -118,20 +118,21 @@ architectures, `#!`/`//!` also accepted on x86_64/arm64 respectively), where
 
 ### Capability source selection (both)
 
-Two standalone annotations pick which capability flows where when the
+One standalone annotation picks which capability flows where when the
 default rules would pick the wrong one (`;!` on both architectures,
-`#!`/`//!` also accepted on x86_64/arm64 respectively). Both name a
+`#!`/`//!` also accepted on x86_64/arm64 respectively). It names a
 register as an ordinary operand (`%r11` in AT&T, `r11` in Intel — the
 `%` is optional); `%fil_` pseudos may be named too. A wrong choice can
 only trap (its bounds check still guards every access), never access
-out of bounds.
+out of bounds. (`new capability` is a deprecated alias for `use
+capability` — existing perlasm using it still assembles — as are the
+historical typo spellings `new capabiltiy` / `use capabiltiy`.)
 
 | Annotation | Applies to |
 |---|---|
-| `use capability %reg` | address arithmetic (`add`/`sub`/`lea`/`and`/`or`) |
-| `new capability %reg` | any instruction with a memory operand |
+| `use capability %reg` | address arithmetic (`add`/`sub`/`lea`/`and`/`or`) and any instruction with a memory operand |
 
-- `use capability %reg` — the result draws its capability from the NAMED
+- On address arithmetic, the result draws its capability from the NAMED
   input register instead of pointer flow's pick. It is needed when several
   inputs carry capabilities (a plain `add` keeps a single capability
   source automatically; shifts never propagate one):
@@ -142,23 +143,36 @@ out of bounds.
 
   With zero or one capability sources the annotation is unnecessary but
   harmless (it must still name a capability-carrying use — naming a
-  scalar is a compile-time error, as is using it on any other mnemonic
-  or naming a register the instruction does not use).
+  scalar is a compile-time error).
 
-- `new capability %reg` — the memory access is guarded by the NAMED
+- On any other instruction with a memory operand (loads, stores, vector
+  moves like `vmovdqu`, ...), the memory access is guarded by the NAMED
   register's capability, which must be the memory operand's base or
   index. It covers the case where the assembler moved the logical base
   out of base position (x86_64-xlate.pl flips `disp(%r13,%rdi)` to
   `disp(%rdi,%r13)` when the base is `%rbp`/`%r13` — the address is
   unchanged, but the base-first selection would then guard with the
-  wrong object), and stale-base shapes:
+  wrong object — so `vmovdqu %xmm,(%a,%b) #! use capability %a` keeps
+  guarding with the written base), and stale-base shapes:
 
       xorq %rdi, %rdi                         # scalar 0, stale web
-      movq (%rdi,%rsi), %rax #! new capability %rsi
+      movq (%rdi,%rsi), %rax #! use capability %rsi
 
-  On a `lea` the annotation instead selects the computed value's pointer
-  source. `new capabiltiy` (the historical typo) is accepted for
-  compatibility.
+  The effective address is still computed from base+index+disp as
+  written — only the capability source changes. Using the annotation on
+  any other mnemonic, or naming a register the instruction does not use
+  (or, for a memory operand, a register that is neither base nor index),
+  is a compile-time error.
+
+  On a `lea` the annotation selects the computed value's pointer
+  source. An arithmetic instruction that also has a memory operand gets
+  both effects (for example `add (%rsi),%rdi #! use capability %rsi`:
+  the `(%rsi)` load is guarded by `%rsi`'s capability and the `%rdi`
+  result draws from it too). On such a dual-effect instruction the named
+  register must satisfy both rules at once: a general-register use of the
+  instruction that is also the memory operand's base or index — naming a
+  use that is neither (like `%rax` above) is a compile-time error, since
+  the access would otherwise be guarded with the wrong capability.
 
 ### Global variables (x86_64)
 

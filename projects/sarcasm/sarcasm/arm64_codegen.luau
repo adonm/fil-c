@@ -891,11 +891,13 @@ function M.make(ctx)
 				.. (node.stmt and node.stmt.raw or "?"))
 		end
 		local capLo
-		-- `//! new capability xN` (stashed on the node by the transform):
-		-- the access is guarded by the NAMED register's capability, not the
-		-- base-first default (validated: the named web carries a capability).
-		if node.newCapTemp and pf.lowerTemp[node.newCapTemp] then
-			capLo = pf.lowerTemp[node.newCapTemp]
+		-- `//! use capability xN` (stashed on the node by the transform;
+		-- `//! new capability xN` is a deprecated alias): the access is
+		-- guarded by the NAMED register's capability, not the base-first
+		-- default (validated: the named web carries a capability).
+		local capSel = node.useCapTemp or node.newCapTemp
+		if capSel and pf.lowerTemp[capSel] then
+			capLo = pf.lowerTemp[capSel]
 		elseif baseTemp and pf.isPtr[baseTemp] then capLo = pf.lowerTemp[baseTemp]
 		elseif indexTemp and pf.isPtr[indexTemp] then capLo = pf.lowerTemp[indexTemp] end
 		local effTemp = baseTemp

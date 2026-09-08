@@ -1,7 +1,7 @@
 	.text
 	# `use capability` requires an address-arithmetic instruction
-	# (add/sub/lea/and/or) — a mov has a single source, so there is
-	# nothing to disambiguate.
+	# (add/sub/lea/and/or) or an instruction with a memory operand — a
+	# register-only mov is neither.
 	.globl	usecap_badop
 	.type	usecap_badop, @function
 usecap_badop:                   ;! long(ptr)

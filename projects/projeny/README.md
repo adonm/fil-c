@@ -13,8 +13,9 @@ Instead, git tracks two small files per project:
 - the release tarball (e.g. `lua-5.4.7.tar.bz2`), and
 - a `.projeny` file naming that tarball plus a git-style patch.
 
-The unpacked work tree (`lua/`) and the `.projeny.status` bookkeeping file
-are never tracked by git.
+The unpacked work tree (`lua/`) and the dot-prefixed
+`.lua.projeny.status` bookkeeping file are never tracked by git (see
+[File naming and migration](#file-naming-and-migration) below).
 
 ## Usage
 
@@ -43,22 +44,22 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
 
 - `setup`: unpacks `Archive:` next to the `.projeny` file, requires it to
   produce exactly one top-level directory named by `Origname:` (hard error
-  otherwise), renames it to `Name:`, applies the patch, and writes
-  `<f>.projeny.status`. It also maintains a snapshot copy of the archive
-  (see "Archive snapshots" below). If the workdir already exists, the
-  status file is required; projeny reconstructs the expected tree from the
-  status copy, diffs it against the workdir to find your uncommitted
-  changes, and merges them onto a fresh setup of the *current* `.projeny`
-  (which may name a different `Archive:` — e.g. upstream moved to a newer
-  tarball). Merge failures leave conflict markers in the workdir and record
-  the files in the status file. A setup that leaves conflicts still finishes
-  (workdir, `.projeny` file, and status are all updated) but exits 1, so
-  scripts under `set -e` stop instead of building from a conflicted tree;
-  fix the files, `resolve` each one, and `commit`.
+  otherwise), renames it to `Name:`, applies the patch, and writes the
+  dot-prefixed `.<f>.projeny.status`. It also maintains a snapshot copy of
+  the archive (see "Archive snapshots" below). If the workdir already
+  exists, the status file is required; projeny reconstructs the expected
+  tree from the status copy, diffs it against the workdir to find your
+  uncommitted changes, and merges them onto a fresh setup of the *current*
+  `.projeny` (which may name a different `Archive:` — e.g. upstream moved
+  to a newer tarball). Merge failures leave conflict markers in the workdir
+  and record the files in the status file. A setup that leaves conflicts
+  still finishes (workdir, `.projeny` file, and status are all updated) but
+  exits 1, so scripts under `set -e` stop instead of building from a
+  conflicted tree; fix the files, `resolve` each one, and `commit`.
 - `commit`: requires the `.projeny` file to match the status copy exactly
   (else hard error: run `setup` to merge first) and refuses when conflicts
   are pending. Otherwise it diffs the workdir against the base archive and
-  stores the new patch in both `.projeny` and `.status` (pending
+  stores the new patch in both `.projeny` and the status file (pending
   add/rm/mv ops are validated and folded in — the diff already reflects
   the on-disk renames/deletions).
 - `add`/`rm`/`mv`: record pending added/removed/renamed files in the
@@ -170,7 +171,9 @@ accepted on input, so hand-written patches need no special handling.
 
 ## `.status` format
 
-Text file `<f>.projeny.status` (untracked by git):
+Text file `.<f>.projeny.status` (untracked by git; older projenies wrote
+
+`<f>.projeny.status`, which is renamed into the dotted form on first use):
 
 ```
 Status: setup
@@ -189,20 +192,66 @@ delimiter.
 
 ## Archive snapshots
 
-Every status-file write also maintains `<Archive>.snapshot` — a byte-exact
+Every status-file write also maintains `.<Archive>.snapshot` — a byte-exact
 copy of the tarball — next to the archive itself (e.g.
-`lua-5.5.4.tar.gz.snapshot`). Trees are reconstructed from the status
+`.lua-5.5.4.tar.gz.snapshot`). Trees are reconstructed from the status
 file's embedded `.projeny` copy (and from the local side of a
 git-conflicted `.projeny`), so their archives may no longer exist: setup
 and `status` prefer the snapshot over the archive and fall back to the
-archive for checkouts set up by older projenies. This keeps `projeny
-setup` (and therefore `package`/`extract` and every build script) working
-after the archive was deleted from git — typically because an upstream
-rebase to a newer tarball did `git rm` on the old one. Snapshots are plain
-untracked files, safe to delete at any time (the next setup recreates
-them); when both the archive and its snapshot are missing, setup fails
-with recovery guidance. Snapshots left behind by a tarball that no longer
-exists are not auto-cleaned.
+archive for checkouts set up by older projenies — and that fallback copies
+the archive into the snapshot right away, so the next run finds a snapshot.
+This keeps `projeny setup` (and therefore `package`/`extract` and every
+build script) working after the archive was deleted from git — typically
+because an upstream rebase to a newer tarball did `git rm` on the old one.
+A missing snapshot is not an error while the tarball still exists: it is
+recreated from the tarball on first use (including by `status`). Snapshots
+are plain untracked files, safe to delete at any time (the next setup
+recreates them); when both the archive and its snapshot are missing, setup
+fails with recovery guidance. Snapshots left behind by a tarball that no
+longer exists are not auto-cleaned.
+
+## File naming and migration
+
+Two bookkeeping files live next to the tracked files, and both are hidden
+(dot-prefixed) so they never clutter directory listings or accidental
+checkins:
+
+- `.<f>.projeny.status` — the status file for `f.projeny` (e.g.
+  `.lua.projeny.status`), and
+- `.<Archive>.snapshot` — the snapshot copy of an archive (e.g.
+  `.lua-5.4.7.tar.bz2.snapshot`).
+
+Older projenies wrote the undotted forms (`f.projeny.status` and
+`<Archive>.snapshot`). Both forms keep working: on first use — by any
+command, since every command resolves the status path up front — a legacy
+undotted file is renamed to its dotted name (content preserved, so a
+checkout set up by an older projeny migrates itself the moment any projeny
+command touches it). When both forms exist, the dotted one wins and the
+undotted one is left untouched. The crash-recovery journal
+(`f.projeny.setup-journal`) never had an undotted status-style form, so it
+needs no migration.
+
+When the workdir (e.g. `lua/`) does not exist, the status file and
+snapshots describe a checkout that is gone; they are stale state. Commands
+disregard them instead of tripping over them: each stale file is renamed to
+`<name>.stale` (then `.stale2`, `.stale3`, ... when a name is taken) with a
+warning naming where it went, and the command then proceeds as if the
+checkout had never been set up (`setup` does a fresh setup; mutating
+commands like `commit`/`add`/`rm`/`mv`/`resolve` still hard-error, since
+there is nothing left to work on). This covers both naming forms: when the
+dotted and undotted versions of a file both exist, each is staled under its
+own name, so nothing survives under an original name. The one exception is
+enforced for every command: nothing is disregarded while a setup journal
+(`f.projeny.setup-journal`) exists. The journal marks an interrupted
+conflicted setup whose recovery still needs the status file (conflict-side
+disambiguation and union bookkeeping) and the snapshot (often the only
+remaining copy of the local side's archive once the rebase deleted the old
+tarball) — renaming them in that crash window would make the recovery that
+a rerun `setup` performs die instead. When the workdir exists but the
+status file does not (in either form), that
+is a hard error: the status file is what makes uncommitted changes
+mergeable, and its absence means the checkout's provenance is lost (remove
+the workdir or restore the status file).
 
 ## Runtime dependencies
 
@@ -314,7 +363,19 @@ explicitly added), git-conflicted `.projeny` recovery via
 when `git` is installed and hand-made markers otherwise), malformed /
 truncated `.projeny` refusal, per-command `help <cmd>` texts, and
 `package`/`extract` (tracked-only payloads, uncommitted-change inclusion,
-compression autodetect, conflict refusal, `extract`-equals-`package`). It prints
+compression autodetect, conflict refusal, `extract`-equals-`package`). It
+also covers the dot-prefixed bookkeeping names: legacy undotted
+`f.projeny.status`/`<Archive>.snapshot` migration on first use (by `setup`
+and by other commands), dotted-wins-when-both-exist, stale-state
+reconciliation when the workdir is gone (`<name>.stale`, `.stale2`,
+`.stale3`, with warnings naming the destinations, for `setup`, `status`,
+`commit`, `add`, and via `setup` for `rebase`; both naming forms staled
+under their own names, plus the previous archive's snapshot when the
+status names a tarball the current `.projeny` no longer does; nothing
+staled while a setup journal exists, with journal recovery then succeeding
+via the snapshot), the workdir-present-but-
+no-status hard error, and snapshot copy-on-fallback from the tarball (by
+`setup` and `status`). It prints
 `ok`/`FAIL` lines with a `passed/failed` summary and exits nonzero on
 any failure. A conflicting `setup` exits 1 (with markers left behind),
 so the suite asserts `expect_fail` for every conflict-leaving setup.

@@ -273,13 +273,25 @@ bool try_read_file_bytes(const std::string& path, std::string* out)
     return true;
 }
 
-void write_file_bytes(const std::string& path, const std::string& data)
+namespace {
+
+// Try-variant of write_file_bytes: the same write-temp + fsync + rename
+// protocol (a crash never leaves a half-written file), but reports failure
+// via the return value (strerror reason in *err when non-null) instead of
+// dying. Used by write_file_bytes and the best-effort try_copy_file_bytes.
+bool write_file_bytes_try(const std::string& path, const std::string& data,
+                          std::string* err)
 {
+    auto fail = [&err](int e) {
+        if (err != nullptr)
+            *err = strerror(e);
+        return false;
+    };
     // Write-then-rename so a crash never leaves a half-written file behind.
     std::string tmp = path + ".tmp";
     int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
-        die("cannot write file '" + path + "': " + strerror(errno));
+        return fail(errno);
     size_t off = 0;
     while (off < data.size()) {
         ssize_t w = write(fd, data.data() + off, data.size() - off);
@@ -289,7 +301,7 @@ void write_file_bytes(const std::string& path, const std::string& data)
             int e = errno;
             close(fd);
             unlink(tmp.c_str());
-            die("cannot write file '" + path + "': " + strerror(e));
+            return fail(e);
         }
         off += (size_t)w;
     }
@@ -300,15 +312,28 @@ void write_file_bytes(const std::string& path, const std::string& data)
         int e = errno;
         close(fd);
         unlink(tmp.c_str());
-        die("cannot write file '" + path + "': " + strerror(e));
+        return fail(e);
     }
     if (close(fd) != 0) {
         int e = errno;
         unlink(tmp.c_str());
-        die("cannot write file '" + path + "': " + strerror(e));
+        return fail(e);
     }
-    if (rename(tmp.c_str(), path.c_str()) != 0)
-        die("cannot write file '" + path + "': " + strerror(errno));
+    if (rename(tmp.c_str(), path.c_str()) != 0) {
+        int e = errno;
+        unlink(tmp.c_str());
+        return fail(e);
+    }
+    return true;
+}
+
+} // namespace
+
+void write_file_bytes(const std::string& path, const std::string& data)
+{
+    std::string err;
+    if (!write_file_bytes_try(path, data, &err))
+        die("cannot write file '" + path + "': " + err);
 }
 
 void fsync_dir(const std::string& path)
@@ -331,6 +356,18 @@ void fsync_dir(const std::string& path)
 void copy_file_bytes(const std::string& src, const std::string& dst)
 {
     write_file_bytes(dst, read_file_bytes(src));
+}
+
+bool try_copy_file_bytes(const std::string& src, const std::string& dst,
+                         std::string* err)
+{
+    std::string data;
+    if (!try_read_file_bytes(src, &data)) {
+        if (err != nullptr)
+            *err = strerror(errno);
+        return false;
+    }
+    return write_file_bytes_try(dst, data, err);
 }
 
 // FNV-1a 64-bit content hash (streamed, binary-safe). Used only to detect
@@ -423,6 +460,22 @@ std::string strip_trailing_slashes(const std::string& p)
     while (n > 1 && p[n - 1] == '/')
         --n;
     return p.substr(0, n);
+}
+
+std::string dotname(const std::string& p)
+{
+    // Same directory, basename prefixed with '.': "dir/f.projeny" ->
+    // "dir/.f.projeny"; a bare "f.projeny" has no directory component and
+    // becomes ".f.projeny". Degenerate paths (/, ., ..) come back unchanged
+    // — callers only pass real file names.
+    std::string s = strip_trailing_slashes(p);
+    std::string base = basename_of(s);
+    if (base.empty() || base == "." || base == "..")
+        return s;
+    std::string dir = dirname_of(s);
+    if (dir == "." || dir.empty())
+        return "." + base;
+    return join_path(dir, "." + base);
 }
 
 std::vector<std::string> split_lines(const std::string& s)

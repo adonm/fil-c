@@ -46,8 +46,14 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   produce exactly one top-level directory named by `Origname:` (hard error
   otherwise), renames it to `Name:`, applies the patch, and writes the
   dot-prefixed `.<f>.projeny.status`. It also maintains a snapshot copy of
-  the archive (see "Archive snapshots" below). If the workdir already
-  exists, the status file is required; projeny reconstructs the expected
+  the archive (see "Archive snapshots" below). When the workdir exists but
+  the status file does not, setup adopts the directory in place if it
+  holds nothing the tarball or patch would overwrite (an empty directory,
+  or one holding only files setup never touches, which are kept and ride
+  along like user-added files); otherwise it refuses, listing the paths it
+  would have overwritten (see "File naming and migration" below). If the
+  workdir exists and the status file does too, projeny reconstructs the
+  expected
   tree from the status copy, diffs it against the workdir to find your
   uncommitted changes, and merges them onto a fresh setup of the *current*
   `.projeny` (which may name a different `Archive:` — e.g. upstream moved
@@ -248,10 +254,16 @@ disambiguation and union bookkeeping) and the snapshot (often the only
 remaining copy of the local side's archive once the rebase deleted the old
 tarball) — renaming them in that crash window would make the recovery that
 a rerun `setup` performs die instead. When the workdir exists but the
-status file does not (in either form), that
-is a hard error: the status file is what makes uncommitted changes
-mergeable, and its absence means the checkout's provenance is lost (remove
-the workdir or restore the status file).
+status file does not (in either form), the directory was never set up by
+projeny (or its bookkeeping is gone). Setup then adopts the directory in
+place when it holds nothing the tarball or patch would overwrite — it
+unpacks into the existing directory, keeping the files it already had
+(nested directories the checkout also has are merged into). Otherwise it
+is a hard error listing the offending paths (capped at ten): the status
+file is what makes uncommitted changes mergeable, and its absence means
+the checkout's provenance is lost, so overwriting anything could destroy
+the only copy of it (remove the conflicting files or the whole workdir,
+or restore the status file).
 
 ## Runtime dependencies
 
@@ -373,8 +385,10 @@ reconciliation when the workdir is gone (`<name>.stale`, `.stale2`,
 under their own names, plus the previous archive's snapshot when the
 status names a tarball the current `.projeny` no longer does; nothing
 staled while a setup journal exists, with journal recovery then succeeding
-via the snapshot), the workdir-present-but-
-no-status hard error, and snapshot copy-on-fallback from the tarball (by
+via the snapshot), the workdir-present-but-no-status adopt-or-refuse rule
+(setup unpacks into an existing directory that holds nothing it would
+overwrite, keeping the foreign files; it refuses with the offending paths
+listed otherwise), and snapshot copy-on-fallback from the tarball (by
 `setup` and `status`). It prints
 `ok`/`FAIL` lines with a `passed/failed` summary and exits nonzero on
 any failure. A conflicting `setup` exits 1 (with markers left behind),

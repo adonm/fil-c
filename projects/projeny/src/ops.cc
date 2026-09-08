@@ -590,14 +590,15 @@ void write_status(const Ctx& ctx, const StatusData& sd)
     write_file_bytes(ctx.statusfile, sd.serialize());
 }
 
-// Fresh setup: unpack the current archive, apply the current patch, and move
-// the result into place. Unpacks before touching the workdir (a bad patch
-// dies leaving the checkout intact), and carries untracked binaries across
-// the replacement so build junk and package tarballs survive.
-void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
+// Build the fresh tree for `cur` inside `tmp`: unpack the current archive
+// and apply the current patch. Returns the tree path (inside tmp). Shared
+// by every fresh-setup flavor so they all see exactly the same set of
+// paths setup would write (tarball files, patch modifications, and
+// patch-added files alike). Unpacks before anything is touched (a bad
+// patch dies leaving the checkout intact).
+std::string build_fresh_tree(const Ctx& ctx, const ProjenyFile& cur,
+                             TempDir& tmp)
 {
-    std::string workdir = join_path(ctx.pdir, cur.name);
-    TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-setup-");
     unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
     std::string fresh = join_path(tmp.path, cur.origname);
     if (!apply_patch_whole(fresh, cur.patch, cur.name,
@@ -612,12 +613,119 @@ void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
                 cur.archive + "'",
             detail);
     }
+    return fresh;
+}
+
+// Fresh setup: unpack the current archive, apply the current patch, and move
+// the result into place. Unpacks before touching the workdir (a bad patch
+// dies leaving the checkout intact), and carries untracked binaries across
+// the replacement so build junk and package tarballs survive.
+void do_fresh_setup(const Ctx& ctx, const ProjenyFile& cur)
+{
+    std::string workdir = join_path(ctx.pdir, cur.name);
+    TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-setup-");
+    std::string fresh = build_fresh_tree(ctx, cur, tmp);
     if (path_exists(workdir))
         reconcile_binaries(workdir, fresh, true);
     if (path_exists(workdir) && !remove_recursive(workdir))
         die("cannot remove existing workdir '" + workdir + "'");
     move_path(fresh, workdir);
     tmp.release(); // fresh moved out; don't delete it
+}
+
+// Inventory a tree as rel path -> is-it-a-directory, recursing into
+// directories. lstat kinds throughout: a symlink is never a directory, so a
+// symlink to a directory counts as a non-dir (soundness for the
+// compatibility rule below — a link must never be descended into or
+// silently classify as a directory). Hidden entries count; empty
+// directories appear as their own entries.
+void collect_rel_entries(const std::string& root, const std::string& prefix,
+                         std::map<std::string, bool>* out)
+{
+    std::string dir = prefix.empty() ? root : join_path(root, prefix);
+    for (const std::string& name : list_dir_names(dir)) {
+        std::string rel = prefix.empty() ? name : prefix + "/" + name;
+        std::string full = join_path(root, rel);
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0)
+            die("cannot stat '" + full + "': " + strerror(errno));
+        bool isdir = S_ISDIR(st.st_mode) != 0;
+        (*out)[rel] = isdir;
+        if (isdir)
+            collect_rel_entries(root, rel, out);
+    }
+}
+
+// Move every entry of from_dir into to_dir. Directory-on-directory pairs
+// recurse (keeping what is already inside); everything else is moved with
+// move_path — the caller's compatibility check has proven those
+// destinations free. Entries of to_dir that from_dir never mentions stay
+// put.
+void merge_tree_into(const std::string& from_dir, const std::string& to_dir)
+{
+    for (const std::string& name : list_dir_names(from_dir)) {
+        std::string src = join_path(from_dir, name);
+        std::string dst = join_path(to_dir, name);
+        if (is_dir(src) && is_dir(dst)) {
+            merge_tree_into(src, dst);
+            continue;
+        }
+        move_path(src, dst);
+    }
+}
+
+// Set up into an existing directory that has no status file: the directory
+// was never set up by projeny (or its bookkeeping was deleted), so there is
+// no base to merge against. The directory can still be adopted in place
+// when it holds NOTHING that this setup would write: the fresh tree is
+// built first in a temp dir (no side effects on the workdir, so a refusal
+// leaves it completely untouched), its relative paths are compared against
+// the directory's, and the setup proceeds only when every shared path is a
+// directory on both sides — i.e. the trees merely nest into each other. A
+// file (or symlink) at a path the tarball or patch would write — or a
+// directory where a file is needed — is a conflict. Anything already in
+// the directory that setup never touches (notes, VCS metadata, build
+// scripts) is kept as-is and rides along like a user-added file.
+void do_fresh_setup_into_existing(const Ctx& ctx, const ProjenyFile& cur)
+{
+    std::string workdir = join_path(ctx.pdir, cur.name);
+    TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-setup-");
+    std::string fresh = build_fresh_tree(ctx, cur, tmp);
+
+    // Compatibility check: conflict iff a relative path exists in both
+    // trees and the two entries are not both directories.
+    std::map<std::string, bool> incoming, existing;
+    collect_rel_entries(fresh, "", &incoming);
+    collect_rel_entries(workdir, "", &existing);
+    std::vector<std::string> conflicts;
+    for (const auto& e : incoming) {
+        auto it = existing.find(e.first);
+        if (it == existing.end())
+            continue; // new path: nothing there to overwrite
+        if (e.second && it->second)
+            continue; // directories on both sides: the trees just nest
+        conflicts.push_back(e.first);
+    }
+    if (!conflicts.empty()) {
+        const size_t kMaxListed = 10;
+        std::string detail = "setup would overwrite these existing paths:\n";
+        size_t shown = std::min(conflicts.size(), kMaxListed);
+        for (size_t i = 0; i < shown; ++i)
+            detail += "  " + conflicts[i] + "\n";
+        if (conflicts.size() > shown)
+            detail += "  ... and " +
+                      std::to_string(conflicts.size() - shown) + " more\n";
+        die("workdir '" + workdir + "' exists but status file '" +
+                ctx.statusfile + "' is missing, and setup would overwrite " +
+                std::to_string(conflicts.size()) +
+                " existing path(s) in it; refusing (remove those files or "
+                "the whole workdir, or restore the status file)",
+            detail);
+    }
+
+    // Compatible: merge the fresh tree's entries into the directory.
+    merge_tree_into(fresh, workdir);
+    tmp.release(); // entries moved out; don't delete the temp tree
 }
 
 // Conflicted setup: the .projeny file holds git conflict markers (from
@@ -1377,12 +1485,25 @@ int cmd_setup(const std::string& projeny_arg)
     if (!is_dir(workdir))
         die("workdir '" + workdir + "' exists but is not a directory");
 
-    // Workdir exists: statusfile is required.
-    if (!path_exists(ctx.statusfile))
-        die("workdir '" + workdir +
-            "' exists but status file '" + ctx.statusfile +
-            "' is missing; refusing (remove the workdir or restore the status "
-            "file)");
+    // Workdir exists but no status file does (neither the dotted form nor
+    // the migrated legacy one). The directory was never set up by projeny,
+    // so there is no base to merge against — but it can still be adopted in
+    // place when it holds nothing that this setup would overwrite: it may
+    // be empty, or hold only files the tarball and patch never touch
+    // (notes, VCS metadata, ...), which are kept and ride along like
+    // user-added files. Otherwise refuse: without a status file there is no
+    // way to merge, so overwriting any existing path could destroy the only
+    // copy of it.
+    if (!path_exists(ctx.statusfile)) {
+        do_fresh_setup_into_existing(ctx, cur);
+        StatusData sd;
+        sd.status = "setup";
+        sd.embedded = cur.raw;
+        write_status(ctx, sd);
+        printf("projeny: set up '%s' from '%s' (into existing directory)\n",
+               workdir.c_str(), cur.archive.c_str());
+        return 0;
+    }
 
     StatusData old = StatusData::parse(ctx.statusfile);
     ProjenyFile oldpf =
@@ -2829,18 +2950,29 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "top-level directory named by Origname: (hard error\n"
                "otherwise); it is renamed to Name:.\n"
                "\n"
-               "When the workdir already exists, the status file is required:\n"
-               "projeny reconstructs the expected tree from the status copy,\n"
-               "diffs it against the workdir to find your uncommitted\n"
-               "changes, and merges them onto a fresh setup of the CURRENT\n"
-               ".projeny file (which may name a different Archive:). Merge\n"
-               "failures leave conflict markers in the workdir and record\n"
-               "the files in the status file; fix them, then `resolve` each\n"
-               "file and `commit`. A setup that leaves conflicts still\n"
-               "finishes (workdir, .projeny file, and status are all\n"
-               "updated) but exits 1, so scripts running under `set -e`\n"
-               "(like `projeny package`) stop instead of building from a\n"
-               "conflicted tree.\n"
+               "When the workdir already exists, the status file is\n"
+               "required: projeny reconstructs the expected tree from the\n"
+               "status copy, diffs it against the workdir to find your\n"
+               "uncommitted changes, and merges them onto a fresh setup of\n"
+               "the CURRENT .projeny file (which may name a different\n"
+               "Archive:). Merge failures leave conflict markers in the\n"
+               "workdir and record the files in the status file; fix them,\n"
+               "then `resolve` each file and `commit`. A setup that leaves\n"
+               "conflicts still finishes (workdir, .projeny file, and\n"
+               "status are all updated) but exits 1, so scripts running\n"
+               "under `set -e` (like `projeny package`) stop instead of\n"
+               "building from a conflicted tree.\n"
+               "\n"
+               "When the workdir exists but the status file does not, the\n"
+               "directory was never set up by projeny. Setup then unpacks\n"
+               "into the existing directory, keeping the files it already\n"
+               "had, if it holds nothing the tarball or patch would\n"
+               "overwrite (it may be empty, or hold only files setup never\n"
+               "touches, which ride along like user-added files). If setup\n"
+               "would overwrite anything already there, it refuses and\n"
+               "lists the offending paths: without a status file there is\n"
+               "no base to merge against, so nothing existing may be\n"
+               "destroyed.\n"
                "\n"
                "setup also maintains .<Archive>.snapshot, a byte-exact copy\n"
                "of the tarball it used, next to the archive; the status\n"
@@ -2857,7 +2989,10 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "workdir is missing, stale status/snapshot files are renamed\n"
                "to <name>.stale (then .stale2, .stale3, ...) with a warning\n"
                "instead of confusing a fresh setup; when the workdir exists\n"
-               "but the status file does not, setup hard-errors.\n"
+               "but the status file does not, setup unpacks into it if it\n"
+               "holds nothing setup would overwrite (keeping the files it\n"
+               "already had), and refuses with the offending paths listed\n"
+               "otherwise.\n"
                "\n"
                "Files that vanished from the workdir without an explicit\n"
                "`projeny rm` (or rename) are treated as accidental loss, not\n"

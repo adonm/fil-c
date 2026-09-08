@@ -6391,6 +6391,262 @@ fi
 expect_file_contains "fresh setup after rebase-stale checks out v2" "$T150/fake/README" "hello v2"
 expect_file_contains "fresh status after rebase-stale embeds the new archive" "$T150/.fake.projeny.status" "Archive: fake-2.0.tar.gz"
 
+# ------------------- 151. setup into an empty existing directory
+# The workdir exists (empty) but no status file does: instead of the old
+# unconditional hard error, setup adopts the directory in place, unpacks
+# the tree into it, and writes the status file.
+T151="$ROOT/t151"
+make_tarballs "$T151" fake
+write_projeny "$T151" fake 1.0 fake
+mkdir "$T151/fake"
+out="$(cd "$T151" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup into an empty existing directory exits 0"
+else
+    fail "setup into an empty existing directory exits 0" "rc=$rc out: $out"
+fi
+case "$out" in
+*"into existing directory"*)
+    ok "setup into an existing directory says so"
+    ;;
+*)
+    fail "setup into an existing directory says so" "out: $out"
+    ;;
+esac
+expect_file_contains "empty-dir setup checks out the tarball" "$T151/fake/README" "hello v1"
+expect_file_contains "empty-dir setup writes src/a.c" "$T151/fake/src/a.c" "int alpha = 1;"
+expect_file_contains "empty-dir setup writes src/b.c" "$T151/fake/src/b.c" "line one v1"
+if [ -f "$T151/.fake.projeny.status" ]; then
+    ok "empty-dir setup writes the status file"
+else
+    fail "empty-dir setup writes the status file"
+fi
+expect_file_contains "empty-dir setup status reports setup" "$T151/.fake.projeny.status" "Status: setup"
+expect_file_contains "empty-dir setup status embeds the archive" "$T151/.fake.projeny.status" "Archive: fake-1.0.tar.gz"
+
+# -------------- 152. setup into a compatible non-empty directory keeps files
+# A directory holding only files the tarball and patch never touch is
+# adopted in place: foreign files (nested, top-level, hidden) survive
+# byte-for-byte next to the fresh checkout.
+T152="$ROOT/t152"
+make_tarballs "$T152" fake
+write_projeny "$T152" fake 1.0 fake
+mkdir -p "$T152/fake/src" "$T152/fake/.hidden"
+printf 'my notes\n' > "$T152/fake/notes.txt"
+printf 'int extra = 1;\n' > "$T152/fake/src/extra.c"
+printf 'hidden state\n' > "$T152/fake/.hidden/keep"
+printf 'dot file\n' > "$T152/fake/.dotfile"
+printf 'my notes\n' > "$ROOT/t152-notes"
+printf 'int extra = 1;\n' > "$ROOT/t152-extra"
+printf 'hidden state\n' > "$ROOT/t152-keep"
+printf 'dot file\n' > "$ROOT/t152-dot"
+out="$(cd "$T152" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup into a compatible non-empty directory exits 0"
+else
+    fail "setup into a compatible non-empty directory exits 0" "rc=$rc out: $out"
+fi
+expect_file_eq "compatible setup keeps the nested foreign file" "$T152/fake/src/extra.c" "$ROOT/t152-extra"
+expect_file_eq "compatible setup keeps the top-level foreign file" "$T152/fake/notes.txt" "$ROOT/t152-notes"
+expect_file_eq "compatible setup keeps the hidden dir's file" "$T152/fake/.hidden/keep" "$ROOT/t152-keep"
+expect_file_eq "compatible setup keeps the hidden file" "$T152/fake/.dotfile" "$ROOT/t152-dot"
+expect_file_contains "compatible setup checks out the tarball" "$T152/fake/README" "hello v1"
+expect_file_contains "compatible setup checks out src/a.c" "$T152/fake/src/a.c" "int alpha = 1;"
+if [ -f "$T152/.fake.projeny.status" ]; then
+    ok "compatible setup writes the status file"
+else
+    fail "compatible setup writes the status file"
+fi
+
+# ------------------------- 153. refusal: the tarball would overwrite a file
+# A pre-existing file at a tarball path is a conflict: setup must refuse
+# naming the path, leave the file byte-for-byte intact, leak nothing else
+# into the directory, and write no status file.
+T153="$ROOT/t153"
+make_tarballs "$T153" fake
+write_projeny "$T153" fake 1.0 fake
+mkdir "$T153/fake"
+printf 'local readme\n' > "$T153/fake/README"
+printf 'local readme\n' > "$ROOT/t153-readme"
+out="$(cd "$T153" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "setup refuses when the tarball would overwrite a file"
+else
+    fail "setup refuses when the tarball would overwrite a file" "out: $out"
+fi
+expect_file_eq "refusal leaves the pre-existing file untouched" "$T153/fake/README" "$ROOT/t153-readme"
+case "$out" in
+*"  README"*) ok "refusal names the offending path" ;;
+*) fail "refusal names the offending path" "out: $out" ;;
+esac
+if [ ! -e "$T153/fake/src" ]; then
+    ok "refusal leaks no tarball content into the directory"
+else
+    fail "refusal leaks no tarball content into the directory" \
+         "ls: $(ls -A "$T153/fake" 2>&1)"
+fi
+if [ ! -f "$T153/.fake.projeny.status" ]; then
+    ok "refusal writes no status file"
+else
+    fail "refusal writes no status file"
+fi
+
+# --------------------- 154. refusal: the patch would overwrite a file
+# The same rule covers patch-added files (produced here by the real
+# add/commit pipeline): a pre-existing file at a patch-add path refuses.
+T154="$ROOT/t154"
+make_tarballs "$T154" fake
+write_projeny "$T154" fake 1.0 fake
+(cd "$T154" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'added by the patch\n' > "$T154/fake/added.txt"
+run_in "$T154" expect_ok "fixture: add the new file" "$PROJENY" add fake.projeny fake/added.txt
+run_in "$T154" expect_ok "fixture: commit folds the add into the patch" "$PROJENY" commit fake.projeny
+expect_file_contains "fixture: .projeny patch adds added.txt" "$T154/fake.projeny" "added.txt"
+# A fresh directory holding only a file at the patch-add path.
+rm -rf "$T154/fake" "$T154/.fake.projeny.status"
+mkdir "$T154/fake"
+printf 'local added\n' > "$T154/fake/added.txt"
+printf 'local added\n' > "$ROOT/t154-added"
+out="$(cd "$T154" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "setup refuses when the patch would overwrite a file"
+else
+    fail "setup refuses when the patch would overwrite a file" "out: $out"
+fi
+expect_file_eq "patch-add refusal leaves the pre-existing file untouched" "$T154/fake/added.txt" "$ROOT/t154-added"
+case "$out" in
+*"  added.txt"*) ok "patch-add refusal names the offending path" ;;
+*) fail "patch-add refusal names the offending path" "out: $out" ;;
+esac
+if [ ! -e "$T154/fake/README" ]; then
+    ok "patch-add refusal leaks no tarball content"
+else
+    fail "patch-add refusal leaks no tarball content"
+fi
+if [ ! -f "$T154/.fake.projeny.status" ]; then
+    ok "patch-add refusal writes no status file"
+else
+    fail "patch-add refusal writes no status file"
+fi
+
+# ---------------- 155. refusal: a file sits where a directory is needed
+T155="$ROOT/t155"
+make_tarballs "$T155" fake
+write_projeny "$T155" fake 1.0 fake
+mkdir "$T155/fake"
+printf 'not a directory\n' > "$T155/fake/src"
+printf 'not a directory\n' > "$ROOT/t155-src"
+out="$(cd "$T155" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "setup refuses when a file sits where a directory is needed"
+else
+    fail "setup refuses when a file sits where a directory is needed" "out: $out"
+fi
+expect_file_eq "file-for-directory refusal leaves the file untouched" "$T155/fake/src" "$ROOT/t155-src"
+case "$out" in
+*"  src"*) ok "file-for-directory refusal names the offending path" ;;
+*) fail "file-for-directory refusal names the offending path" "out: $out" ;;
+esac
+if [ ! -e "$T155/fake/README" ] && [ ! -f "$T155/.fake.projeny.status" ]; then
+    ok "file-for-directory refusal touches nothing else"
+else
+    fail "file-for-directory refusal touches nothing else" \
+         "ls: $(ls -A "$T155/fake" 2>&1)"
+fi
+
+# ---------------- 156. refusal: a directory sits where a file is needed
+T156="$ROOT/t156"
+make_tarballs "$T156" fake
+write_projeny "$T156" fake 1.0 fake
+mkdir -p "$T156/fake/README"
+printf 'inside\n' > "$T156/fake/README/inner"
+out="$(cd "$T156" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "setup refuses when a directory sits where a file is needed"
+else
+    fail "setup refuses when a directory sits where a file is needed" "out: $out"
+fi
+if [ -d "$T156/fake/README" ] && [ "$(cat "$T156/fake/README/inner")" = "inside" ]; then
+    ok "directory-for-file refusal leaves the directory untouched"
+else
+    fail "directory-for-file refusal leaves the directory untouched" \
+         "ls: $(ls -A "$T156/fake" 2>&1)"
+fi
+case "$out" in
+*"  README"*) ok "directory-for-file refusal names the offending path" ;;
+*) fail "directory-for-file refusal names the offending path" "out: $out" ;;
+esac
+if [ ! -e "$T156/fake/src" ] && [ ! -f "$T156/.fake.projeny.status" ]; then
+    ok "directory-for-file refusal touches nothing else"
+else
+    fail "directory-for-file refusal touches nothing else" \
+         "ls: $(ls -A "$T156/fake" 2>&1)"
+fi
+
+# ------------------------- 157. foreign files persist across later setups
+# After an into-existing-directory setup, the foreign files are ordinary
+# untracked files: the next setup (status present, tracked files untouched)
+# carries them along like user-added files.
+T157="$ROOT/t157"
+make_tarballs "$T157" fake
+write_projeny "$T157" fake 1.0 fake
+mkdir -p "$T157/fake/src" "$T157/fake/.hidden"
+printf 'my notes\n' > "$T157/fake/notes.txt"
+printf 'int extra = 1;\n' > "$T157/fake/src/extra.c"
+printf 'hidden state\n' > "$T157/fake/.hidden/keep"
+printf 'dot file\n' > "$T157/fake/.dotfile"
+(cd "$T157" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T157" expect_ok "setup again after an into-existing setup exits 0" "$PROJENY" setup fake.projeny
+expect_file_eq "re-setup keeps the top-level foreign file" "$T157/fake/notes.txt" "$ROOT/t152-notes"
+expect_file_eq "re-setup keeps the nested foreign file" "$T157/fake/src/extra.c" "$ROOT/t152-extra"
+expect_file_eq "re-setup keeps the hidden dir's file" "$T157/fake/.hidden/keep" "$ROOT/t152-keep"
+expect_file_eq "re-setup keeps the hidden file" "$T157/fake/.dotfile" "$ROOT/t152-dot"
+expect_file_contains "re-setup keeps the tarball content" "$T157/fake/README" "hello v1"
+expect_file_contains "re-setup keeps the src content" "$T157/fake/src/a.c" "int alpha = 1;"
+
+# ------------------- 158. refusal lists at most ten offending paths
+# A 12-file tarball meeting 12 pre-existing files: the diagnostic caps the
+# path list at ten with a "... and N more" tail, and still touches nothing.
+T158="$ROOT/t158"
+mkdir -p "$T158/fake-1.0"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf 'file %s\n' "$i" > "$T158/fake-1.0/f$i.c"
+done
+(cd "$T158" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    Many files.\n' > "$T158/fake.projeny"
+mkdir "$T158/fake"
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    printf 'mine %s\n' "$i" > "$T158/fake/f$i.c"
+done
+out="$(cd "$T158" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "setup refuses when a dozen files collide"
+else
+    fail "setup refuses when a dozen files collide" "out: $out"
+fi
+case "$out" in
+*"... and 2 more"*) ok "refusal caps the path list at ten" ;;
+*) fail "refusal caps the path list at ten" "out: $out" ;;
+esac
+if [ "$(cat "$T158/fake/f1.c")" = "mine 1" ] && [ "$(cat "$T158/fake/f12.c")" = "mine 12" ]; then
+    ok "capped refusal leaves every file untouched"
+else
+    fail "capped refusal leaves every file untouched" \
+         "ls: $(ls -A "$T158/fake" 2>&1)"
+fi
+if [ ! -f "$T158/.fake.projeny.status" ]; then
+    ok "capped refusal writes no status file"
+else
+    fail "capped refusal writes no status file"
+fi
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

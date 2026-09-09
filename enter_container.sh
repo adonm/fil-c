@@ -227,8 +227,8 @@ echo "Generating Dockerfile at ${DOCKERFILE_PATH}..."
 # NOTE: We're using the single-quote here document, so that things like $(nproc) are literal.
 cat > "${DOCKERFILE_PATH}" <<'DOCKERFILE_END'
 # A Docker image for Fil-C development and compilation.
-# Using Ubuntu 24.04 LTS for maximum binary compatibility across Linux distributions.
-FROM ubuntu:24.04
+# Using Ubuntu 22.04 LTS for maximum binary compatibility across Linux distributions.
+FROM ubuntu:22.04
 
 # Set non-interactive mode to avoid tzdata and other prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -307,7 +307,35 @@ RUN apt-get install -y \
     python3 python3-pip python3-setuptools \
     wget rsync file less sudo \
     libncurses-dev libssl-dev zlib1g-dev \
-    xz-utils bzip2 gzip gdb lldb mg screen tmux meson
+    xz-utils bzip2 gzip gdb lldb mg screen tmux
+
+RUN pip install meson
+
+RUN apt-get install -y gcc-12 g++-12
+RUN ln -s /usr/bin/gcc-12 /usr/local/bin/gcc
+RUN ln -s /usr/bin/g++-12 /usr/local/bin/g++
+
+COPY pizlix/binutils-2.47.tar.xz /usr/local/src/
+RUN cd /usr/local/src && \
+    tar -xf binutils-2.47.tar.xz && \
+    cd binutils-2.47 && \
+    mkdir build && \
+    cd build && \
+    ../configure --prefix=/usr/local \
+        --disable-gold \
+        --enable-ld=default \
+        --enable-shared \
+        --disable-werror \
+        --enable-64-bit-bfd \
+        --enable-new-dtags \
+        --with-system-zlib \
+        --enable-default-hash-style=gnu \
+        --disable-gprofng && \
+    make -j `nproc` tooldir=/usr/local && \
+    make -j `nproc` tooldir=/usr/local install && \
+    cd /usr/local/src && \
+    rm -rf binutils-2.47 binutils-2.47.tar.xz && \
+    ldconfig -v
 
 DOCKERFILE_END
 

@@ -129,9 +129,6 @@ cp -v \
     preserve-yolo.txt \
     $LFS/sources
 
-(cd $FILCSRC && filc/projeny package projects/yolo-util-linux.projeny projects/yolo-util-linux/pizlonated-yolo-util-linux.tar.gz)
-cp -v $FILCSRC/projects/yolo-util-linux/pizlonated-yolo-util-linux.tar.gz $LFS/sources
-
 chown root:root $LFS/sources/*
 
 cp -v \

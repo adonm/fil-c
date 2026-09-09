@@ -17,7 +17,7 @@ test $EUID -eq `stat -c %u $FILCSRC`
 
 cd $FILCSRC
 
-rm -vf projects/pizlonated-*.tar.gz
+rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/lfs-bootscripts-20240825 pizlonated-lfs-bootscripts
 ./package-source.sh projects/kbd-2.6.4 pizlonated-kbd
 ./package-source.sh projects/xz-5.8.3 pizlonated-xz

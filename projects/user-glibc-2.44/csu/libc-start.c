@@ -122,12 +122,12 @@ __libc_start_main (int (*main) (int, char **, char ** MAIN_AUXVEC_DECL),
 
   ARCH_SETUP_TLS ();
   
+  zregister_sys_errno_handler(errno_handler);
+  zregister_sys_dlerror_handler(dlerror_handler);
+
   /* Perform early initialization.  In the shared case, this function
      is called from the dynamic loader as early as possible.  */
   __libc_early_init (true);
-
-  zregister_sys_errno_handler(errno_handler);
-  zregister_sys_dlerror_handler(dlerror_handler);
 
 #ifndef SHARED
   /* Call the initializer of the libc.  This is only needed here if we

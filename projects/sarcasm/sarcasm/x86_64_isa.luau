@@ -136,18 +136,58 @@ end
 --   inc/dec preserve CF; rol/ror preserve SF/ZF/AF/PF (and write only OF/CF);
 --   shld/shrd preserve CF; cmpxchg8b/16b write only ZF; bt/bts/btr/btc write
 --   only CF; sahf leaves OF; div/idiv leave the flags unmodified in practice
---   (documented-undefined); stc/clc/cmc write only CF. (bsf/bsr/tzcnt/lzcnt/
+--   (documented-undefined); stc/clc/cmc write only CF; cld/std write only DF
+--   (see FLAG_DF below). (bsf/bsr/tzcnt/lzcnt/
 --   popcnt ARE listed below despite leaving some flags undefined: an undefined
 --   flag is still a WRITE — garbage, not the incoming value — so no later read
 --   can depend on the pre-instruction value.)
+-- A shift/rotate with a provable $0 count writes NO flags at all (SDM: "if the
+-- count is 0, the flags are not affected") — see isShiftCountZero; those forms
+-- are in NEITHER table either (the scan propagates through them, and DCE keeps
+-- them while a flag consumer is reachable, exactly like every other no-def).
 -- Unknown mnemonics are also neither (the scan continues — conservative).
 local FLAG_USE = {}
+
+-- String moves/stores (rep movs*/stos* and their bare single-step forms) read
+-- the direction flag: a set DF copies/fills backwards, which the checked
+-- lowering does not model (it traps) — so DF is live into every stringop.
+-- Matched after baseMnemonic plus the one-letter suffix strip in flagUse
+-- ("movsq"->"movs", "movsb"->"movs", ...); the dword Intel spellings
+-- ("movsd"/"stosd", which keep their `d`) are matched exactly but only in
+-- their zero-operand string form, so the FP scalar-double `movsd` (which has
+-- operands and touches no flags) never counts as a use.
+local STRINGOP_BASE = { movs = true, stos = true }
+
+-- x87 conditional moves read the flags left by the PRECEDING instruction
+-- (fcmovb/c/... test CF/ZF/PF exactly like the GPR cmov family). They are
+-- modeled (fp EXACT, register-only) rather than rejected, so they must be
+-- flag uses: the save/restore bracket passes the pending condition through
+-- unchanged, and DCE then keeps every flag write feeding one.
+local FCMOV = { fcmovb = true, fcmove = true, fcmovbe = true, fcmovu = true,
+
+	fcmovnb = true, fcmovne = true, fcmovnbe = true, fcmovnu = true }
+
 for _, m in {
+
 	"adc","sbb",            -- carry-in / borrow-in reads
+
 	"adcx","adox",          -- carry-in (adcx) / overflow-in (adox) reads
+
 	"rcl","rcr",            -- rotate through carry: read CF
+
+	"cmc",                  -- complement carry: reads CF (and writes CF)
+
+	"loope","loopz",        -- ZF-consuming loop variants: read ZF (rejected by
+	"loopne","loopnz",      -- fp.unsafeReject, but the coarse table must still
+	                        -- name the read so coarse flagUse and flagUseMask
+	                        -- agree on every path, including any path that
+	                        -- reaches liveness before the rejection)
+
 	"lahf",                 -- reads the flags into %ah
+
 } do FLAG_USE[m] = true end
+for m in STRINGOP_BASE do FLAG_USE[m] = true end
+for m in FCMOV do FLAG_USE[m] = true end
 
 local FLAG_DEF = {}
 for _, m in {
@@ -160,8 +200,45 @@ for _, m in {
 	"bsf","bsr","tzcnt","lzcnt","popcnt",       -- ZF/CF/PF written, OF/SF/AF undefined
 } do FLAG_DEF[m] = true end
 
+-- Is `stmt` a shift/rotate whose count is provably the immediate $0 — in which
+-- case the hardware writes NO flags (SDM: "if the count is 0, the flags are
+-- not affected")? Covers shl/sal/shr/sar, rol/ror, rcl/rcr (two-operand,
+-- destination-first: the count is ops[2]) and shld/shrd (three-operand: the
+-- count is ops[3]). Only a literal $0 immediate counts: any other count (a
+-- nonzero immediate, the %cl register form, or a missing count) keeps the
+-- conservative kill — a dynamic count that happens to mask to zero still
+-- preserves the flags at runtime, so killing is sound (an extra save, never
+-- a missing one), while claiming no-def there would be unsound. (A nonzero
+-- count masked to zero by the 5/6-bit count mask, e.g. $32 for a 32-bit
+-- operand, likewise stays a kill: conservative and sound.)
+local SHIFT_FAMILY = { shl = true, sal = true, shr = true, sar = true,
+	rol = true, ror = true, rcl = true, rcr = true }
+local function isShiftCountZero(stmt)
+	if not stmt then return false end
+	local raw = string.lower(stmt.mnemonic)
+	local b = x86.baseMnemonic(raw)
+	local s = string.gsub(b, "[bwlq]$", "")
+	local count = nil
+	if SHIFT_FAMILY[b] or SHIFT_FAMILY[s] then
+		count = (stmt.operands or {})[2]
+	elseif b == "shld" or b == "shrd" or s == "shld" or s == "shrd" then
+		count = (stmt.operands or {})[3]
+	else
+		return false
+	end
+	if not count or count.kind ~= "imm" then return false end
+	if count.value ~= nil then return count.value == 0 end
+	if count.text ~= nil then
+		local t = string.gsub(count.text, "^%$", "")
+		local v = tonumber(t)
+		return v == 0
+	end
+	return false
+end
+
 -- Does `stmt` READ the flags? Conditional consumers (jcc/setcc/cmov) and the
--- carry-in/rotate-through-carry families, plus lahf. Used by transform.luau's
+-- carry-in/rotate-through-carry families, plus lahf, the stringops (DF), and
+-- the x87 conditional moves. Used by transform.luau's
 -- flag-liveness scan (flagsLiveFrom).
 function x86.flagUse(stmt)
 	if not stmt then return false end
@@ -171,7 +248,17 @@ function x86.flagUse(stmt)
 	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
 	-- keep their AT&T size suffix (adcxq, crc32l, rclq, popcntq, shldq, btq, ...).
 	m = string.gsub(m, "[bwlq]$", "")
-	return FLAG_USE[m] == true
+	if FLAG_USE[m] then return true end
+	-- The dword string moves keep their `d` ("movsd"/"stosd" — the Intel
+	-- spellings; AT&T uses movsl/stosl), so the strip above never normalizes
+	-- them: match exactly, but only in the zero-operand string form, so the
+	-- FP scalar-double `movsd %xmm0, %xmm1` (which touches no flags) never
+	-- counts as a use.
+	local raw = string.lower(stmt.mnemonic)
+	if (raw == "movsd" or raw == "stosd") and #(stmt.operands or {}) == 0 then
+		return true
+	end
+	return false
 end
 
 -- Does `stmt` write ALL SIX flags (defined or documented-undefined — no later read
@@ -179,6 +266,8 @@ end
 -- scan (flagsLiveFrom). Partial writes are deliberately NOT here (see above).
 function x86.flagDef(stmt)
 	if not stmt then return false end
+	-- A $0-count shift/rotate writes nothing (see isShiftCountZero).
+	if isShiftCountZero(stmt) then return false end
 	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
 	if FLAG_DEF[m] then return true end
 	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
@@ -198,13 +287,15 @@ end
 -- insns def the flags pseudo-temp, so liveness already protects their writes; the
 -- read-and-write family counted as USES by the scan (adc/sbb write all six, adcx/
 -- adox/rcl/rcr write CF/OF) and every PARTIAL write (inc/dec preserve CF; rol/ror,
--- shld/shrd, bt/bts/btr/btc, stc/clc/cmc write only CF; sahf writes all but OF)
+-- shld/shrd, bt/bts/btr/btc, stc/clc/cmc write only CF; cld/std write only DF;
+-- sahf writes all but OF)
 -- also CHANGE the flags without def-ing them. Deleting such an instruction while a
 -- flag consumer is forward-reachable would change the flags that consumer reads,
 -- so DCE keeps it. (The flag-SAVE scan deliberately ignores these instructions —
 -- a save/restore bracket passes the flags through unchanged, so for bracketing a
 -- partial write is correctly invisible; removal is the one decision that must
--- respect them.) Pure flag CONSUMERS that write nothing (jcc/setcc/cmov/lahf) are
+-- respect them.) Pure flag CONSUMERS that write nothing (jcc/setcc/cmov/lahf,
+-- the stringops' DF read, fcmov) are
 -- NOT here: deleting them cannot change any flags.
 local FLAG_WRITE_NO_DEF = {}
 for _, m in {
@@ -216,11 +307,14 @@ for _, m in {
 	"shld","shrd",            -- CF
 	"bt","bts","btr","btc",   -- CF
 	"stc","clc","cmc",        -- CF
+	"cld","std",              -- DF (the direction flag; read by rep movs*/stos*)
 	"sahf",                   -- all but OF (also pinned; unreachable in DCE)
 } do FLAG_WRITE_NO_DEF[m] = true end
 
 function x86.flagWriteNoDef(stmt)
 	if not stmt then return false end
+	-- A $0-count shift/rotate writes nothing (see isShiftCountZero).
+	if isShiftCountZero(stmt) then return false end
 	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
 	if FLAG_WRITE_NO_DEF[m] then return true end
 	-- same suffix fallback as flagUse: baseMnemonic only normalizes mnemonics in
@@ -228,6 +322,154 @@ function x86.flagWriteNoDef(stmt)
 	-- shldq, btq, incq, ...).
 	m = string.gsub(m, "[bwlq]$", "")
 	return FLAG_WRITE_NO_DEF[m] == true
+end
+
+-- Per-flag EFLAGS masks for the flag-liveness fixpoint (transform.luau's
+-- flagsLiveFrom): which architectural flags an instruction READS (use) and
+-- which it fully WRITES (def — the incoming value is dead, whether defined
+-- or documented-undefined garbage). Partial writes appear in NEITHER mask
+-- (the fixpoint propagates through them — sound and conservative), exactly
+-- like the coarse flagUse/flagDef tables above, but per-flag granularity
+-- kills liveness precisely: an `inc` (all but CF) no longer keeps CF alive
+-- for a later `adc`, and a `cmc`-free `clc` no longer keeps anything alive.
+-- Bit positions are the EFLAGS bits (CF=1, PF=4, AF=16, ZF=64, SF=128,
+-- OF=2048); FLAG_ALL is all six. FLAG_DF is the direction flag (EFLAGS bit
+-- 10): written by cld/std, read by the string moves/stores (rep movs*/stos*
+-- and their bare forms — a set DF traps in the checked lowering). DF rides
+-- the same fixpoint as the other six: cld/std fully write it (a kill), the
+-- stringops read it (a use), and every other modeled instruction leaves it
+-- alone (propagate — sound, since only cld/std modify DF).
+local FLAG_CF, FLAG_PF, FLAG_AF = 1, 4, 16
+local FLAG_ZF, FLAG_SF, FLAG_OF = 64, 128, 2048
+local FLAG_DF = 1024
+local FLAG_ALL = FLAG_CF + FLAG_PF + FLAG_AF + FLAG_ZF + FLAG_SF + FLAG_OF
+x86.FLAG_ALL = FLAG_ALL
+x86.FLAG_DF = FLAG_DF
+
+-- Condition-code suffix (je/jne/jb/.../setb/cmovl/...) -> read mask. Unsigned,
+-- signed, and flag-direct conditions all reduce to EFLAGS subsets.
+local COND_MASK = {
+	o = FLAG_OF, no = FLAG_OF,
+	b = FLAG_CF, c = FLAG_CF, nae = FLAG_CF,
+	ae = FLAG_CF, nb = FLAG_CF, nc = FLAG_CF,
+	e = FLAG_ZF, z = FLAG_ZF,
+	ne = FLAG_ZF, nz = FLAG_ZF,
+	be = FLAG_CF + FLAG_ZF, na = FLAG_CF + FLAG_ZF,
+	a = FLAG_CF + FLAG_ZF, nbe = FLAG_CF + FLAG_ZF,
+	s = FLAG_SF, ns = FLAG_SF,
+	p = FLAG_PF, pe = FLAG_PF,
+	np = FLAG_PF, po = FLAG_PF,
+	l = FLAG_SF + FLAG_OF, nge = FLAG_SF + FLAG_OF,
+	ge = FLAG_SF + FLAG_OF, nl = FLAG_SF + FLAG_OF,
+	le = FLAG_SF + FLAG_ZF + FLAG_OF, ng = FLAG_SF + FLAG_ZF + FLAG_OF,
+	g = FLAG_SF + FLAG_ZF + FLAG_OF, nle = FLAG_SF + FLAG_ZF + FLAG_OF,
+}
+
+-- Condition suffix of a jcc/setcc/cmov mnemonic (nil when unparseable — the
+-- masks then conservatively read everything).
+local function condOf(m)
+	local s = nil
+	if string.sub(m, 1, 1) == "j" then s = string.sub(m, 2)
+	elseif string.sub(m, 1, 3) == "set" then s = string.sub(m, 4)
+	elseif string.sub(m, 1, 4) == "cmov" then s = string.sub(m, 5)
+	else return nil end
+	if COND_MASK[s] then return s end
+	-- AT&T operand-size suffix (cmovbw/cmovll/...): strip one trailing w/l/q
+	-- when the remainder is a condition.
+	local t = string.sub(s, 1, -2)
+	if string.match(s, "[wlq]$") and COND_MASK[t] then return t end
+	return nil
+end
+
+-- EFLAGS bits READ by `stmt` (0 when it reads none). Agrees with flagUse in
+-- the coarse sense (nonzero iff flagUse), except instructions flagUse counts
+-- as uses that write nothing it tracks... (none: every coarse use reads at
+-- least one flag here too).
+function x86.flagUseMask(stmt)
+	if not stmt then return 0 end
+	local raw = string.lower(stmt.mnemonic)
+	local m = x86.baseMnemonic(raw)
+	if m == "jcc" or m == "setcc" or m == "cmov" then
+		local c = condOf(raw)
+		if c then return COND_MASK[c] end
+		return FLAG_ALL
+	end
+	if m == "adc" or m == "sbb" then return FLAG_CF end
+	if m == "adcx" then return FLAG_CF end
+	if m == "adox" then return FLAG_OF end
+	if m == "rcl" or m == "rcr" then return FLAG_CF end
+	if m == "cmc" then return FLAG_CF end
+	if m == "lahf" then return FLAG_SF + FLAG_ZF + FLAG_AF + FLAG_PF + FLAG_CF end
+	-- x87 conditional moves read the pending condition (CF/ZF/PF by opcode;
+	-- conservatively all six — an extra save, never a missing one). The exact
+	-- opcode names never take a size suffix, so they match here; the strip
+	-- below would mangle them ("fcmovb" -> "fcmov"), hence no fallback entry.
+	if FCMOV[m] then return FLAG_ALL end
+	-- String moves/stores read the direction flag (see FLAG_DF above). The
+	-- suffixed forms ("movsq", "movsb", ...) match after the strip below;
+	-- only the bare forms ("movs"/"stos") match here.
+	if STRINGOP_BASE[m] then return FLAG_DF end
+	if (raw == "movsd" or raw == "stosd") and #(stmt.operands or {}) == 0 then
+		return FLAG_DF
+	end
+	-- ZF-consuming loop variants (rejected by fp.unsafeReject, but the mask
+	-- must still name the read so any path that reaches liveness before the
+	-- rejection — or any future relaxation — stays sound).
+	if m == "loope" or m == "loopz" or m == "loopne" or m == "loopnz" then
+		return FLAG_ZF
+	end
+	m = string.gsub(m, "[bwlq]$", "")
+	if m == "adc" or m == "sbb" then return FLAG_CF end
+	if m == "adcx" then return FLAG_CF end
+	if m == "adox" then return FLAG_OF end
+	if m == "rcl" or m == "rcr" then return FLAG_CF end
+	if m == "cmc" then return FLAG_CF end
+	if STRINGOP_BASE[m] then return FLAG_DF end
+	if m == "loope" or m == "loopz" or m == "loopne" or m == "loopnz" then
+		return FLAG_ZF
+	end
+	return 0
+end
+
+-- EFLAGS bits fully WRITTEN by `stmt` (incoming value dead). Agrees with
+-- flagDef (ALL iff flagDef) except adc/sbb, which the coarse table counts as
+-- uses (their carry-in read matters to DCE) but which write all six flags —
+-- nothing past them can observe the incoming flags, so the liveness fixpoint
+-- kills precisely.
+function x86.flagDefMask(stmt)
+	if not stmt then return 0 end
+	-- A $0-count shift/rotate writes nothing (see isShiftCountZero): no kill.
+	if isShiftCountZero(stmt) then return 0 end
+	local raw = string.lower(stmt.mnemonic)
+	local m = x86.baseMnemonic(raw)
+	if m == "adc" or m == "sbb" then return FLAG_ALL end
+	if m == "adcx" then return FLAG_CF end
+	if m == "adox" then return FLAG_OF end
+	if m == "rcl" or m == "rcr" then return FLAG_CF + FLAG_OF end
+	if m == "inc" or m == "dec" then return FLAG_ALL - FLAG_CF end
+	if m == "rol" or m == "ror" then return FLAG_CF + FLAG_OF end
+	if m == "shld" or m == "shrd" then return FLAG_CF end
+	if m == "bt" or m == "bts" or m == "btr" or m == "btc" then return FLAG_CF end
+	if m == "stc" or m == "clc" then return FLAG_CF end
+	if m == "cmc" then return FLAG_CF end
+	-- cld/std fully write the direction flag (see FLAG_DF above).
+	if m == "cld" or m == "std" then return FLAG_DF end
+	if m == "sahf" then return FLAG_SF + FLAG_ZF + FLAG_AF + FLAG_PF + FLAG_CF end
+	if FLAG_DEF[m] then return FLAG_ALL end
+	m = string.gsub(m, "[bwlq]$", "")
+	if m == "adc" or m == "sbb" then return FLAG_ALL end
+	if m == "adcx" then return FLAG_CF end
+	if m == "adox" then return FLAG_OF end
+	if m == "rcl" or m == "rcr" then return FLAG_CF + FLAG_OF end
+	if m == "inc" or m == "dec" then return FLAG_ALL - FLAG_CF end
+	if m == "rol" or m == "ror" then return FLAG_CF + FLAG_OF end
+	if m == "shld" or m == "shrd" then return FLAG_CF end
+	if m == "bt" or m == "bts" or m == "btc" or m == "btr" then return FLAG_CF end
+	if m == "stc" or m == "clc" then return FLAG_CF end
+	if m == "cmc" then return FLAG_CF end
+	if m == "cld" or m == "std" then return FLAG_DF end
+	if FLAG_DEF[m] then return FLAG_ALL end
+	return 0
 end
 
 -- condition -> whether it's an unsigned/eq branch we generate; classify only needs control.
@@ -1399,6 +1641,18 @@ function x86.classify(insn)
 			if partialRegWrite(ops[1]) then
 				table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
 			end
+		end
+	elseif m == "cld" or m == "std" then
+		-- CLD/STD write only the direction flag (DF=0 / DF=1): no GPR effects,
+		-- no memory effects. Modeled explicitly (NOT unknown) so the flag
+		-- tables name the DF write precisely (flagDefMask) and the rep
+		-- movs*/stos* lowering's DF check sees a live DF use feeding it.
+		-- (As unknown register-only forms they used to pass through with an
+		-- all-live conservative use; the precise model keeps that soundness
+		-- with fewer spurious saves.)
+		if #ops ~= 0 then
+			error("sarcasm: " .. rawMnem .. " takes no operands (it operates on the"
+				.. " implicit direction flag): " .. (insn.raw or rawMnem))
 		end
 	else
 		-- Unknown mnemonic. With a memory operand there is no way to determine the

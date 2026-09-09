@@ -50,14 +50,15 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
 ($a1,$a2,$a4,$a8,$a12,$a48)=map("%r$_",(9..15));
 ($R,$Tx)=("%xmm0","%xmm1");
 
-# Sarcasm: _mul_1x1 gets no frame of its own — when inlined as a localcall
-# clone, any %rsp write in the clone clears the caller's parked-%rsp slot
-# carrier (clearDynSlots). Its 16-entry tab lives in a GC-allocated '.alloca'
-# buffer instead: indexed frame access is rejected, but indexed access
-# through the heap buffer pointer is capability-checked and fine. The gas
-# path keeps the frame tab at 0(%rsp) (clone displacement D keys to the
-# caller's D-8, the +8 rule). $TAB is gas-only now: the heap tab lives
-# in %fil_gf2mtab (see tabslot/tabidx below).
+# Sarcasm: _mul_1x1 keeps its sub/add frame when inlined as a localcall
+# clone (a constant adjustment at a known depth keys perturbed slots
+# exactly, and the clone spills into the caller's synthesized frame like
+# any other code). Its 16-entry tab still lives in a GC-allocated
+# '.alloca' buffer: indexed frame access cannot be virtualized (the index
+# is dynamic), but indexed access through the heap buffer pointer is
+# capability-checked and fine. The gas path keeps the frame tab at 0(%rsp)
+# (clone displacement D keys to the caller's D-8, the +8 rule). $TAB is
+# gas-only now: the heap tab lives in %fil_gf2mtab (see tabslot/tabidx).
 my $TAB = 0;
 sub tabslot { my $o = shift; return $ENV{SARCASM} ? "$o(%fil_gf2mtab)" : ($TAB+$o)."(%rsp)"; }
 sub tabidx { my $r = shift; return $ENV{SARCASM} ? "(%fil_gf2mtab,$r,8)" : "$TAB(%rsp,$r,8)"; }
@@ -70,7 +71,7 @@ $code.=<<___;
 _mul_1x1:
 .cfi_startproc
 ___
-$code.=<<___ if (!$ENV{SARCASM});
+$code.=<<___;
 	sub	\$128+8,%rsp
 ___
 $code.=<<___;
@@ -179,7 +180,7 @@ $code.=<<___;
 	xor	$i0,$lo
 	xor	$i1,$hi
 ___
-$code.=<<___ if (!$ENV{SARCASM});
+$code.=<<___;
 
 	add	\$128+8,%rsp
 ___

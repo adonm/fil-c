@@ -289,8 +289,12 @@ the caller's frame slots all follow the ordinary web rules. Details:
   `leaq 0(%rsp),%rdi`, which resolves into the caller's alloca region.
 - `#! local` is accepted as an optional explicit marker on such calls
   (validated to resolve the same way; a mismatch is a compile error).
-- The flags are clobbered across a local call (the ret dispatch compares),
-  exactly like an ordinary call. A subroutine that falls off its end, a
+- A subroutine may set up its own frame with a constant `sub` (torn down
+  before its `ret`): the clone accesses the caller's frame and spills like
+  any other code, keyed at the perturbed depth with the same -8 bias.
+- The flags flow into the subroutine (a hardware `call` preserves them) and
+  are clobbered by its return (the ret dispatch compares). A subroutine that
+  falls off its end, a
   branch out of a subroutine that is not a mid-body tail join (below), and a
   `.globl` no-signature label are compile-time errors; on arm64 a discovered
   local subroutine is a clean "not yet supported" error.
@@ -384,17 +388,27 @@ it never touches `%rsp`/`sp`, so the input's own stack math keeps its meaning:
   and `subq $imm,%rsp`; the frame geometry comes from that prefix.
   `enter` is rejected.
 - %rsp writes are legal only (a) in the prologue (callee-saved pushes,
-  `movq %rsp,%rbp`, `subq`/`addq $imm,%rsp`, and a `movq %rsp,%reg` save
-  into a callee-saved register), (b) as the alloca allocation, (c) as %rsp
-  recovery (`movq %rbp,%rsp`, `leaq N(%rbp),%rsp` with the frame pointer
-  established, or `movq %reg,%rsp` from an unredefined prologue save), (d)
-  as a mid-function `addq $imm,%rsp` free that provably reaches a `ret`,
+  `movq %rsp,%rbp`, `subq`/`addq $imm,%rsp`, `and $-N,%rsp` for a power of
+  two N >= 16, and a `movq %rsp,%reg` save into a callee-saved register),
+  (b) as the alloca allocation, (c) as %rsp recovery (`movq %rbp,%rsp`,
+  `leaq N(%rbp),%rsp` with the frame pointer established, or
+  `movq %reg,%rsp` from an unredefined prologue save), (d) as a proven
+  mid-function constant adjustment (`addq`/`subq $imm,%rsp`,
+  `leaq K(%rsp),%rsp`, or `and $-N,%rsp` at a known depth with dead flags),
   and (e) as epilogue teardown — everything else is a compile error.
+- A register holding `%rsp` or `%rsp`+offset (`movq %rsp,%reg`,
+  `leaq K(%rsp),%reg`) is a stack+offset alias: accesses at offsets from it
+  are ordinary stack accesses at statically known offsets. Control flow that
+  leaves it ambiguous (stack+offset on one path, heap/alloca/argument on
+  another) is a static error at the access, as are returning or storing it.
 - Frame slots (x86_64 spellings; sp/x29 analogous on arm64) are
   virtualized into register-allocated locals with compile-time bounds —
   no capability needed; the 128-byte SysV red zone is legal. Accesses
   outside the frame, caller-argument-area writes, and taking the frame's
-  address are rejected.
+  address are rejected. Aligned vector accesses wider than 16 bytes
+  (vmovdqa32/64) need a covering `and $-N,%rsp` note plus an aligned offset
+  (the frame is then emitted aligned); otherwise they are compile errors
+  suggesting the unaligned form.
 - A body that can fall off its end without `ret`, and a branch to the
   function's own entry label, are rejected.
 

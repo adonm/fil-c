@@ -830,7 +830,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- byte-identical output.
 	local frameRegion = nil
 	if backend.arch == "x86_64" and framePolicy.analyzeFrame then
-		local _, _, _, _, _, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
+		local _, _, _, fpinfo2, yolo2, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
+		-- The region-carrying run sees caller-saved stack-pointer saves the
+		-- region-less early run cannot record (its region corner needs the
+		-- regions), so its FP/SIMD cluster and yolo-argument layout info is a
+		-- superset of the early run's: it alone covers stack accesses through
+		-- stack+offset alias registers. Take it for the layout (the rewrite's
+		-- own run inside preprocess can only record LESS — the promoted frame
+		-- region turns some carriers back into region traffic — so the layout
+		-- always covers what the rewrite materializes).
+		if fpinfo2 ~= nil then fctx.fp = fpinfo2 end
+		if yolo2 ~= nil then fctx.yolo = yolo2 end
 		if frameEscapes and fctx and fctx.frameSize > 0 then
 			-- LAST in the list: an explicit (annotated) region overlapping the
 			-- frame wins the membership test.
@@ -1725,51 +1735,137 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	end
 	local flagLiveCache = {}
 	local flagCapable = (cgm.flagUse and cgm.flagDef and cg.saveFlags and cg.restoreFlags) and true or false
-	local function flagsLiveFrom(i)
-		if not flagCapable then return false end
-		if flagLiveCache[i] ~= nil then return flagLiveCache[i] end
-		local res = true   -- conservative default (end of function = live-out)
-		local j = i
-		-- Follow a local CALL into the clone's entry: hardware `call` does not write
-		-- the flags, so the program's flags flow INTO the clone and the clone may
-		-- read them before defining them (rsaz_512_mul's mulx carry chain reads CF
-		-- across `call __rsaz_512_mulx`; mont5's sqr8x likewise). A local RET still
-		-- clobbers the flags (the ret dispatch's compare chain), so a flag consumer
-		-- reached only past the clone's return does NOT make the incoming flags
-		-- live. The visited set caps the walk at each entry label once, so a
-		-- recursive or mutually-recursive clone family terminates — conservatively
-		-- treating the re-entry as a live use.
-		local visited = {}
-		while j <= #lf.nodes do
-			local nd = lf.nodes[j]
+	-- Precise backward flag-liveness fixpoint over the node CFG (labels are
+	-- nodes; a branch targets the label node, whose successors carry the flow
+	-- on — the same graph the DCE pass above uses). liveIn[i] is true iff a
+	-- flag consumer is reachable from node i before any full flag write, so
+	-- an instrumented sequence inserted at node i needs its save/restore
+	-- bracket exactly then. Consequences, all automatic from the equations:
+	-- flags are dead at (real) calls — the ABI clobbers them, modeled as a
+	-- synthetic def — and before a `ret` (nothing reads past it); straight-
+	-- line defs kill, uses revive, labels/branches propagate to successors.
+	--   * a local CALL is not a real call: hardware `call` does not write the
+	--     flags, so the program's flags flow INTO the clone and the clone may
+	--     read them before defining them (rsaz_512_mul's mulx carry chain
+	--     reads CF across `call __rsaz_512_mulx`; mont5's sqr8x likewise).
+	--     Its successors are the fall-through continuation AND the clone
+	--     entry, and it defines nothing itself.
+	--   * a local RET clobbers the flags (the ret dispatch's compare chain),
+	--     modeled as a def, so a flag consumer reached only past the clone's
+	--     return does NOT make the incoming flags live. Its successors are
+	--     the clone's continuation labels (no fall-through: the dispatch
+	--     branches to the continuations).
+	-- Partial flag writes (inc/dec, shifts, bt, stc, ...) kill precisely the
+	-- flags they write (x86_64_isa's per-flag masks): an `inc` keeps CF alive
+	-- for a later `adc` but not ZF for a later `jz`, and jcc/setcc/cmov read
+	-- only their condition's flags. A save/restore bracket passes the flags
+	-- through unchanged, so bracketing elides exactly when no live flag
+	-- crosses the sequence.
+	local flagLiveIn = nil
+	local function buildFlagLiveness()
+		if flagLiveIn then return end
+		flagLiveIn = {}
+		local n = #lf.nodes
+		local use, def, succ = {}, {}, {}
+		for i = 1, n do
+			use[i], def[i], succ[i] = 0, 0, {}
+		end
+		-- Per-flag use/def masks (x86_64 classifies each EFLAGS bit; arm64's
+		-- all-or-nothing NZCV rides the same interface coarsely). Falls back
+		-- to the coarse predicates when a backend offers no masks.
+		-- An UNMODELED instruction (classify's unknown flag — a register-only
+		-- form that passed validation) defaults SAFE: its flag read is
+		-- assumed LIVE (all bits) so a required save/restore is never
+		-- omitted; its def stays 0 (propagate) so nothing is killed.
+		local function useMaskOf(st, c)
+			if c and c.unknown then return 4294967295 end
+			if cgm.flagUseMask then return cgm.flagUseMask(st) or 0 end
+			if cgm.flagUse and cgm.flagUse(st) then return 4294967295 end
+			return 0
+		end
+		local function defMaskOf(st)
+			if cgm.flagDefMask then return cgm.flagDefMask(st) or 0 end
+			if cgm.flagDef and cgm.flagDef(st) then return 4294967295 end
+			return 0
+		end
+		for i, nd in lf.nodes do
 			if nd.kind == "insn" then
 				local st = nd.stmt
-				local ctrl = nd.c and nd.c.control or "none"
 				if st.localRet then
 					-- the clone returns here; the ret dispatch clobbers the
 					-- flags, so the incoming flags are dead past this point.
-					res = false; break
+					def[i] = 4294967295
+					if st.localRet.conts then
+						for _, t in st.localRet.conts do
+							local ti = t and labelIndex[t]
+							if ti then table.insert(succ[i], ti) end
+						end
+					end
 				elseif st.localCall then
+					-- jump to the clone AND fall through to the continuation.
 					local ent = st.localCall.entry
 					local ei = ent and labelIndex[ent]
-					if ei and not visited[ent] then
-						visited[ent] = true
-						j = ei  -- resume at the clone entry (j += 1 skips the label)
-					elseif not ei then
-						res = true; break  -- unknown entry: conservative
-					else
-						res = true; break  -- re-entry (cycle): conservative
+					if ei then table.insert(succ[i], ei) end
+					if i < n then table.insert(succ[i], i + 1) end
+					use[i] = useMaskOf(st, nd.c)
+					def[i] = defMaskOf(st)
+				else
+					local ctrl = nd.c and nd.c.control or "none"
+					use[i] = useMaskOf(st, nd.c)
+					def[i] = defMaskOf(st)
+					if ctrl == "call" or ctrl == "indcall" then
+						-- a real call clobbers the flags per the ABI (no valid
+						-- code reads them across a call).
+						def[i] = 4294967295
 					end
-				elseif cgm.flagUse(nd.stmt) then res = true; break
-				elseif cgm.flagDef(nd.stmt) then res = false; break
-				elseif ctrl == "call" or ctrl == "indcall" then res = false; break
-				elseif ctrl ~= "none" then res = true; break
+					if nd.c and nd.c.targets then
+						for _, t in nd.c.targets do
+							local ti = labelIndex[t]
+							if ti then table.insert(succ[i], ti) end
+						end
+					end
+					if (not nd.c or nd.c.fallsThrough ~= false) and i < n then
+						table.insert(succ[i], i + 1)
+					end
 				end
-			elseif nd.kind == "label" then
-				res = true; break
+			else
+				if i < n then table.insert(succ[i], i + 1) end
 			end
-			j += 1
 		end
+		local liveIn = {}
+		for i = 1, n do liveIn[i] = 0 end
+		local changed = true
+		while changed do
+			changed = false
+			for i = n, 1, -1 do
+				-- liveIn[i] = use[i] | (liveOut[i] & ~def[i]): a flag read
+				-- here is live; a flag live in any successor survives unless
+				-- this node fully rewrites it. Partial writes (in neither
+				-- mask) propagate incoming liveness soundly.
+				local v = use[i]
+				if v == 0 then
+					for _, j in succ[i] do
+						v = bit32.bor(v, liveIn[j])
+					end
+					v = bit32.band(v, bit32.bnot(def[i]))
+				else
+					local w = 0
+					for _, j in succ[i] do
+						w = bit32.bor(w, liveIn[j])
+					end
+					v = bit32.bor(v, bit32.band(w, bit32.bnot(def[i])))
+				end
+				if v ~= liveIn[i] then liveIn[i] = v changed = true end
+			end
+		end
+		flagLiveIn = liveIn
+	end
+	local function flagsLiveFrom(i)
+		if not flagCapable then return false end
+		if flagLiveCache[i] ~= nil then return flagLiveCache[i] end
+		buildFlagLiveness()
+		-- Past the last node nothing can read the flags: dead.
+		local res = (i <= #lf.nodes) and flagLiveIn[i] ~= 0 or false
 		flagLiveCache[i] = res
 		return res
 	end
@@ -3908,6 +4004,20 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if fpRegion > 0 and #rootTemps % 2 == 1 then
 			shift += 8
 		end
+		-- Mirror computeLayout's widened pad: the shift must be a multiple of
+		-- the EFFECTIVE frame alignment (the cluster-based width the layout
+		-- uses: max cluster areq capped at 64, 16 when none needs more) so the
+		-- clusters' alignment residues survive it. The raw `and $-N` note max
+		-- (fctx.fp.alignReq, uncapped e.g. 1024) must NOT be used here: the
+		-- layout pads only to the effective width, so a raw-width shift would
+		-- land shifted slots/saveOff outside the laid-out FP region.
+		local alignMod = 16
+		for _, c in ((fctx and fctx.fp and fctx.fp.clusters) or {}) do
+			if c.areq and c.areq > alignMod then alignMod = math.min(c.areq, 64) end
+		end
+		if alignMod > 16 then
+			while (shift % alignMod) ~= 0 do shift += 8 end
+		end
 		if shift > 0 then
 			local seen = {}
 			local function shiftOps(ops)
@@ -3942,6 +4052,18 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- materialized incoming yolo stack-argument area size for the layout
 		-- (x86_64 only; 0 when no FP instruction reads an incoming stack argument).
 		yoloBytes = (fctx and fctx.yolo and fctx.yolo.bytes) or 0,
+		-- Effective frame alignment (x86_64 only): the widest alignment any
+		-- materialized cluster needs (16 when none needs more). The taint scan
+		-- proved each such cluster's input offsets aligned under an
+		-- `and $-N, %rsp` note; the layout dynamically aligns the synthesized
+		-- frame to this width so they stay aligned in the output.
+		frameAlignReq = (function()
+			local effA = 16
+			for _, c in ((fctx and fctx.fp and fctx.fp.clusters) or {}) do
+				if c.areq and c.areq > effA then effA = math.min(c.areq, 64) end
+			end
+			return effA
+		end)(),
 	}
 end
 

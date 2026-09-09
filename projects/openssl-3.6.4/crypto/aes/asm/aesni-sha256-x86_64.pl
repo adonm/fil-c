@@ -473,7 +473,7 @@ $code.=<<___;
 .Lxop_00_47:
 	sub	\$-16*2*$SZ,$Tbl	# size optimization
 	vmovdqu	(%r12),$inout		# $a4
-	mov	%r12,$_inp	# $a4
+	mov	%r12,$_inp		# $a4
 ___
 sub XOP_256_00_47 () {
 my $j = shift;
@@ -580,9 +580,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&XOP_256_00_47($j,\&body_00_15,@X);
 	push(@X,shift(@X));			# rotate(@X)
     }
-    	&mov		("%r12",$_inp);	# borrow $a4
+    	&mov		("%r12",$_inp);		# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-  &mov		("%r15",$_out);	# borrow $a2
+	&mov		("%r15",$_out);		# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -591,7 +591,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lxop_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-  &mov		($_inp."","%r12");
+	&mov		($_inp,"%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -599,9 +599,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
     }
 					}
 $code.=<<___;
-	mov	$_inp,%r12	# borrow $a4
-	mov	$_out,%r13	# borrow $a0
-	mov	$_ctx,%r15	# borrow $a2
+	mov	$_inp,%r12		# borrow $a4
+	mov	$_out,%r13		# borrow $a0
+	mov	$_ctx,%r15		# borrow $a2
 	mov	$_in0,%rsi		# borrow $a3
 
 	vpand	$mask14,$temp,$temp
@@ -796,7 +796,7 @@ $code.=<<___;
 .Lavx_00_47:
 	sub	\$-16*2*$SZ,$Tbl	# size optimization
 	vmovdqu	(%r12),$inout		# $a4
-	mov	%r12,$_inp	# $a4
+	mov	%r12,$_inp		# $a4
 ___
 sub Xupdate_256_AVX () {
 	(
@@ -856,9 +856,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&AVX_256_00_47($j,\&body_00_15,@X);
 	push(@X,shift(@X));			# rotate(@X)
     }
-    	&mov		("%r12",$_inp);	# borrow $a4
+    	&mov		("%r12",$_inp);		# borrow $a4
 	&vpand		($temp,$temp,$mask14);
-  &mov		("%r15",$_out);	# borrow $a2
+	&mov		("%r15",$_out);		# borrow $a2
 	&vpor		($iv,$iv,$temp);
 	&vmovdqu	("(%r15,%r12)",$iv);	# write output
 	&lea		("%r12","16(%r12)");	# inp++
@@ -867,7 +867,7 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 	&jne	(".Lavx_00_47");
 
 	&vmovdqu	($inout,"(%r12)");
-  &mov		($_inp."","%r12");
+	&mov		($_inp,"%r12");
 
     $aesni_cbc_idx=0;
     for ($i=0; $i<16; ) {
@@ -876,9 +876,9 @@ my @insns = (&$body,&$body,&$body,&$body);	# 104 instructions
 
 					}
 $code.=<<___;
-	mov	$_inp,%r12	# borrow $a4
-	mov	$_out,%r13	# borrow $a0
-	mov	$_ctx,%r15	# borrow $a2
+	mov	$_inp,%r12		# borrow $a4
+	mov	$_out,%r13		# borrow $a0
+	mov	$_ctx,%r15		# borrow $a2
 	mov	$_in0,%rsi		# borrow $a3
 
 	vpand	$mask14,$temp,$temp

@@ -670,23 +670,52 @@ end
 -- FP/vector argument reads), then regalloc spill slots. The FP/SIMD+yolo region
 -- starts on a 16-byte boundary (8 bytes of padding after the root slots when
 -- numRoots is odd) so the clusters' and the yolo area's mod-16 alignment residues
--- (movaps-class accesses) survive the shift. The alignment modulus stays 16 (body
--- rsp ≡ 0 mod 16); aligned >16-byte stack accesses are rejected by the frame rewrite.
-local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes, yoloBytes)
+-- (movaps-class accesses) survive the shift. The body rsp is 16-aligned by
+-- default. When alignReq > 16 (a materialized cluster needs vmovdqa-class
+-- alignment, proved aligned by the taint scan), the prologue dynamically aligns
+-- the frame (sub total, and $-A) and saves the pre-alignment rsp at saveOff
+-- for the epilogue to restore; static sizing cannot align since the entry
+-- rsp's mod-A residue is dynamic (only mod-16 is fixed by the ABI).
+local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes, yoloBytes, alignReq)
 	spillBytes = spillBytes or 0
 	fpSaveBytes = fpSaveBytes or 0
 	fpBytes = fpBytes or 0
 	yoloBytes = yoloBytes or 0
+	local A = alignReq or 16
+	if A < 16 then A = 16 end
 	local p = #calleeSaved
 	local rootBase = 16
-	local fpPad = ((fpSaveBytes + fpBytes + yoloBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	local fpPadBase = ((fpSaveBytes + fpBytes + yoloBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	-- Widen the pad so the root-area shift (8*numRoots + fpPad, mirrored by the
+	-- transform's frameSlot shift) is a multiple of the frame alignment: the
+	-- materialized clusters' alignment residues survive it. At the default
+	-- 16-byte alignment the historical pad already qualifies, so outputs are
+	-- unchanged there.
+	local fpPad = fpPadBase
+	if A > 16 then
+		while ((8 * numRoots + fpPad) % A) ~= 0 do fpPad += 8 end
+	end
 	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes
 	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+yolo+spills)
-	-- Maintain 16-byte alignment at call sites: (8 retaddr + 8*p pushes + N) % 16 == 0.
-	local target = ((p % 2) == 0) and 8 or 0
-	local N = base
-	while (N % 16) ~= target do N += 1 end
-	return { total = N, rootBase = rootBase, spillBase = spillBase, pushed = calleeSaved }
+	local N, total, saveOff = base, base, nil
+	if A > 16 then
+		-- Dynamic alignment: the content (base bytes) sits at the aligned rsp,
+		-- the pre-alignment rsp is saved 8 bytes into the cluster area (base0
+		-- = 16 + saveBytes, shifted past the roots by 8*numRoots + fpPad --
+		-- the frameSlot shift, a multiple of A by the widened pad above), and
+		-- A slack bytes cover the rounding.
+		N = base
+		total = base + A
+		saveOff = 16 + fpSaveBytes + 8 * numRoots + fpPad
+	else
+		-- Maintain 16-byte alignment at call sites: (8 retaddr + 8*p pushes + N) % 16 == 0.
+		local target = ((p % 2) == 0) and 8 or 0
+		N = base
+		while (N % 16) ~= target do N += 1 end
+		total = N
+	end
+	return { total = total, alignA = A, saveOff = saveOff,
+		rootBase = rootBase, spillBase = spillBase, pushed = calleeSaved }
 end
 x86_64_render.computeLayout = computeLayout
 
@@ -746,7 +775,19 @@ function x86_64_render.prologue(rc)
 	local function ln(s) table.insert(out, s) end
 	local function I(v) return att and ("$" .. v) or tostring(v) end
 	for _, r in rc.calleeSaved do ln("\t" .. (att and "pushq" or "push") .. "\t" .. (att and ("%" .. r) or r)) end
-	ln("\t" .. (att and "subq" or "sub") .. "\t" .. (att and (I(layout.total) .. ", %rsp") or ("rsp, " .. layout.total)))
+	local alignA = layout.alignA or 16
+	if alignA > 16 then
+		-- Dynamically aligned frame (a materialized cluster needs vmovdqa-class
+		-- alignment): the entry rsp's mod-A residue is dynamic, so align at
+		-- runtime and save the pre-alignment rsp for the epilogue to restore.
+		-- layout.total covers the content plus A slack bytes for the rounding.
+		ln("\t" .. (att and "movq" or "mov") .. "\t" .. (att and ("%rsp, %" .. SC) or (SC .. ", rsp")))
+		ln("\t" .. (att and "subq" or "sub") .. "\t" .. (att and (I(layout.total) .. ", %rsp") or ("rsp, " .. layout.total)))
+		ln("\t" .. (att and "andq" or "and") .. "\t" .. (att and ("$-" .. alignA .. ", %rsp") or ("rsp, -" .. alignA)))
+		ln("\t" .. mq .. "\t" .. (att and ("%" .. SC .. ", " .. layout.saveOff .. "(%rsp)") or ("QWORD PTR [rsp + " .. layout.saveOff .. "], " .. SC)))
+	else
+		ln("\t" .. (att and "subq" or "sub") .. "\t" .. (att and (I(layout.total) .. ", %rsp") or ("rsp, " .. layout.total)))
+	end
 	-- stack-overflow check: fail when rsp <= limit (limit at [myth=rdi]).
 	if att then
 		ln("\tcmpq\t%rsp, (%rdi)")
@@ -784,7 +825,15 @@ function x86_64_render.epilogue(rc)
 	-- pop frame: myth->top_frame = frame.prev  (scratch = r11, preserves rax/rdx/rcx)
 	ln("\t" .. mq .. "\t" .. (att and ("(%rsp), %" .. SC) or (SC .. ", QWORD PTR [rsp]")))
 	ln("\t" .. mq .. "\t" .. (att and ("%" .. SC .. ", 16(%" .. mythName .. ")") or ("QWORD PTR [" .. mythName .. " + 16], " .. SC)))
-	ln("\t" .. (att and "addq" or "add") .. "\t" .. (att and (I(layout.total) .. ", %rsp") or ("rsp, " .. layout.total)))
+	local alignA2 = layout.alignA or 16
+	if alignA2 > 16 then
+		-- Dynamically aligned frame: restore the pre-alignment rsp saved by the
+		-- prologue (the rounding is lossy, so the static total cannot restore
+		-- it); the callee-saved pops below then match the prologue pushes.
+		ln("\t" .. mq .. "\t" .. (att and (layout.saveOff .. "(%rsp), %rsp") or ("rsp, QWORD PTR [rsp + " .. layout.saveOff .. "]")))
+	else
+		ln("\t" .. (att and "addq" or "add") .. "\t" .. (att and (I(layout.total) .. ", %rsp") or ("rsp, " .. layout.total)))
+	end
 	for i = #rc.calleeSaved, 1, -1 do ln("\t" .. (att and "popq" or "pop") .. "\t" .. (att and ("%" .. rc.calleeSaved[i]) or rc.calleeSaved[i])) end
 end
 

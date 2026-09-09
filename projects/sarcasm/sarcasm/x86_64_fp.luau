@@ -1506,6 +1506,9 @@ local REASON_NOTRACK = "the CET `notrack` prefix is not supported (it changes in
 local REASON_LOOPZF = "loop's ZF-consuming form branches on the flags left by the PRECEDING instruction, and sarcasm's injected memory-access checks clobber EFLAGS (the documented known issue), so the pending condition could be silently polluted (modeling it cannot be proven sound; use plain `loop`, which branches on the decremented counter instead)"
 local REASON_ADDRSIZE = "an address-size prefix changes the addressing mode of the instruction that follows, which sarcasm does not model (the size-suffixed spelling is supported where one exists, e.g. loopl for the 0x67-address-size `loop`)"
 
+local REASON_FLAGREAD = "flag-reading/writing instructions with unmodeled EFLAGS effects cannot be proven sound against sarcasm's injected flag-clobbering checks (the flag-liveness model has no entry for this mnemonic, so a default-dead assumption would silently omit a required save/restore)"
+local REASON_BCD = "BCD arithmetic instructions (daa/das/aaa/aas/aam/aad) read and write AF/CF with unmodeled EFLAGS effects that sarcasm's injected flag-clobbering checks could silently pollute (cannot prove memory safety)"
+
 -- Instructions with implicit GPR operands the def/use model cannot express (same
 -- class as pcmpestri/pcmpistri, which the fp table rejects): regalloc could rename
 -- the registers they secretly read/write and silently miscompile. (Exact-key table:
@@ -1592,6 +1595,22 @@ local UNSAFE = {
 	-- prefixed instruction itself is not modeled. The size-suffixed spellings
 	-- (loopl/loopq, jecxz/jrcxz) are the supported way to write those forms.
 	addr32 = REASON_ADDRSIZE, addr16 = REASON_ADDRSIZE,
+	-- Flag-stack transfers: pushf/pushfq/pushfd READ EFLAGS (a pending
+	-- condition from a preceding flag-setter would be silently polluted by an
+	-- injected check) and popf/popfq/popfd WRITE EFLAGS with values the model
+	-- does not track. Neither is in the flag-liveness tables, so both stay
+	-- rejected rather than silently passing with a dead default.
+	pushf = REASON_FLAGREAD, pushfq = REASON_FLAGREAD, pushfd = REASON_FLAGREAD,
+	pushfw = REASON_FLAGREAD,
+	popf = REASON_FLAGREAD, popfq = REASON_FLAGREAD, popfd = REASON_FLAGREAD,
+	popfw = REASON_FLAGREAD,
+	-- salc (set AL from carry) reads CF with no entry in the flag-use tables.
+	salc = REASON_FLAGREAD,
+	-- BCD arithmetic: AF/CF readers+writers with unmodeled flag effects.
+	daa = REASON_BCD, das = REASON_BCD, aaa = REASON_BCD, aas = REASON_BCD,
+	aam = REASON_BCD, aad = REASON_BCD,
+	-- arpl reads/writes the RPL bits with ZF effects the model does not track.
+	arpl = REASON_FLAGREAD,
 }
 
 -- string ops: implicit rsi/rdi memory the checker cannot see. Only the

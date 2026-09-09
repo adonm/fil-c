@@ -313,6 +313,8 @@ function M.isMemInsn(mnem) return isa.isMemInsn(mnem) end
 M.flagUse = isa.flagUse
 M.flagDef = isa.flagDef
 M.flagWriteNoDef = isa.flagWriteNoDef
+M.flagUseMask = isa.flagUseMask
+M.flagDefMask = isa.flagDefMask
 
 -- `;! load ptr` / `;! store ptr` are valid ONLY on a scalar 64-bit load/store
 -- (ldr/ldur/str/stur with a 64-bit GPR data register): the invisicap sequence moves

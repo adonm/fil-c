@@ -52,8 +52,11 @@ struct my_statx {
 	uint64_t spare[14];
 };
 
-/* struct open_how comes from <fcntl.h> (glibc 2.44 pulls in the kernel's
-   linux/openat2.h, and always defines struct open_how one way or another). */
+struct my_open_how {
+    unsigned long long flags;
+    unsigned long long mode;
+    unsigned long long resolve;
+};
 
 int main(int argc, char** argv)
 {
@@ -504,7 +507,7 @@ int main(int argc, char** argv)
     // Test openat2 syscall
     {
         // Create a test file
-        struct open_how how;
+        struct my_open_how how;
         memset(&how, 0, sizeof(how));
         how.flags = O_CREAT | O_WRONLY;
         how.mode = 0644;

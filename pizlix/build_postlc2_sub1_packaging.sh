@@ -31,5 +31,4 @@ filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/yaml-0.2.5 pizlonated-yaml
 ./package-source.sh projects/ruby-3.3.10 pizlonated-ruby
 filc/projeny package projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz
-filc/projeny package projects/mg.projeny projects/mg/pizlonated-mg.tar.gz
 

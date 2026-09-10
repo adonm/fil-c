@@ -450,11 +450,115 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 	-- the operand at transform time):
 	--   * inArgWord — an INCOMING fast-CC stack-argument load (cg.loadInArg): the
 	--     word sits at [entry_rsp + 8 + 8*w] (above the return address), i.e. at
-	--     [rsp + 8*#calleeSaved + layout.total + 8 + 8*w] at the body frame base.
+	--     [rsp + 8*#calleeSaved + layout.total + 8 + 8*w] at the body frame base
+	--     in the STATIC (alignA <= 16) case. Under DYNAMIC alignment (alignA >
+	--     16) the body rsp is the post-`and` rsp (pre-and rsp minus 0..A-1 slack,
+	--     entry-dependent), so no static rsp-relative displacement can address
+	--     the incoming words: the load is emitted as a two-move sequence through
+	--     its own destination register
+	--       mov saveOff(%rsp), dst ; mov postPushDelta(dst), dst
+	--     where saveOff(%rsp) holds the prologue-saved post-push rsp (captured
+	--     into r11 before the `sub`, i.e. entry_rsp - 8*#calleeSaved) and
+	--     postPushDelta is the word's offset from THAT base: 8*#calleeSaved +
+	--     8 + 8*w (above the return address). x86_64-only (arm64 has no
+	--     dynamic frame alignment).
 	--   * spillShift — a spill reload/store regalloc inserted inside an outgoing
 	--     stack-arg window (cg.beginStackArgs/endStackArgs), where rsp was dropped
 	--     by N: re-base the slot by the window's shift so it addresses the same
 	--     frame slot (see sarcasm.luau's rewriteSpills).
+	-- Dynamic-align incoming-argument loads cannot use a static displacement.
+	local layoutA = (rc and rc.layout and rc.layout.alignA) or 16
+	if node.inArgWord and rc and rc.layout and layoutA > 16 then
+		local saveOff = rc.layout.saveOff
+		assert(saveOff ~= nil,
+			"sarcasm: internal error: dynamic frame without saveOff for inArgWord")
+		-- The prologue saves the POST-PUSH rsp (entry_rsp - 8*#calleeSaved,
+		-- captured before the `sub`), so the word's offset from the saved base
+		-- is 8*#calleeSaved + 8 + 8*w -- notably WITHOUT layout.total (the
+		-- static displacement's total accounts for the `sub`, which the saved
+		-- base predates).
+		local postPushDelta = 8 * #rc.calleeSaved + 8 + 8 * node.inArgWord
+		-- loadInArg builds its mem with dispVal 0, but honor any base dispVal.
+		-- NO-INDEX ASSUMPTION: loadInArg builds build.memx(build.rp(4)) with no
+		-- index operand, and nothing between cg.loadInArg and renderInsn adds
+		-- one — the second move addresses (base + postPushDelta) with no scale.
+		-- Reject (a clean `sarcasm:` compile failure, not an internal-error
+		-- assert) rather than silently ignoring an index (which would address
+		-- the wrong word): user assembly never builds inArgWord nodes directly,
+		-- so an index here means a compiler-side provenance change, and failing
+		-- closed with the input blamed keeps the failure actionable.
+		for _, o in ops do
+			if o.kind == "mem" and o.base and o.base.fixedNum == 4 then
+				if o.index ~= nil then
+					error("sarcasm: inArgWord memory operand has an index register"
+						.. " (entry stack-argument loads address base + word"
+						.. " with no scale)")
+				end
+				postPushDelta += (o.dispVal or 0)
+				break
+			end
+		end
+		-- inArgWord nodes are emitted only by the entry-CC unpack (transform.luau,
+		-- before any call's beginStackArgs window opens), and rewriteSpills
+		-- (sarcasm.luau) stamps spillShift only on spill reload/store nodes it
+		-- creates INSIDE such a window — never on a pre-existing entry mov —
+		-- and the FIP packer propagates spillShift only across spillReload/
+		-- spillStore rebuilds. So spillShift can never co-occur with inArgWord
+		-- by construction, and no user input can produce the combination (entry
+		-- unpack sites and window interiors are disjoint node provenances).
+		-- Coexistence (not co-occurrence) of the two features in one function
+		-- IS exercised: filc/tests/sarcasm-frame-and64-stackargs-spill-att runs
+		-- incoming stack-argument loads (inArgWord, dynamic-align two-move form)
+		-- alongside an outgoing stack-argument call whose marshalling spills
+		-- inside the window (spillShift re-basing) — proving the loud reject
+		-- below has no false positives on real spill traffic. Reject loudly
+		-- (a clean `sarcasm:` compile failure, not a crash) rather than
+		-- silently mis-rendering, so any future provenance change fails closed.
+		if node.spillShift ~= nil then
+			error("sarcasm: inArgWord inside outgoing stack-arg window"
+				.. " (entry stack-argument load colliding with a call's"
+				.. " stack-argument area)")
+		end
+		local dstOp = ops[1]
+		assert(dstOp and dstOp.kind == "reg",
+			"sarcasm: internal error: inArgWord node without reg destination")
+		local dstNum = physOf(node, dstOp, colorNum)
+		assert(dstNum ~= nil,
+			"sarcasm: internal error: inArgWord destination has no color")
+		-- Width-aware emission. The FIRST load moves the full 64-bit saved rsp
+		-- base (a truncated base would address garbage), so it is always a
+		-- 64-bit move into the full destination register; the SECOND load (the
+		-- actual argument word) matches the destination width. DSTW AUDIT
+		-- (2026-09): cg.loadInArg builds its destination with build.rt(dst) —
+		-- no width argument, so build.luau stamps width 64 — and all three
+		-- callers (transform.luau's entry-CC unpack x2, the yolo-base fill)
+		-- pass a bare temp id, never a narrowed operand. Stack words are 8
+		-- bytes each (marshalFastArgs packs at 8*j), so only the 64-bit form
+		-- is reachable — the former 32-bit branch was dead code and is
+		-- removed. A width-mismatched `movq ..., %eax` (or an `eax` with
+		-- QWORD PTR) must never be emitted, so any non-64 width still fails
+		-- loudly.
+		local dstW = dstOp.width or 64
+		if dstW ~= 64 then
+			error("sarcasm: inArgWord destination width "
+				.. tostring(dstW) .. " (entry stack-argument loads are 64-bit)")
+		end
+		local dstStr = renderOperand(node, dstOp, colorNum, syntax)
+		local dstBase = regName(dstNum, 64)
+		local dstFull = (syntax == "att" and "%" or "") .. dstBase
+		if syntax == "att" then
+			local l1 = "\tmovq\t" .. tostring(saveOff) .. "(%rsp), " .. dstFull
+			local l2 = "\tmovq\t" .. tostring(postPushDelta) .. "(%" .. dstBase .. "), " .. dstStr
+			return l1 .. "\n" .. l2
+		else
+			local s1 = saveOff == 0 and "[rsp]"
+				or "[rsp + " .. tostring(saveOff) .. "]"
+			local l1 = "\tmov\t" .. dstFull .. ", QWORD PTR " .. s1
+			local l2 = "\tmov\t" .. dstStr .. ", QWORD PTR [" .. dstBase
+				.. " + " .. tostring(postPushDelta) .. "]"
+			return l1 .. "\n" .. l2
+		end
+	end
 	local dispDelta = 0
 	if node.inArgWord and rc and rc.layout then
 		dispDelta = rc.layout.total + 8 * #rc.calleeSaved + 8 + 8 * node.inArgWord

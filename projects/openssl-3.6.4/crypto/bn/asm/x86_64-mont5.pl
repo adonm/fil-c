@@ -95,9 +95,16 @@ my $sqrx8x_internal = "__bn_sqrx8x_internal";
 # clones share their caller's buffer through it (see CS/CSX).
 my $FRraw = "%fil_mont5frame_raw";
 my $FR = $ENV{SARCASM} ? "%fil_mont5frame" : "%rsp";
-# Mask displacement for the mul4x/mulx4x masks (same frame slot both modes):
-# gas uses 88-112 against its 8-mod-16 %rsp; SARCASM uses 80-112 against the
-# 0-mod-16 $FR base (slot num_bytes-32, already 16-aligned, no rounding).
+# Mask displacement for the mul4x/mulx4x masks (same logical slot both
+# modes): gas spells 88-112 against %rsp, which at that point carries the
+# pushed return address (slot N lives at N+8(%rsp), see CS below), while
+# SARCASM spells 80-112 against the 0-mod-16 $FR base (slot N lives at
+# N(%fil_mont5frame): the call is a jump to a per-caller clone with no
+# push). The 8-byte delta is that call-push bias, not an alignment dodge:
+# both spellings are 16-aligned in practice (gas via the and $-64 frame
+# alignment, SARCASM via the 16-aligned .alloca base), matching upstream,
+# which has no per-mask `and` either. Sarcasm's aligned-stack support
+# covers the movdqa mask traffic.
 my $maskoff = $ENV{SARCASM} ? "80-112" : "88-112";
 # Shared save-slot spelling for the displacement-only entry-%rsp reloads
 # below: 0(%rsp) fixed slot under sarcasm (%rsp never moves), 40(%rsp)
@@ -3918,23 +3925,7 @@ bn_get_bits5: #! int(ptr,int)
 	cmp	\$11,%ecx
 	cmova	%r11,%r10
 	cmova	%eax,%ecx
-___
-if ($ENV{SARCASM}) {
-# Fil-C requires natural alignment for every access, but the windowed bit
-# extraction deliberately reads a 16-bit word at a byte offset that can be
-# odd; assemble it from two byte loads instead (always correct).
-$code.=<<___;
-	movzb	(%r10,$num,2),%eax
-	movzb	1(%r10,$num,2),%r11d
-	shl	\$8,%r11d
-	or	%r11d,%eax
-___
-} else {
-$code.=<<___;
 	movzw	(%r10,$num,2),%eax
-___
-}
-$code.=<<___;
 	shrl	%cl,%eax
 	and	\$31,%eax
 	ret

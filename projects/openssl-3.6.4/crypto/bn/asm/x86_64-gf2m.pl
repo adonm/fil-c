@@ -70,11 +70,7 @@ $code.=<<___;
 .align	16
 _mul_1x1:
 .cfi_startproc
-___
-$code.=<<___;
 	sub	\$128+8,%rsp
-___
-$code.=<<___;
 .cfi_adjust_cfa_offset	128+8
 	mov	\$-1,$a1
 	lea	($a,$a),$i0
@@ -179,12 +175,8 @@ $code.=<<___;
 	movq	$R,$i1
 	xor	$i0,$lo
 	xor	$i1,$hi
-___
-$code.=<<___;
 
 	add	\$128+8,%rsp
-___
-$code.=<<___;
 .cfi_adjust_cfa_offset	-128-8
 	ret
 .Lend_mul_1x1:

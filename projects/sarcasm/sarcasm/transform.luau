@@ -830,7 +830,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- byte-identical output.
 	local frameRegion = nil
 	if backend.arch == "x86_64" and framePolicy.analyzeFrame then
-		local _, _, _, fpinfo2, yolo2, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
+		local fs2, _, _, fpinfo2, yolo2, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
 		-- The region-carrying run sees caller-saved stack-pointer saves the
 		-- region-less early run cannot record (its region corner needs the
 		-- regions), so its FP/SIMD cluster and yolo-argument layout info is a
@@ -841,6 +841,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- always covers what the rewrite materializes).
 		if fpinfo2 ~= nil then fctx.fp = fpinfo2 end
 		if yolo2 ~= nil then fctx.yolo = yolo2 end
+		-- Take the region-carrying run's frameSize too: the early run's
+		-- region-sensitive outputs (depths, bands, and hence the B2-extended
+		-- frameSize) are best-effort geometry with no rewrite consumer — every
+		-- x86_* mark is cleared and recomputed by this run and again by the
+		-- preprocess run — so the D9 promotion size must not depend on them.
+		-- (The early run's remaining scalars — fpOffset/usesFp — are pure
+		-- prologue geometry, region-invariant by construction.) Recording more
+		-- saves can only resolve more depths (fewer "dyn", more banded
+		-- accesses counted), so fs2 >= the early size; adopting it never
+		-- under-covers the promotion.
+		if fs2 ~= nil and fctx then fctx.frameSize = fs2 end
 		if frameEscapes and fctx and fctx.frameSize > 0 then
 			-- LAST in the list: an explicit (annotated) region overlapping the
 			-- frame wins the membership test.
@@ -915,6 +926,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		return { argRegs = argRegs, resultReg = resultReg }
 	end
 
+	-- ORDERING: cgm.classify rejects unsafe instructions (x86_64: fp.unsafeReject
+	-- inside x86.classify — loope/loopz/loopne/loopnz, pushf/popf, salc, BCD, ...).
+	-- A rejection raises here, aborting compilation strictly BEFORE the DCE rounds
+	-- and before any flagsLiveFrom save-scan below ever runs, so no rejected
+	-- instruction can reach either flag consumer (the coarse flagUse/flagDef and
+	-- flagUseMask/flagDefMask entries for rejected mnemonics are unreachable
+	-- belt-and-braces — see x86_64_isa.luau's ORDERING PROOF).
 	local lf = lift.liftFunction(body, { classify = cgm.classify, returnRegs = returnRegs, callInfo = callInfo })
 	prof.mark("  [" .. name .. "] lift")
 

@@ -154,11 +154,6 @@ sub LB() { my $r=shift; $r =~ s/%[er]([a-d])x/%\1l/	or
 			$r =~ s/%[er](bp)/%\1l/		or
 			$r =~ s/%(r[0-9]+)[d]?/%\1b/;   $r; }
 
-sub RD() { my $r=shift; $r =~ s/%[er]([a-d])x/%e\1x/	or
-  $r =~ s/%[er]([sd]i)/%e\1i/	or
-  $r =~ s/%[er](bp)/%e\1p/		or
-  $r =~ s/%(r[0-9]+)[d]?/%\1d/;   $r; }
-
 sub AUTOLOAD()		# thunk [simplified] 32-bit style perlasm
 { my $opcode = $AUTOLOAD; $opcode =~ s/.*:://;
   my $arg = pop;
@@ -171,22 +166,7 @@ sub AUTOLOAD()		# thunk [simplified] 32-bit style perlasm
   my $inp = shift;
 
 	$N++;
-  if ($ENV{SARCASM}) {
-    # sarcasm drops the xor-zeroing as redundant, but 8-bit movb writes
-    # preserve the upper bits; movzbl needs no prior zeroing.
-    $code.=<<___;
-	movzbl	`&LB("$Zlo")`,`&RD("$nlo")`
-	movzbl	`&LB("$Zlo")`,`&RD("$nhi")`
-	shl	\$4,`&LB("$nlo")`
-	mov	\$14,$cnt
-	mov	8($Htbl,$nlo),$Zlo
-	mov	($Htbl,$nlo),$Zhi
-	and	\$0xf0,`&LB("$nhi")`
-	mov	$Zlo,$rem
-	jmp	.Loop$N
-___
-  } else {
-    $code.=<<___;
+$code.=<<___;
 	xor	$nlo,$nlo
 	xor	$nhi,$nhi
 	mov	`&LB("$Zlo")`,`&LB("$nlo")`
@@ -198,9 +178,6 @@ ___
 	and	\$0xf0,`&LB("$nhi")`
 	mov	$Zlo,$rem
 	jmp	.Loop$N
-___
-  }
-$code.=<<___;
 
 .align	16
 .Loop$N:
@@ -459,14 +436,9 @@ $code.=".align	16\n.Louter_loop:\n";
 	&mov	("8($Xi)","%rdx");
 	&shr	("%rdx",32);
 
-  if ($ENV{SARCASM}) {
-    &rol	($dat,8);
-    &movz	(&RD($nlo),&LB($dat));
-  } else {
-    &xor	($nlo,$nlo);
-    &rol	($dat,8);
-    &mov	(&LB($nlo),&LB($dat));
-  }
+	&xor	($nlo,$nlo);
+	&rol	($dat,8);
+	&mov	(&LB($nlo),&LB($dat));
 	&movz	($nhi[0],&LB($dat));
 	&shl	(&LB($nlo),4);
 	&shr	($nhi[0],4);
@@ -478,7 +450,7 @@ $code.=".align	16\n.Louter_loop:\n";
 	    &mov	($Zlo,"8($Htbl,$nlo)")			if ($i==0);
 	    &mov	($Zhi,"($Htbl,$nlo)")			if ($i==0);
 
-      if ($ENV{SARCASM}) { &movz	(&RD($nlo),&LB($dat)); } else { &mov	(&LB($nlo),&LB($dat)); }
+	    &mov	(&LB($nlo),&LB($dat));
 	    &xor	($Zlo,$tmp)				if ($i>0);
 	    &movzw	($rem[1],"($rem_8bit,$rem[1],2)")	if ($i>0);
 
@@ -496,13 +468,9 @@ $code.=".align	16\n.Louter_loop:\n";
 	    &shr	($Zlo,8);
 
 	    &movz	($rem[0],&LB($rem[0]));
-      if ($ENV{SARCASM}) {
-        # the final refill reads -4($Xi) and is dead on loop exit;
-        # it is out of bounds under capabilities, so skip it.
-        &mov	($dat,"$j($Xi)")			if (--$j%4==0 && $j>=0);
-      } else {
-        &mov	($dat,"$j($Xi)")			if (--$j%4==0);
-      }
+	    # The final refill reads -4($Xi) and is dead on loop exit;
+	    # it is out of bounds under capabilities, so skip it under SARCASM.
+	    &mov	($dat,"$j($Xi)")			if (--$j%4==0 && (!$ENV{SARCASM} || $j>=0));
 	    &shr	($Zhi,8);
 
       if ($ENV{SARCASM}) { &xor	($Zlo,"16(%fil_gh4,$nhi[0],8)"); } else { &xor	($Zlo,"-128($Hshr4,$nhi[0],8)"); }

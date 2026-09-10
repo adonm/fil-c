@@ -250,6 +250,18 @@ local rbpNorm = 0  -- rbp-relative normalization base (D0 - fpDepth; 0 without a
 local frameAlignReq = 16
 local frameAndDepth = 0
 
+-- Whether the latest analyzeFrame run executed the cloneRet balance proof
+-- (true exactly when it ran with regions ~= nil). The rewrite's cloneRet
+-- exemption (the depth-0-at-ret gate) asserts this: the exemption may only be
+-- consumed on marks from a run whose proof backed them. The transform's early
+-- geometry run (regions == nil) skips the proof, so consuming ITS marks would
+-- be fail-open — the assert makes that a loud internal error instead of a
+-- silent hole. Same single-threaded discipline as D0/frameAlignReq below:
+-- frame.preprocess runs analyzeFrame immediately before the rewrite loop for
+-- the same body, and its `regions` argument is always a table there (possibly
+-- empty), so the flag is true whenever the rewrite can see a cloneRet.
+local cloneRetProofRan = false
+
 -- Incoming yolo stack-argument state for the CURRENT function (set by analyzeFrame,
 -- consumed by the rewrite — same single-threaded discipline as D0):
 --   yoloCount — number of SysV stack (7th+ integer-class) arguments in the entry
@@ -373,9 +385,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86_midAnd = nil
 		st.x86_preAnd = nil
 		st.x86_smap = nil
+		st.x86_b2band = nil
 	end
 	frameAlignReq = 16
 	frameAndDepth = 0
+	-- Record whether this run executes the cloneRet balance proof below
+	-- (regions ~= nil). The rewrite asserts the flag before consuming any
+	-- cloneRet exemption — the machine check behind the early-run skip.
+	cloneRetProofRan = (regions ~= nil)
 
 	-- Fixed-alloca region lookup mirroring frame.preprocess's: `dyn` selects the
 	-- alignment-anchored regions ("dyn"-depth rsp coordinates), static the
@@ -440,7 +457,16 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 	end
 
-	-- label name -> index of the insn it precedes; nextInsn[i] -> next insn index after i
+	-- label name -> index of the insn it precedes; nextInsn[i] -> next insn index after i.
+	-- Both skip every non-insn statement (labels, directives, blanks): labelAt
+	-- maps each label to the next INSN (pending labels accumulate across
+	-- directives/blanks, so a clone entry buried under extra labels still
+	-- resolves to its first real instruction), and nextInsn threads each index
+	-- to the next INSN (only insns update the cursor, so a `jmp` whose target
+	-- label is followed by labels/nops/directives and then an `and` still
+	-- reaches that `and` — the jumper header's x86_preAnd mark flows across
+	-- the jump edge: see sarcasm-reject-b2-preand-gap-att — and straight-line
+	-- gaps never break fallthrough: see sarcasm-tail-b2-gap-att).
 	local labelAt, nextInsn = {}, {}
 	do
 		local pending = {}
@@ -457,6 +483,22 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		for i = #body, 1, -1 do
 			nextInsn[i] = nxt
 			if body[i].kind == "insn" then nxt = i end
+		end
+		-- MACHINE CHECK of the skip invariant above (the x86_preAnd proof and
+		-- every CFG consumer ride on it): every label resolves to an insn index
+		-- (or just past the end for trailing labels), and every nextInsn step
+		-- lands on an insn (or just past the end) — no label, directive, or
+		-- blank in either map. sarcasm-tail-b2-gap-att proves it end to end
+		-- (a clone entry buried under labels/nops still resolves, and
+		-- straight-line gaps never break fallthrough).
+		for _, t in pairs(labelAt) do
+			assert(t == #body + 1 or (body[t] and body[t].kind == "insn"),
+				"sarcasm: internal error: label mapped to a non-insn statement")
+		end
+		for i = 1, #body do
+			local n = nextInsn[i]
+			assert(n == #body + 1 or (body[n] and body[n].kind == "insn"),
+				"sarcasm: internal error: nextInsn mapped to a non-insn statement")
 		end
 	end
 
@@ -645,6 +687,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- components (a disagreement, or any unanalyzable-rsp influence, yields "dyn" —
 	-- unprovable).
 	local classCache = {}
+	-- Classify via x86.classify, which rejects unsafe instructions
+	-- (fp.unsafeReject) by raising. analyzeFrame runs strictly before the
+	-- lift/DCE/save-scan in transform.transformFunction, so a rejection here
+	-- (or in the lift's own classify pass) aborts compilation before DCE or
+	-- the flag save-scan ever sees the instruction — see x86_64_isa.luau's
+	-- ORDERING PROOF.
 	local function classOf(st)
 		local c = classCache[st]
 		if c == nil then c = x86.classify(st); classCache[st] = c end
@@ -1172,6 +1220,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- use of the register would observe the phantom value — rejected as always).
 	local function regionCarrierAccess(st, d, e)
 		if type(d) ~= "table" or not d.anchored or not d.scopeDepth then return false end
+		-- Control-flow reads are not region traffic: `call *D(%carrier)` /
+		-- `jmp *D(%carrier)` reads the carrier as a CODE address even when D
+		-- lands inside the anchored scope — redirecting it would jump to the
+		-- region pointer while the use-check exemption below silently consumed
+		-- the phantom read (same class as the aliasOk call/jmp guard there).
+		do
+			local bb = x86.baseMnemonic(string.lower(st.mnemonic))
+			if bb == "call" or bb == "jmp" then return false end
+		end
 		local mem
 		for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
 		if not (mem and mem.base and mem.base.kind == "reg" and mem.base.name == e.name
@@ -1196,6 +1253,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- rsp+0 region corner.)
 		local isSave = isSpSaveForm(st) and d ~= nil and not isDynDepth(d)
 			and (x86.CALLEE_SAVED[ops[1].name] ~= nil or yoloCount > 0
+				or st.b2clone ~= nil
 				or (regions ~= nil and not regionOf(0, false)))
 			and (idx < prologueEnd or not (st.allocaPlace or st.allocaOwned))
 		-- A saved-rsp materialization via lea. The yolo form (`leaq 0(%rsp), %reg`,
@@ -1428,6 +1486,57 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- Reject it. (Never mutate the incoming map — it is shared across the fixpoint.)
 		local c = classOf(st)
 		local out = smap
+		-- A real hardware call clobbers every caller-saved register (SysV AMD64):
+		-- a live register carrier parked in one no longer holds the save when
+		-- the call returns, so poison it here — any later recovery or carrier
+		-- use through it fails closed at the use site (and a merge with a
+		-- call-free path marks the register conflicted, which is equally
+		-- fail-closed). Every hardware-call spelling is covered: baseMnemonic
+		-- normalizes `call`/`callq`/`callw` to one "call" (x86_64_isa FIXED —
+		-- `callw` is the encodable 16-bit form; `calll` has no 64-bit encoding
+		-- and stays rejected). An indirect `call *%reg` THROUGH a carrier is
+		-- first a use of the phantom value: the use-check loop below iterates
+		-- the INCOMING map, so it stays a static error at the call itself, not
+		-- a silent poison (see sarcasm-reject-b2-carrier-indcall-att); a
+		-- `call *mem` through a carrier register or slot is rejected the same
+		-- way (the aliasOk/region/slot guards above exclude call/jmp — see
+		-- sarcasm-reject-b2-carrier-memcall-att and
+		-- sarcasm-reject-b2-carrier-memslot-att). Callee-saved carriers
+		-- survive, by a two-case trust argument (not by assumption): a
+		-- same-file callee is ALSO compiled by sarcasm, whose emitted prologue
+		-- saves and epilogue restores every callee-saved register it touches
+		-- (verifiable in the callee's own output — see
+		-- sarcasm-tail-b2-carrier-callee-att, which executes across one); an
+		-- extern (or register-indirect, capability-checked) callee is outside
+		-- sarcasm's proof, and its preservation is the SysV ABI contract —
+		-- the same trust boundary every cross-module call in Fil-C already
+		-- rides on. Slot carriers live in frame memory, which the call cannot
+		-- touch, and are left alone. Local calls are branches to inlined
+		-- clones, not hardware calls — they clobber nothing by themselves
+		-- (the clone's own redefinitions poison through the ordinary
+		-- def-marking below, so a caller-saved carrier live across a localcall
+		-- whose clone clobbers the register is still rejected — at the
+		-- clobber when it reads, at the recovery/ret when it only writes; see
+		-- sarcasm-reject-b2-carrier-local-att), so they are excluded. In particular this proves the
+		-- B2-clone carrier relaxation (a clone may park in any register)
+		-- live-across-no-calls: a caller-saved clone carrier that reaches a
+		-- nested B1/local/annotated call is poisoned on every path through
+		-- the call.
+		if x86.baseMnemonic(string.lower(st.mnemonic)) == "call" and st.localCall == nil then
+			for pname, pe in pairs(smap) do
+				if not pe.redefined and not pe.slot and not pe.roff and not pe.conflict
+					and x86.CALLEE_SAVED[pe.name] == nil then
+					if out == smap then
+						out = {}
+						for k, v in pairs(smap) do out[k] = v end
+					end
+					local ne = {}
+					for k, v in pairs(pe) do ne[k] = v end
+					ne.redefined = true
+					out[pname] = ne
+				end
+			end
+		end
 		for name, e in pairs(smap) do
 			if not e.redefined and not e.slot and not e.roff and not e.conflict then
 				-- Count this instruction's modeled uses of the save register. Allowed
@@ -1439,9 +1548,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- written does not depend on the register's old value, so the modeled
 				-- use observes nothing; the def below kills the alias, exactly as a
 				-- plain redefinition). Anything else observes the dropped save.
+				-- ORDERING (reject-vs-poison): this loop iterates the INCOMING
+				-- map (`smap`, never the poison-mutated `out`), so a use of the
+				-- phantom value is rejected HERE even when the same instruction
+				-- also poisons the register below (a `call *%carrier-reg` is a
+				-- static error at the call itself, never a silent poison — see
+				-- sarcasm-reject-b2-carrier-indcall-att). A `leaq` escape through
+				-- a carrier (`leaq 0(%carrier), %reg` — aliasSlotOf refuses leas)
+				-- is likewise rejected here rather than recorded: the
+				-- isLeaSave early-return above requires an %rsp base, so a
+				-- carrier base can never be swallowed into a save (see
+				-- sarcasm-reject-b2-carrier-lea-att).
+				local bb = x86.baseMnemonic(string.lower(st.mnemonic))
 				local zeroing = false
 				do
-					local bb = x86.baseMnemonic(string.lower(st.mnemonic))
 					if (bb == "xor" or bb == "sub") and ops[1] and ops[2]
 						and ops[1].kind == "reg" and ops[2].kind == "reg"
 						and ops[1].num == e.num and ops[2].num == e.num then
@@ -1459,9 +1579,18 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- access (the rewrite virtualizes/materializes it). The use is
 				-- legal only for a single memory-base use resolving inside the
 				-- frame and outside any promoted region; anything else observes
-				-- the phantom value.
+				-- the phantom value. Control-flow reads are NOT data accesses:
+				-- `call *D(%carrier)` / `jmp *D(%carrier)` reads the carrier as
+				-- a CODE address, so even when D lands inside the frame the
+				-- alias computation must not legalize it (that would jump to
+				-- the phantom value — a callee-saved carrier would not even be
+				-- poisoned afterwards, so nothing downstream would catch it;
+				-- see sarcasm-reject-b2-carrier-memcall-att). The transform's
+				-- annotation walk rejects every memory-operand indirect call
+				-- anyway — this guard keeps the frame pass's own proof
+				-- (reject at the use site) instead of relying on it.
 				local aliasOk = false
-				if nUses == 1 and not owned then
+				if nUses == 1 and not owned and bb ~= "call" and bb ~= "jmp" then
 					local amem = nil
 					for _, o in (st.operands or {}) do if o.kind == "mem" then amem = o end end
 					local ao = amem and aliasSlotOf(st, amem, e)
@@ -1516,6 +1645,17 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- not the carrier-load form would observe the phantom value — reject it.
 		-- (Region-pointer-derived bases key the slot in the region's coordinates —
 		-- the same space the direct rsp-relative spelling uses.)
+		-- A `call *off(%rsp)` / `jmp *off(%rsp)` memory operand READS the slot
+		-- (the indirect target) even though it sits in operand position 1: when
+		-- the slot holds a carrier (%rsp-slot carrier — the value parked by
+		-- `movq %carrier, off(%rsp)`), the read observes the phantom value and
+		-- must be rejected, never misclassified as a write that silently drops
+		-- the slot (see sarcasm-reject-b2-carrier-memslot-att). ORDERING: this
+		-- rejection runs on the same incoming map the call-poison above spared
+		-- (slot carriers are never poisoned — frame memory survives calls, and
+		-- sarcasm-tail-b2-carrier-slot-att proves a slot carrier stays usable
+		-- across one), so surviving the poison never legalizes the read.
+		local slotBb = x86.baseMnemonic(string.lower(st.mnemonic))
 		for _, o in ops do
 			if o.kind == "mem" then
 				local key, off, space = memSlotKey(o, d, smap, st)
@@ -1528,7 +1668,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					for k, e in pairs(smap) do
 						if e.slot and not e.redefined and e.space == space and w
 							and off < e.off + 8 and off + w > e.off then
-							if ops[1] == o then
+							local isWrite = (ops[1] == o) and slotBb ~= "call" and slotBb ~= "jmp"
+							if isWrite then
 								-- a write (the mem operand is the destination): poison
 								if out == smap then
 									out = {}
@@ -1633,6 +1774,27 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- identity-based change detection stable.)
 		return out
 	end
+	-- CFG successors over the POST-tailcall-rewrite body. B2 audit: every
+	-- shape tailcall.rewriteFunction emits is covered with no special cases —
+	-- a retargeted jumper->clone jump is a direct `jmp` to a renamed label
+	-- (the labelAt edge; the clone entry's crossJumpEntry mark is not a CFG
+	-- fact), a conditional B2 join keeps its jcc fallthrough, nested-B1 via
+	-- blocks are direct-jump chains (jcc->via, via call, via `jmp tailret`),
+	-- the tailRet epilogue is a label plus a `ret` (no successors, like every
+	-- ret), clone rets are plain `ret`s (no successors: they return from the
+	-- jumper, never to the jump site), and nested-clone jumps are direct
+	-- `jmp`s. Completeness here is load-bearing for x86_preAnd reachability:
+	-- a missing edge (in either direction — the preAnd walk follows
+	-- predecessors derived from these successors) would leave clone code
+	-- depth-less (unreached) and skip its checks, reopening alias-across-and
+	-- (see sarcasm-reject-b2-cross-and-att, which pins the jumper-header
+	-- define / in-clone use-after-and rejection end to end). Fallthrough
+	-- completeness matters in the other direction too: every non-branch
+	-- insn (including `leave`, which execution continues past) falls through
+	-- via nextInsn, while trapping insns (`ud2`/`int3`/`int`/`hlt`) terminate
+	-- — see the trap guard below and sarcasm-tail-b2-gap-att (label/nop gaps
+	-- must not break fallthrough) and sarcasm-tail-b2-ownand-att (a clone's
+	-- own `and` must not over-poison the jumper).
 	local function successors(i)
 		local st = body[i]
 		-- Local-subroutine marks (localcall.luau): a local call transfers to the
@@ -1659,6 +1821,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		local nxt = nextInsn[i]
 		local out = {}
 		if b == "ret" then return out end
+		-- Trapping instructions never fall through: `ud2` raises #UD, `int3` and
+		-- `int` (only `int $3` passes fp.unsafeReject — SIGTRAP) trap, and `hlt`
+		-- is privileged (rejected by fp.unsafeReject, listed so any future
+		-- relaxation still gets the CFG right). A fallthrough edge here would be
+		-- a spurious CFG edge: for x86_preAnd reachability it over-marks
+		-- (fail-closed but imprecise — a trap before an `and` would poison
+		-- innocent header traffic), and for flagsDeadAfter/checkLostReload it
+		-- invents paths that can never execute. (`leave`, by contrast, IS
+		-- fallthrough — an rsp/rbp update whose execution continues on the next
+		-- instruction — so it keeps the fallthrough below deliberately.)
+		-- NOTE: x86.classify still reports fallsThrough=true for these (the
+		-- lift's reaching-definitions over-approximates, which is sound); this
+		-- function is the frame pass's own precise CFG and terminates there.
+		if m == "ud2" or m == "int3" or m == "int" or m == "hlt" then return out end
 		if b == "jmp" then
 			local o = st.operands[1]
 			if o and o.kind == "sym" and labelAt[o.text] then return { labelAt[o.text] } end
@@ -1672,28 +1848,49 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		return out
 	end
 
-	-- Are the condition flags DEAD after statement i — nothing reads them before a
-	-- full flag write on any control-flow path? Conservative forward scan over the
-	-- CFG: a flag READER (flagUse, incl. carry-in consumers) kills the proof; a
-	-- full flag WRITER (flagDef: all six flags defined or documented-undefined)
-	-- terminates the path soundly. A PARTIAL writer (flagWriteNoDef: inc/dec
-	-- preserve CF, stc/clc replace only CF, sahf, bt*, shifts) neither reads nor
-	-- fully rewrites — the flags a later reader would see through it depend on
-	-- the pre-instruction value, so it also kills the proof. Paths that reach a
-	-- `ret` (or the body end) are sound: nothing reads flags there. Used by the
-	-- mid-function `addq $imm, %rsp` drop below (the add clobbers the flags).
+	-- Are the condition flags DEAD after statement i — nothing reads the
+	-- clobbered flags before they are fully rewritten on any control-flow
+	-- path? Precise forward scan over the CFG with per-flag granularity
+	-- (x86.flagUseMask/flagDefMask): the pending set starts as the flags
+	-- statement i fully rewrites; a USE of a pending flag kills the proof, a
+	-- full rewrite clears pending flags, and partial writes propagate the
+	-- remainder (sound: the flags a later reader sees through them still
+	-- include the clobbered value — e.g. `dec` preserves CF, so a later
+	-- `adc` still observes the clobber, while a later `jnz` observes only
+	-- the `dec`-written ZF). Paths that reach a `ret` (or the body end) are
+	-- sound: nothing reads flags there. Used by the mid-function `subq/
+	-- `addq $imm, %rsp` and `and $-N, %rsp` drops below (they clobber the
+	-- flags). Strictly more precise than the historical coarse scan (a full
+	-- rewrite clears the whole pending set, so every historically-accepted
+	-- shape stays accepted) while additionally accepting clobbers hidden
+	-- behind partial writes whose preserved flags no reader observes (the
+	-- chacha B2-clone inner-frame `sub` ahead of a `dec`-counter loop).
 	local function flagsDeadAfter(i)
-		local work, seen = {}, {}
-		for _, s in successors(i) do table.insert(work, s) end
+		local start = x86.flagDefMask(body[i])
+		if start == 0 then return true end
+		-- seen[idx] = union of pending masks already expanded there. Pending
+		-- only shrinks along a path, so a pending set covered by the union
+		-- adds no new behavior (every continuation was already proven for a
+		-- superset of it).
+		local seen = {}
+		local work = {}
+		for _, s in successors(i) do table.insert(work, { s, start }) end
 		while #work > 0 do
-			local j = table.remove(work)
-			if not seen[j] then
-				seen[j] = true
-				local st = body[j]
-				if st.kind == "insn" then
-					if x86.flagUse(st) or x86.flagWriteNoDef(st) then return false end
-					if not x86.flagDef(st) then
-						for _, s in successors(j) do table.insert(work, s) end
+			local item = table.remove(work)
+			local j, pend = item[1], item[2]
+			if pend ~= 0 then
+				local prev = seen[j] or 0
+				if bit32.band(pend, bit32.bnot(prev)) ~= 0 then
+					seen[j] = bit32.bor(prev, pend)
+					local st = body[j]
+					if st and st.kind == "insn" then
+						if bit32.band(x86.flagUseMask(st), pend) ~= 0 then return false end
+						pend = bit32.band(pend, bit32.bnot(x86.flagDefMask(st)))
+						if pend ~= 0 then
+							for _, s in successors(j) do table.insert(work, { s, pend }) end
+						end
+					elseif st then
+						for _, s in successors(j) do table.insert(work, { s, pend }) end
 					end
 				end
 			end
@@ -1971,6 +2168,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- recomputed exactly): dropped by the rewrite anywhere it appears.
 				if isSpSaveForm(st) and not isDynDepth(depthIn[i])
 					and (x86.CALLEE_SAVED[st.operands[1].name] ~= nil or yoloCount > 0
+						or st.b2clone ~= nil
 						or (regions ~= nil and not regionOf(0, false)))
 					and (st.x86_prologue or not (st.allocaPlace or st.allocaOwned)) then
 					st.x86_spSave = true
@@ -2240,8 +2438,48 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 		local firstAnd = andIdxs[1]
 		if firstAnd then
-			for i = 1, firstAnd - 1 do
-				if body[i].kind == "insn" then body[i].x86_preAnd = true end
+			-- Mark every instruction that can REACH a mid-function `and`:
+			-- such an access keys pre-and numbering while later same-key
+			-- traffic keys post-and numbering shifted by the and's dynamic
+			-- slack. The historical layout approximation (every instruction
+			-- before the first and) is wrong once B2 shared-tail clones are
+			-- appended after the body: each clone is its own path-ENTRY
+			-- (reached only through its jump edge, returning through its
+			-- rets), so traffic in one clone (or the jumper body) cannot
+			-- observe another clone's and slack unless control actually
+			-- flows there — exactly what reachability says. Traffic that
+			-- CAN flow into an and — within one clone ahead of its own and,
+			-- or jumper-header traffic ahead of the dispatch jump — stays
+			-- marked and rejected, preserving the protection (including a
+			-- define-before-and/use-after-and shape across the jump edge,
+			-- whose shared key would name different addresses).
+			local isAnd = {}
+			for _, a in ipairs(andIdxs) do isAnd[a] = true end
+			local pred = {}
+			for i = 1, #body do
+				if body[i].kind == "insn" then
+					for _, s in successors(i) do
+						local l = pred[s]
+						if not l then l = {}; pred[s] = l end
+						table.insert(l, i)
+					end
+				end
+			end
+			local reached = {}
+			local work = {}
+			for _, a in ipairs(andIdxs) do
+				if not reached[a] then reached[a] = true; table.insert(work, a) end
+			end
+			while #work > 0 do
+				local j = table.remove(work)
+				for _, p in (pred[j] or {}) do
+					if not reached[p] then reached[p] = true; table.insert(work, p) end
+				end
+			end
+			for i, st in body do
+				if st.kind == "insn" and reached[i] and not isAnd[i] then
+					st.x86_preAnd = true
+				end
 			end
 			-- Alias-carrier accesses CROSSING a mid-function `and` cannot be proven
 			-- safe: pre- and post-and traffic share one numbering, but
@@ -2262,8 +2500,6 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- pointer after the and and address the slot through it, or address
 			-- the slot directly. Prologue `and` notes hold no slot traffic by
 			-- construction and never trigger this.)
-			local isAnd = {}
-			for _, a in ipairs(andIdxs) do isAnd[a] = true end
 			for i, st in body do
 				if st.kind == "insn" and st.x86_aliasOff ~= nil and not st.x86_preAnd
 					and not isAnd[i] then
@@ -2312,6 +2548,103 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- teardown on some path, or an unprovable "dyn" depth) is a static
 	-- error.
 	do
+		-- Direct-carrier-to-entry-rsp hatch (poly1305 avx512->avx2 shared tail):
+		-- both bodies park the entry rsp once (`leaq -8(%rsp),%r11`) and the shared
+		-- tail recovers it directly (`leaq 8(%r11),%rsp; vzeroupper; ret`) with no
+		-- pushes/pops anywhere. The ret sits at depth 0 while its clone entry sits
+		-- at the jump-site depth (320), so the depth-equality branch rejects it, and
+		-- there is no verified teardown span (the recovery is a carrier lea, not a
+		-- constant add plus paired pops), so the depth-0 hatch rejects it too. The
+		-- shape is still sound: with no pushes outstanding there are no saves to
+		-- restore (shape + identity are vacuous) and depth 0 is completeness, while
+		-- the carrier discipline proves the recovery revives exactly the entry rsp
+		-- (the jumper's carrier stays live and unredefined to the ret, and every
+		-- frame access was already bounds-proven against the frame). Accept exactly
+		-- that shape, fail closed on everything else:
+		--   * ret at numeric 0, entry at numeric non-zero (otherwise an earlier
+		--     branch already decides);
+		--   * save stacks empty at BOTH entry and ret (no pushes to restore, and no
+		--     abandonment via recovery truncation);
+		--   * NO push/pop anywhere inside this clone and no dyn/non-empty saves at
+		--     any clone point (a push abandoned by the recovery would look empty at
+		--     the ret but is a lost save);
+		--   * a PROVEN carrier recovery to exactly 0 inside this clone (an
+		--     x86_spRecover mov/lea whose smap-computed revived depth is 0);
+		--   * that same save still live (unredefined, non-slot, non-roff,
+		--     non-conflict) at the ret.
+		-- In particular a teardown-span epilogue with extra traffic (see
+		-- sarcasm-reject-b2-epi-traffic-att) has no carrier and stays rejected, an
+		-- imbalanced sub without teardown (sarcasm-reject-b2-imbal-att) never sits
+		-- at 0, and any push-carrying clone fails the empty checks.
+		local function carrierToZeroOk(retIdx, entryIdx, retSt)
+			local dR = depthIn[retIdx]
+			local dE = entryIdx and depthIn[entryIdx] or nil
+			if type(dR) ~= "number" or dR ~= 0 then return false end
+			if type(dE) ~= "number" or dE == 0 then return false end
+			local svR = savesIn[retIdx]
+			local svE = entryIdx and savesIn[entryIdx] or nil
+			if type(svR) ~= "table" or type(svE) ~= "table" then return false end
+			if #svR ~= 0 or #svE ~= 0 then return false end
+			local cidx = retSt.b2clone
+			if type(cidx) ~= "number" then return false end
+			for j, cst in body do
+				if cst.b2clone == cidx then
+					local sv = savesIn[j]
+					if sv == nil then
+						-- unreachable clone point: dead code needs no proof
+					elseif sv == "dyn" then
+						return false
+					elseif type(sv) == "table" then
+						if #sv ~= 0 then return false end
+					else
+						return false
+					end
+					if cst.kind == "insn" then
+						local b = x86.baseMnemonic(string.lower(cst.mnemonic))
+						if b == "push" or b == "pop" then return false end
+					end
+				end
+			end
+			local recoverSaveIdx = nil
+			for j, cst in body do
+				if cst.b2clone == cidx and cst.x86_spRecover and cst.kind == "insn" then
+					local ops = cst.operands
+					local b = x86.baseMnemonic(string.lower(cst.mnemonic))
+					local sm = smapIn[j]
+					if type(sm) == "table" then
+						if b == "mov" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "reg" then
+							local ee = sm[ops[2].name]
+							if ee and not ee.redefined and not ee.slot and not ee.roff and not ee.conflict
+								and type(ee.depth) == "number" and ee.depth == 0 and ee.saveIdx ~= nil then
+								recoverSaveIdx = ee.saveIdx
+								break
+							end
+						elseif b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
+							and ops[2].base and ops[2].base.kind == "reg" and not ops[2].index and not ops[2].dispSym then
+							local ee = sm[ops[2].base.name]
+							if ee and not ee.redefined and not ee.slot and not ee.roff and not ee.conflict
+								and type(ee.depth) == "number" and ee.saveIdx ~= nil then
+								local rd = ee.depth - (ops[2].dispVal or 0)
+								if rd == 0 then
+									recoverSaveIdx = ee.saveIdx
+									break
+								end
+							end
+						end
+					end
+				end
+			end
+			if recoverSaveIdx == nil then return false end
+			local smR = smapIn[retIdx]
+			if type(smR) ~= "table" then return false end
+			for _, ee in pairs(smR) do
+				if not ee.slot and not ee.roff and not ee.conflict and not ee.redefined
+					and ee.saveIdx == recoverSaveIdx and type(ee.depth) == "number" then
+					return true
+				end
+			end
+			return false
+		end
 		local function depthEq(a, b)
 			if a == b then return true end
 			if type(a) ~= type(b) then return false end
@@ -2343,15 +2676,47 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 		end
 		for i, st in body do
-			if st.kind == "insn" and st.localRet then
-				local e = st.localRet.entry and labelAt[st.localRet.entry] or nil
+			-- The cloneRet check runs only on region-carrying runs: the rewrite's
+			-- ret-perturbation exemption (frame.preprocess) consumes the
+			-- REGION-CARRYING run's marks (preprocess calls analyzeFrame with the
+			-- alloca/frame regions and rewrites from those marks), so that run's
+			-- proof backs the exemption — the region-less early geometry run
+			-- (transform.luau's frame-size pre-pass, regions == nil) has no
+			-- rewrite consumer and its marks are discarded. Moreover the early
+			-- run cannot record caller-saved rsp saves (its region corner needs
+			-- the regions), so a B2 clone carrying its owner's carrier-recovery
+			-- epilogue (mont's %rax chain, chacha's %r9 chain: the save lives in
+			-- the jumper header ahead of the jump edge) has no carrier there and
+			-- its recovery is unproven — checking it early rejects shapes the
+			-- later run legalizes. Skipping the early check is therefore not
+			-- fail-open, by three facts. (1) Discarded marks: analyzeFrame
+			-- clears every x86_* mark at entry, so no per-statement output of
+			-- the early run (depths, teardown spans, bands) survives into a
+			-- later run — runs 2 (region-carrying) and 3 (preprocess) recompute
+			-- them from scratch. (2) Recomputed geometry: the transform adopts
+			-- run 2's frameSize for the D9 promotion size (and run 3 recomputes
+			-- its own for the rewrite), so the only early-run scalar any
+			-- consumer keeps — the prologue-derived frameSize/fpOffset/usesFp —
+			-- is region-invariant by construction (the prologue scan never
+			-- consults regions). (3) Double coverage: every real imbalance is
+			-- still caught twice (the alloca-regions run and the preprocess
+			-- run), and both run before any rewrite consumes a cloneRet mark.
+			-- localRet keeps its historical unconditional check (its teardowns
+			-- are carrier-free constant adjustments, provable on every run).
+			if st.kind == "insn" and (st.localRet or (st.cloneRet and regions ~= nil)) then
+				local isClone = st.cloneRet ~= nil
+				local mark = st.localRet or st.cloneRet
+				local e = mark.entry and labelAt[mark.entry] or nil
 				local dRet, dEntry = depthIn[i], (e and depthIn[e] or nil)
 				if dRet == nil then
 					-- Unreached ret (dead code) needs no balance proof; a
 					-- CFG-reachable ret with no depth is an analysis gap: fail closed.
 					if reachable[i] then
-						error("sarcasm: local subroutine returns with an unprovable stack-pointer"
-							.. " depth (no depth could be proven for the `ret` itself): " .. (st.raw or st.mnemonic))
+						error(isClone
+							and ("sarcasm: shared-tail clone returns with an unprovable stack-pointer"
+								.. " depth (no depth could be proven for the `ret` itself): " .. (st.raw or st.mnemonic))
+							or ("sarcasm: local subroutine returns with an unprovable stack-pointer"
+								.. " depth (no depth could be proven for the `ret` itself): " .. (st.raw or st.mnemonic)))
 					else
 						continue
 					end
@@ -2361,21 +2726,68 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- depth: the entry is unreached, missing, or unprovable, so
 					-- balance cannot be proven. Fail closed (dead rets already
 					-- continued above).
-					error("sarcasm: local subroutine returns with an unprovable clone-entry"
-						.. " depth (cannot prove the subroutine's scratch frame was torn"
-						.. " down before `ret`): " .. (st.raw or st.mnemonic))
-				end
-				if isDynDepth(dRet) or isDynDepth(dEntry) or not depthEq(dRet, dEntry) then
-					if isDynDepth(dRet) or isDynDepth(dEntry) then
-						error("sarcasm: local subroutine returns with an unknown stack-pointer"
-							.. " depth (cannot prove the subroutine's scratch frame was torn"
+					error(isClone
+						and ("sarcasm: shared-tail clone returns with an unprovable clone-entry"
+							.. " depth (cannot prove the clone's inner frame was torn"
 							.. " down before `ret`): " .. (st.raw or st.mnemonic))
+						or ("sarcasm: local subroutine returns with an unprovable clone-entry"
+							.. " depth (cannot prove the subroutine's scratch frame was torn"
+							.. " down before `ret`): " .. (st.raw or st.mnemonic)))
+				end
+				if isDynDepth(dRet) or isDynDepth(dEntry) or
+					-- A clone may also return at the entry rsp (depth 0) when its
+					-- entry depth differs — but only when the ret sits inside a
+					-- VERIFIED epilogue teardown span (st.x86_teardown): the span
+					-- proof covers exactly the restoring operations (one constant
+					-- rsp adjustment plus paired callee-saved pops and
+					-- frame-touch-free computation leading straight to this ret),
+					-- so the pushed registers are provably restored and the
+					-- ordinary return path owns the frame from here. A bare
+					-- depth-0 hatch proves no restores (an arbitrary path that
+					-- merely lands on 0 — a carrier recovery, an unverified
+					-- adjustment — may abandon the pushed saves), so without the
+					-- span mark the imbalance stays a static error.
+					-- WHY the localcall span proof transfers to B2 epilogues: the
+					-- span validator (validateTeardown) guarantees SHAPE — a straight
+					-- run of restoring ops with no targeted labels, no calls, no
+					-- stack-touching traffic (extra traffic breaks the span: see
+					-- sarcasm-reject-b2-epi-traffic-att) — while the pop-pairing
+					-- analysis guarantees IDENTITY at every KNOWN depth (a pop whose
+					-- register/depth mismatches the outstanding save is
+					-- x86_unpairedPop and rejected by the rewrite), and dRet == 0
+					-- guarantees COMPLETENESS (every push accounted for). Shape +
+					-- identity + completeness is exactly an epilogue, whether the
+					-- clone returns to its callsite depth (localcall) or to the
+					-- entry rsp (this hatch). A DIRECT carrier recovery to the entry
+					-- rsp with no pushes outstanding (carrierToZeroOk above: the
+					-- poly1305 avx512->avx2 `leaq 8(%r11),%rsp` shared tail) carries
+					-- no saves to restore, so the span's shape+identity proof is
+					-- vacuous and depth 0 alone is completeness — accepted without
+					-- the span mark.
+					(not depthEq(dRet, dEntry) and not (isClone and dRet == 0 and st.x86_teardown)
+						and not (isClone and carrierToZeroOk(i, e, st))) then
+					if isDynDepth(dRet) or isDynDepth(dEntry) then
+						error(isClone
+							and ("sarcasm: shared-tail clone returns with an unknown stack-pointer"
+								.. " depth (cannot prove the clone's inner frame was torn"
+								.. " down before `ret`): " .. (st.raw or st.mnemonic))
+							or ("sarcasm: local subroutine returns with an unknown stack-pointer"
+								.. " depth (cannot prove the subroutine's scratch frame was torn"
+								.. " down before `ret`): " .. (st.raw or st.mnemonic)))
 					else
-						error("sarcasm: local subroutine returns with an unbalanced stack frame"
-							.. " (a `sub $N,%rsp` scratch frame inside the subroutine must be"
-							.. " torn down with a matching `add $N,%rsp` on every path before"
-							.. " `ret`; the continuation resumes at the caller's depth): "
-							.. (st.raw or st.mnemonic))
+						error(isClone
+							and ("sarcasm: shared-tail clone returns with an unbalanced stack frame"
+								.. " (the clone must undo every `sub $N,%rsp` on every path before"
+								.. " `ret` — back to its clone-entry depth, or all the way to the"
+								.. " entry rsp inside a verified epilogue teardown span (one constant"
+								.. " `add` plus paired callee-saved pops leading straight to `ret`)"
+								.. " when it carries its owner's whole epilogue): "
+								.. (st.raw or st.mnemonic))
+							or ("sarcasm: local subroutine returns with an unbalanced stack frame"
+								.. " (a `sub $N,%rsp` scratch frame inside the subroutine must be"
+								.. " torn down with a matching `add $N,%rsp` on every path before"
+								.. " `ret`; the continuation resumes at the caller's depth): "
+								.. (st.raw or st.mnemonic)))
 					end
 				end
 			end
@@ -2445,6 +2857,93 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86_dropRestore = true
 	end
 
+	-- B2 shared-tail clone coordinate bands (tailcall.luau st.b2clone = the
+	-- per-function clone index): a clone executes at the jump-site depth and
+	-- carries its owner's own frame setup (`sub`, `and $-N`) and teardown, so
+	-- its rsp-relative accesses keyed off the perturbed depth (disp + D0 - d)
+	-- would numerically overlap the jumper's own frame slots — same offset,
+	-- different addresses on mutually-exclusive paths. Sharing one coordinate
+	-- would merge their webs (a clone scratch def kills the jumper slot's
+	-- pointer-ness and vice versa, and FP-taint materializes them into one
+	-- home). Each clone therefore gets a PRIVATE band: bandedOff =
+	-- unbiasedOff + bandBase[idx], which preserves the address<->offset
+	-- equivalence exactly (same unbiased offset means same address) while
+	-- separating clones from the jumper and each other. Band bases are
+	-- multiples of 64, so the taint scan's mod-areq alignment residues are
+	-- unaffected: the scan fail-closeds every access whose areq does not
+	-- divide 64 (every areq the knowledge module produces — 1, 16, 32, 64 —
+	-- does), and a multiple-of-64 base preserves every such residue exactly.
+	-- Bases lay out cumulatively after
+	-- the prologue frame (each band starts 128 past the previous band's
+	-- unbiased extent), so no band overlaps the jumper frame or another band
+	-- by construction. MEASURED (pushq %rbx + subq $64 prologue, frameSize 64):
+	-- a clone with an inner `sub $64` (unbiased extent [-64,-64]) gets base 256
+	-- and frameSize grows 64 -> 200 (delta +136 = the 128 separation + the 8-byte
+	-- access width); an inner `sub $128` (extent [-128,-128]) gets base 320 and
+	-- maps to the SAME banded extent [192,200) — the base shifts by exactly the
+	-- extent shift, so inner-frame depth never changes the backing size. Two such
+	-- bands lay out at bases 320, 384 with mapped extents [192,200), [320,328)
+	-- (the second band's lo maps exactly to the first band's mapped hi + 128)
+	-- and frameSize 328. Only plain rsp-relative accesses band; rbp-relative
+	-- accesses address the shared frame pointer, carrier (x86_aliasOff)
+	-- accesses resolve absolutely, region members ride region coordinates,
+	-- and indexed/symbolic operands are rejected shapes — all keep their
+	-- existing keying (such traffic in clones is fail-closed by the
+	-- pre-existing rejections when it cannot prove safe).
+	local b2base = {}
+	do
+		local extents = {}  -- idx -> { lo, hi } unbiased-off range
+		for _, st in body do
+			local idx = st.b2clone
+			if st.kind == "insn" and type(idx) == "number" and not st.x86_prologue
+				and st.x86_aliasOff == nil then
+				local d = st.x86_depth
+				if d ~= nil and not isDynDepth(d) then
+					for _, o in (st.operands or {}) do
+						if o.kind == "mem" and o.base and o.base.rc == "sp"
+							and not o.index and not o.dispSym
+							and not regionOf((o.dispVal or 0), false) then
+							local off = (o.dispVal or 0)
+							if d ~= D0 then off = off + D0 - d end
+							local e = extents[idx]
+							if not e then extents[idx] = { lo = off, hi = off }
+							else
+								if off < e.lo then e.lo = off end
+								if off > e.hi then e.hi = off end
+							end
+						end
+					end
+				end
+			end
+		end
+		local order = {}
+		for idx in extents do table.insert(order, idx) end
+		table.sort(order)
+		local cursor = frameSize + 128
+		for _, idx in order do
+			local e = extents[idx]
+			-- multiple of 64 (alignment residues preserved); at or past the
+			-- cursor, so the band clears every earlier band and the frame.
+			local base = cursor - e.lo
+			base = math.ceil(base / 64) * 64
+			b2base[idx] = base
+			cursor = base + e.hi + 128
+		end
+	end
+	-- Band base for a B2-clone statement (0 for anything else).
+	local function b2band(st)
+		local b = st.b2clone
+		if type(b) == "number" then return b2base[b] or 0 end
+		return 0
+	end
+
+	-- Publish bands as rewrite-visible marks (rewrite is separate).
+	for _, st in body do
+		if st.kind == "insn" and type(st.b2clone) == "number" then
+			st.x86_b2band = b2base[st.b2clone] or 0
+		end
+	end
+
 	-- FP/SIMD stack-slot taint scan. FP/vector instructions cannot ride the GPR slot
 	-- virtualization (their operands are real vector registers, not temps — the slot
 	-- pseudo-register would render as garbage), so every stack range an FP
@@ -2495,6 +2994,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					if mem.base.rc ~= "sp" then off = rbpNorm + off
 					elseif st.localClone and scand ~= nil and not isDynDepth(scand) then
 						off = off + D0 - scand - 8
+					elseif st.b2clone and scand ~= nil and not isDynDepth(scand) then
+						off = off + D0 - scand + b2band(st)
 					elseif not st.x86_prologue and scand ~= nil and scand ~= D0
 						and not isDynDepth(scand) then
 						off = off + D0 - scand
@@ -2516,6 +3017,22 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						w = gprStackWidth(m, mem)
 					end
 					if w then
+						-- B2 band bases are multiples of 64: a banded offset
+						-- (unbiased + base) preserves the input access's
+						-- mod-areq residue — and hence its synthesized
+						-- alignment — iff areq divides 64. Every areq the
+						-- knowledge module can produce (1, 16, or a vector
+						-- width 16/32/64, capped at 64 above) does — but if
+						-- one ever does not, banding would silently
+						-- misalign it, so fail closed here rather than emit
+						-- a bad frame.
+						if areq ~= 1 and 64 % areq ~= 0 then
+							error("sarcasm: stack access with a " .. areq .. "-byte alignment"
+								.. " requirement cannot be proven safe (B2 shared-tail bands"
+								.. " are multiples of 64, which preserves only alignment"
+								.. " requirements that divide 64): "
+								.. (body[si].raw or body[si].mnemonic))
+						end
 						-- An aligned access needing more than the guaranteed
 						-- 16-byte stack alignment (a vmovdqa32/64-class access):
 						-- the frame must carry an `and $-N, %rsp` note with
@@ -2771,6 +3288,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if st.localClone then
 							-- the +8 rule (the rewrite's region coordinates)
 							off = (mem.dispVal or 0) + D0 - d - 8
+						elseif st.b2clone and type(d) == "number" then
+							-- a B2-clone lea into its inner frame: banded coordinates
+							-- (an escape promotes the frame).
+							off = (mem.dispVal or 0) + D0 - d + b2band(st)
 						elseif d == D0 then
 							off = (mem.dispVal or 0)
 						end
@@ -2789,6 +3310,60 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				end
 			end
 		end
+	end
+
+	-- B2 shared-tail inner-frame extent (tailcall.luau st.b2clone): clone
+	-- accesses key into per-clone bands (b2band above), so extend the frame
+	-- to cover the banded extents: every banded access addresses scratch its
+	-- own `sub` allocated below the jump-site rsp (or the red zone), so backing
+	-- [off, off+width) with real synthesized-frame space is sound. The width is
+	-- the access's own width — the taint scan's exact computation (GPR suffix /
+	-- PTR size, FP knowledge width), falling back to the maximum vector width
+	-- (64) when it is unknown or uncomputable — so the extension covers exactly
+	-- what each access touches and over-covers only the unknowable remainder.
+	-- BLOAT BOUND: frameSize grows past the true need by at most 63 bytes (one
+	-- fallback-width access), plus each band's 128-byte separation gap from the
+	-- layout above; bands never overlap by construction, so the total waste is
+	-- bounded by 64 + 128 * (#bands). Runs after all annotation, so the
+	-- carrier-normalized x86_aliasOff is used when present (absolute,
+	-- unbanded), exactly like the rewrite's slot path.
+	do
+		local maxNeed = frameSize
+		for _, st in body do
+			if st.kind == "insn" and st.b2clone and not st.x86_prologue then
+				local d = st.x86_depth
+				if d ~= nil and not isDynDepth(d) then
+					for _, o in (st.operands or {}) do
+						if o.kind == "mem" and o.base and o.base.rc == "sp"
+							and not o.index and not o.dispSym then
+							local off = (st.x86_aliasOff ~= nil) and st.x86_aliasOff
+								or ((o.dispVal or 0) + D0 - d + b2band(st))
+							-- Exactly the taint scan's width (pcall: the scan
+							-- never saw some shapes this loop does — an FP
+							-- read of an incoming yolo argument, a dropped
+							-- save-store — and accessWidth errors on a
+							-- contradicting PTR annotation, which must not
+							-- newly reject an otherwise accepted shape here).
+							local w = nil
+							do
+								local ok, ww = pcall(function()
+									local m = string.lower(st.mnemonic)
+									local fpe = fpKnowledge.lookup(m)
+									if isFpInsn(fpe, st) then
+										return fpKnowledge.accessWidth(m, st.operands, st.raw)
+									end
+									return gprStackWidth(m, o)
+								end)
+								if ok then w = ww end
+							end
+							if type(w) ~= "number" then w = 64 end
+							if off + w > maxNeed then maxNeed = off + w end
+						end
+					end
+				end
+			end
+		end
+		frameSize = maxNeed
 	end
 
 	-- 5th return: the incoming yolo stack-argument info for the transform (slot
@@ -3161,8 +3736,25 @@ function x86_64_frame.rewrite(st, ctx)
 		-- synthetic epilogue ret (st.tailRet — tailcall.luau) is exempt too: it sits
 		-- at the tail branch's (arbitrary) virtual depth, but the body's stack is
 		-- virtual, so the synthesized epilogue — which owns the real %rsp — tears
-		-- the frame down correctly regardless.
-		if b == "ret" and not st.localRet and not st.tailRet and d ~= nil and d ~= 0
+		-- the frame down correctly regardless. A shared-tail clone's ret
+		-- (st.cloneRet — tailcall.luau) is exempt the same way: the clone-balance
+		-- check above (which runs on every region-carrying analysis run -- the run whose marks this rewrite consumes) proved it sits at exactly
+		-- its clone entry's depth (the jump-site depth, with the clone's inner
+		-- frame torn down) — or at the entry rsp inside a verified epilogue
+		-- teardown span, which restores the pushed saves itself — and the
+		-- body's stack is virtual, so the ordinary return path tears the frame
+		-- down correctly regardless.
+		-- MACHINE CHECK: the cloneRet exemption below asserts the balance proof ran
+		-- on the marks this rewrite consumes (cloneRetProofRan — set by analyzeFrame;
+		-- the region-less early run clears it and only a region-carrying run sets it,
+		-- so an exemption reached off early-run marks fails loudly instead of silently).
+		if st.cloneRet then
+			assert(cloneRetProofRan,
+				"sarcasm: internal error: shared-tail clone return consumed without"
+				.. " the clone-balance proof (region-less analysis marks reached the"
+				.. " rewrite): " .. (st.raw or m))
+		end
+		if b == "ret" and not st.localRet and not st.tailRet and not st.cloneRet and d ~= nil and d ~= 0
 			and not (isDynDepth(d) and st.x86_teardown) then
 			error("sarcasm: return with a perturbed or unknown stack pointer cannot be proven"
 				.. " safe: " .. (st.raw or m))
@@ -3552,6 +4144,7 @@ function x86_64_frame.rewrite(st, ctx)
 		if aliasOff == nil then
 		if mem.base.rc ~= "sp" then off = rbpNorm + off
 		elseif st.localClone and d ~= nil and not isDynDepth(d) then off = off + D0 - d - 8
+		elseif st.b2clone and d ~= nil and not isDynDepth(d) then off = off + D0 - d + (st.x86_b2band or 0)
 		elseif perturbedRsp then off = off + D0 - d end
 		end
 		-- An entry-rsp materialization for reading the incoming yolo stack arguments

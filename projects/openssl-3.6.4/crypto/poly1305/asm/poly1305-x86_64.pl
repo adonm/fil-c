@@ -189,15 +189,8 @@ poly1305_init: #! int(ptr,ptr,ptr)
 	lea	poly1305_blocks(%rip),%r10	#! funcref
 	lea	poly1305_emit(%rip),%r11	#! funcref
 ___
-# Fil-C requires memory access alignment to equal the access width, and
-# OPENSSL_ia32cap_P is only guaranteed 4-byte aligned, so the pristine
-# 8-byte load at OPENSSL_ia32cap_P+4 can never pass at runtime. Load the
-# two 32-bit halves instead (ungated: the semantics are identical).
 $code.=<<___	if ($avx);
-	mov	OPENSSL_ia32cap_P+4(%rip),%r9d
-	mov	OPENSSL_ia32cap_P+8(%rip),%r8d
-	shl	\$32,%r8
-	or	%r8,%r9
+	mov	OPENSSL_ia32cap_P+4(%rip),%r9
 	lea	poly1305_blocks_avx(%rip),%rax	#! funcref
 	lea	poly1305_emit_avx(%rip),%rcx	#! funcref
 	bt	\$`60-32`,%r9		# AVX?
@@ -275,8 +268,6 @@ poly1305_blocks: #! void(ptr,ptr,size_t,unsigned)
 	shr	\$2,$s1
 	mov	$r1,%rax
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
-___
-$code.=<<___;
 	jmp	.Loop
 
 .align	32
@@ -291,8 +282,6 @@ $code.=<<___;
 	mov	$r1,%rax
 	dec	%r15			# len-=16
 	jnz	.Loop
-___
-$code.=<<___;
 
 	mov	$h0,0($ctx)		# store hash value
 	mov	$h1,8($ctx)
@@ -337,14 +326,10 @@ poly1305_emit: #! void(ptr,ptr,ptr)
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
-___
-$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
-___
-$code.=<<___;
 
 	ret
 .cfi_endproc
@@ -626,14 +611,10 @@ poly1305_blocks_avx: #! void(ptr,ptr,size_t,unsigned)
 	shr	\$2,$s1
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
-___
-$code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
-___
-$code.=<<___;
 
 	call	__poly1305_block
 
@@ -737,14 +718,10 @@ $code.=<<___;
 	test	\$31,$len
 	jz	.Linit_avx
 
-___
-$code.=<<___;
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
 	lea	16($inp),$inp
 	adc	$padbit,$h2
-___
-$code.=<<___;
 	sub	\$16,%r15
 
 	call	__poly1305_block
@@ -796,8 +773,6 @@ $code.=<<___;
 	lea	48(%rsp),%rsp
 .cfi_adjust_cfa_offset	-48
 .Lbase2_64_avx_epilogue:
-___
-$code.=<<___;
 	jmp	.Ldo_avx
 .cfi_endproc
 
@@ -809,8 +784,7 @@ $code.=<<___;
 	vmovd		4*2($ctx),$H2
 	vmovd		4*3($ctx),$H3
 	vmovd		4*4($ctx),$H4
-___
-$code.=<<___;
+
 .Ldo_avx:
 ___
 $code.=<<___	if (!$win64);
@@ -1465,14 +1439,10 @@ poly1305_emit_avx: #! void(ptr,ptr,ptr)
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
-___
-$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
-___
-$code.=<<___;
 
 	ret
 .cfi_endproc
@@ -1567,8 +1537,6 @@ poly1305_blocks_avx2: #! void(ptr,ptr,size_t,unsigned)
 	shr	\$2,$s1
 	add	$r1,$s1			# s1 = r1 + (r1 >> 2)
 
-___
-$code.=<<___;
 .Lbase2_26_pre_avx2:
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
@@ -1581,8 +1549,6 @@ $code.=<<___;
 
 	test	\$63,%r15
 	jnz	.Lbase2_26_pre_avx2
-___
-$code.=<<___;
 
 	test	$padbit,$padbit		# if $padbit is zero,
 	jz	.Lstore_base2_64_avx2	# store hash in base 2^64 format
@@ -1684,8 +1650,6 @@ $code.=<<___;
 	test	\$63,$len
 	jz	.Linit_avx2
 
-___
-$code.=<<___;
 .Lbase2_64_pre_avx2:
 	add	0($inp),$h0		# accumulate input
 	adc	8($inp),$h1
@@ -1698,8 +1662,6 @@ $code.=<<___;
 
 	test	\$63,%r15
 	jnz	.Lbase2_64_pre_avx2
-___
-$code.=<<___;
 
 .Linit_avx2:
 	################################# base 2^64 -> base 2^26
@@ -1750,8 +1712,6 @@ $code.=<<___;
 	lea	48(%rsp),%rsp
 .cfi_adjust_cfa_offset	-48
 .Lbase2_64_avx2_epilogue:
-___
-$code.=<<___;
 	jmp	.Ldo_avx2
 .cfi_endproc
 
@@ -1764,8 +1724,7 @@ $code.=<<___;
 	vmovd		4*2($ctx),%x#$H2
 	vmovd		4*3($ctx),%x#$H3
 	vmovd		4*4($ctx),%x#$H4
-___
-$code.=<<___;
+
 .Ldo_avx2:
 ___
 if ($ENV{SARCASM}) {
@@ -3922,14 +3881,10 @@ poly1305_emit_base2_44: #! void(ptr,ptr,ptr)
 	cmovnz	%r8,%rax
 	cmovnz	%r9,%rcx
 
-___
-$code.=<<___;
 	add	0($nonce),%rax	# accumulate nonce
 	adc	8($nonce),%rcx
 	mov	%rax,0($mac)	# write result
 	mov	%rcx,8($mac)
-___
-$code.=<<___;
 
 	ret
 .cfi_endproc

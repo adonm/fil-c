@@ -148,15 +148,7 @@ ___
 $code.=<<___ if (!$ENV{SARCASM});
 	jz	.Lsqr8x_enter
 ___
-# Sarcasm: bn_mul_mont never dispatches to bn_sqr8x_mont. The bn_sqr8x_mont
-# body calls bn_sqr8x_internal/bn_sqrx8x_internal cross-file (they live in
-# x86_64-mont5.s); those callee bodies address their caller's frame with
-# the +8 convention, so under sarcasm they are de-globl'd file-local
-# subroutines and the cross-file call cannot link. Squaring (ap==bp,
-# num%8==0) therefore falls through to the generic mul4x multiply path,
-# which handles a==b correctly — same result, just slightly slower. The
-# bn_sqr8x_mont body itself is not emitted under SARCASM (see below), so
-# the .Lsqr8x_enter label has no producer and no consumer.
+# Sarcasm: bn_sqr8x_mont body not emitted (see below); fall through to mul4x.
 $code.=<<___;
 	jmp	.Lmul4x_enter
 
@@ -924,7 +916,7 @@ $code.=<<___;
 
 .type	bn_sqr8x_mont,\@function,6
 .align	32
-bn_sqr8x_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
+bn_sqr8x_mont:
 .cfi_startproc
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
@@ -943,8 +935,6 @@ bn_sqr8x_mont: #! int(ptr,ptr,ptr,ptr,ptr,int)
 .cfi_push	%r15
 .Lsqr8x_prologue:
 
-___
-  $code.=<<___;
 	mov	${num}d,%r10d
 	shl	\$3,${num}d		# convert $num to bytes
 	shl	\$3+2,%r10		# 4*$num
@@ -1000,8 +990,6 @@ ___
 	mov	%rax, 40(%rsp)		# save original %rsp
 .cfi_cfa_expression	%rsp+40,deref,+8
 .Lsqr8x_body:
-___
-$code.=<<___;
 
 	movq	$nptr, %xmm2		# save pointer to modulus
 	pxor	%xmm0,%xmm0
@@ -1014,7 +1002,7 @@ $code.=<<___ if ($addx);
 	cmp	\$0x80100,%eax
 	jne	.Lsqr8x_nox
 
-	call	bn_sqrx8x_internal	#! void(ptr,ptr,ptr,ptr,ptr,int) # see x86_64-mont5 module
+	call	bn_sqrx8x_internal	# see x86_64-mont5 module
 					# %rax	top-most carry
 					# %rbp	nptr
 					# %rcx	-8*num
@@ -1030,7 +1018,7 @@ $code.=<<___ if ($addx);
 .Lsqr8x_nox:
 ___
 $code.=<<___;
-	call	bn_sqr8x_internal	#! void(ptr,ptr,ptr,ptr,ptr,int) # see x86_64-mont5 module
+	call	bn_sqr8x_internal	# see x86_64-mont5 module
 					# %rax	top-most carry
 					# %rbp	nptr
 					# %r8	-8*num

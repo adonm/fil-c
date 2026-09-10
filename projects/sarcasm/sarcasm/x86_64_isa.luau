@@ -43,7 +43,14 @@ local FIXED = {
 	-- access — see the frame rewrite and lowerSpecial, which pass them through
 	-- without an access check, and the renderer, which normalizes the bare forms).
 	nopw = "nop", nopl = "nop",
-	call = "call", callq = "call", jmp = "jmp", jmpq = "jmp",
+	call = "call", callq = "call", callw = "call", jmp = "jmp", jmpq = "jmp", jmpw = "jmp",
+	-- (callw/jmpw are the 16-bit operand-size forms, encodable in 64-bit mode
+	-- with a 0x66 prefix: without these entries baseMnemonic leaves the raw
+	-- mnemonic, so a `callw` would miss the frame pass's caller-saved carrier
+	-- poisoning (x86_64_frame.transfer) and a `jmpw` would miss the CFG and
+	-- tailcall classification (successors/jumpKind) — both fail-open-adjacent
+	-- misclassifications of real control flow. calll/jmpl have no 64-bit
+	-- encoding and stay on the unknown-mnemonic rejection.)
 	-- the flag-byte transfers (zero explicit operands; implicit %ah <-> EFLAGS —
 	-- modeled by classify's pinned branch below)
 	lahf = "lahf", sahf = "sahf",
@@ -133,14 +140,19 @@ end
 -- PARTIAL flag writes must be in NEITHER table — the scan keeps scanning forward
 -- past them, so a later consumer still triggers the save/restore (conservative and
 -- correct):
---   inc/dec preserve CF; rol/ror preserve SF/ZF/AF/PF (and write only OF/CF);
---   shld/shrd preserve CF; cmpxchg8b/16b write only ZF; bt/bts/btr/btc write
---   only CF; sahf leaves OF; div/idiv leave the flags unmodified in practice
---   (documented-undefined); stc/clc/cmc write only CF; cld/std write only DF
---   (see FLAG_DF below). (bsf/bsr/tzcnt/lzcnt/
---   popcnt ARE listed below despite leaving some flags undefined: an undefined
---   flag is still a WRITE — garbage, not the incoming value — so no later read
---   can depend on the pre-instruction value.)
+--   inc/dec preserve CF; rol/ror preserve SF/ZF/AF/PF (and write only CF/OF);
+--   shld/shrd are conservatively modeled as CF-only (SDM Vol.2: a nonzero count
+--   additionally writes SF/ZF/PF and OF (defined for a 1-bit shift, undefined
+--   otherwise) plus AF (undefined) — i.e. all six on a nonzero count — but
+--   claiming only CF keeps the scan propagating the rest, which costs at most
+--   an extra save/restore and never omits a required one); cmpxchg8b/16b write
+--   only ZF; bt/bts/btr/btc write only CF; sahf leaves OF; div/idiv leave the
+--   flags unmodified in practice (documented-undefined); stc/clc/cmc write only
+--   CF; cld/std write only DF (see FLAG_DF below).
+-- (The bit-scan/count group — bsf/bsr/tzcnt/lzcnt/popcnt — IS fully modeled
+-- below despite leaving some flags undefined: an undefined flag is still a
+-- WRITE — garbage, not the incoming value — so no later read can depend on
+-- the pre-instruction value. See the FLAG_DEF audit there.)
 -- A shift/rotate with a provable $0 count writes NO flags at all (SDM: "if the
 -- count is 0, the flags are not affected") — see isShiftCountZero; those forms
 -- are in NEITHER table either (the scan propagates through them, and DCE keeps
@@ -175,13 +187,28 @@ for _, m in {
 
 	"rcl","rcr",            -- rotate through carry: read CF
 
-	"cmc",                  -- complement carry: reads CF (and writes CF)
+	"cmc",                  -- complement carry: reads CF (and writes CF).
+	                        -- SUPPORTED (not rejected): the coarse use here, the
+	                        -- CF-only flagUseMask/flagDefMask below, and the CF
+	                        -- flagWriteNoDef entry agree exactly (use=true with a
+	                        -- nonzero mask; def=false with a non-ALL mask).
 
 	"loope","loopz",        -- ZF-consuming loop variants: read ZF (rejected by
 	"loopne","loopnz",      -- fp.unsafeReject, but the coarse table must still
 	                        -- name the read so coarse flagUse and flagUseMask
-	                        -- agree on every path, including any path that
-	                        -- reaches liveness before the rejection)
+	                        -- agree on every path.
+	                        -- ORDERING PROOF (reject precedes every flag
+	                        -- consumer): fp.unsafeReject fires inside
+	                        -- x86.classify, which lift.liftFunction invokes for
+	                        -- every instruction strictly before
+	                        -- transform.transformFunction's DCE rounds and
+	                        -- before any flagsLiveFrom save-scan use (and
+	                        -- x86_64_frame.analyzeFrame's own classify pass
+	                        -- runs earlier still) — a rejected loope/loopz/
+	                        -- loopne/loopnz aborts compilation before DCE or
+	                        -- the save-scan ever sees it, so these entries are
+	                        -- unreachable belt-and-braces. Executable proof:
+	                        -- filc/tests/sarcasm-reject-loopz (compileFailure).
 
 	"lahf",                 -- reads the flags into %ah
 
@@ -190,14 +217,29 @@ for m in STRINGOP_BASE do FLAG_USE[m] = true end
 for m in FCMOV do FLAG_USE[m] = true end
 
 local FLAG_DEF = {}
+-- SDM Vol.2 audit (2026-09, felixcloutier/Intel SDM text):
+--   crc32 is DELIBERATELY ABSENT: "Flags Affected: None" — it writes NO flags,
+--   so listing it as a def would kill genuinely live flags and omit a required
+--   save/restore (unsound). It stays in NEITHER table (propagate).
+--   bsf/bsr: "The ZF flag is set to 1 if the source operand is 0; otherwise
+--   ... cleared. The CF, OF, SF, AF, and PF flags are undefined." ZF is always
+--   defined, the other five always garbage — all six killed on every path.
+--   tzcnt/lzcnt: ZF and CF always defined (CF set iff the input was zero, ZF
+--   iff the output is zero), OF/SF/PF/AF always undefined — all six killed on
+--   every path (and on pre-BMI hosts these decode as bsf, whose mask is also
+--   ALL, so the claim holds on every host).
+--   popcnt: CF/OF/SF/AF/PF cleared (defined), ZF set iff the result is zero
+--   (defined) — all six defined on every path.
+-- An undefined flag is still a WRITE — garbage, not the incoming value — so no
+-- later read can depend on the pre-instruction value: ALL-def is sound and
+-- precise for the whole group.
 for _, m in {
 	"add","sub","and","or","xor","cmp","test",  -- the ALU family (all six written)
 	"neg",                                      -- neg writes all six
 	"shl","sal","shr","sar",                    -- shifts: AF undefined, the rest written
 	"mul","imul",                               -- CF/OF defined, the rest undefined
 	"xadd","cmpxchg",                           -- full flag writes
-	"crc32",                                    -- all six written (SF/ZF/AF/PF undefined)
-	"bsf","bsr","tzcnt","lzcnt","popcnt",       -- ZF/CF/PF written, OF/SF/AF undefined
+	"bsf","bsr","tzcnt","lzcnt","popcnt",       -- all six written (see audit above)
 } do FLAG_DEF[m] = true end
 
 -- Is `stmt` a shift/rotate whose count is provably the immediate $0 — in which
@@ -271,7 +313,7 @@ function x86.flagDef(stmt)
 	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
 	if FLAG_DEF[m] then return true end
 	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
-	-- keep their AT&T size suffix (crc32l, tzcntq, ...). Strip it ONLY as a
+	-- keep their AT&T size suffix (tzcntq, popcntl, ...). Strip it ONLY as a
 	-- fallback after the exact-base check above: several bases themselves end in
 	-- b/w/l/q ("sub", "shl", "sal", "mul", "imul") and stripping them first would
 	-- mangle the base ("sub" -> "su"), wrongly reporting no flag write. (DCE then
@@ -286,9 +328,11 @@ end
 -- dead-code-elimination complement of flagUse/flagDef (same normalization): flagDef
 -- insns def the flags pseudo-temp, so liveness already protects their writes; the
 -- read-and-write family counted as USES by the scan (adc/sbb write all six, adcx/
--- adox/rcl/rcr write CF/OF) and every PARTIAL write (inc/dec preserve CF; rol/ror,
--- shld/shrd, bt/bts/btr/btc, stc/clc/cmc write only CF; cld/std write only DF;
--- sahf writes all but OF)
+-- adox/rcl/rcr write CF/OF) and every PARTIAL write (inc/dec preserve CF; rol/ror
+-- write CF/OF (SDM: SF/ZF/AF/PF always unaffected); shld/shrd conservatively
+-- modeled as CF-only (SDM writes more on nonzero counts — see the note above —
+-- the under-claim only propagates extra liveness); bt/bts/btr/btc, stc/clc/cmc
+-- write only CF; cld/std write only DF; sahf writes all but OF)
 -- also CHANGE the flags without def-ing them. Deleting such an instruction while a
 -- flag consumer is forward-reachable would change the flags that consumer reads,
 -- so DCE keeps it. (The flag-SAVE scan deliberately ignores these instructions —
@@ -297,6 +341,13 @@ end
 -- respect them.) Pure flag CONSUMERS that write nothing (jcc/setcc/cmov/lahf,
 -- the stringops' DF read, fcmov) are
 -- NOT here: deleting them cannot change any flags.
+-- crc32 is DELIBERATELY ABSENT here too (verified 2026-09): SDM "Flags
+-- Affected: None" — it writes NO flags, so a dead crc32 whose register result
+-- is dead may be DCE'd even while flags are live (deleting it cannot change
+-- any flags), and the save-scan correctly propagates through it (NEITHER
+-- coarse table, zero masks). Listing it here would only pin dead code; listing
+-- it in FLAG_DEF would be UNSOUND (it would kill genuinely live flags — see
+-- the FLAG_DEF audit above).
 local FLAG_WRITE_NO_DEF = {}
 for _, m in {
 	"adc","sbb",              -- full six-flag writes (counted as uses for the scan)
@@ -339,6 +390,13 @@ end
 -- the same fixpoint as the other six: cld/std fully write it (a kill), the
 -- stringops read it (a use), and every other modeled instruction leaves it
 -- alone (propagate — sound, since only cld/std modify DF).
+-- 32-bit-universe note: all seven modeled bits (CF=1, PF=4, AF=16, ZF=64,
+-- SF=128, DF=1024, OF=2048) fit in the bit32 32-bit universe, so the
+-- fixpoints' bit32.bnot(def) is exact on the modeled bits — the flipped upper
+-- 24 bits never meet a live bit (every use/def mask in this file is a sum of
+-- the constants above), and bit32.band(w, bnot(def)) then clears exactly the
+-- killed flags. No mask in this file exceeds 2^12, far below the 2^32 wrap
+-- point, so no truncation or sign issue can arise.
 local FLAG_CF, FLAG_PF, FLAG_AF = 1, 4, 16
 local FLAG_ZF, FLAG_SF, FLAG_OF = 64, 128, 2048
 local FLAG_DF = 1024
@@ -412,9 +470,11 @@ function x86.flagUseMask(stmt)
 	if (raw == "movsd" or raw == "stosd") and #(stmt.operands or {}) == 0 then
 		return FLAG_DF
 	end
-	-- ZF-consuming loop variants (rejected by fp.unsafeReject, but the mask
-	-- must still name the read so any path that reaches liveness before the
-	-- rejection — or any future relaxation — stays sound).
+	-- ZF-consuming loop variants: rejected by fp.unsafeReject inside
+	-- x86.classify — which lift.liftFunction runs strictly before DCE and
+	-- any flagsLiveFrom use — so no such instruction can reach liveness
+	-- (see the ORDERING PROOF at FLAG_USE). The mask still names the ZF
+	-- read so the entry stays sound under any future relaxation.
 	if m == "loope" or m == "loopz" or m == "loopne" or m == "loopnz" then
 		return FLAG_ZF
 	end

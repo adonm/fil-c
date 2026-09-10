@@ -27,22 +27,19 @@ all: \
 	../../pizfix/benchmarks/pcre_benchmark \
 	../../pizfix/benchmarks/deltablue \
 	../../pizfix/benchmarks/binarytrees \
-	../../pizfix/benchmarks/fannkuch-redux \
 	../../pizfix/benchmarks/fannkuch-redux-2 \
-	../../pizfix/benchmarks/n-body \
 	../../pizfix/benchmarks/n-body-2 \
-	../../pizfix/benchmarks/spectralnorm \
 	../../pizfix/benchmarks/reversecomplement
 
-# The x86 SIMD benchmarks are compiled with the ISA flags that their x86
-# intrinsic code needs.  On other architectures (e.g. aarch64) the sources use
-# their portable emulation paths instead and don't need any ISA flags.
-ifeq ($(shell uname -m),aarch64)
-N_BODY_X86_FLAGS =
-SPECTRALNORM_X86_FLAGS =
-else
-N_BODY_X86_FLAGS = -march=ivybridge
-SPECTRALNORM_X86_FLAGS = -mavx
+# The fannkuch-redux, n-body, and spectralnorm benchmarks use x86_64 SIMD
+# intrinsics, so they are only built on x86_64.  On other architectures (e.g.
+# aarch64) they are omitted from the default build; their build rules below
+# are still defined so they can be built by hand where the intrinsics exist.
+ifeq ($(shell uname -m),x86_64)
+all: \
+	../../pizfix/benchmarks/fannkuch-redux \
+	../../pizfix/benchmarks/n-body \
+	../../pizfix/benchmarks/spectralnorm
 endif
 
 clean:
@@ -96,7 +93,7 @@ clean:
 ../../pizfix/benchmarks/n-body: n-body.c
 	../../build/bin/clang \
 	    -o ../../pizfix/benchmarks/n-body \
-	    n-body.c -O3 -g $(N_BODY_X86_FLAGS)
+	    n-body.c -O3 -g -march=ivybridge
 
 ../../pizfix/benchmarks/n-body-2: n-body-2.c
 	../../build/bin/clang \
@@ -106,7 +103,7 @@ clean:
 ../../pizfix/benchmarks/spectralnorm: spectralnorm.c
 	../../build/bin/clang \
 	    -o ../../pizfix/benchmarks/spectralnorm \
-	    spectralnorm.c -O3 -g $(SPECTRALNORM_X86_FLAGS)
+	    spectralnorm.c -O3 -g -mavx
 
 ../../pizfix/benchmarks/reversecomplement: reversecomplement.c
 	../../build/bin/clang \

@@ -225,7 +225,7 @@ cd pizlonated-icu/source
 ./configure --prefix=/usr
 make
 make install
-cd ../../..
+cd ../..
 rm -rf pizlonated-icu
 hash -r
 

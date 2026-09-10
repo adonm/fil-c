@@ -1,4 +1,0 @@
-#define SHARED 1
-
-#include <ldsodefs.h>
-

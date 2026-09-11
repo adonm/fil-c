@@ -10,6 +10,8 @@ output-includes:
   - "Illegal instruction"
 optFlags:
   "-O2 -Iprojects/openssl-3.6.4/include"
+needsAVX512:
+  true
 extraLinkerArgs:
   "projects/openssl-3.6.4/libcrypto.a"
 skip:

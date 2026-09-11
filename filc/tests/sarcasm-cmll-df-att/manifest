@@ -12,3 +12,5 @@ optFlags:
   "-O2 -Iprojects/openssl-3.6.4/include"
 extraLinkerArgs:
   "projects/openssl-3.6.4/libcrypto.a"
+skip:
+  true

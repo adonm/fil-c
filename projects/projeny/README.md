@@ -330,17 +330,29 @@ with `-Wall -Wextra` under both system `g++` and the Fil-C compiler:
 make clean && make CXX=$(pwd)/../../build/bin/clang++ -j$(nproc) && make test
 ```
 
+Builds can also be out-of-tree. Pass `BUILD_DIR=<dir>` to `make` and all
+build products (object files, dep files, and the binary) land in `<dir>`
+instead of next to the sources; `make clean` removes them again. Different
+build directories are independent of each other, so multiple compilers can
+share one source tree without clobbering each other's build. For example,
+Fil-C's build scripts use `BUILD_DIR=build-yolo` for the yolo build
+(`build_projeny_yolo.sh`) and `BUILD_DIR=build-filc` for the Fil-C build
+(`build_projeny.sh`).
+
 ## Testing with the Fil-C compiler
 
 After `./build_all_fast.sh`, `build/bin/clang++` exists at the repo root.
 Build and test projeny with it (absolute `CXX` path, from this directory):
 
 ```
-make clean
-make CXX=/path/to/fil-c/build/bin/clang++ -j$(nproc)
-make test
-make clean
+make clean BUILD_DIR=build-filc
+make CXX=/path/to/fil-c/build/bin/clang++ BUILD_DIR=build-filc -j$(nproc)
+make test BUILD_DIR=build-filc
+make clean BUILD_DIR=build-filc
 ```
+
+This builds out-of-tree into `build-filc/`, leaving any in-tree build
+products untouched.
 
 The test suite (`tests/run_tests.sh`) builds tiny fake-project tarballs
 v1/v2 in a temp dir and exercises fresh setup, edit+commit roundtrips,

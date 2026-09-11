@@ -2225,6 +2225,33 @@ PAS_NEVER_INLINE void filc_store_barrier_for_lower_slow(filc_thread* my_thread, 
     barrier_impl(my_thread, filc_object_for_lower_not_null(lower));
 }
 
+PAS_NEVER_INLINE bool filc_weak_load_barrier_slow(filc_thread* my_thread, filc_object* object)
+{
+    for (;;) {
+        /* NOTE: we will only reloop if we had been filc_terminating. */
+        if (filc_non_free_object_is_live_for_weak(object, FUGC_MARKER))
+            return true;
+        /* Now we know that the object is not marked. */
+        switch (filc_current_marking_state) {
+        case filc_not_marking:
+            if (fugc_has_unfinished_census)
+                return false;
+            return true;
+        case filc_marking:
+            filc_barrier_slow(my_thread, object);
+            return true;
+        case filc_terminating:
+            pas_compare_and_swap_uint32_weak((uint32_t*)&filc_current_marking_state,
+                                             (unsigned)filc_terminating,
+                                             (unsigned)filc_marking);
+            break;
+        default:
+            PAS_ASSERT(!"Should not be reached");
+            break;
+        }
+    }
+}
+
 PAS_NO_RETURN PAS_NEVER_INLINE void filc_check_native_access_fail(filc_ptr ptr,
                                                                   size_t size_and_alignment,
                                                                   filc_access_kind kind)

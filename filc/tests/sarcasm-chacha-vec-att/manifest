@@ -4,7 +4,3 @@ only-on-platform:
   x86_64
 output-includes:
   - "chacha vectors ok"
-extraLinkerArgs:
-  "projects/openssl-3.6.4/libcrypto.a"
-skip:
-  true

@@ -4140,11 +4140,38 @@ function x86_64_frame.rewrite(st, ctx)
 		-- rsp-relative displacement additionally keys 8 lower (the +8 rule: hardware has
 		-- the pushed return address between the clone's rsp and the caller's frame — at
 		-- the callsite depth this is exactly disp-8).
+		-- A B2-clone access overlapping a pushed slot addresses the jumper's
+		-- slot (the x25519 `mov 16(%rsp),%rdi # restore dst` and the shared
+		-- epilogue restores): it must share the slot's web, so it keys unbanded.
+		-- This covers callee-saved saves (paired by the save-slot model below
+		-- with the jumper's save) and caller-saved push-spills like the offloaded
+		-- first argument (ordinary slot webs, shared by coordinate exactly like
+		-- the jumper's own accesses). All other clone traffic rides the private
+		-- band (the pinned sarcasm-tail-b2-addrcompare-att semantics:
+		-- same-spelled scratch in the clone and the jumper are different
+		-- addresses). This pre-scan mirrors the save-slot model's hit test
+		-- exactly; the model itself runs below on the unbanded offset and
+		-- accepts or rejects exactly like ordinary code.
+		local function b2saveHit(unbanded)
+			local sv = st.x86_saves
+			if sv == nil or sv == "dyn" or #sv == 0 then return false end
+			if isFpInsn(fpEntry, st) then return false end
+			local w0 = gprStackWidth(m, mem)
+			if not w0 then return false end
+			for _, s in sv do
+				if usesRbp and s.name == "rbp" then continue end
+				local sd = D0 - s.depth
+				if unbanded < sd + 8 and unbanded + w0 > sd then return true end
+			end
+			return false
+		end
 		local off = aliasOff or (mem.dispVal or 0)
 		if aliasOff == nil then
 		if mem.base.rc ~= "sp" then off = rbpNorm + off
 		elseif st.localClone and d ~= nil and not isDynDepth(d) then off = off + D0 - d - 8
-		elseif st.b2clone and d ~= nil and not isDynDepth(d) then off = off + D0 - d + (st.x86_b2band or 0)
+		elseif st.b2clone and d ~= nil and not isDynDepth(d) then
+			off = off + D0 - d
+			if not b2saveHit(off) then off = off + (st.x86_b2band or 0) end
 		elseif perturbedRsp then off = off + D0 - d end
 		end
 		-- An entry-rsp materialization for reading the incoming yolo stack arguments

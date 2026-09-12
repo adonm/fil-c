@@ -32,6 +32,7 @@ projeny mv <f.projeny> <src> <dst>       rename a file, mark as renamed
 projeny resolve <f.projeny> <path>       clear a conflict entry
 projeny rebase <f.projeny> <tarball>     point the project at a new tarball
 projeny status <f.projeny>               show setup/conflict/pending state
+projeny diff <f.projeny>                 print a checkout's uncommitted diff
 projeny diff <dir> <other-dir>           print the diff between two trees
 projeny patch <dir> <patch-file>         apply a patch file to a tree
 projeny package <f.projeny|dir> <out>    setup, then tar the tracked files
@@ -91,6 +92,15 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   warns to stderr and proceeds with the new file — it never silently keeps
   the old bytes.
 
+- `diff <f.projeny>`: prints the checkout's uncommitted change to stdout —
+  the diff of the workdir against what a *fresh* `setup` of the current
+  `.projeny` file would check out (tarball plus current patch). For
+  ordinary edits this is also the patch `commit` would store; the two
+  differ only when a pending `mv` renames a file that the last commit
+  itself added or renamed (commit re-derives the rename from the tarball's
+  paths: a committed-added file becomes a plain add, a committed rename
+  re-traces to the original tarball path). See "The uncommitted diff"
+  below for the exact semantics.
 - `diff <dir> <other-dir>`: prints the minimal unified diff between
   two on-disk trees to stdout (labels use the second directory's
   basename, so the output feeds `projeny patch`, `git apply`, and
@@ -115,6 +125,59 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   destination must not exist or must be empty.
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
+
+## The uncommitted diff
+
+`projeny diff <f.projeny>` prints the uncommitted change of a checkout: the
+diff of the workdir against what a fresh `setup` of the current `.projeny`
+file would check out — the tarball plus the current patch. It takes the
+same refusals `commit` does (the `.projeny` file must match the status
+copy, conflicts must be resolved, pending ops must match the workdir).
+
+The diff and `commit` answer different questions about the same workdir:
+the diff is relative to the checked-in tree (what a fresh `setup` would
+produce), while the stored patch is relative to the raw tarball. For
+ordinary edits they are the same patch. They differ only when a pending
+`mv` renames a file that the last commit itself added or renamed: the
+diff describes the move against the checked-in paths, while `commit`
+re-derives the rename from the tarball's paths — a committed-added file
+commits as a plain add of its new name, and a committed rename re-traces
+to the original tarball path. Each output is correct for its own baseline.
+
+Which changes appear is decided by the pending ops, the same way `commit`
+decides:
+
+- Files added with `projeny add` (and `projeny mv` destinations) show as
+  `new file mode` blocks; files removed with `projeny rm` (and `projeny mv`
+  sources) show as `deleted file mode` blocks. `add`/`rm` take directories,
+  and a directory entry covers everything under it.
+- `projeny mv` renders as a `rename from`/`rename to` block — always, even
+  when the moved file's content diverged beyond the rename similarity
+  threshold. Chained moves (`mv a b`, then `mv b c`) collapse into a single
+  rename `a -> c` with no mention of `b`, and moving a directory renames
+  each contained file.
+- Everything untracked — created without `projeny add`, whether text,
+  symlink, or binary — stays out of the diff, like git leaves untracked
+  files out of commits (one exception: files created inside a directory
+  that a pending `mv` moved — the move destination is registered on the
+  add side, so new files under it ride along in the diff and in the
+  commit).
+- A tracked file deleted *without* `projeny rm` is not part of the diff
+  either (the next `setup` would restore it); each such file instead
+  produces a warning on stderr naming the `projeny rm` command that would
+  record it, so an otherwise empty output cannot masquerade as "no local
+  changes".
+
+The exit status is 0 whenever the diff itself succeeds — even when it
+prints changes or warnings. stdout carries only the patch; warnings go to
+stderr. Combined with `projeny patch`, the diff moves a change between
+checkouts:
+
+```
+projeny diff mylib.projeny > /tmp/uncommitted.patch
+# ...in a second checkout of the same .projeny file:
+projeny patch mylib /tmp/uncommitted.patch
+```
 
 ## Recovering a git-conflicted `.projeny` file
 

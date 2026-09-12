@@ -39,6 +39,7 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Compute the user diff between two on-disk trees. Labels are
@@ -48,6 +49,62 @@
 // mode-only changes of binaries carry no payload.
 std::string vcs_diff_trees(const std::string& base_tree, const std::string& workdir,
                            const std::string& wid);
+
+// Options for the pending-aware diff below. A null pointer disables the
+// corresponding behavior, so default-constructed options give exactly the
+// plain tree diff of vcs_diff_trees.
+struct VcsDiffOpts {
+    // Pending `projeny mv` pairs (workdir-relative src -> dst). Each pair
+    // is forced into a rename block even when content similarity would
+    // never pair the sides, taking precedence over content-based pairing.
+    // Sources that name no base-tree path (even after resolving through
+    // `committed_patch`) are ignored: there is no delete side to pair.
+    const std::vector<std::pair<std::string, std::string>>* forced_renames =
+        nullptr;
+    // The committed patch (wid-label form) to resolve pending rename
+    // sources through when the base tree predates the committed renames
+    // (commit diffs the raw archive). Null or empty: the base tree already
+    // contains the committed renames (a fresh-setup expected tree).
+    const std::string* committed_patch = nullptr;
+    // Keep lists (workdir-relative; an entry also covers everything under
+    // it, since add/rm/mv accept directories). When non-null, pure-add
+    // blocks survive only when their new path is covered by `add_keep`
+    // (untracked files — text, symlink, or binary — stay out), and rename
+    // blocks survive only when a covered side justifies them: both sides
+    // covered keeps the rename, one side degrades to that side's pure
+    // delete/add, neither drops the block.
+    const std::vector<std::string>* add_keep = nullptr;
+    // When non-null, pure-delete blocks survive only when their old path
+    // is covered by `delete_keep` (unregistered disappearances stay out;
+    // the caller reports them via `disappeared`). Coverage through an
+    // entry that is exactly a pending rename source (a moved directory)
+    // additionally requires the file to have moved with the directory:
+    // its counterpart under the rename destination must exist in the
+    // workdir or be covered itself. A plain `rm` of a file inside a moved
+    // directory is therefore unregistered — warned and left out — like a
+    // plain rm anywhere else.
+    const std::vector<std::string>* delete_keep = nullptr;
+    // Filled (sorted, uniqued) with the base-tree file paths missing from
+    // the workdir and not covered by `delete_keep`: files that vanished
+    // locally without `projeny rm`. Computed from the trees themselves, so
+    // rename pairing can never hide one. Null: not collected.
+    std::vector<std::string>* disappeared = nullptr;
+};
+
+// vcs_diff_trees with pending-op awareness (see VcsDiffOpts): forced
+// rename pairing, keep-list filtering, and disappearance collection. All
+// of it is off for default-constructed options.
+std::string vcs_diff_trees_ex(const std::string& base_tree,
+                              const std::string& workdir,
+                              const std::string& wid, const VcsDiffOpts& opts);
+
+// True when `rel` is exactly a `keep` entry or lives under a kept entry
+// (add/rm/mv take directories, so keep entries may name directories and
+// then cover everything under them). The shared keep-list predicate: the
+// pending-aware diff and `commit`'s disappeared check both use it for
+// their exact/under-a-directory coverage decisions.
+bool vcs_covers_keep_path(const std::vector<std::string>& keep,
+                          const std::string& rel);
 
 // Drop pure-deletion blocks whose deleted path is not in `keep` (workdir-
 // relative). Used by setup to restore files that vanished without an
@@ -60,16 +117,33 @@ std::string vcs_drop_deletes_not_in(const std::string& patch,
                                     const std::vector<std::string>& keep);
 
 // Workdir-relative new paths of binary-add blocks in `patch` (binary blocks
-// with a payload that create a file). Used by commit to tell previously
-// committed binary adds (tracked: keep them on every recommits) apart from
-// truly untracked binaries (leave them out).
+// with a payload that create a file), plus the destinations of every binary
+// rename block (payload-free pure renames included). Used by commit to tell
+// previously committed binary adds and renames (tracked: keep them on every
+// recommit) apart from truly untracked binaries (leave them out). The rename
+// destinations belong here because commit re-derives its diff against the
+// RAW archive, which predates every committed rename: when a committed
+// rename's content diverged beyond rename detection (binaries never
+// similarity-pair), the re-derived diff is a delete of the old path plus an
+// add of the new one — and if that add were dropped as "untracked", the
+// stored patch would lose the new file entirely and the next setup would
+// resurrect the old path with the committed file silently gone.
 std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
                                               const std::string& wid);
 
 // Workdir-relative new paths of pure-add blocks in `patch` (text, symlink
-// and binary adds that create a file, excluding renames). Used by commit to
-// tell previously committed adds (tracked: keep them on every recommit)
-// apart from truly untracked files (leave them out).
+// and binary adds that create a file), plus the destinations of every rename
+// block. Used by commit to tell previously committed adds and renames
+// (tracked: keep them on every recommit) apart from truly untracked files
+// (leave them out). The rename destinations belong here because commit
+// re-derives its diff against the RAW archive, which predates every
+// committed rename: when a committed rename's content has diverged beyond
+// rename detection (below the 50% line-similarity threshold, or any binary
+// whose bytes changed), the re-derived diff is a delete of the old path plus
+// an add of the new one — and if that add were dropped as "untracked", the
+// stored patch would lose the new file entirely and the next setup would
+// resurrect the old path with the committed file silently gone. Where
+// pairing re-finds the rename instead, the extra keep entry is harmless.
 std::vector<std::string> vcs_add_paths(const std::string& patch,
                                        const std::string& wid);
 

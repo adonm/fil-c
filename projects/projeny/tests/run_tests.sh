@@ -6647,6 +6647,1041 @@ else
     fail "capped refusal writes no status file"
 fi
 
+# ----------------- 159. diff <f.projeny>: clean checkout and untracked files
+# The projeny-file diff prints the uncommitted change against a fresh setup
+# of the current .projeny file: nothing on a clean checkout, only registered
+# changes otherwise, and untracked anything (text or binary) never appears.
+T159="$ROOT/t159"
+make_tarballs "$T159" fake
+write_projeny "$T159" fake 1.0 fake
+(cd "$T159" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+out="$(cd "$T159" && "$PROJENY" diff fake.projeny 2>"$T159/err")"
+rc=$?
+if [ $rc -eq 0 ] && [ -z "$out" ]; then
+    ok "diff-projeny clean checkout prints nothing, exits 0"
+else
+    fail "diff-projeny clean checkout prints nothing, exits 0" \
+         "rc=$rc out: $out"
+fi
+if [ ! -s "$T159/err" ]; then
+    ok "diff-projeny clean checkout is silent on stderr too"
+else
+    fail "diff-projeny clean checkout is silent on stderr too" \
+         "err: $(cat "$T159/err")"
+fi
+python3 - "$T159/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int alpha = 1;", "int alpha = 10;")
+open(p, "w").write(s)
+EOF
+printf 'untracked text\n' > "$T159/fake/loose.txt"
+python3 -c "open('$T159/fake/loose.bin','wb').write(b'un\x00tracked\n')"
+out="$(cd "$T159" && "$PROJENY" diff fake.projeny 2>"$T159/err")"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "diff-projeny with edits exits 0"
+else
+    fail "diff-projeny with edits exits 0" "rc=$rc err: $(cat "$T159/err")"
+fi
+case "$out" in
+*"+int alpha = 10;"*) ok "diff-projeny shows the tracked edit hunk" ;;
+*) fail "diff-projeny shows the tracked edit hunk" "out: $out" ;;
+esac
+case "$out" in
+*"loose.txt"*|*"loose.bin"*)
+    fail "diff-projeny ignores untracked text and binary files" "out: $out"
+    ;;
+*) ok "diff-projeny ignores untracked text and binary files" ;;
+esac
+
+# --------------------------- 160. diff <f.projeny>: add folds in, tracked or not
+# Only `projeny add`ed files count as additions: the added text file and the
+# added binary file both appear, a second never-added file does not.
+T160="$ROOT/t160"
+make_tarballs "$T160" fake
+write_projeny "$T160" fake 1.0 fake
+(cd "$T160" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'brand new file\n' > "$T160/fake/src/added.c"
+printf 'other new file\n' > "$T160/fake/src/stray.c"
+python3 -c "open('$T160/fake/src/added.bin','wb').write(b'ab\x00cd\n')"
+run_in "$T160" expect_ok "diff-projeny add marks text file" \
+    "$PROJENY" add fake.projeny fake/src/added.c
+run_in "$T160" expect_ok "diff-projeny add marks binary file" \
+    "$PROJENY" add fake.projeny fake/src/added.bin
+out="$(cd "$T160" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"new file mode"*) ok "diff-projeny shows new file mode for added file" ;;
+*) fail "diff-projeny shows new file mode for added file" "out: $out" ;;
+esac
+case "$out" in
+*"+brand new file"*) ok "diff-projeny shows added file content" ;;
+*) fail "diff-projeny shows added file content" "out: $out" ;;
+esac
+case "$out" in
+*"GIT binary patch"*) ok "diff-projeny carries added binary as binary block" ;;
+*) fail "diff-projeny carries added binary as binary block" "out: $out" ;;
+esac
+case "$out" in
+*"stray.c"*)
+    fail "diff-projeny leaves never-added files out" "out: $out"
+    ;;
+*) ok "diff-projeny leaves never-added files out" ;;
+esac
+
+# --------------------------------------- 161. diff <f.projeny>: rm folds in
+T161="$ROOT/t161"
+make_tarballs "$T161" fake
+write_projeny "$T161" fake 1.0 fake
+(cd "$T161" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T161" expect_ok "diff-projeny rm marks deletion" \
+    "$PROJENY" rm fake.projeny fake/src/b.c
+out="$(cd "$T161" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"deleted file mode"*) ok "diff-projeny shows deleted file mode" ;;
+*) fail "diff-projeny shows deleted file mode" "out: $out" ;;
+esac
+case "$out" in
+*"-line one v1"*) ok "diff-projeny deletion block carries the old content" ;;
+*) fail "diff-projeny deletion block carries the old content" "out: $out" ;;
+esac
+
+# ------------------------- 162. diff <f.projeny>: mv renders as rename
+# An unchanged move is a pure rename block (no hunks); a move whose content
+# diverged beyond the similarity threshold is STILL a rename block (forced
+# pairing), with hunks carrying the edit.
+T162="$ROOT/t162"
+make_tarballs "$T162" fake
+write_projeny "$T162" fake 1.0 fake
+(cd "$T162" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T162" expect_ok "diff-projeny mv renames file" \
+    "$PROJENY" mv fake.projeny fake/src/b.c fake/src/renamed.c
+out="$(cd "$T162" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/b.c"*) ok "diff-projeny mv shows rename from" ;;
+*) fail "diff-projeny mv shows rename from" "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/renamed.c"*) ok "diff-projeny mv shows rename to" ;;
+*) fail "diff-projeny mv shows rename to" "out: $out" ;;
+esac
+case "$out" in
+*"@@ "*) fail "diff-projeny pure mv has no hunks" "out: $out" ;;
+*) ok "diff-projeny pure mv has no hunks" ;;
+esac
+printf 'totally\nnew\ncontent\nhere\n' > "$T162/fake/src/renamed.c"
+out="$(cd "$T162" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/b.c"*)
+    ok "diff-projeny divergent mv still renders as rename"
+    ;;
+*) fail "diff-projeny divergent mv still renders as rename" "out: $out" ;;
+esac
+case "$out" in
+*"+totally"*) ok "diff-projeny divergent mv carries the edit hunks" ;;
+*) fail "diff-projeny divergent mv carries the edit hunks" "out: $out" ;;
+esac
+
+# --------------------------- 163. diff <f.projeny>: chains and directories
+T163="$ROOT/t163"
+make_tarballs "$T163" fake
+write_projeny "$T163" fake 1.0 fake
+(cd "$T163" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+mkdir -p "$T163/fake/src/dir1"
+printf 'one\n' > "$T163/fake/src/dir1/f1.c"
+printf 'two\n' > "$T163/fake/src/dir1/f2.c"
+run_in "$T163" expect_ok "diff-projeny add chain file one" \
+    "$PROJENY" add fake.projeny fake/src/dir1/f1.c
+run_in "$T163" expect_ok "diff-projeny add chain file two" \
+    "$PROJENY" add fake.projeny fake/src/dir1/f2.c
+run_in "$T163" expect_ok "diff-projeny commit dir content" \
+    "$PROJENY" commit fake.projeny
+run_in "$T163" expect_ok "diff-projeny mv chain step one" \
+    "$PROJENY" mv fake.projeny fake/src/a.c fake/src/mid.c
+run_in "$T163" expect_ok "diff-projeny mv chain step two" \
+    "$PROJENY" mv fake.projeny fake/src/mid.c fake/src/end.c
+out="$(cd "$T163" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/a.c"*)
+    ok "diff-projeny chained mv starts at the original path"
+    ;;
+*) fail "diff-projeny chained mv starts at the original path" "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/end.c"*) ok "diff-projeny chained mv ends at the final path" ;;
+*) fail "diff-projeny chained mv ends at the final path" "out: $out" ;;
+esac
+case "$out" in
+*"mid.c"*)
+    fail "diff-projeny chained mv never mentions the middle name" "out: $out"
+    ;;
+*) ok "diff-projeny chained mv never mentions the middle name" ;;
+esac
+run_in "$T163" expect_ok "diff-projeny mv whole directory" \
+    "$PROJENY" mv fake.projeny fake/src/dir1 fake/src/dir2
+out="$(cd "$T163" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/dir1/f1.c"*"rename to src/dir2/f1.c"*)
+    ok "diff-projeny dir mv renames the contained files"
+    ;;
+*) fail "diff-projeny dir mv renames the contained files" "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/dir2/f2.c"*) ok "diff-projeny dir mv covers every file" ;;
+*) fail "diff-projeny dir mv covers every file" "out: $out" ;;
+esac
+
+# ----------------- 164. diff <f.projeny>: disappeared files warn, never diff
+# A tracked file deleted without `projeny rm` is not a deletion: the diff
+# stays empty for it, warns on stderr, and a similar untracked file cannot
+# smuggle a bogus rename block in. Registering the deletion makes it appear.
+T164="$ROOT/t164"
+make_tarballs "$T164" fake
+write_projeny "$T164" fake 1.0 fake
+(cd "$T164" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+rm "$T164/fake/src/a.c"
+printf 'int alpha = 1;\n\nint beta = 77;\n' > "$T164/fake/src/moved.c"
+out="$(cd "$T164" && "$PROJENY" diff fake.projeny 2>"$T164/err")"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "diff-projeny with disappeared file still exits 0"
+else
+    fail "diff-projeny with disappeared file still exits 0" \
+         "rc=$rc out: $out"
+fi
+if [ -z "$out" ]; then
+    ok "diff-projeny prints nothing for the disappeared file"
+else
+    fail "diff-projeny prints nothing for the disappeared file" "out: $out"
+fi
+case "$(cat "$T164/err")" in
+*"'src/a.c' was removed locally but is not marked with"*)
+    ok "diff-projeny warns naming the disappeared file"
+    ;;
+*) fail "diff-projeny warns naming the disappeared file" \
+        "err: $(cat "$T164/err")" ;;
+esac
+case "$out" in
+*"rename from"*|*"moved.c"*)
+    fail "diff-projeny no bogus rename for disappeared+similar untracked" \
+         "out: $out"
+    ;;
+*) ok "diff-projeny no bogus rename for disappeared+similar untracked" ;;
+esac
+# The warning names the exact command that registers the deletion, with the
+# path spelled wid-prefixed ("fake/src/a.c") so the command works from any
+# CWD: add/rm/mv resolve that form lexically, while the bare workdir-
+# relative spelling dies with "outside the workdir" unless the CWD happens
+# to be the workdir. Re-run the diff from $ROOT — deliberately a different
+# directory than the pdir — with an explicit .projeny path to capture the
+# suggestion, then execute it verbatim ("$PROJENY" stands in for the
+# leading "projeny" word; unquoted $cmd word-splits the arguments).
+out="$(cd "$ROOT" && "$PROJENY" diff "$T164/fake.projeny" \
+    2>"$ROOT/t164-suggested.err")"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "diff-projeny diff works from an unrelated CWD"
+else
+    fail "diff-projeny diff works from an unrelated CWD" \
+         "rc=$rc out: $out err: $(cat "$ROOT/t164-suggested.err")"
+fi
+cmd="$(grep "not marked with" "$ROOT/t164-suggested.err" |
+    sed -e "s/.*not marked with 'projeny //" \
+        -e "s/'; it will not appear in the diff\$//")"
+case "$cmd" in
+*" fake/src/a.c"*)
+    ok "diff-projeny suggested command uses the wid-prefixed path"
+    ;;
+*) fail "diff-projeny suggested command uses the wid-prefixed path" \
+        "cmd: $cmd" ;;
+esac
+run_in "$ROOT" expect_ok "diff-projeny suggested rm works verbatim from any CWD" \
+    "$PROJENY" $cmd
+out="$(cd "$T164" && "$PROJENY" diff fake.projeny 2>"$T164/err")"
+case "$out" in
+*"deleted file mode"*"src/a.c"*)
+    ok "diff-projeny registered deletion appears"
+    ;;
+*) fail "diff-projeny registered deletion appears" "out: $out" ;;
+esac
+if [ ! -s "$T164/err" ]; then
+    ok "diff-projeny registered deletion warns nothing"
+else
+    fail "diff-projeny registered deletion warns nothing" \
+         "err: $(cat "$T164/err")"
+fi
+
+# ------------------------------- 165. diff <f.projeny>: add-then-mv, refusals
+T165="$ROOT/t165"
+make_tarballs "$T165" fake
+write_projeny "$T165" fake 1.0 fake
+(cd "$T165" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'fresh file\n' > "$T165/fake/src/newfile.c"
+run_in "$T165" expect_ok "diff-projeny add pending file" \
+    "$PROJENY" add fake.projeny fake/src/newfile.c
+run_in "$T165" expect_ok "diff-projeny mv the pending-added file" \
+    "$PROJENY" mv fake.projeny fake/src/newfile.c fake/src/final.c
+out="$(cd "$T165" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"new file mode"*"src/final.c"*)
+    ok "diff-projeny added-then-moved file shows under final name"
+    ;;
+*) fail "diff-projeny added-then-moved file shows under final name" \
+        "out: $out" ;;
+esac
+case "$out" in
+*"newfile.c"*)
+    fail "diff-projeny added-then-moved file shows once" "out: $out"
+    ;;
+*) ok "diff-projeny added-then-moved file shows once" ;;
+esac
+# Refusal: the .projeny file differs from the status copy.
+printf '\n    Extra prose.\n' >> "$T165/fake.projeny"
+out="$(cd "$T165" && "$PROJENY" diff fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "diff-projeny refuses a changed .projeny file"
+else
+    fail "diff-projeny refuses a changed .projeny file" "out: $out"
+fi
+case "$out" in
+*"run setup to merge first"*)
+    ok "diff-projeny changed-.projeny error mentions setup"
+    ;;
+*) fail "diff-projeny changed-.projeny error mentions setup" "out: $out" ;;
+esac
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    Fake project fake for projeny tests.\n\n' > "$T165/fake.projeny"
+run_in "$T165" expect_ok "diff-projeny restored .projeny setup" \
+    "$PROJENY" setup fake.projeny
+# Refusal: unresolved conflicts recorded in the status file.
+sed -i 's/^--- projeny content ---$/Conflict: src\/a.c\n--- projeny content ---/' \
+    "$T165/.fake.projeny.status"
+out="$(cd "$T165" && "$PROJENY" diff fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "diff-projeny refuses with unresolved conflicts"
+else
+    fail "diff-projeny refuses with unresolved conflicts" "out: $out"
+fi
+case "$out" in
+*"cannot diff with unresolved conflicts"*)
+    ok "diff-projeny conflict error names the problem"
+    ;;
+*) fail "diff-projeny conflict error names the problem" "out: $out" ;;
+esac
+# Refusal: a pending add whose file is gone from the workdir. The injected
+# conflict is dropped with `resolve` (setup would union it right back in).
+run_in "$T165" expect_ok "diff-projeny resolve the injected conflict" \
+    "$PROJENY" resolve fake.projeny src/a.c
+rm "$T165/fake/src/final.c"
+out="$(cd "$T165" && "$PROJENY" diff fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "diff-projeny refuses a pending add with a missing file"
+else
+    fail "diff-projeny refuses a pending add with a missing file" "out: $out"
+fi
+case "$out" in
+*"pending add 'src/final.c' does not exist"*)
+    ok "diff-projeny pending-add error names the file"
+    ;;
+*) fail "diff-projeny pending-add error names the file" "out: $out" ;;
+esac
+
+# --------------------- 166. diff <f.projeny>: roundtrip through projeny patch
+# The diff of one checkout applies to a fresh checkout of the same .projeny
+# file and reproduces the first workdir exactly (tracked edit, add, rm, mv).
+T166="$ROOT/t166"
+mkdir -p "$T166/a" "$T166/b"
+for side in a b; do
+    make_tarballs "$T166/$side" fake
+    write_projeny "$T166/$side" fake 1.0 fake
+done
+(cd "$T166/a" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T166/a/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 5;")
+open(p, "w").write(s)
+EOF
+printf 'carried file\n' > "$T166/a/fake/src/carried.c"
+run_in "$T166/a" expect_ok "roundtrip add carried file" \
+    "$PROJENY" add fake.projeny fake/src/carried.c
+run_in "$T166/a" expect_ok "roundtrip rm src/b.c" \
+    "$PROJENY" rm fake.projeny fake/src/b.c
+run_in "$T166/a" expect_ok "roundtrip mv README" \
+    "$PROJENY" mv fake.projeny fake/README fake/README.md
+(cd "$T166/a" && "$PROJENY" diff fake.projeny > "$T166/uncommitted.patch" 2>"$T166/err")
+if [ -s "$T166/uncommitted.patch" ]; then
+    ok "roundtrip diff is nonempty"
+else
+    fail "roundtrip diff is nonempty" "err: $(cat "$T166/err")"
+fi
+(cd "$T166/b" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T166/b" expect_ok "roundtrip patch applies to fresh checkout" \
+    "$PROJENY" patch fake "$T166/uncommitted.patch"
+out="$(cd "$T166/a" && "$PROJENY" diff fake ../b/fake 2>&1)"
+if [ -z "$out" ]; then
+    ok "roundtrip reproduced the workdir exactly"
+else
+    fail "roundtrip reproduced the workdir exactly" "2-dir diff: $out"
+fi
+
+# ------------------ 167. commit honors forced renames, even over renames
+# A divergent move commits as a rename block (not delete+add), and a move of
+# an already-committed rename resolves back to the ORIGINAL archive path so
+# the stored patch still renames the tarball's file.
+T167="$ROOT/t167"
+make_tarballs "$T167" fake
+write_projeny "$T167" fake 1.0 fake
+(cd "$T167" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T167" expect_ok "commit-rename mv first" \
+    "$PROJENY" mv fake.projeny fake/src/a.c fake/src/renamed.c
+printf 'divergent\ncontent\nentirely\n' > "$T167/fake/src/renamed.c"
+run_in "$T167" expect_ok "commit-rename commit succeeds" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "commit stores forced rename from" \
+    "$T167/fake.projeny" "rename from src/a.c"
+expect_file_contains "commit stores forced rename to" \
+    "$T167/fake.projeny" "rename to src/renamed.c"
+rm -rf "$T167/fake" "$T167/.fake.projeny.status"
+run_in "$T167" expect_ok "commit-rename fresh setup" "$PROJENY" setup fake.projeny
+expect_file_contains "commit-rename setup reproduces content" \
+    "$T167/fake/src/renamed.c" "divergent"
+if [ ! -e "$T167/fake/src/a.c" ]; then
+    ok "commit-rename setup keeps the old path gone"
+else
+    fail "commit-rename setup keeps the old path gone"
+fi
+# Committed-rename resolution: rename again, on top of the committed rename.
+printf 'final\ndivergent\nbytes\n' > "$T167/fake/src/renamed.c"
+run_in "$T167" expect_ok "commit-rename second mv" \
+    "$PROJENY" mv fake.projeny fake/src/renamed.c fake/src/final.c
+run_in "$T167" expect_ok "commit-rename second commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "re-commit renames the original archive path" \
+    "$T167/fake.projeny" "rename from src/a.c"
+expect_file_contains "re-commit renames to the final path" \
+    "$T167/fake.projeny" "rename to src/final.c"
+if grep -q "rename to src/renamed.c" "$T167/fake.projeny"; then
+    fail "re-commit drops the intermediate name" "$(grep rename "$T167/fake.projeny")"
+else
+    ok "re-commit drops the intermediate name"
+fi
+rm -rf "$T167/fake" "$T167/.fake.projeny.status"
+run_in "$T167" expect_ok "commit-rename setup of the twice-renamed patch" \
+    "$PROJENY" setup fake.projeny
+expect_file_contains "twice-renamed setup reproduces final content" \
+    "$T167/fake/src/final.c" "final"
+if [ ! -e "$T167/fake/src/renamed.c" ] && [ ! -e "$T167/fake/src/a.c" ]; then
+    ok "twice-renamed setup leaves only the final path"
+else
+    fail "twice-renamed setup leaves only the final path" \
+         "ls: $(ls "$T167/fake/src" 2>&1)"
+fi
+
+# ------------------------- 168. diff <f.projeny> after a committed add
+# Once an add is committed the file is tracked: an edit shows as a plain
+# modify block, with no add block (and untracked files still stay out).
+T168="$ROOT/t168"
+make_tarballs "$T168" fake
+write_projeny "$T168" fake 1.0 fake
+(cd "$T168" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'committed add\n' > "$T168/fake/src/added.c"
+run_in "$T168" expect_ok "post-commit-add add file" \
+    "$PROJENY" add fake.projeny fake/src/added.c
+run_in "$T168" expect_ok "post-commit-add commit" "$PROJENY" commit fake.projeny
+printf 'committed add, now edited\n' > "$T168/fake/src/added.c"
+printf 'still untracked\n' > "$T168/fake/src/stray.c"
+out="$(cd "$T168" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"new file mode"*)
+    fail "diff-projeny after committed add has no add block" "out: $out"
+    ;;
+*) ok "diff-projeny after committed add has no add block" ;;
+esac
+case "$out" in
+*"+committed add, now edited"*)
+    ok "diff-projeny after committed add shows the modify hunk"
+    ;;
+*) fail "diff-projeny after committed add shows the modify hunk" "out: $out" ;;
+esac
+case "$out" in
+*"stray.c"*)
+    fail "diff-projeny after committed add ignores untracked" "out: $out"
+    ;;
+*) ok "diff-projeny after committed add ignores untracked" ;;
+esac
+
+# --------- 169. diff vs commit: the two baselines differ for renamed work
+# The diff is relative to the checked-in tree (tarball + current patch,
+# what a fresh setup would produce); the stored patch is relative to the
+# raw tarball. For ordinary edits they are the same patch. They differ
+# when a pending mv renames a file the last commit itself added or
+# renamed: the diff describes the move against the checked-in paths, while
+# commit re-derives the rename from the tarball's paths — a committed-
+# added file commits as a plain add of its new name, and a committed
+# rename re-traces to the original tarball path. Each output is correct
+# for its own baseline.
+T169="$ROOT/t169"
+make_tarballs "$T169" fake
+write_projeny "$T169" fake 1.0 fake
+(cd "$T169" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'brand new\n' > "$T169/fake/src/added.c"
+run_in "$T169" expect_ok "diff-vs-commit add the new file" \
+    "$PROJENY" add fake.projeny fake/src/added.c
+run_in "$T169" expect_ok "diff-vs-commit commit the add" \
+    "$PROJENY" commit fake.projeny
+run_in "$T169" expect_ok "diff-vs-commit mv the committed-added file" \
+    "$PROJENY" mv fake.projeny fake/src/added.c fake/src/moved.c
+out="$(cd "$T169" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/added.c"*)
+    ok "diff-vs-commit diff describes the mv against the checked-in path"
+    ;;
+*) fail "diff-vs-commit diff describes the mv against the checked-in path" \
+        "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/moved.c"*)
+    ok "diff-vs-commit diff names the moved-to path"
+    ;;
+*) fail "diff-vs-commit diff names the moved-to path" "out: $out" ;;
+esac
+run_in "$T169" expect_ok "diff-vs-commit commit the mv" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "diff-vs-commit commit stores a plain add" \
+    "$T169/fake.projeny" "new file mode"
+expect_file_contains "diff-vs-commit commit stores the moved-to path" \
+    "$T169/fake.projeny" "src/moved.c"
+if grep -q "rename from" "$T169/fake.projeny"; then
+    fail "diff-vs-commit commit stores no rename for a committed-added file" \
+         "$(grep -E '^(rename|new file|deleted file)' "$T169/fake.projeny")"
+else
+    ok "diff-vs-commit commit stores no rename for a committed-added file"
+fi
+rm -rf "$T169/fake" "$T169/.fake.projeny.status"
+run_in "$T169" expect_ok "diff-vs-commit fresh setup" \
+    "$PROJENY" setup fake.projeny
+expect_file_contains "diff-vs-commit setup reproduces the moved content" \
+    "$T169/fake/src/moved.c" "brand new"
+if [ ! -e "$T169/fake/src/added.c" ]; then
+    ok "diff-vs-commit setup keeps the pre-move name gone"
+else
+    fail "diff-vs-commit setup keeps the pre-move name gone"
+fi
+# Second scenario: a committed rename, moved again. The diff describes the
+# second move against the committed path; commit re-traces to the original
+# tarball path.
+run_in "$T169" expect_ok "diff-vs-commit mv the original file" \
+    "$PROJENY" mv fake.projeny fake/src/a.c fake/src/r1.c
+run_in "$T169" expect_ok "diff-vs-commit commit the rename" \
+    "$PROJENY" commit fake.projeny
+run_in "$T169" expect_ok "diff-vs-commit mv the committed rename" \
+    "$PROJENY" mv fake.projeny fake/src/r1.c fake/src/r2.c
+out="$(cd "$T169" && "$PROJENY" diff fake.projeny 2>&1)"
+case "$out" in
+*"rename from src/r1.c"*)
+    ok "diff-vs-commit diff describes the second mv against the committed path"
+    ;;
+*) fail "diff-vs-commit diff describes the second mv against the committed path" \
+        "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/r2.c"*)
+    ok "diff-vs-commit diff names the final path"
+    ;;
+*) fail "diff-vs-commit diff names the final path" "out: $out" ;;
+esac
+case "$out" in
+*"rename from src/a.c"*)
+    fail "diff-vs-commit diff never mentions the tarball path" "out: $out"
+    ;;
+*) ok "diff-vs-commit diff never mentions the tarball path" ;;
+esac
+run_in "$T169" expect_ok "diff-vs-commit commit the second mv" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "diff-vs-commit commit re-traces to the tarball path" \
+    "$T169/fake.projeny" "rename from src/a.c"
+expect_file_contains "diff-vs-commit commit renames to the final path" \
+    "$T169/fake.projeny" "rename to src/r2.c"
+rm -rf "$T169/fake" "$T169/.fake.projeny.status"
+run_in "$T169" expect_ok "diff-vs-commit setup of the re-traced patch" \
+    "$PROJENY" setup fake.projeny
+expect_file_contains "diff-vs-commit re-traced setup reproduces content" \
+    "$T169/fake/src/r2.c" "int alpha = 1;"
+if [ ! -e "$T169/fake/src/a.c" ] && [ ! -e "$T169/fake/src/r1.c" ]; then
+    ok "diff-vs-commit re-traced setup leaves the old names gone"
+else
+    fail "diff-vs-commit re-traced setup leaves the old names gone" \
+         "ls: $(ls "$T169/fake/src" 2>&1)"
+fi
+
+# ------------ 170. dir mv: un-rm'd inner deletion, untracked riders
+# A plain `rm` of a file inside a directory that a pending `mv` moved is
+# NOT part of the move: the diff drops its deletion block and warns like
+# the plain case, and commit refuses until `projeny rm` registers the
+# deletion (rm records the moved-to path). An untracked file created under
+# the move destination rides along in the diff (the destination is a
+# registered add-side entry) and in the commit. Here the inner files are
+# committed adds, so commit's raw-tarball baseline never had them: the
+# stored patch carries plain adds of the new names (the diff-vs-commit
+# baseline rule), never renames or deletions of the checked-in paths.
+T170="$ROOT/t170"
+make_tarballs "$T170" fake
+write_projeny "$T170" fake 1.0 fake
+(cd "$T170" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+mkdir "$T170/fake/src/dir1"
+printf 'one\n' > "$T170/fake/src/dir1/f1.c"
+printf 'two\n' > "$T170/fake/src/dir1/f2.c"
+run_in "$T170" expect_ok "dir-mv-rm add inner file one" \
+    "$PROJENY" add fake.projeny fake/src/dir1/f1.c
+run_in "$T170" expect_ok "dir-mv-rm add inner file two" \
+    "$PROJENY" add fake.projeny fake/src/dir1/f2.c
+run_in "$T170" expect_ok "dir-mv-rm commit the directory" \
+    "$PROJENY" commit fake.projeny
+run_in "$T170" expect_ok "dir-mv-rm mv the directory" \
+    "$PROJENY" mv fake.projeny fake/src/dir1 fake/src/dir2
+printf 'untracked rider\n' > "$T170/fake/src/dir2/new.c"
+rm "$T170/fake/src/dir2/f1.c"
+out="$(cd "$T170" && "$PROJENY" diff fake.projeny 2>"$T170/err")"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "dir-mv-rm diff exits 0"
+else
+    fail "dir-mv-rm diff exits 0" "rc=$rc out: $out"
+fi
+case "$out" in
+*"rename from src/dir1/f2"*)
+    ok "dir-mv-rm diff renames the surviving inner file"
+    ;;
+*) fail "dir-mv-rm diff renames the surviving inner file" "out: $out" ;;
+esac
+case "$out" in
+*"rename to src/dir2/f2"*)
+    ok "dir-mv-rm diff names the moved destination"
+    ;;
+*) fail "dir-mv-rm diff names the moved destination" "out: $out" ;;
+esac
+case "$out" in
+*"deleted file mode"*)
+    fail "dir-mv-rm diff leaves the un-rm'd inner deletion out" "out: $out"
+    ;;
+*) ok "dir-mv-rm diff leaves the un-rm'd inner deletion out" ;;
+esac
+case "$out" in
+*"new file mode"*"src/dir2/new.c"*)
+    ok "dir-mv-rm diff shows the untracked rider under the destination"
+    ;;
+*) fail "dir-mv-rm diff shows the untracked rider under the destination" \
+        "out: $out" ;;
+esac
+case "$(cat "$T170/err")" in
+*"'src/dir1/f1.c' was removed locally but is not marked with"*)
+    ok "dir-mv-rm diff warns about the un-rm'd inner deletion"
+    ;;
+*) fail "dir-mv-rm diff warns about the un-rm'd inner deletion" \
+        "err: $(cat "$T170/err")" ;;
+esac
+out="$(cd "$T170" && "$PROJENY" commit fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "dir-mv-rm commit refuses while the deletion is unregistered"
+else
+    fail "dir-mv-rm commit refuses while the deletion is unregistered" \
+         "out: $out"
+fi
+case "$out" in
+*"cannot commit with disappeared files"*)
+    ok "dir-mv-rm refusal names the disappeared-file error"
+    ;;
+*) fail "dir-mv-rm refusal names the disappeared-file error" "out: $out" ;;
+esac
+case "$out" in
+*"src/dir1/f1"*)
+    ok "dir-mv-rm refusal names the vanished inner file"
+    ;;
+*) fail "dir-mv-rm refusal names the vanished inner file" "out: $out" ;;
+esac
+run_in "$T170" expect_ok "dir-mv-rm rm registers the moved-to path" \
+    "$PROJENY" rm fake.projeny fake/src/dir2/f1.c
+run_in "$T170" expect_ok "dir-mv-rm commit after rm" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "dir-mv-rm commit stores the survivor under its new name" \
+    "$T170/fake.projeny" "new file mode"
+expect_file_contains "dir-mv-rm commit stores the moved-to path" \
+    "$T170/fake.projeny" "src/dir2/f2.c"
+expect_file_contains "dir-mv-rm commit carries the untracked rider" \
+    "$T170/fake.projeny" "src/dir2/new.c"
+if grep -q "rename from" "$T170/fake.projeny" || \
+   grep -q "deleted file mode" "$T170/fake.projeny"; then
+    fail "dir-mv-rm commit stores plain adds (the tarball never had the dir)" \
+         "$(grep -E '^(rename|new file|deleted file)' "$T170/fake.projeny")"
+else
+    ok "dir-mv-rm commit stores plain adds (the tarball never had the dir)"
+fi
+rm -rf "$T170/fake" "$T170/.fake.projeny.status"
+run_in "$T170" expect_ok "dir-mv-rm fresh setup" "$PROJENY" setup fake.projeny
+if [ -f "$T170/fake/src/dir2/f2.c" ]; then
+    ok "dir-mv-rm setup restores the surviving inner file"
+else
+    fail "dir-mv-rm setup restores the surviving inner file"
+fi
+expect_file_contains "dir-mv-rm setup restores the committed rider" \
+    "$T170/fake/src/dir2/new.c" "untracked rider"
+if [ ! -e "$T170/fake/src/dir1" ] && [ ! -e "$T170/fake/src/dir2/f1.c" ]; then
+    ok "dir-mv-rm setup keeps the old dir and deleted file gone"
+else
+    fail "dir-mv-rm setup keeps the old dir and deleted file gone" \
+         "ls: $(ls -A "$T170/fake/src" 2>&1)"
+fi
+
+# ------- 171. dir mv with the directory shipped in the tarball
+# The same un-rm'd-inner-deletion flow, but with dir1 present in the raw
+# tarball: now commit's baseline really does contain the checked-in paths,
+# so after `projeny rm` registers the deletion the stored patch carries a
+# rename of the tarball's file plus a deleted-file block — while before
+# the rm the deletion is warned out of the diff and commit refuses.
+T171="$ROOT/t171"
+mkdir -p "$T171/fake-1.0/src/dir1"
+printf 'int alpha = 1;\n' > "$T171/fake-1.0/src/a.c"
+printf 'one\n' > "$T171/fake-1.0/src/dir1/f1.c"
+printf 'two\n' > "$T171/fake-1.0/src/dir1/f2.c"
+(cd "$T171" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    Fake project fake for projeny tests.\n' > "$T171/fake.projeny"
+(cd "$T171" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T171" expect_ok "tarball-dir mv the directory" \
+    "$PROJENY" mv fake.projeny fake/src/dir1 fake/src/dir2
+rm "$T171/fake/src/dir2/f1.c"
+out="$(cd "$T171" && "$PROJENY" diff fake.projeny 2>"$T171/err")"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "tarball-dir diff exits 0"
+else
+    fail "tarball-dir diff exits 0" "rc=$rc out: $out"
+fi
+case "$out" in
+*"rename from src/dir1/f2"*)
+    ok "tarball-dir diff renames the surviving inner file"
+    ;;
+*) fail "tarball-dir diff renames the surviving inner file" "out: $out" ;;
+esac
+case "$out" in
+*"deleted file mode"*)
+    fail "tarball-dir diff leaves the un-rm'd inner deletion out" "out: $out"
+    ;;
+*) ok "tarball-dir diff leaves the un-rm'd inner deletion out" ;;
+esac
+case "$(cat "$T171/err")" in
+*"'src/dir1/f1.c' was removed locally but is not marked with"*)
+    ok "tarball-dir diff warns about the un-rm'd inner deletion"
+    ;;
+*) fail "tarball-dir diff warns about the un-rm'd inner deletion" \
+        "err: $(cat "$T171/err")" ;;
+esac
+out="$(cd "$T171" && "$PROJENY" commit fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "tarball-dir commit refuses while the deletion is unregistered"
+else
+    fail "tarball-dir commit refuses while the deletion is unregistered" \
+         "out: $out"
+fi
+case "$out" in
+*"cannot commit with disappeared files"*)
+    ok "tarball-dir refusal names the disappeared-file error"
+    ;;
+*) fail "tarball-dir refusal names the disappeared-file error" "out: $out" ;;
+esac
+run_in "$T171" expect_ok "tarball-dir rm registers the moved-to path" \
+    "$PROJENY" rm fake.projeny fake/src/dir2/f1.c
+out="$(cd "$T171" && "$PROJENY" diff fake.projeny 2>"$T171/err")"
+case "$out" in
+*"deleted file mode"*"src/dir1/f1"*)
+    ok "tarball-dir registered deletion appears against the original path"
+    ;;
+*) fail "tarball-dir registered deletion appears against the original path" \
+        "out: $out" ;;
+esac
+if [ -s "$T171/err" ]; then
+    fail "tarball-dir registered deletion warns nothing" \
+         "err: $(cat "$T171/err")"
+else
+    ok "tarball-dir registered deletion warns nothing"
+fi
+run_in "$T171" expect_ok "tarball-dir commit after rm" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "tarball-dir commit renames the tarball's file" \
+    "$T171/fake.projeny" "rename from src/dir1/f2.c"
+expect_file_contains "tarball-dir commit names the moved destination" \
+    "$T171/fake.projeny" "rename to src/dir2/f2.c"
+expect_file_contains "tarball-dir commit stores the registered deletion" \
+    "$T171/fake.projeny" "deleted file mode"
+expect_file_contains "tarball-dir commit deletes the tarball's path" \
+    "$T171/fake.projeny" "src/dir1/f1.c"
+rm -rf "$T171/fake" "$T171/.fake.projeny.status"
+run_in "$T171" expect_ok "tarball-dir fresh setup" "$PROJENY" setup fake.projeny
+if [ -f "$T171/fake/src/dir2/f2.c" ] && \
+   [ ! -e "$T171/fake/src/dir1/f1.c" ] && \
+   [ ! -e "$T171/fake/src/dir1/f2.c" ] && \
+   [ ! -e "$T171/fake/src/dir2/f1.c" ]; then
+    ok "tarball-dir setup reproduces the moved+pruned directory"
+else
+    fail "tarball-dir setup reproduces the moved+pruned directory" \
+         "ls: $(ls -A "$T171/fake/src" "$T171/fake/src/dir1" \
+               "$T171/fake/src/dir2" 2>&1)"
+fi
+
+# ------------- 172. binary mv with a payload: renames must carry the bytes
+# A moved binary whose content changed commits as a rename block carrying a
+# `GIT binary patch` (new bytes first, then old). The binary ships in the
+# tarball so the stored patch really is a rename-with-payload block: a
+# committed-ADDED binary re-derives as a plain add on commit (see 169), and
+# an add block never touches the rename path. Applying such a block must
+# write the NEW bytes at the destination — the applier once took a pure-
+# rename shortcut that silently kept the OLD bytes (fresh setup after
+# `rm -rf`, and diff->patch onto a second checkout, both lost the edit with
+# no error anywhere). Also pins the payload-free case: a pure binary mv
+# still takes the move-only fast path (no payload, bytes untouched).
+T172="$ROOT/t172"
+mkdir -p "$T172/a" "$T172/b" "$T172/c"
+for side in a b c; do
+    mkdir -p "$T172/$side/fake-1.0/src"
+    printf 'int alpha = 1;\n' > "$T172/$side/fake-1.0/src/a.c"
+    printf 'line one v1\n' > "$T172/$side/fake-1.0/src/b.c"
+    printf 'hello v1\n' > "$T172/$side/fake-1.0/README"
+    # Content A: NUL-bearing. keep.bin never changes (payload-free rename).
+    python3 -c \
+        "open('$T172/$side/fake-1.0/src/blob.bin','wb').write(b'old\x00\x00\x00blob\x00A\x00payload\n')"
+    python3 -c "open('$T172/$side/fake-1.0/src/keep.bin','wb').write(b'keep\x00\x00me\n')"
+    (cd "$T172/$side" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+    printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    Fake project fake for projeny tests.\n' > "$T172/$side/fake.projeny"
+done
+# Reference bytes: content B differs in length and NUL placement from A.
+python3 -c \
+    "open('$T172/blob-B.bin','wb').write(b'\x00\x00brand\x00new\x00blob-B payload with a different length\n')"
+python3 -c "open('$T172/keep-C.bin','wb').write(b'keep\x00\x00me\n')"
+run_in "$T172/a" expect_ok "bin-rename checkout setup" \
+    "$PROJENY" setup fake.projeny
+run_in "$T172/a" expect_ok "bin-rename mv the tracked binary" \
+    "$PROJENY" mv fake.projeny fake/src/blob.bin fake/src/blob2.bin
+cp "$T172/blob-B.bin" "$T172/a/fake/src/blob2.bin"
+(cd "$T172/a" && "$PROJENY" diff fake.projeny > "$T172/uncommitted.patch" \
+    2>"$T172/a/err")
+rc=$?
+if [ $rc -eq 0 ] && [ -s "$T172/uncommitted.patch" ]; then
+    ok "bin-rename diff exits 0 with the pending rename"
+else
+    fail "bin-rename diff exits 0 with the pending rename" \
+         "rc=$rc err: $(cat "$T172/a/err")"
+fi
+expect_file_contains "bin-rename diff carries rename from src/blob.bin" \
+    "$T172/uncommitted.patch" "rename from src/blob.bin"
+expect_file_contains "bin-rename diff carries rename to src/blob2.bin" \
+    "$T172/uncommitted.patch" "rename to src/blob2.bin"
+expect_file_contains "bin-rename diff carries the binary payload" \
+    "$T172/uncommitted.patch" "GIT binary patch"
+# Roundtrip: apply the diff to a second checkout of the same .projeny file.
+run_in "$T172/b" expect_ok "bin-rename second checkout setup" \
+    "$PROJENY" setup fake.projeny
+run_in "$T172/b" expect_ok "bin-rename patch applies the rename payload" \
+    "$PROJENY" patch fake "$T172/uncommitted.patch"
+if cmp -s "$T172/b/fake/src/blob2.bin" "$T172/blob-B.bin"; then
+    ok "bin-rename patch writes the new bytes at the destination"
+else
+    fail "bin-rename patch writes the new bytes at the destination" \
+         "got: $(python3 -c "print(open('$T172/b/fake/src/blob2.bin','rb').read())" 2>&1)"
+fi
+if [ ! -e "$T172/b/fake/src/blob.bin" ]; then
+    ok "bin-rename patch removes the source path"
+else
+    fail "bin-rename patch removes the source path"
+fi
+expect_file_eq "bin-rename patch leaves payload-free binaries untouched" \
+    "$T172/b/fake/src/keep.bin" "$T172/keep-C.bin"
+run_in "$T172/a" expect_ok "bin-rename commit" "$PROJENY" commit fake.projeny
+expect_file_contains "bin-rename commit stores rename from src/blob.bin" \
+    "$T172/a/fake.projeny" "rename from src/blob.bin"
+expect_file_contains "bin-rename commit stores rename to src/blob2.bin" \
+    "$T172/a/fake.projeny" "rename to src/blob2.bin"
+expect_file_contains "bin-rename commit stores the binary payload" \
+    "$T172/a/fake.projeny" "GIT binary patch"
+# The bug: a fresh setup must restore the NEW bytes, not just move the old
+# file. Wipe workdir and status, then set up from the committed patch.
+rm -rf "$T172/a/fake" "$T172/a/.fake.projeny.status"
+run_in "$T172/a" expect_ok "bin-rename fresh setup after wipe" \
+    "$PROJENY" setup fake.projeny
+if cmp -s "$T172/a/fake/src/blob2.bin" "$T172/blob-B.bin"; then
+    ok "bin-rename setup restores the new bytes at the destination"
+else
+    fail "bin-rename setup restores the new bytes at the destination" \
+         "got: $(python3 -c "print(open('$T172/a/fake/src/blob2.bin','rb').read())" 2>&1)"
+fi
+if [ ! -e "$T172/a/fake/src/blob.bin" ]; then
+    ok "bin-rename setup keeps the source path gone"
+else
+    fail "bin-rename setup keeps the source path gone"
+fi
+expect_file_eq "bin-rename setup leaves payload-free binaries untouched" \
+    "$T172/a/fake/src/keep.bin" "$T172/keep-C.bin"
+# Idempotence: the second setup takes the already-applied path (source
+# missing, destination holds the new bytes) and must change nothing.
+run_in "$T172/a" expect_ok "bin-rename setup twice is a no-op" \
+    "$PROJENY" setup fake.projeny
+expect_file_eq "bin-rename setup twice keeps the new bytes" \
+    "$T172/a/fake/src/blob2.bin" "$T172/blob-B.bin"
+# Payload-free case in isolation: a pure binary mv (identical bytes) emits
+# no payload, commits as a bare rename block, and a fresh setup reproduces
+# the identical bytes at the new path via the move-only fast path.
+run_in "$T172/c" expect_ok "bin-rename payload-free checkout setup" \
+    "$PROJENY" setup fake.projeny
+run_in "$T172/c" expect_ok "bin-rename payload-free mv the binary" \
+    "$PROJENY" mv fake.projeny fake/src/keep.bin fake/src/keep2.bin
+out="$(cd "$T172/c" && "$PROJENY" diff fake.projeny 2>"$T172/c/err")"
+case "$out" in
+*"rename from src/keep.bin"*)
+    ok "bin-rename pure mv renders as rename"
+    ;;
+*) fail "bin-rename pure mv renders as rename" "out: $out" ;;
+esac
+case "$out" in
+*"GIT binary patch"*)
+    fail "bin-rename pure mv carries no payload" "out: $out"
+    ;;
+*) ok "bin-rename pure mv carries no payload" ;;
+esac
+run_in "$T172/c" expect_ok "bin-rename payload-free commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "bin-rename payload-free commit stores the rename" \
+    "$T172/c/fake.projeny" "rename to src/keep2.bin"
+if grep -q "GIT binary patch" "$T172/c/fake.projeny"; then
+    fail "bin-rename payload-free commit stores no payload" \
+         "$(grep -A2 "GIT binary patch" "$T172/c/fake.projeny")"
+else
+    ok "bin-rename payload-free commit stores no payload"
+fi
+rm -rf "$T172/c/fake" "$T172/c/.fake.projeny.status"
+run_in "$T172/c" expect_ok "bin-rename payload-free fresh setup" \
+    "$PROJENY" setup fake.projeny
+expect_file_eq "bin-rename payload-free setup reproduces the bytes" \
+    "$T172/c/fake/src/keep2.bin" "$T172/keep-C.bin"
+if [ ! -e "$T172/c/fake/src/keep.bin" ]; then
+    ok "bin-rename payload-free setup keeps the old path gone"
+else
+    fail "bin-rename payload-free setup keeps the old path gone"
+fi
+# --------- 173. re-commit after a committed rename keeps the renamed file
+# Commit re-derives its patch from scratch against the raw archive, which
+# predates every committed rename. When a committed rename's content has
+# diverged beyond rename detection (a binary whose bytes changed - binaries
+# never similarity-pair - or text below the 50% line-similarity threshold),
+# that re-derivation yields delete(old) + add(new), and the add used to be
+# dropped by the untracked-add keep filter: the keep list collected only
+# PURE adds (both add-path helpers excluded rename blocks). The stored patch
+# then lost the new file entirely, the next setup resurrected the old path,
+# and the committed file was gone - rc 0 everywhere, no error. Both flows
+# below commit a rename, commit AGAIN with no pending ops, and require the
+# re-stored patch to still deliver the renamed file. The stored form is NOT
+# pinned (a re-pairing rename and a delete+add are both correct): the
+# OUTCOME is pinned - a fresh setup must reproduce the committed workdir.
+T173="$ROOT/t173"
+mkdir -p "$T173/a" "$T173/b"
+for side in a b; do
+    mkdir -p "$T173/$side/fake-1.0/src"
+    printf 'int alpha = 1;\n' > "$T173/$side/fake-1.0/src/a.c"
+    cat > "$T173/$side/fake-1.0/src/orig.c" <<'EOF'
+int alpha = 1;
+
+int beta = 1;
+
+int gamma = 1;
+
+int delta = 1;
+EOF
+    # Content A: NUL-bearing, shipped in the tarball so the committed block
+    # really is a rename (a committed-ADDED binary re-derives as a plain add).
+    python3 -c \
+        "open('$T173/$side/fake-1.0/src/blob.bin','wb').write(b'old\x00\x00\x00blob\x00A\x00payload\n')"
+    (cd "$T173/$side" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+    printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    Fake project fake for projeny tests.\n' > "$T173/$side/fake.projeny"
+done
+# Reference bytes: content B differs in length and NUL placement from A.
+python3 -c \
+    "open('$T173/blob-B.bin','wb').write(b'\x00\x00brand\x00new\x00blob-B payload with a different length\n')"
+# The wildly dissimilar text rewrite shares no line with the tarball original.
+cat > "$T173/divergent.txt" <<'EOF'
+zebra
+quartz
+mystic
+plinth
+EOF
+# Binary flow: mv + overwrite with B, commit, commit again, fresh setup.
+run_in "$T173/a" expect_ok "recommit-binary checkout setup" \
+    "$PROJENY" setup fake.projeny
+run_in "$T173/a" expect_ok "recommit-binary mv the tracked binary" \
+    "$PROJENY" mv fake.projeny fake/src/blob.bin fake/src/blob2.bin
+cp "$T173/blob-B.bin" "$T173/a/fake/src/blob2.bin"
+run_in "$T173/a" expect_ok "recommit-binary first commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "recommit-binary stores rename from src/blob.bin" \
+    "$T173/a/fake.projeny" "rename from src/blob.bin"
+expect_file_contains "recommit-binary stores rename to src/blob2.bin" \
+    "$T173/a/fake.projeny" "rename to src/blob2.bin"
+expect_file_contains "recommit-binary stores the binary payload" \
+    "$T173/a/fake.projeny" "GIT binary patch"
+# The bug: the second commit (no pending ops) re-derives the diff against
+# the raw archive; the diverged bytes never re-pair, and the re-derived add
+# of blob2.bin used to be dropped as untracked - the file silently vanished.
+run_in "$T173/a" expect_ok "recommit-binary second commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "recommit-binary re-stored patch still names blob2.bin" \
+    "$T173/a/fake.projeny" "src/blob2.bin"
+expect_file_contains "recommit-binary re-stored patch still carries bytes" \
+    "$T173/a/fake.projeny" "GIT binary patch"
+# Outcome, not form: a fresh setup must reproduce the committed workdir
+# (rename-with-payload or delete+binary-add are both correct stored forms).
+rm -rf "$T173/a/fake" "$T173/a/.fake.projeny.status"
+run_in "$T173/a" expect_ok "recommit-binary fresh setup after wipe" \
+    "$PROJENY" setup fake.projeny
+if cmp -s "$T173/a/fake/src/blob2.bin" "$T173/blob-B.bin"; then
+    ok "recommit-binary setup restores the new bytes at blob2.bin"
+else
+    fail "recommit-binary setup restores the new bytes at blob2.bin" \
+         "got: $(python3 -c "print(open('$T173/a/fake/src/blob2.bin','rb').read())" 2>&1)"
+fi
+if [ ! -e "$T173/a/fake/src/blob.bin" ]; then
+    ok "recommit-binary setup keeps the old path gone"
+else
+    fail "recommit-binary setup keeps the old path gone"
+fi
+# Text flow: mv + wildly dissimilar rewrite, commit, commit again, fresh
+# setup. The forced-rename commit stores an arbitrarily divergent rename, so
+# the second commit re-derives below the similarity threshold.
+run_in "$T173/b" expect_ok "recommit-text checkout setup" \
+    "$PROJENY" setup fake.projeny
+run_in "$T173/b" expect_ok "recommit-text mv the tracked file" \
+    "$PROJENY" mv fake.projeny fake/src/orig.c fake/src/renamed.c
+cp "$T173/divergent.txt" "$T173/b/fake/src/renamed.c"
+run_in "$T173/b" expect_ok "recommit-text first commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "recommit-text stores rename from src/orig.c" \
+    "$T173/b/fake.projeny" "rename from src/orig.c"
+expect_file_contains "recommit-text stores rename to src/renamed.c" \
+    "$T173/b/fake.projeny" "rename to src/renamed.c"
+run_in "$T173/b" expect_ok "recommit-text second commit" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "recommit-text re-stored patch still names renamed.c" \
+    "$T173/b/fake.projeny" "src/renamed.c"
+rm -rf "$T173/b/fake" "$T173/b/.fake.projeny.status"
+run_in "$T173/b" expect_ok "recommit-text fresh setup after wipe" \
+    "$PROJENY" setup fake.projeny
+expect_file_eq "recommit-text setup restores the exact divergent content" \
+    "$T173/b/fake/src/renamed.c" "$T173/divergent.txt"
+if [ ! -e "$T173/b/fake/src/orig.c" ]; then
+    ok "recommit-text setup keeps the old path gone"
+else
+    fail "recommit-text setup keeps the old path gone"
+fi
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

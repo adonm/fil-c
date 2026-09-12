@@ -242,7 +242,10 @@ void ensure_snapshot(const std::string& archive)
 // phrase for the error (e.g. "reconstruct the tree recorded by '<file>'").
 // Dies with recovery guidance when neither file exists. Archives named by
 // the CURRENT .projeny file must not go through here: those files must
-// exist, and unpack_single_top's plain error is the right one.
+// exist, and unpack_single_top's plain error is the right one. (Exception:
+// the pending-aware `projeny diff <f.projeny>` goes through here, because
+// it requires the .projeny file to match the status copy first — so its
+// archive is the status-recorded archive.)
 std::string resolve_status_archive(const std::string& archive,
                                    const std::string& what)
 {
@@ -1686,23 +1689,20 @@ int cmd_commit(const std::string& projeny_arg)
     // package tarball written into the workdir) are filtered back out of the
     // patch, the way git leaves untracked files out of commits.
     reconcile_binaries(workdir, base, false);
-    // diff_trees already returns canonical "a/<wid>/..." labels, so no
-    // second canonicalization pass is needed (the old code double-wrapped
+    // The differ returns canonical "a/<wid>/..." labels, so no second
+    // canonicalization pass is needed (the old code double-wrapped
     // absolute paths and produced garbage labels). normalize_patch_text
     // already ends the patch with exactly one newline.
-    std::string raw_patch = diff_trees(base, workdir, cur.name);
     // Commit filtering: only explicitly marked files change tracking state.
     //   - a file that disappeared without `projeny rm` (or a `projeny mv`
     //     source) is an error: refuse instead of silently deleting.
     //   - a new file that appeared without `projeny add` (or a `projeny mv`
     //     destination) is untracked: leave it out of the patch, like git.
-    // Rename blocks (including mv pairs the differ paired by content) are
-    // always kept, so `projeny mv` renders as a rename diff.
     // Previously committed adds/deletes are tracked too: the diff is
     // regenerated from scratch on every commit, so without them a recommit
     // would silently drop every committed addition or re-error on every
-    // committed deletion. `keep` entries may name directories (add/rm take
-    // dirs): files under them match via prefix, as is_tracked_path does.
+    // committed deletion. Keep entries may name directories (add/rm take
+    // dirs): files under them match via prefix.
     {
         std::vector<std::string> del_keep;
         for (const auto& r : st.removed)
@@ -1713,14 +1713,40 @@ int cmd_commit(const std::string& projeny_arg)
             if (std::find(del_keep.begin(), del_keep.end(), p) == del_keep.end())
                 del_keep.push_back(p);
         }
-        auto covered = [&del_keep](const std::string& rel) -> bool {
-            for (auto& k : del_keep) {
+        // Coverage for the disappeared check below. An exact keep hit is
+        // authoritative (a removed entry, a pending rename source, or the
+        // patch's own deleted path), and so is living under a keep entry
+        // (add/rm take directories) — except when that entry is exactly
+        // the source of a pending rename (a directory move): there the
+        // file counts as registered only when it moved with the directory,
+        // i.e. its counterpart under the rename destination exists in the
+        // workdir or is itself covered by the removed list (`projeny rm`
+        // after the move records the moved-to path). Otherwise a plain
+        // `rm` of one file inside a moved directory would be silently
+        // folded into the pending move and committed as a deletion — the
+        // next setup would then restore a file the user removed.
+        auto covered = [&](const std::string& rel) -> bool {
+            for (const auto& k : del_keep) {
                 if (k.empty())
                     continue;
                 if (rel == k)
                     return true;
-                if (rel.size() > k.size() && rel.compare(0, k.size(), k) == 0 &&
-                    rel[k.size()] == '/')
+                if (!(rel.size() > k.size() &&
+                      rel.compare(0, k.size(), k) == 0 &&
+                      rel[k.size()] == '/'))
+                    continue;
+                bool is_dir_move = false;
+                for (const auto& rn : st.renamed) {
+                    if (rn.first != k)
+                        continue;
+                    is_dir_move = true;
+                    std::string counterpart =
+                        rn.second + rel.substr(k.size());
+                    if (path_exists(join_path(workdir, counterpart)) ||
+                        vcs_covers_keep_path(st.removed, counterpart))
+                        return true; // moved with the directory
+                }
+                if (!is_dir_move)
                     return true;
             }
             return false;
@@ -1771,26 +1797,40 @@ int cmd_commit(const std::string& projeny_arg)
                 detail);
         }
     }
-    {
-        std::vector<std::string> keep;
-        for (const auto& a : st.added)
-            keep.push_back(a);
-        for (const auto& rn : st.renamed)
-            keep.push_back(rn.second);
-        // Previously committed adds are tracked too: the diff is
-        // regenerated from scratch on every commit, so without them a
-        // recommit would silently drop every committed addition.
-        for (const auto& p : vcs_add_paths(cur.patch, cur.name)) {
-            if (std::find(keep.begin(), keep.end(), p) == keep.end())
-                keep.push_back(p);
-        }
-        for (const auto& p : vcs_binary_add_paths(cur.patch, cur.name)) {
-            if (std::find(keep.begin(), keep.end(), p) == keep.end())
-                keep.push_back(p);
-        }
-        raw_patch = vcs_drop_adds_not_in(raw_patch, cur.name, keep);
-        raw_patch = vcs_drop_binary_adds_not_in(raw_patch, cur.name, keep);
+    std::vector<std::string> keep;
+    for (const auto& a : st.added)
+        keep.push_back(a);
+    for (const auto& rn : st.renamed)
+        keep.push_back(rn.second);
+    // Previously committed adds are tracked too: the diff is
+    // regenerated from scratch on every commit, so without them a
+    // recommit would silently drop every committed addition.
+    for (const auto& p : vcs_add_paths(cur.patch, cur.name)) {
+        if (std::find(keep.begin(), keep.end(), p) == keep.end())
+            keep.push_back(p);
     }
+    for (const auto& p : vcs_binary_add_paths(cur.patch, cur.name)) {
+        if (std::find(keep.begin(), keep.end(), p) == keep.end())
+            keep.push_back(p);
+    }
+    // The patch is generated through the same pending-aware differ that
+    // `projeny diff <f.projeny>` prints, so what a diff shows is exactly
+    // what commit stores. forced_renames makes `projeny mv` ALWAYS render
+    // as a rename block — even when the moved file's content diverged
+    // beyond the similarity threshold, and even when the moved file is
+    // itself the product of an earlier committed rename (the pending
+    // source resolves back through the committed patch to the original
+    // archive path, which is what the base tree here — the raw archive —
+    // still names). committed_patch supplies those committed renames.
+    // add_keep leaves untracked adds out; delete_keep stays null because
+    // the disappeared check above is the sole deletion authority: no
+    // delete block is ever dropped here, and a resolved rename's delete
+    // side may name an archive path that no pending op mentions.
+    VcsDiffOpts dopts;
+    dopts.forced_renames = &st.renamed;
+    dopts.committed_patch = &cur.patch;
+    dopts.add_keep = &keep;
+    std::string raw_patch = vcs_diff_trees_ex(base, workdir, cur.name, dopts);
     std::string new_patch = normalize_patch_text(raw_patch);
 
     cur.rebuild(new_patch);
@@ -2438,6 +2478,107 @@ int cmd_status(const std::string& projeny_arg)
     return 0;
 }
 
+int cmd_diff_projeny(const std::string& projeny_arg)
+{
+    Ctx ctx = resolve_ctx(projeny_arg);
+    if (!path_exists(ctx.statusfile))
+        die("status file '" + ctx.statusfile + "' is missing; run setup first");
+    StatusData st = StatusData::parse(ctx.statusfile);
+    std::string cur_raw = read_file_bytes(ctx.projeny_arg);
+    if (cur_raw != st.embedded)
+        die("'" + ctx.projeny_arg +
+            "' differs from the copy in '" + ctx.statusfile +
+            "'; run setup to merge first");
+    if (!st.conflicts.empty()) {
+        std::string detail;
+        for (auto& c : st.conflicts)
+            detail += "  " + c + "\n";
+        die("cannot diff with unresolved conflicts", detail);
+    }
+    ProjenyFile cur = ProjenyFile::parse_bytes(cur_raw,
+                                               "'" + ctx.projeny_arg + "'");
+    std::string workdir = join_path(ctx.pdir, cur.name);
+    if (!is_dir(workdir)) {
+        // The checkout directory is gone: the status and snapshot files are
+        // stale state. Disregard them (warn + rename), then keep the hard
+        // error — there is nothing to diff against.
+        disregard_stale_state(ctx, {cur.archive});
+        die("workdir '" + workdir + "' is missing; run setup first");
+    }
+
+    // Validate pending ops exactly like commit: this diff must describe a
+    // state commit would accept, so pending bookkeeping must match reality.
+    for (const auto& a : st.added) {
+        if (!path_exists(join_path(workdir, a)))
+            die("pending add '" + a + "' does not exist in '" + workdir + "'");
+    }
+    for (const auto& rn : st.renamed) {
+        if (!path_exists(join_path(workdir, rn.second)))
+            die("pending rename '" + rn.first + " -> " + rn.second +
+                "': destination missing in '" + workdir + "'");
+        if (path_exists(join_path(workdir, rn.first)))
+            die("pending rename '" + rn.first + " -> " + rn.second +
+                "': source still exists in '" + workdir + "'");
+    }
+
+    // Baseline: what a FRESH `projeny setup` of the CURRENT .projeny file
+    // would check out (the archive plus its patch). Like status, prefer the
+    // snapshot — the byte-exact copy of what the last setup actually used,
+    // which survives git deleting the archive — and fall back to the
+    // archive itself, snapshotting it on the way. resolve_status_archive
+    // dies with recovery guidance when neither file exists.
+    std::string archive_path =
+        resolve_status_archive(join_path(ctx.pdir, cur.archive),
+                               "diff '" + ctx.projeny_arg + "'");
+    TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-diff-");
+    std::string Etree = build_tree_from_patch(
+        tmp, archive_path, cur.origname, cur.name, cur.patch,
+        "patch in '" + ctx.projeny_arg + "'");
+
+    // Pending ops decide which changes count: adds (and move destinations)
+    // on the add side, removals (and move sources) on the delete side.
+    // committed_patch stays null: the expected tree already contains the
+    // committed renames, so every pending rename source names an E path
+    // directly and needs no unwinding.
+    std::vector<std::string> add_keep, del_keep;
+    for (const auto& a : st.added)
+        add_keep.push_back(a);
+    for (const auto& r : st.removed)
+        del_keep.push_back(r);
+    for (const auto& rn : st.renamed) {
+        del_keep.push_back(rn.first);
+        add_keep.push_back(rn.second);
+    }
+    std::vector<std::string> disappeared;
+    VcsDiffOpts dopts;
+    dopts.forced_renames = &st.renamed;
+    dopts.add_keep = &add_keep;
+    dopts.delete_keep = &del_keep;
+    dopts.disappeared = &disappeared;
+    std::string raw = vcs_diff_trees_ex(Etree, workdir, cur.name, dopts);
+
+    // Files that vanished without `projeny rm` are unregistered deletions:
+    // they never reach the diff (the next setup would restore them), but
+    // staying silent would make an empty output look like "no local
+    // changes" instead of "some changes were ignored", so warn with the
+    // exact command that registers each one. The path is spelled
+    // wid-prefixed ("<name>/<rel>"): add/rm/mv accept that form from any
+    // CWD, while the bare workdir-relative spelling only resolves when the
+    // CWD is the workdir itself (everywhere else it dies with "outside the
+    // workdir"). These go to stderr; stdout carries only the patch.
+    for (const auto& rel : disappeared) {
+        warn("'" + rel + "' was removed locally but is not marked with "
+             "'projeny rm " +
+             ctx.projeny_arg + " " + cur.name + "/" + rel +
+             "'; it will not appear in the diff");
+    }
+
+    std::string patch = normalize_patch_text(raw);
+    if (!patch.empty())
+        fwrite(patch.data(), 1, patch.size(), stdout);
+    return 0;
+}
+
 int cmd_diff(const std::string& dir, const std::string& other_dir)
 {
     if (!is_dir(dir))
@@ -2922,6 +3063,7 @@ int cmd_help(const std::string& arg0)
            "  resolve <f.projeny> <path>       clear a conflict marker entry\n"
            "  rebase <f.projeny> <tarball>     point the project at a new tarball\n"
            "  status <f.projeny>               show setup/conflict/pending state\n"
+           "  diff <f.projeny>                 print a checkout's uncommitted diff\n"
            "  diff <dir> <other-dir>           print the diff between two trees\n"
            "  patch <dir> <patch-file>         apply a patch file to a tree\n"
            "  package <f.projeny|dir> <out>    setup, then tar the tracked files\n"
@@ -3074,8 +3216,9 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "\n"
                "Rename a file inside the workdir and record the rename as\n"
                "pending (folded into the patch by the next `commit`, which\n"
-               "renders it as a rename diff when the content is similar\n"
-               "enough). Moving a pending-added file keeps it added under\n"
+               "renders it as a rename diff — always, even when the moved\n"
+               "file's content diverged beyond the rename similarity\n"
+               "threshold). Moving a pending-added file keeps it added under\n"
                "the new name. Path forms are the same as for `add`.\n",
                t);
         return 0;
@@ -3123,21 +3266,57 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
         return 0;
     }
     if (topic == "diff") {
-        printf("%s diff <dir> <other-dir>\n"
+        printf("%s diff <f.projeny>\n"
+               "%s diff <dir> <other-dir>\n"
                "\n"
-               "Print the unified diff between two on-disk trees to stdout\n"
-               "(git-compatible: `diff --git a/... b/...`, ---/+++, @@\n"
-               "hunks, new/deleted/rename entries; text hunks are accepted\n"
-               "by `git apply` and `patch -p1` as well as `projeny patch`).\n"
-               "The diff is minimal: an internal Myers line diff with rename\n"
-               "detection. NUL-bearing (binary) files travel as base64\n"
-               "`GIT binary patch` blocks (projeny-internal encoding);\n"
-               "everything else roundtrips exactly, including trailing\n"
-               "blank lines.\n"
-               "Labels use the second directory's basename, so\n"
-               "`projeny diff A B > p` plus `projeny patch C p` reproduces\n"
-               "B from a copy C of A. Both arguments must be directories.\n",
-               t);
+               "With a .projeny file: print the checkout's uncommitted change\n"
+               "to stdout — the diff of the workdir against what a FRESH\n"
+               "`setup` of the current .projeny file would check out (the\n"
+               "tarball plus the current patch). `commit` answers a\n"
+               "different question about the same workdir: it diffs against\n"
+               "the raw tarball. For ordinary edits the two patches agree;\n"
+               "they differ only when a pending `mv` renames a file the\n"
+               "last commit itself added or renamed — the diff describes\n"
+               "the move against the checked-in paths, while `commit`\n"
+               "re-derives it from the tarball's paths (a committed-added\n"
+               "file commits as a plain add of its new name; a committed\n"
+               "rename re-traces to the original tarball path). Each output\n"
+               "is correct for its own baseline.\n"
+               "\n"
+               "Pending add/rm/mv operations are reported as add/delete/\n"
+               "rename blocks: a `projeny mv` renders as a rename block even\n"
+               "when the moved file's content diverged beyond the rename\n"
+               "similarity threshold, and chained moves collapse into one\n"
+               "rename from the original path to the final one (a directory\n"
+               "move renames each contained file). Only registered changes\n"
+               "count: a file added without `projeny add` or moved-to\n"
+               "without `projeny mv` is untracked and stays out of the diff,\n"
+               "like git leaves untracked files out (one exception: files\n"
+               "created inside a directory that a pending `mv` moved — the\n"
+               "move destination is registered, so new files under it ride\n"
+               "along); a file deleted without `projeny rm` is left out\n"
+               "too, and produces a warning on stderr naming the `projeny\n"
+               "rm` command that would record it.\n"
+               "The command refuses (hard error) when the .projeny file\n"
+               "differs from the status copy (run `setup` to merge first),\n"
+               "when conflicts are unresolved, or when pending ops do not\n"
+               "match the workdir. The exit status is 0 whenever the diff\n"
+               "itself succeeds — even when it prints changes or warnings.\n"
+               "stdout carries only the patch; warnings go to stderr.\n"
+               "\n"
+               "With two directories: print the minimal unified diff between\n"
+               "two on-disk trees to stdout (git-compatible: `diff --git\n"
+               "a/... b/...`, ---/+++, @@ hunks, new/deleted/rename entries;\n"
+               "text hunks are accepted by `git apply` and `patch -p1` as\n"
+               "well as `projeny patch`). The diff is minimal: an internal\n"
+               "Myers line diff with rename detection. NUL-bearing (binary)\n"
+               "files travel as base64 `GIT binary patch` blocks\n"
+               "(projeny-internal encoding); everything else roundtrips\n"
+               "exactly, including trailing blank lines. Labels use the\n"
+               "second directory's basename, so `projeny diff A B > p` plus\n"
+               "`projeny patch C p` reproduces B from a copy C of A. Both\n"
+               "arguments must be directories.\n",
+               t, t);
         return 0;
     }
     if (topic == "patch") {

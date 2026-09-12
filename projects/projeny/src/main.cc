@@ -45,6 +45,7 @@ int usage(const char* arg0, bool err)
             "  resolve <f.projeny> <path>\n"
             "  rebase <f.projeny> <new-tarball>\n"
             "  status <f.projeny>\n"
+            "  diff <f.projeny>\n"
             "  diff <dir> <other-dir>\n"
             "  patch <dir> <patch-file>\n"
             "  package <f.projeny|dir> <output-tarball>\n"
@@ -113,9 +114,11 @@ int main(int argc, char** argv)
         return cmd_status(args[1]);
     }
     if (cmd == "diff") {
-        if (args.size() != 3)
-            return usage(arg0.c_str(), true);
-        return cmd_diff(args[1], args[2]);
+        if (args.size() == 2)
+            return cmd_diff_projeny(args[1]);
+        if (args.size() == 3)
+            return cmd_diff(args[1], args[2]);
+        return usage(arg0.c_str(), true);
     }
     if (cmd == "patch") {
         if (args.size() != 3)

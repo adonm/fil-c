@@ -2481,6 +2481,33 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					st.x86_preAnd = true
 				end
 			end
+			-- Forward reachability from the mids: an instruction reachable from
+			-- an `and` may execute with that and's dynamic slack baked into rsp.
+			-- A carrier parked at such a point captures a slack-tainted value,
+			-- so a later restore through it is not entry-absolute (this is the
+			-- dual of the preAnd walk above, which marks what can reach an
+			-- and). A park reached from NO and on any path captures the
+			-- slack-free rsp — entry-absolute when parked at the entry depth —
+			-- no matter where the ands sit in body order (a dispatch-exclusive
+			-- path's and never executes alongside another path's park/use, e.g.
+			-- the aesni-mb shared 4x/8x bodies).
+			local reachedFromAnd = {}
+			do
+				local work2 = {}
+				for _, a in ipairs(andIdxs) do
+					if not reachedFromAnd[a] then
+						reachedFromAnd[a] = true; table.insert(work2, a)
+					end
+				end
+				while #work2 > 0 do
+					local j = table.remove(work2)
+					for _, s in successors(j) do
+						if not reachedFromAnd[s] then
+							reachedFromAnd[s] = true; table.insert(work2, s)
+						end
+					end
+				end
+			end
 			-- Alias-carrier accesses CROSSING a mid-function `and` cannot be proven
 			-- safe: pre- and post-and traffic share one numbering, but
 			-- each and shifts rsp by a dynamic slack (0..N-1), so the same key
@@ -2499,10 +2526,56 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- and used after it with no further and between: save the stack
 			-- pointer after the and and address the slot through it, or address
 			-- the slot directly. Prologue `and` notes hold no slot traffic by
-			-- construction and never trigger this.)
+			-- construction and never trigger this. Epilogue restores through an
+			-- ENTRY-derived carrier (`mov K(%carrier),%reg` reloading a pushed
+			-- save, marked x86_dropRestore) are exempt, and ONLY those: they
+			-- restore a register web and are dropped, never virtualizing a slot
+			-- web, and their save slot is at an absolute entry-relative address
+			-- the and slack cannot shift (the save-stack depth match proves it
+			-- is that save). The exemption is deliberately narrow — a live
+			-- carrier holding the slack-free entry rsp itself (parked at the
+			-- entry depth on a path reached from no mid-function and, per the
+			-- reachedFromAnd walk above) with a save-depth match re-verified
+			-- here. A restore through a carrier parked where an and's slack
+			-- was already baked into rsp (reachable from an and), or any other
+			-- dropRestore without a live entry carrier, still fails below: the
+			-- same key would name different addresses on the two sides. (Body
+			-- order alone cannot decide this: a park textually after one and
+			-- may sit on a dispatch-exclusive path that never executes it —
+			-- the aesni-mb 4x/8x sharing — while a park textually before an
+			-- and may still be reached from it around a loop.)
+			local function dropRestoreCrossingExempt(i, st)
+				if not st.x86_dropRestore then return false end
+				local mem = nil
+				for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
+				if not (mem and mem.base and mem.base.kind == "reg") then return false end
+				local e = smapIn[i] and smapIn[i][mem.base.name]
+				if not (e and not e.redefined and not e.slot and not e.roff and not e.conflict) then
+					return false
+				end
+				-- Entry-derived: the parked value must be the entry rsp itself
+				-- (depth 0 — not a deeper frame address), parked on a path
+				-- reached from no mid-function and (so no and slack is baked
+				-- into it).
+				if type(e.depth) ~= "number" or e.depth ~= 0 then return false end
+				local parkIdx = e.saveIdx or st.x86_aliasSaveIdx or 0
+				if type(parkIdx) ~= "number" or parkIdx == 0 or reachedFromAnd[parkIdx] then return false end
+				-- Save-depth match, re-verified against the incoming save stack
+				-- (mirrors restoreLoadOf): the carrier depth minus the
+				-- displacement must name exactly the restored register's save.
+				local sv = savesIn[i]
+				if not (sv and sv ~= "dyn") then return false end
+				local want = e.depth - (mem.dispVal or 0)
+				for _, s in sv do
+					if s.depth == want then
+						return s.name == st.operands[1].name
+					end
+				end
+				return false
+			end
 			for i, st in body do
 				if st.kind == "insn" and st.x86_aliasOff ~= nil and not st.x86_preAnd
-					and not isAnd[i] then
+					and not isAnd[i] and not dropRestoreCrossingExempt(i, st) then
 					-- Unknown save position (nil) fails closed: treat as before.
 					local sIdx = st.x86_aliasSaveIdx or 0
 					-- Nearest preceding and to this use (nil when the use is

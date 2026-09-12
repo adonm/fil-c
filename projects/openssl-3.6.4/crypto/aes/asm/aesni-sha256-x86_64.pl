@@ -374,14 +374,7 @@ ${func}_xop: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 	push	%r15
 .cfi_push	%r15
 	sub	\$`$framesz+$win64*16*10`,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-64,%rsp		# align stack frame
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 
 	shl	\$6,$len
 	sub	$inp,$out		# re-bias
@@ -697,14 +690,7 @@ ${func}_avx: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 	push	%r15
 .cfi_push	%r15
 	sub	\$`$framesz+$win64*16*10`,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-64,%rsp		# align stack frame
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 
 	shl	\$6,$len
 	sub	$inp,$out		# re-bias

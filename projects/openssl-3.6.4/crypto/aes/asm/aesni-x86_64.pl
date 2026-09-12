@@ -1237,14 +1237,7 @@ $code.=<<___;
 	push	%rbp
 .cfi_push	%rbp
 	sub	\$$frame_size,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8($key_)		# offload everything
@@ -1796,14 +1789,7 @@ aesni_xts_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 	push	%rbp
 .cfi_push	%rbp
 	sub	\$$frame_size,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8(%r11)		# offload everything
@@ -2287,14 +2273,7 @@ aesni_xts_decrypt: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
 	push	%rbp
 .cfi_push	%rbp
 	sub	\$$frame_size,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,-0xa8(%r11)		# offload everything
@@ -3811,57 +3790,41 @@ $code.=<<___;
 .Lcbc_enc_tail:
 	mov	$len,%rcx	# zaps $key
 ___
-if ($ENV{SARCASM}) {
-  # The tail block is encrypted inline here (not by swapping the two
-  # pointer arguments and re-entering the main loop): such a swap makes
-  # $inp's and $out's register webs share a definition, and ptrflow's
-  # dynamic lower for the merged web then feeds the main loop's
-  # input-block read a capability from a different origin. A balanced
-  # push/pop of %rbx is dropped by the frame model and provides the
-  # block pointer without touching $inp/$out. The copies use 'rep movsb' /
-  # 'rep stosb' directly (sarcasm lowers them to checked copies/fills); the
-  # xchg below is straight-line, so each side keeps its own capability.
-  $code.=<<___;
+# Dual rep-vs-.long below is intentional: gas `.long 0x9066A4F3/0x9066AAF3`
+# encodes `rep movsb/stosb` plus a 2-byte nop pad (`66 90`, `xchg %ax,%ax`;
+# objdump shows `f3 a4 66 90`), while plain `rep movsb/stosb` is 2 bytes
+# (`f3 a4`). Sarcasm rejects data directives in function bodies, so it spells
+# the ops out (`rep movsb`/`rep stosb` lower to checked copies/fills); gas
+# keeps the legacy padded encoding. The xchg-then-re-enter-loop shape itself
+# needs no workaround (sarcasm's dynamic lower tracks the merged web in
+# lockstep; see filc/tests/sarcasm-xchg-loop-att).
+$code.=<<___;
 	xchg	$inp,$out	# $inp is %rsi and $out is %rdi now
-	rep	movsb	# copy tail bytes
-	mov	\$16,%ecx	# zero tail
-	sub	$len,%rcx
-	xor	%eax,%eax
-	rep	stosb	# zero pad
-	push	%rbx
-	mov	$key_,$key	# restore $key
-	mov	$rnds_,$rounds	# restore $rounds
-	lea	-16(%rdi),%rbx	# the padded tail block
-	movups	(%rbx),%xmm3
-	movups	($key),$rndkey0
-	movups	16($key),$rndkey1
-	xorps	$rndkey0,%xmm3
-	lea	32($key),$key
-	xorps	%xmm3,$inout0
-.Lcbc_enc_tail_round:
-	aesenc	$rndkey1,$inout0
-	decl	%eax
-	movups	($key),$rndkey1
-	lea	16($key),$key
-	jnz	.Lcbc_enc_tail_round
-	aesenclast	$rndkey1,$inout0
-	movups	$inout0,(%rbx)	# store the tail ciphertext
-	pop	%rbx
-	pxor	$rndkey0,$rndkey0
-	pxor	$rndkey1,$rndkey1
-	movups	$inout0,($ivp)	# store new IV
-	pxor	$inout0,$inout0
-	pxor	%xmm3,%xmm3
-	jmp	.Lcbc_ret
+___
+if ($ENV{SARCASM}) {
+  $code.=<<___;
+	rep	movsb
 ___
 } else {
   $code.=<<___;
-	xchg	$inp,$out	# $inp is %rsi and $out is %rdi now
 	.long	0x9066A4F3	# rep movsb
+___
+}
+$code.=<<___;
 	mov	\$16,%ecx	# zero tail
 	sub	$len,%rcx
 	xor	%eax,%eax
+___
+if ($ENV{SARCASM}) {
+  $code.=<<___;
+	rep	stosb
+___
+} else {
+  $code.=<<___;
 	.long	0x9066AAF3	# rep stosb
+___
+}
+$code.=<<___;
 	lea	-16(%rdi),%rdi	# rewind $out by 1 block
 	mov	$rnds_,$rounds	# restore $rounds
 	mov	%rdi,%rsi	# $inp and $out are the same
@@ -3869,7 +3832,6 @@ ___
 	xor	$len,$len	# len=16
 	jmp	.Lcbc_enc_loop	# one more spin
 ___
-}
 $code.=<<___;
 #--------------------------- CBC DECRYPT ------------------------------#
 .align	16
@@ -3900,14 +3862,7 @@ $code.=<<___;
 	push	%rbp
 .cfi_push	%rbp
 	sub	\$$frame_size,%rsp
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 	and	\$-16,%rsp	# Linux kernel stack can be incorrectly seeded
-___
-}
-$code.=<<___;
-	# sarcasm: plain sub frame above (slots virtualized; no re-alignment).
 ___
 $code.=<<___ if ($win64);
 	movaps	%xmm6,0x10(%rsp)
@@ -3923,13 +3878,7 @@ $code.=<<___ if ($win64);
 .Lcbc_decrypt_body:
 ___
 
-my $key_="%rbp";
-# Under sarcasm $inp_ must not alias the key backup: two pointer origins
-# in one register web (the key schedule and the input buffer) would make
-# ptrflow merge their capabilities, and the main loop's input-block read
-# would be checked against the key's object. %r9 is dead in this path
-# (it only carried the ia32cap dispatch value).
-my $inp_=$ENV{SARCASM}?"%r9":"%rbp";
+my $inp_=$key_="%rbp";			# reassign $key_
 
 $code.=<<___;
 	mov	$key,$key_		# [re-]backup $key [after reassignment]
@@ -4317,10 +4266,10 @@ $code.=<<___;
 	jmp	.Lcbc_dec_ret
 .align	16
 ___
-if ($ENV{SARCASM}) {
-  # SARCASM: no frame take (rejected); stream the partial bytes straight
-  # out of the XMM register with movd/psrldq (no frame temp needed).
-  $code.=<<___;
+# Unconditional streaming copy (no frame temp, no `.long`): gas accepts the
+# plain movd/mov/psrldq loop, and sarcasm requires it (frame takes like
+# `lea (%rsp),%rsi` plus data directives are rejected). Single path for both.
+$code.=<<___;
 .Lcbc_dec_tail_partial:
 	mov	$out,%rdi
 	mov	\$16,%rcx
@@ -4334,19 +4283,6 @@ if ($ENV{SARCASM}) {
 	jnz	.Lcbc_dec_tail_copy
 	pxor	$inout0,$inout0
 ___
-} else {
-  $code.=<<___;
-.Lcbc_dec_tail_partial:
-	movaps	$inout0,(%rsp)
-	pxor	$inout0,$inout0
-	mov	\$16,%rcx
-	mov	$out,%rdi
-	sub	$len,%rcx
-	lea	(%rsp),%rsi
-	.long	0x9066A4F3		# rep movsb
-	movdqa	$inout0,(%rsp)
-___
-}
 $code.=<<___;
 
 .Lcbc_dec_ret:
@@ -4406,28 +4342,11 @@ ${PREFIX}_set_decrypt_key: #! int(ptr,int,ptr)
 .cfi_startproc
 	.byte	0x48,0x83,0xEC,0x08	# sub rsp,8
 .cfi_adjust_cfa_offset	8
-	call	aesni_set_encrypt_key #! int(ptr,int,ptr)	# (was the __aesni_set_encrypt_key alias)
-___
-if ($ENV{SARCASM}) {
-  # A signatured call preserves only the %eax result: the %esi
-  # side-channel (rounds-1) does not survive. Reload the round count
-  # from the key schedule instead.
-  $code.=<<___;
-	test	%eax,%eax
-	jnz	.Ldec_key_ret
-	mov	240($key),$bits		# rounds-1 is stored at 240($key)
-	shl	\$4,$bits
-	lea	16($key,$bits),$inp	# points at the end of key schedule
-___
-} else {
-  $code.=<<___;
+	call	__aesni_set_encrypt_key
 	shl	\$4,$bits		# rounds-1 after _aesni_set_encrypt_key
 	test	%eax,%eax
 	jnz	.Ldec_key_ret
 	lea	16($key,$bits),$inp	# points at the end of key schedule
-___
-}
-$code.=<<___;
 
 	$movkey	($key),%xmm0		# just swap
 	$movkey	($inp),%xmm1
@@ -4794,7 +4713,11 @@ ___
 if ($ENV{SARCASM}) {
   # End the function body here: the key-expansion subroutines below are
   # file-local call/ret routines, and sarcasm's local-subroutine
-  # discovery works on unconsumed top-level statements.
+  # discovery works on unconsumed top-level statements (a call to a
+  # mid-body label of a signatured function is rejected; see
+  # filc/tests/sarcasm-localcall-midfn-att). The alias-clone of this
+  # function for `call __aesni_set_encrypt_key` inlines those calls, so
+  # the subroutines must be top-level local subroutines under sarcasm.
   $code.=<<___;
 .cfi_endproc
 .size	${PREFIX}_set_encrypt_key,.-${PREFIX}_set_encrypt_key

@@ -94,7 +94,9 @@
 #include <grp.h>
 #include <math.h>
 #include <sys/swap.h>
+#ifdef __x86_64__
 #include <sys/io.h>
+#endif
 #include <sys/personality.h>
 #include <sys/fsuid.h>
 #include <sys/prctl.h>
@@ -14299,10 +14301,17 @@ long double filc_native_zmath_significandl(filc_thread* my_thread, long double v
 unsigned filc_native_zmath_getcw(filc_thread* my_thread)
 {
     PAS_UNUSED_PARAM(my_thread);
-#ifdef __x86_64__
+#if defined(__x86_64__)
     unsigned result;
     asm volatile ("fnstcw %0" : "=m"(result));
     return result;
+#elif defined(__aarch64__)
+    /* On AArch64 the "control word" that glibc's _FPU_GETCW wants is FPCR.
+       This is only ever executed inside the runtime (libpas is compiled with
+       the host compiler as yolo code), so inline asm is fine here. */
+    unsigned long result;
+    asm volatile ("mrs %0, fpcr" : "=r"(result));
+    return (unsigned)result;
 #else
     filc_internal_panic(NULL, "zmath_getcw not implemented on this architecture.");
 #endif
@@ -14311,11 +14320,36 @@ unsigned filc_native_zmath_getcw(filc_thread* my_thread)
 void filc_native_zmath_setcw(filc_thread* my_thread, unsigned cw)
 {
     PAS_UNUSED_PARAM(my_thread);
-#ifdef __x86_64__
+#if defined(__x86_64__)
     asm volatile ("fldcw %0" : : "m"(cw));
+#elif defined(__aarch64__)
+    asm volatile ("msr fpcr, %0" : : "r"((unsigned long)cw));
 #else
     PAS_UNUSED_PARAM(cw);
     filc_internal_panic(NULL, "zmath_setcw not implemented on this architecture.");
+#endif
+}
+
+unsigned filc_native_zmath_getfpsr(filc_thread* my_thread)
+{
+    PAS_UNUSED_PARAM(my_thread);
+#if defined(__aarch64__)
+    unsigned long result;
+    asm volatile ("mrs %0, fpsr" : "=r"(result));
+    return (unsigned)result;
+#else
+    filc_internal_panic(NULL, "zmath_getfpsr not implemented on this architecture.");
+#endif
+}
+
+void filc_native_zmath_setfpsr(filc_thread* my_thread, unsigned fpsr)
+{
+    PAS_UNUSED_PARAM(my_thread);
+#if defined(__aarch64__)
+    asm volatile ("msr fpsr, %0" : : "r"((unsigned long)fpsr));
+#else
+    PAS_UNUSED_PARAM(fpsr);
+    filc_internal_panic(NULL, "zmath_setfpsr not implemented on this architecture.");
 #endif
 }
 

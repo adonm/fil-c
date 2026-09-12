@@ -38,6 +38,23 @@
 #define SA_RESTORER 0x4000000
 #endif
 
+/* Which flags sigaction(2) reports back in sa_flags is libc- and
+   architecture-specific.  The test compiles against the user libc, so key on
+   __GLIBC__ (defined by glibc, not by musl) as well as the architecture:
+   - x86_64 + any libc: the libc passes its own restorer to the kernel, and the
+     kernel reports SA_RESTORER.
+   - aarch64 + musl: musl's arch/aarch64/bits/signal.h defines SA_RESTORER and
+     its sigaction sets the flag (with a dummy restorer; the kernel does not
+     use it), and reports it back.
+   - aarch64 + glibc: glibc's sigaction does not set SA_RESTORER, and the
+     kernel never reports it, since aarch64 signal return goes through a
+     kernel/vDSO trampoline. */
+#if defined(__aarch64__) && defined(__GLIBC__)
+#define FILC_SA_RESTORER 0
+#else
+#define FILC_SA_RESTORER SA_RESTORER
+#endif
+
 static void sighandler(int sig) { }
 
 int main(int argc, char** argv)
@@ -157,7 +174,7 @@ int main(int argc, char** argv)
     ZASSERT(sigaction(SIGPIPE, &act, &oact) == 0);
     ZASSERT(oact.sa_handler == SIG_IGN);
     zprintf("oact.sa_flags = %x\n", oact.sa_flags);
-    ZASSERT(oact.sa_flags == (SA_RESTART | SA_RESTORER));
+    ZASSERT(oact.sa_flags == (SA_RESTART | FILC_SA_RESTORER));
 #ifndef __USE_GNU
     ZASSERT(!sigismember(&oact.sa_mask, SIGPIPE));
     ZASSERT(!sigismember(&oact.sa_mask, SIGTERM));
@@ -165,7 +182,7 @@ int main(int argc, char** argv)
 
     ZASSERT(sigaction(SIGPIPE, NULL, &oact) == 0);
     ZASSERT(oact.sa_handler == SIG_DFL);
-    ZASSERT(oact.sa_flags == (SA_NODEFER | SA_RESTORER));
+    ZASSERT(oact.sa_flags == (SA_NODEFER | FILC_SA_RESTORER));
     ZASSERT(sigismember(&oact.sa_mask, SIGPIPE));
     ZASSERT(sigismember(&oact.sa_mask, SIGTERM));
 
@@ -176,13 +193,13 @@ int main(int argc, char** argv)
     ZASSERT(sigaction(SIGPIPE, &act, NULL) == 0);
     ZASSERT(sigaction(SIGPIPE, NULL, &oact) == 0);
     ZASSERT(oact.sa_handler == sighandler);
-    ZASSERT(oact.sa_flags == (SA_NODEFER | SA_RESTORER));
+    ZASSERT(oact.sa_flags == (SA_NODEFER | FILC_SA_RESTORER));
     act.sa_handler = sighandler;
     act.sa_flags = SA_SIGINFO;
     ZASSERT(sigaction(SIGPIPE, &act, NULL) == 0);
     ZASSERT(sigaction(SIGPIPE, NULL, &oact) == 0);
     ZASSERT(oact.sa_handler == sighandler);
-    ZASSERT(oact.sa_flags == (SA_SIGINFO | SA_RESTORER));
+    ZASSERT(oact.sa_flags == (SA_SIGINFO | FILC_SA_RESTORER));
     act.sa_handler = SIG_IGN;
     ZASSERT(sigaction(SIGPIPE, &act, NULL) == 0);
 

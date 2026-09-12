@@ -1,5 +1,5 @@
-/* stpcpy - copy a string returning pointer to end.
-   Copyright (C) 2015-2026 Free Software Foundation, Inc.
+/* An eventfd implementation for AArch64.
+   Copyright (C) 2026 Free Software Foundation, Inc.
    This file is part of the GNU C Library.
 
    The GNU C Library is free software; you can redistribute it and/or
@@ -16,5 +16,22 @@
    License along with the GNU C Library; if not, see
    <https://www.gnu.org/licenses/>.  */
 
-#define BUILD_STPCPY
-#include "strcpy.S"
+#include <sys/eventfd.h>
+#include <sysdep.h>
+#include <pizlonated_syscalls.h>
+
+libc_hidden_proto (eventfd)
+
+/* AArch64 does not have the legacy eventfd syscall, and the generic
+   syscalls.list entry would otherwise turn eventfd into an ENOSYS stub
+   while sysdeps/unix/sysv/linux/Makefile still expects eventfd.o to be
+   built.  Implement eventfd in terms of the Fil-C runtime's zsys_eventfd
+   (which the runtime implements with the host libc's eventfd, itself
+   based on the eventfd2 syscall).  */
+
+int
+eventfd (unsigned int count, int flags)
+{
+  return zsys_eventfd (count, flags);
+}
+libc_hidden_def (eventfd)

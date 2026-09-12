@@ -856,6 +856,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-lpizlo");
       if (IsStatic || IsStaticPIE)
         CmdArgs.push_back("--start-group");
+      CmdArgs.push_back("-lyolort");
       CmdArgs.push_back("-lyoloc");
       CmdArgs.push_back("-lyolom");
       CmdArgs.push_back("-lyolort");

@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Copyright (c) 2025 Epic Games, Inc. All Rights Reserved.
+# Copyright (c) 2026 Filip Pizlo. All Rights Reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
@@ -11,10 +12,10 @@
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
 #
-# THIS SOFTWARE IS PROVIDED BY EPIC GAMES, INC. ``AS IS'' AND ANY
+# THIS SOFTWARE IS PROVIDED BY FILIP PIZLO ``AS IS'' AND ANY
 # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
-# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL EPIC GAMES, INC. OR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL FILIP PIZLO OR
 # CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
 # EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
 # PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
@@ -36,7 +37,22 @@ set -x
 
 cd ../pizfix
 
-OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
+case $ARCH in
+    x86_64)
+        OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
+        OUTPUT_FORMAT=elf64-x86-64
+        ;;
+    aarch64)
+        # On aarch64, glibc's dynamic loader is ld-linux-aarch64.so.1 (the
+        # .so.1 suffix is correct for aarch64; x86_64 uses .so.2).
+        OLDLDNAME=ld-linux-aarch64.so.1
+        OUTPUT_FORMAT=elf64-littleaarch64
+        ;;
+    *)
+        echo "Unsupported arch: $ARCH"
+        exit 1
+        ;;
+esac
 OLDLIBCIMPLNAME=libc.so.6
 OLDLIBCNONSHAREDNAME=libc_nonshared.a
 OLDLIBMIMPLNAME=libm.so.6
@@ -68,9 +84,9 @@ patchelf --set-soname $LDNAME lib/$LDNAME
 patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBMIMPLNAME
 patchelf --replace-needed $OLDLIBCIMPLNAME $LIBCIMPLNAME lib/$LIBMIMPLNAME
 patchelf --set-soname $LIBMIMPLNAME lib/$LIBMIMPLNAME
-echo "OUTPUT_FORMAT(elf64-x86-64)" > lib/$LIBCNAME
+echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBCNAME
 echo "GROUP ( $PWD/lib/$LIBCIMPLNAME $PWD/lib/$LIBCNONSHAREDNAME  AS_NEEDED ( $PWD/lib/$LDNAME ) )" >> lib/$LIBCNAME
-echo "OUTPUT_FORMAT(elf64-x86-64)" > lib/$LIBMNAME
+echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBMNAME
 echo "GROUP ( $PWD/lib/$LIBMIMPLNAME )" >> lib/$LIBMNAME
 
 rm -rf yolo-include

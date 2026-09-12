@@ -28,11 +28,24 @@ set -x
 
 VERSION=`uname -r`
 
-cp build/lib/amd64-unknown-openbsd$VERSION/libc++.so pizfix/lib
-cp build/lib/amd64-unknown-openbsd$VERSION/libc++.so.1.0 pizfix/lib
-cp build/lib/amd64-unknown-openbsd$VERSION/libc++abi.so.1.0 pizfix/lib
-cp build/lib/amd64-unknown-openbsd$VERSION/libc++.a pizfix/lib
-cp build/lib/amd64-unknown-openbsd$VERSION/libc++abi.a pizfix/lib
+# Install the C++ headers into the LLVM build tree, where the Fil-C compiler
+# driver and the optfil/pizlix installers expect to find them.
+rm -rf build/include/c++
+cp -R runtimes-build/include/c++ build/include/c++
+mkdir -p build/include/amd64-unknown-openbsd$VERSION
+rm -rf build/include/amd64-unknown-openbsd$VERSION/c++
+cp -R runtimes-build/include/amd64-unknown-openbsd$VERSION/c++ build/include/amd64-unknown-openbsd$VERSION/c++
+
+# Also mirror the C++ modules into the LLVM build tree.
+mkdir -p build/modules
+rm -rf build/modules/c++
+cp -R runtimes-build/modules/c++ build/modules/c++
+
+cp runtimes-build/lib/amd64-unknown-openbsd$VERSION/libc++.so pizfix/lib
+cp runtimes-build/lib/amd64-unknown-openbsd$VERSION/libc++.so.1.0 pizfix/lib
+cp runtimes-build/lib/amd64-unknown-openbsd$VERSION/libc++abi.so.1.0 pizfix/lib
+cp runtimes-build/lib/amd64-unknown-openbsd$VERSION/libc++.a pizfix/lib
+cp runtimes-build/lib/amd64-unknown-openbsd$VERSION/libc++abi.a pizfix/lib
 (cd pizfix/lib &&
      rm -f libc++.so.1 &&
      rm -f libc++abi.so.1 &&

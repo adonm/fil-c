@@ -26,10 +26,21 @@
 set -e
 set -x
 
-cp build/lib/libc++.1.0.dylib pizfix/lib
-cp build/lib/libc++abi.1.0.dylib pizfix/lib
-cp build/lib/libc++.a pizfix/lib
-cp build/lib/libc++abi.a pizfix/lib
+# Install the C++ headers into the LLVM build tree, where the Fil-C compiler
+# driver and the optfil/pizlix installers expect to find them.
+mkdir -p build/include
+rm -rf build/include/c++
+cp -R runtimes-build/include/c++ build/include/c++
+
+# Also mirror the C++ modules into the LLVM build tree.
+mkdir -p build/modules
+rm -rf build/modules/c++
+cp -R runtimes-build/modules/c++ build/modules/c++
+
+cp runtimes-build/lib/libc++.1.0.dylib pizfix/lib
+cp runtimes-build/lib/libc++abi.1.0.dylib pizfix/lib
+cp runtimes-build/lib/libc++.a pizfix/lib
+cp runtimes-build/lib/libc++abi.a pizfix/lib
 (cd pizfix/lib &&
      rm -f libc++.1.dylib &&
      rm -f libc++.dylib &&

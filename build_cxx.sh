@@ -35,7 +35,52 @@ then
     . ./clang-build-overrides.sh
 fi
 
-(cd build && ninja $NINJAFLAGS runtimes-clean && ninja $NINJARUNTIMEFLAGS runtimes)
+# The C++ runtimes (libc++ and libc++abi) are built as a standalone cmake
+# project against the Fil-C compiler, separate from the LLVM build that
+# configure_llvm.sh configures. This is done instead of using the LLVM build's
+# "runtimes" target, so that changing runtimes-only options does not require
+# rebuilding LLVM and so that building the runtimes does not drag in unrelated
+# LLVM targets. We nuke and reconfigure runtimes-build every time this script
+# runs, because build_cxx.sh is invoked downstream from a rebuild of the user
+# libc. The musl-or-not option (ALTLLVMLIBCOPT, exported by setup_glibc.sh for
+# glibc builds) only affects this cmake invocation, so changing it does not
+# require rebuilding LLVM.
+
+if test "x$ALTLLVMLIBCOPT" = "x"
+then
+    LLVMLIBCOPT="-DLIBCXX_HAS_MUSL_LIBC=ON"
+else
+    LLVMLIBCOPT=$ALTLLVMLIBCOPT
+fi
+
+test -e build/bin/clang -a -e build/bin/clang++
+
+TRIPLE=`$PWD/build/bin/clang -print-target-triple`
+
+rm -rf runtimes-build build/runtimes
+mkdir -p runtimes-build
+
+cmake -S runtimes -B runtimes-build -G Ninja \
+    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+    -DCMAKE_C_COMPILER=$PWD/build/bin/clang \
+    -DCMAKE_CXX_COMPILER=$PWD/build/bin/clang++ \
+    -DCMAKE_ASM_COMPILER=$PWD/build/bin/clang \
+    -DCMAKE_C_COMPILER_WORKS=ON \
+    -DCMAKE_CXX_COMPILER_WORKS=ON \
+    -DCMAKE_ASM_COMPILER_WORKS=ON \
+    -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
+    -DLLVM_DEFAULT_TARGET_TRIPLE=$TRIPLE \
+    -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON \
+    -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON \
+    -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DLIBCXX_HAS_PTHREAD_API=ON \
+    $LLVMLIBCOPT -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+    -DLIBCXX_FORCE_LIBCXXABI=ON \
+    -DLLVM_ENABLE_ASSERTIONS=ON \
+    -DLIBCXX_HARDENING_MODE=extensive \
+    -DLLVM_INCLUDE_TESTS=OFF
+
+(cd runtimes-build && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
+
 ./install-cxx-$OS.sh
 ./fix_clang.sh
 

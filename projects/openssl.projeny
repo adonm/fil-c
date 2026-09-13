@@ -986,7 +986,7 @@ diff --git a/openssl/crypto/armcap.c b/openssl/crypto/armcap.c
 
  static size_t OPENSSL_rndr_wrapper(size_t (*func)(unsigned char *, size_t), unsigned char *buf, size_t len)
  {
-@@ -178,15 +265,37 @@
+@@ -178,15 +265,38 @@
 
  size_t OPENSSL_rndr_bytes(unsigned char *buf, size_t len)
  {
@@ -1004,10 +1004,11 @@ diff --git a/openssl/crypto/armcap.c b/openssl/crypto/armcap.c
 +#if defined(__aarch64__) && defined(OPENSSL_CPUID_OBJ)
 +/*
 + * Fil-C: with $CPUIDASM_aarch64 active, arm64cpuid.S replaces mem_clr.c as
-+ * the provider of OPENSSL_cleanse and CRYPTO_memcmp.  The assembler
-+ * versions of these two (and only these two) were dropped from
-+ * arm64cpuid.pl; cleanse is implemented here with zmemset and CRYPTO_memcmp
-+ * is forwarded to the raw assembler routine that is kept in arm64cpuid.S.
++ * the provider of OPENSSL_cleanse and CRYPTO_memcmp.  Of the two, only the
++ * OPENSSL_cleanse assembler was dropped from arm64cpuid.pl (see the FIXME
++ * there): cleanse is implemented here with zmemset, while CRYPTO_memcmp is
++ * forwarded to the raw assembler routine that is deliberately kept in
++ * arm64cpuid.S as the zunsafe target.
 + */
 +void OPENSSL_cleanse(void *ptr, size_t len)
 +{
@@ -1026,7 +1027,7 @@ diff --git a/openssl/crypto/armcap.c b/openssl/crypto/armcap.c
  #if !defined(__APPLE__) && !defined(OSSL_IMPLEMENT_GETAUXVAL)
  static sigset_t all_masked;
 
-@@ -220,6 +329,17 @@
+@@ -220,6 +330,17 @@
  /* We only call _armv8_cpuid_probe() if (OPENSSL_armcap_P & ARMV8_CPUID) != 0 */
  unsigned int _armv8_cpuid_probe(void);
 
@@ -1044,7 +1045,7 @@ diff --git a/openssl/crypto/armcap.c b/openssl/crypto/armcap.c
  #if defined(__APPLE__)
  /*
   * Checks the specified integer sysctl, returning `value` if it's 1, otherwise returning 0.
-@@ -406,7 +526,7 @@
+@@ -406,7 +527,7 @@
 
  #ifdef __aarch64__
      if (OPENSSL_armcap_P & ARMV8_CPUID)
@@ -1834,7 +1835,7 @@ diff --git a/openssl/crypto/ec/ecp_nistz256.c b/openssl/crypto/ec/ecp_nistz256.c
 
  /* One converted into the Montgomery domain */
  static const BN_ULONG ONE[P256_LIMBS] = {
-@@ -140,6 +215,41 @@
+@@ -140,6 +215,43 @@
  /* Precomputed tables for the default generator */
  extern const PRECOMP256_ROW ecp_nistz256_precomputed[37];
 
@@ -1858,8 +1859,10 @@ diff --git a/openssl/crypto/ec/ecp_nistz256.c b/openssl/crypto/ec/ecp_nistz256.c
 +
 +    PRECOMP256_ROW *smashed = OPENSSL_malloc(sizeof(PRECOMP256_ROW) * 37);
 +
-+    if (smashed == NULL)
++    if (smashed == NULL) {
++        ERR_raise(ERR_LIB_EC, ERR_R_MALLOC_FAILURE);
 +        return;
++    }
 +    sm = (unsigned char *)smashed;
 +    for (row = 0; row < 37; row++) {
 +        const unsigned char *r = nat + row * 64 * 64;
@@ -1876,7 +1879,7 @@ diff --git a/openssl/crypto/ec/ecp_nistz256.c b/openssl/crypto/ec/ecp_nistz256.c
  /* Recode window to a signed digit, see ecp_nistputil.c for details */
  static unsigned int _booth_recode_w5(unsigned int in)
  {
-@@ -246,12 +356,29 @@
+@@ -246,12 +358,29 @@
   * ecp_nistz256 module is ECP_NISTZ256_ASM.)
   */
  #ifndef ECP_NISTZ256_REFERENCE_IMPLEMENTATION
@@ -1912,7 +1915,7 @@ diff --git a/openssl/crypto/ec/ecp_nistz256.c b/openssl/crypto/ec/ecp_nistz256.c
  #else
  /* Point double: r = 2*a */
  static void ecp_nistz256_point_double(P256_POINT *r, const P256_POINT *a)
-@@ -998,7 +1125,15 @@
+@@ -998,7 +1127,15 @@
               * is because applications, such as Apache, do not use
               * EC_KEY_precompute_mult.
               */
@@ -1928,7 +1931,7 @@ diff --git a/openssl/crypto/ec/ecp_nistz256.c b/openssl/crypto/ec/ecp_nistz256.c
          }
 
          if (preComputedTable) {
-@@ -1250,12 +1385,23 @@
+@@ -1250,12 +1387,23 @@
  /*
   * Montgomery mul modulo Order(P): res = a*b*2^-256 mod Order(P)
   */
@@ -2294,7 +2297,7 @@ diff --git a/openssl/crypto/modes/armv8_gcm_asm_forward.c b/openssl/crypto/modes
 new file mode 100644
 --- /dev/null
 +++ b/openssl/crypto/modes/armv8_gcm_asm_forward.c
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,52 @@
 +#include "internal/deprecated.h"
 +
 +#include <assert.h>
@@ -2313,6 +2316,12 @@ new file mode 100644
 + * These wrappers provide pizlonated C entry points that hop into the raw
 + * assembler with zunsafe calls.  The kernels take the input length in BITS
 + * and return the number of BYTES processed.
++ *
++ * Xi is passed as a pointer into a GCM128_CONTEXT: the kernels read H, Htable
++ * (and beyond) relative to Xi, relying on the relative layout documented in
++ * include/crypto/modes.h, so the whole tail of the context behind Xi is
++ * checked (mirroring the x86_64 aesni_gcm_asm_forward.c treatment).  The
++ * kernels also update the counter in ivec, so ivec is checked as writable.
 + */
 +#define WRAP_KERNEL(name)                                                     \
 +    size_t name(const uint8_t *in, uint64_t len_bits, uint8_t *out,           \
@@ -2322,8 +2331,8 @@ new file mode 100644
 +                                                                              \
 +        zcheck_readonly(in, len);                                             \
 +        zcheck(out, len);                                                     \
-+        zcheck(Xi, 2 * sizeof(uint64_t));                                     \
-+        zcheck_readonly(ivec, 16);                                            \
++        zcheck(Xi, sizeof(GCM128_CONTEXT) - offsetof(GCM128_CONTEXT, Xi));    \
++        zcheck(ivec, 16);                                                     \
 +        zcheck_readonly(key, sizeof(AES_KEY));                                \
 +        return zunsafe_buf_call(len, #name, in, len_bits, out, Xi, ivec,      \
 +                                key);                                         \

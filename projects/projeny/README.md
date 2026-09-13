@@ -19,25 +19,29 @@ The unpacked work tree (`lua/`) and the dot-prefixed
 
 ## Usage
 
-All commands take the `.projeny` path (relative or absolute). The tarball is
-looked up next to the `.projeny` file, and the work tree is created next to
-it as well (named by the `Name:` header).
+Every command that names a project takes a project argument (relative or
+absolute): the `.projeny` file itself, the work tree (or any directory
+holding exactly one `.projeny` file), or a path whose `<arg>.projeny`
+sibling exists — typically the checkout directory before it was ever
+created, or a bare name like `lua` for `lua.projeny`. The tarball is
+looked up next to the `.projeny` file, and the work tree is created next
+to it as well (named by the `Name:` header).
 
 ```
-projeny setup <f.projeny>                unpack archive, apply patch
-projeny commit <f.projeny>               fold workdir changes into the patch
-projeny add <f.projeny> <path>           mark a file as added
-projeny rm <f.projeny> <path>            delete a file, mark as removed
-projeny mv <f.projeny> <src> <dst>       rename a file, mark as renamed
-projeny resolve <f.projeny> <path>       clear a conflict entry
-projeny rebase <f.projeny> <tarball>     point the project at a new tarball
-projeny status <f.projeny>               show setup/conflict/pending state
-projeny diff <f.projeny>                 print a checkout's uncommitted diff
-projeny diff <dir> <other-dir>           print the diff between two trees
-projeny patch <dir> <patch-file>         apply a patch file to a tree
-projeny package <f.projeny|dir> <out>    setup, then tar the tracked files
-projeny extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir
-projeny help [command]                   show help (per-command with a name)
+projeny setup <f.projeny|dir>               unpack archive, apply patch
+projeny commit <f.projeny|dir>              fold workdir changes into the patch
+projeny add <f.projeny|dir> <path>          mark a file as added
+projeny rm <f.projeny|dir> <path>           delete a file, mark as removed
+projeny mv <f.projeny|dir> <src> <dst>      rename a file, mark as renamed
+projeny resolve <f.projeny|dir> <path>      clear a conflict entry
+projeny rebase <f.projeny|dir> <tarball>    point the project at a new tarball
+projeny status <f.projeny|dir>              show setup/conflict/pending state
+projeny diff <f.projeny|dir>                print a checkout's uncommitted diff
+projeny diff <dir> <other-dir>              print the diff between two trees
+projeny patch <dir> <patch-file>            apply a patch file to a tree
+projeny package <f.projeny|dir> <out>       setup, then tar the tracked files
+projeny extract <f.projeny|dir> <dest>      setup, then copy tracked files to a dir
+projeny help [command]                      show help (per-command with a name)
 ```
 
 Paths into the work tree may be CWD-relative, absolute, or workdir-relative
@@ -54,15 +58,21 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   along like user-added files); otherwise it refuses, listing the paths it
   would have overwritten (see "File naming and migration" below). If the
   workdir exists and the status file does too, projeny reconstructs the
-  expected
-  tree from the status copy, diffs it against the workdir to find your
-  uncommitted changes, and merges them onto a fresh setup of the *current*
-  `.projeny` (which may name a different `Archive:` — e.g. upstream moved
-  to a newer tarball). Merge failures leave conflict markers in the workdir
-  and record the files in the status file. A setup that leaves conflicts
-  still finishes (workdir, `.projeny` file, and status are all updated) but
-  exits 1, so scripts under `set -e` stop instead of building from a
-  conflicted tree; fix the files, `resolve` each one, and `commit`.
+  expected tree from the status copy, diffs it against the workdir to find
+  your uncommitted changes, and merges them onto a fresh setup of the
+  *current* `.projeny` (which may name a different `Archive:` — e.g.
+  upstream moved to a newer tarball). Merge failures leave conflict markers
+  in the workdir and record the files in the status file. A setup that
+  leaves conflicts still finishes (workdir, `.projeny` file, and status are
+  all updated) but exits 1, so scripts under `set -e` stop instead of
+  building from a conflicted tree; fix the files, `resolve` each one, and
+  `commit`. The reporting is honest about whether a merge happened: a
+  checkout with no local changes re-sets up fresh ("no local changes"),
+  untracked files (never `projeny add`ed) merely ride along into the new
+  tree ("no local changes; kept N untracked file(s)"), and a real merge
+  prints one line per file — `merged:`, `added:`, `deleted:`, or
+  `renamed:` — plus a `conflict:` line for every file left conflicted
+  (exactly the status file's `Conflict:` entries).
 - `commit`: requires the `.projeny` file to match the status copy exactly
   (else hard error: run `setup` to merge first) and refuses when conflicts
   are pending. Otherwise it diffs the workdir against the base archive and
@@ -92,7 +102,7 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   warns to stderr and proceeds with the new file — it never silently keeps
   the old bytes.
 
-- `diff <f.projeny>`: prints the checkout's uncommitted change to stdout —
+- `diff <f.projeny|dir>`: prints the checkout's uncommitted change to stdout —
   the diff of the workdir against what a *fresh* `setup` of the current
   `.projeny` file would check out (tarball plus current patch). For
   ordinary edits this is also the patch `commit` would store; the two
@@ -115,7 +125,9 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   base archive plus patch plus pending add/rm/mv ops, minus untracked
   files — like `git archive` / `package-source.sh`. The first argument may
   be the `.projeny` file or a directory holding (or, as `<dir>.projeny`
-  for a `<dir>` workdir, naming) exactly one of them. The archive holds a
+  for a `<dir>` workdir, naming) exactly one of them, or a path whose
+  `<arg>.projeny` sibling exists (a missing checkout directory also works
+  then). The archive holds a
   single top-level directory named after the output file, and compression
   is autodetected from its extension (`.tar`, `.tar.gz`/`.tgz`,
   `.tar.bz2`, `.tar.xz`, `.tar.zst`).
@@ -128,7 +140,7 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
 
 ## The uncommitted diff
 
-`projeny diff <f.projeny>` prints the uncommitted change of a checkout: the
+`projeny diff <f.projeny|dir>` prints the uncommitted change of a checkout: the
 diff of the workdir against what a fresh `setup` of the current `.projeny`
 file would check out — the tarball plus the current patch. It takes the
 same refusals `commit` does (the `.projeny` file must match the status
@@ -194,7 +206,10 @@ hand-written prose must indent every non-empty line with a leading space.
 and status copy, merges the local-side patch into the workdir
 with conflicts marked (three-way against the shared base archive when
 both sides name the same tarball), and re-applies any uncommitted
-workdir-vs-status changes on top. Which side is upstream is auto-detected:
+workdir-vs-status changes on top; the final report lists each merged
+file (`merged:`/`added:`/`deleted:`/`renamed:` plus `conflict:` lines),
+or says there was nothing to merge when the local side is empty. Which
+side is upstream is auto-detected:
 `git merge` keeps ours=local, while `git pull --rebase`/`rebase` and
 `stash pop` swap the sides (`<<<<<<< HEAD` holds upstream there) —
 projeny reads the branch labels (`upstream`/`origin`/`remote`/`theirs`,

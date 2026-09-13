@@ -113,7 +113,8 @@ build/bin/clang++ -o program program.cpp -g -O -std=c++20
   - File bookkeeping: `projeny add` / `projeny rm` / `projeny mv` record pending file additions/removals/renames (they also perform the on-disk operation, except `add`); `projeny resolve <f>.projeny <path>` clears a resolved conflict; commit refuses disappeared files that were not `projeny rm`'d, and ignores files that were never `projeny add`ed
   - `projeny setup projects/<name>.projeny` unpacks + patches the tarball into `projects/<Name>/`; when run on an existing checkout it merges local (uncommitted) changes onto a new base and leaves conflict markers + `Conflict:` entries for you to resolve
 - **Command reference** (one-liners):
-  - `setup` - Unpack+patch, merge on base change; also the only command that handles git conflict markers inside a pulled `.projeny` file
+  - All project-taking commands accept the `.projeny` file, the checkout dir (existing or not, if a `<name>.projeny` sibling exists), or a dir holding a single `.projeny` — like `package`/`extract` always have
+  - `setup` - Unpack+patch, merge on base change (and say honestly when there was nothing to merge); also the only command that handles git conflict markers inside a pulled `.projeny` file
   - `commit` - Regenerate the patch from tarball+workdir
   - `add` / `rm` / `mv` / `resolve` - File bookkeeping (see editing workflow above)
   - `rebase <f>.projeny <new-tarball>` - Move the patch to a newer tarball

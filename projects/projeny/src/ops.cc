@@ -1174,6 +1174,192 @@ int setup_recover(const Ctx& ctx, const std::string& raw)
                                   status_name, &local_base);
 }
 
+// Workdir-relative form of a diff-label repo path: split_file_diffs strips
+// the a/ b/ prefixes but keeps the wid component ("<wid>/rel"), while
+// pending-op keep lists and conflict entries are workdir-relative.
+std::string wid_rel(const std::string& repo_path, const std::string& wid)
+{
+    if (repo_path == wid)
+        return "";
+    if (!wid.empty() && starts_with(repo_path, wid + "/"))
+        return repo_path.substr(wid.size() + 1);
+    return repo_path;
+}
+
+// True when diff block `b` is a pure addition (its old side is absent).
+// The "diff --git" line cannot tell: for adds and deletes both projeny and
+// git repeat the present path on both sides, so the absent side shows only
+// in the header below it ("new file mode" / a "/dev/null" --- label) —
+// except for foreign patches, which do put /dev/null on the header line.
+// Scanning stops at the first hunk so hunk bodies can never vote (a
+// removed line could otherwise mimic a marker).
+bool block_is_pure_add(const FileDiff& b)
+{
+    if (b.a_path.empty())
+        return !b.b_path.empty(); // foreign "/dev/null b/x" header form
+    if (b.a_path != b.b_path)
+        return false; // rename: both sides present
+    for (const std::string& line : split_lines(b.text)) {
+        if (starts_with(line, "@@"))
+            break; // hunks start: the header is over
+        if (starts_with(line, "new file mode ") ||
+            starts_with(line, "--- /dev/null"))
+            return true;
+        if (starts_with(line, "deleted file mode ") ||
+            starts_with(line, "+++ /dev/null"))
+            return false;
+    }
+    return false;
+}
+
+// True when diff block `b` is a pure deletion (its new side is absent);
+// mirror image of block_is_pure_add.
+bool block_is_pure_delete(const FileDiff& b)
+{
+    if (b.b_path.empty())
+        return !b.a_path.empty(); // foreign "a/x /dev/null" header form
+    if (b.a_path != b.b_path)
+        return false; // rename: both sides present
+    for (const std::string& line : split_lines(b.text)) {
+        if (starts_with(line, "@@"))
+            break; // hunks start: the header is over
+        if (starts_with(line, "deleted file mode ") ||
+            starts_with(line, "+++ /dev/null"))
+            return true;
+        if (starts_with(line, "new file mode ") ||
+            starts_with(line, "--- /dev/null"))
+            return false;
+    }
+    return false;
+}
+
+// Expected destination of `rel` under a pending rename (s -> d): rel is
+// covered when it names the source itself (a file move) or lives under it
+// (a directory move), and the covered path's destination is d plus the
+// remainder. Returns "" when the entry does not cover rel.
+// (vcs_covers_keep_path answers only bool; the report needs the rewritten
+// destination to find the matching add side.)
+std::string rename_dest_for(const std::string& rel,
+                            const std::pair<std::string, std::string>& rn)
+{
+    const std::string& s = rn.first;
+    if (rel == s)
+        return rn.second;
+    if (rel.size() > s.size() && rel.compare(0, s.size(), s) == 0 &&
+        rel[s.size()] == '/')
+        return rn.second + rel.substr(s.size());
+    return "";
+}
+
+// Per-file merge report for a setup that had real local changes: one
+// "merged:"/"added:"/"deleted:"/"renamed:" line per FileDiff block, in
+// block order, plus a "conflict:" line for every path in `conflicts` (a
+// conflicted file reports as "conflict:" instead of its block's own line;
+// a conflicted rename therefore names the destination, which is the path
+// the status file records). Pure additions the pending ops never
+// registered — when `keep` is non-null — are untracked files that ride
+// along into the new tree without being changes, so they stay out. Every
+// conflict path is guaranteed a line even when no block names it (e.g. a
+// conflict carried over from an earlier setup).
+//
+// The blocks usually come from a plain workdir-vs-expected diff without
+// the forced-rename pairing `projeny diff`/`commit` use, so a pending
+// `projeny mv` whose moved file diverged past the rename-similarity
+// threshold renders as an independent pure delete plus a pure add.
+// `renames` (the pending list from the status file; null when none is
+// known) pairs those sides back up: a pure delete whose path a pending
+// rename covers — exactly, or under a moved directory — and the pure add
+// sitting at the expected destination report one
+// "renamed: <src> -> <dst>" line at the first of the two blocks' positions
+// instead of their own lines. Sides without a counterpart behave exactly
+// as before (a new file inside a moved directory stays "added:", a delete
+// with no add side stays "deleted:"); a conflict on either side suppresses
+// the pair's line like any other, covered by the trailing "conflict:".
+std::vector<std::string> merge_report_lines(
+    const std::vector<FileDiff>& blocks, const std::string& wid,
+    const std::vector<std::string>* keep,
+    const std::vector<std::string>& conflicts,
+    const std::vector<std::pair<std::string, std::string>>* renames)
+{
+    auto is_conflicted = [&](const std::string& rel) {
+        return std::find(conflicts.begin(), conflicts.end(), rel) !=
+               conflicts.end();
+    };
+    std::vector<std::string> lines;
+    auto emit = [&](const std::string& line) {
+        if (std::find(lines.begin(), lines.end(), line) == lines.end())
+            lines.push_back(line);
+    };
+    // Pre-pass: pair pending-rename sides before anything is emitted.
+    // used[i] marks a block consumed by a pair; pair_line holds the pair's
+    // "renamed:" line, parked at the first of the two block positions
+    // (empty when a conflict on either side suppresses it).
+    std::vector<bool> used(blocks.size(), false);
+    std::vector<std::string> pair_line(blocks.size(), "");
+    if (renames != nullptr) {
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            if (used[i] || !block_is_pure_delete(blocks[i]))
+                continue;
+            std::string a = wid_rel(blocks[i].a_path, wid);
+            std::string dest;
+            for (const auto& rn : *renames) {
+                dest = rename_dest_for(a, rn);
+                if (!dest.empty())
+                    break;
+            }
+            if (dest.empty())
+                continue; // no pending rename covers this delete
+            for (size_t j = 0; j < blocks.size(); ++j) {
+                if (used[j] || !block_is_pure_add(blocks[j]))
+                    continue;
+                if (wid_rel(blocks[j].b_path, wid) != dest)
+                    continue; // not this rename's add side
+                used[i] = used[j] = true;
+                if (!is_conflicted(a) && !is_conflicted(dest))
+                    pair_line[i < j ? i : j] =
+                        "renamed: " + a + " -> " + dest;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const FileDiff& b = blocks[i];
+        std::string a = wid_rel(b.a_path, wid);
+        std::string r = wid_rel(b.b_path, wid);
+        if (b.a_path.empty() && b.b_path.empty())
+            continue; // opaque block: the merge dies before any report
+        if (used[i]) {
+            // Half of a paired pending rename: its line (when not
+            // conflicted away) was emitted at the first block's position.
+            if (!pair_line[i].empty())
+                emit(pair_line[i]);
+            continue;
+        }
+        if (block_is_pure_add(b)) {
+            // `keep` filters only untracked riders (diffs taken against a
+            // workdir, where files the pending ops never registered ride
+            // along): with a null `keep` — the committed-patch caller,
+            // where every block is a real change — every add reports.
+            if (keep != nullptr && !vcs_covers_keep_path(*keep, r))
+                continue; // untracked rider, not a change
+            if (!is_conflicted(r))
+                emit("added: " + r);
+        } else if (block_is_pure_delete(b)) {
+            if (!is_conflicted(a))
+                emit("deleted: " + a);
+        } else if (a != r) {
+            if (!is_conflicted(a) && !is_conflicted(r))
+                emit("renamed: " + a + " -> " + r);
+        } else {
+            if (!is_conflicted(r))
+                emit("merged: " + r);
+        }
+    }
+    for (const auto& c : conflicts)
+        emit("conflict: " + c);
+    return lines;
+}
+
 // Shared conflicted-merge core used by setup_conflicted (fresh conflict)
 // and setup_recover (journal-guided rerun after a crash). All inputs are
 // read-only until the write phase; `union_status` supplies the
@@ -1388,24 +1574,110 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         printf("projeny: resolved conflicted '%s' by taking upstream for the "
                ".projeny file and merging local changes into '%s'\n",
                ctx.projeny_arg.c_str(), cur_workdir.c_str());
+    // Per-file report of what the merge brought in: the local side's
+    // committed patch (stage 1) plus, in the harder case, the uncommitted
+    // workdir-vs-status diff (stage 2). Untracked riders in the harder diff
+    // (never `projeny add`ed) are not changes and stay out of the report.
+    // The pending renames ride along too: stage 2's diff is a plain
+    // workdir-vs-expected diff, so a divergent pending mv would otherwise
+    // split into delete+add in the report.
+    std::vector<std::string> report = merge_report_lines(
+        split_file_diffs(local.patch), local.name, nullptr, sd.conflicts,
+        union_status != nullptr ? &union_status->renamed : nullptr);
+    if (harder) {
+        std::vector<std::string> harder_keep;
+        if (union_status != nullptr) {
+            for (const auto& a : union_status->added)
+                harder_keep.push_back(a);
+            for (const auto& rn : union_status->renamed)
+                harder_keep.push_back(rn.second);
+        }
+        std::vector<std::string> more = merge_report_lines(
+            split_file_diffs(U_unc), harder_base->name,
+            union_status != nullptr ? &harder_keep : nullptr, sd.conflicts,
+            union_status != nullptr ? &union_status->renamed : nullptr);
+        // The two stages dedup only within themselves, and each names every
+        // conflict, so a file conflicted in both stages (e.g. changed in the
+        // committed patch and again uncommitted) would print twice. Append
+        // only lines the first stage did not already report, preserving the
+        // stage order (sort_unique would scramble it).
+        for (const auto& l : more) {
+            if (std::find(report.begin(), report.end(), l) == report.end())
+                report.push_back(l);
+        }
+    }
+    if (report.empty()) {
+        // Nothing was merged (empty local side and no uncommitted diff):
+        // say so instead of claiming a merge. Conflicts can never reach
+        // this branch: merge_report_lines appends one "conflict:" line per
+        // entry, so any unresolved conflict keeps the report non-empty.
+        printf("projeny: no local changes to merge onto '%s'\n",
+               cur_workdir.c_str());
+        return 0;
+    }
+    printf("projeny: merged local changes onto '%s':\n", cur_workdir.c_str());
+    for (const auto& l : report)
+        printf("  %s\n", l.c_str());
     if (!sd.conflicts.empty()) {
-        printf("projeny: merged with %zu conflict(s):\n", sd.conflicts.size());
-        for (auto& c : sd.conflicts)
-            printf("  %s\n", c.c_str());
         printf("projeny: setup left conflicts (exit 1); fix them, then "
                "`resolve` each file and `commit`\n");
         return 1;
-    } else {
-        printf("projeny: merged local changes onto '%s'\n", cur_workdir.c_str());
     }
     return 0;
+}
+
+// Resolve a project argument to a .projeny file path. Accepts either the
+// .projeny file itself or a directory: a directory holding exactly one
+// "*.projeny" file names it implicitly, otherwise a "<dir>.projeny"
+// sibling is used (so both the workdir and a project dir work). A
+// non-directory path also resolves to its "<arg>.projeny" sibling when one
+// exists (the checkout directory was never created, or a bare name was
+// given). Anything else comes back unchanged so the caller's own error
+// reports it — including a missing "*.projeny" path, whose read failure
+// carries recovery guidance no generic resolver error can improve on. Dies
+// otherwise.
+std::string resolve_projeny_path(const std::string& arg, const char* cmd)
+{
+    std::string a = strip_trailing_slashes(arg);
+    if (a.empty())
+        a = ".";
+    if (is_dir(a)) {
+        std::vector<std::string> cands;
+        for (const std::string& n : list_dir_names(a)) {
+            if (ends_with(n, ".projeny"))
+                cands.push_back(join_path(a, n));
+        }
+        if (cands.size() == 1)
+            return cands[0];
+        if (cands.empty()) {
+            std::string sib = a + ".projeny";
+            if (path_exists(sib) && !is_dir(sib))
+                return sib;
+            die(std::string("cannot ") + cmd + " '" + arg +
+                "': directory holds no .projeny file (nor a '" + sib +
+                "' sibling); name the .projeny file explicitly");
+        }
+        std::string detail;
+        for (auto& c : cands)
+            detail += "  " + c + "\n";
+        die(std::string("cannot ") + cmd + " '" + arg +
+            "': directory holds multiple .projeny files; name one explicitly",
+            detail);
+    }
+    if (ends_with(a, ".projeny"))
+        return arg;
+    std::string sib = a + ".projeny";
+    if (path_exists(sib) && !is_dir(sib))
+        return sib;
+    return arg;
 }
 
 } // namespace
 
 int cmd_setup(const std::string& projeny_arg)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "setup");
+    Ctx ctx = resolve_ctx(pj);
     std::string raw;
     if (!try_read_file_bytes(ctx.projeny_arg, &raw)) {
         die("cannot read '" + ctx.projeny_arg +
@@ -1554,11 +1826,36 @@ int cmd_setup(const std::string& projeny_arg)
         U = vcs_drop_deletes_not_in(U, oldpf.name, keep);
     }
 
-    if (normalize_patch_text(U) == normalize_patch_text(oldpf.patch)) {
-        // No local changes: plain fresh setup from CURRENT .projeny. Keep
-        // pending add/rm/mv ops (documented choice); previously recorded
-        // conflicts are unioned, never silently dropped (like the
-        // conflicted-.projeny path below).
+    // Classify U's blocks: which are real local changes, and how many are
+    // just untracked files that will ride along. A pure addition whose path
+    // the pending ops never registered (never `projeny add`ed, not a rename
+    // destination) is untracked; everything else — a pending add, a
+    // deletion, a rename, a modification — is a real local change.
+    std::vector<std::string> add_keep;
+    for (const auto& a : old.added)
+        add_keep.push_back(a);
+    for (const auto& rn : old.renamed)
+        add_keep.push_back(rn.second);
+    std::vector<FileDiff> ubs = split_file_diffs(U);
+    size_t untracked = 0;
+    bool have_changes = false;
+    for (const auto& b : ubs) {
+        if (block_is_pure_add(b) &&
+            !vcs_covers_keep_path(add_keep, wid_rel(b.b_path, oldpf.name))) {
+            ++untracked;
+            continue;
+        }
+        have_changes = true;
+        break;
+    }
+
+    if (ubs.empty()) {
+        // No local changes at all (a pristine checkout of base+patch is
+        // empty against itself, whether or not the patch is empty): plain
+        // fresh setup from CURRENT .projeny. Keep pending add/rm/mv ops
+        // (documented choice); previously recorded conflicts are unioned,
+        // never silently dropped (like the conflicted-.projeny path
+        // below).
         do_fresh_setup(ctx, cur);
         StatusData sd;
         sd.status = "setup";
@@ -1623,22 +1920,48 @@ int cmd_setup(const std::string& projeny_arg)
     sd.renamed = old.renamed;
     sd.embedded = cur.raw;
     write_status(ctx, sd);
+    if (!have_changes) {
+        // The diff held only untracked files: the merge above carried them
+        // into the new tree, but there was nothing to merge — say so
+        // instead of claiming a merge.
+        if (!sd.conflicts.empty()) {
+            printf("projeny: re-set up '%s' from '%s' (no local changes; "
+                   "kept %zu untracked file(s)) but %zu conflict(s) are "
+                   "still unresolved:\n",
+                   workdir.c_str(), cur.archive.c_str(), untracked,
+                   sd.conflicts.size());
+            for (auto& c : sd.conflicts)
+                printf("  %s\n", c.c_str());
+            return 1;
+        }
+        printf("projeny: re-set up '%s' from '%s' (no local changes; kept "
+               "%zu untracked file(s))\n",
+               workdir.c_str(), cur.archive.c_str(), untracked);
+        return 0;
+    }
+    // Real local changes were merged: report what happened per file. Every
+    // conflict in the final status list appears as a "conflict:" line even
+    // when no diff block names it (e.g. one carried over from an earlier
+    // setup). U was diffed without forced-rename pairing, so the pending
+    // renames are handed in to keep a divergent mv reporting as renamed.
+    std::vector<std::string> report =
+        merge_report_lines(ubs, oldpf.name, &add_keep, sd.conflicts,
+                           &old.renamed);
+    printf("projeny: merged local changes onto '%s':\n", workdir.c_str());
+    for (const auto& l : report)
+        printf("  %s\n", l.c_str());
     if (!sd.conflicts.empty()) {
-        printf("projeny: merged with %zu conflict(s):\n", sd.conflicts.size());
-        for (auto& c : sd.conflicts)
-            printf("  %s\n", c.c_str());
         printf("projeny: setup left conflicts (exit 1); fix them, then "
                "`resolve` each file and `commit`\n");
         return 1;
-    } else {
-        printf("projeny: merged local changes onto '%s'\n", workdir.c_str());
     }
     return 0;
 }
 
 int cmd_commit(const std::string& projeny_arg)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "commit");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     StatusData st = StatusData::parse(ctx.statusfile);
@@ -1845,7 +2168,8 @@ int cmd_commit(const std::string& projeny_arg)
 
 int cmd_add(const std::string& projeny_arg, const std::string& path)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "add");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
@@ -1880,7 +2204,8 @@ int cmd_add(const std::string& projeny_arg, const std::string& path)
 
 int cmd_rm(const std::string& projeny_arg, const std::string& path)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "rm");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
@@ -1919,7 +2244,8 @@ int cmd_rm(const std::string& projeny_arg, const std::string& path)
 int cmd_mv(const std::string& projeny_arg, const std::string& src,
            const std::string& dst)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "mv");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
@@ -1977,7 +2303,8 @@ int cmd_mv(const std::string& projeny_arg, const std::string& src,
 
 int cmd_resolve(const std::string& projeny_arg, const std::string& path)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "resolve");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
@@ -2052,14 +2379,15 @@ int cmd_resolve(const std::string& projeny_arg, const std::string& path)
 
 int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "rebase");
+    Ctx ctx = resolve_ctx(pj);
 
     // If status/workdir are missing, do a setup first.
     ProjenyFile cur0 = ProjenyFile::parse(ctx.projeny_arg);
     std::string workdir0 = join_path(ctx.pdir, cur0.name);
     if (!path_exists(ctx.statusfile) || !is_dir(workdir0)) {
         printf("projeny: no setup yet; running setup first\n");
-        cmd_setup(projeny_arg);
+        cmd_setup(pj);
     }
 
     StatusData st = StatusData::parse(ctx.statusfile);
@@ -2282,10 +2610,11 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
 
 int cmd_status(const std::string& projeny_arg)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "status");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile)) {
         printf("projeny: '%s' is not set up (no status file)\n",
-               projeny_arg.c_str());
+               ctx.projeny_arg.c_str());
         return 1;
     }
     StatusData st = StatusData::parse(ctx.statusfile);
@@ -2480,7 +2809,8 @@ int cmd_status(const std::string& projeny_arg)
 
 int cmd_diff_projeny(const std::string& projeny_arg)
 {
-    Ctx ctx = resolve_ctx(projeny_arg);
+    std::string pj = resolve_projeny_path(projeny_arg, "diff");
+    Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
     StatusData st = StatusData::parse(ctx.statusfile);
@@ -2760,44 +3090,10 @@ int cmd_patch(const std::string& dir, const std::string& patch_file)
 // (never committed, never `add`ed) are left out, just like `git archive`
 // leaves them out. `extract` does the same except it populates a directory
 // instead of creating an archive (the projeny variant of extract_source).
+// The project argument goes through resolve_projeny_path (above), like
+// every other project-taking command.
 
 namespace {
-
-// Resolve a `package`/`extract` project argument to a .projeny file path.
-// Accepts either the .projeny file itself or a directory: a directory holding
-// exactly one "*.projeny" file names it implicitly, otherwise a "<dir>.projeny"
-// sibling is used (so both the workdir and a project dir work). Dies otherwise.
-std::string resolve_projeny_path(const std::string& arg, const char* cmd)
-
-{
-    std::string a = strip_trailing_slashes(arg);
-    if (a.empty())
-        a = ".";
-    if (is_dir(a)) {
-        std::vector<std::string> cands;
-        for (const std::string& n : list_dir_names(a)) {
-            if (ends_with(n, ".projeny"))
-                cands.push_back(join_path(a, n));
-        }
-        if (cands.size() == 1)
-            return cands[0];
-        if (cands.empty()) {
-            std::string sib = a + ".projeny";
-            if (path_exists(sib) && !is_dir(sib))
-                return sib;
-            die(std::string("cannot ") + cmd + " '" + arg +
-                "': directory holds no .projeny file (nor a '" + sib +
-                "' sibling); name the .projeny file explicitly");
-        }
-        std::string detail;
-        for (auto& c : cands)
-            detail += "  " + c + "\n";
-        die(std::string("cannot ") + cmd + " '" + arg +
-            "': directory holds multiple .projeny files; name one explicitly",
-            detail);
-    }
-    return arg;
-}
 
 // Compression for `package`, autodetected from the output name, plus the
 // top-level directory name stored in the archive (the output basename with
@@ -3055,20 +3351,25 @@ int cmd_help(const std::string& arg0)
     printf("\n"
            "Manage \"project = release tarball + patch\" pairs.\n"
            "\n"
-           "  setup <f.projeny>                unpack archive, apply patch\n"
-           "  commit <f.projeny>               fold workdir changes into the patch\n"
-           "  add <f.projeny> <path>           mark a file as added\n"
-           "  rm <f.projeny> <path>            delete a file, mark as removed\n"
-           "  mv <f.projeny> <src> <dst>       rename a file, mark as renamed\n"
-           "  resolve <f.projeny> <path>       clear a conflict marker entry\n"
-           "  rebase <f.projeny> <tarball>     point the project at a new tarball\n"
-           "  status <f.projeny>               show setup/conflict/pending state\n"
-           "  diff <f.projeny>                 print a checkout's uncommitted diff\n"
+           "  setup <f.projeny|dir>            unpack archive, apply patch\n"
+           "  commit <f.projeny|dir>           fold workdir changes into the patch\n"
+           "  add <f.projeny|dir> <path>       mark a file as added\n"
+           "  rm <f.projeny|dir> <path>        delete a file, mark as removed\n"
+           "  mv <f.projeny|dir> <src> <dst>   rename a file, mark as renamed\n"
+           "  resolve <f.projeny|dir> <path>   clear a conflict marker entry\n"
+           "  rebase <f.projeny|dir> <tarball> point the project at a new tarball\n"
+           "  status <f.projeny|dir>           show setup/conflict/pending state\n"
+           "  diff <f.projeny|dir>             print a checkout's uncommitted diff\n"
            "  diff <dir> <other-dir>           print the diff between two trees\n"
            "  patch <dir> <patch-file>         apply a patch file to a tree\n"
            "  package <f.projeny|dir> <out>    setup, then tar the tracked files\n"
            "  extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir\n"
            "  help [command]                   show this message or command help\n"
+           "\n"
+           "Project arguments (<f.projeny|dir>) may be the .projeny file, the\n"
+           "workdir or another directory holding exactly one .projeny file, or\n"
+           "a path whose '<arg>.projeny' sibling exists — typically a missing\n"
+           "checkout directory, or a bare name like 'foo' for 'foo.projeny'.\n"
            "\n"
            "Paths into the work tree may be CWD-relative, absolute, or\n"
            "workdir-relative (\"<Name>/...\"). They are stored relative to\n"
@@ -3083,7 +3384,7 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
 {
     const char* t = arg0.c_str();
     if (topic == "setup") {
-        printf("%s setup <f.projeny>\n"
+        printf("%s setup <f.projeny|dir>\n"
                "\n"
                "Unpack the release tarball named by the Archive: header and\n"
                "apply the patch, creating the workdir named by Name: (plus a\n"
@@ -3156,12 +3457,18 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "command refuses a conflicted\n"
                ".projeny file outright. A truncated or binary-garbled\n"
                ".projeny file is refused without touching the workdir or\n"
-               "status file.\n",
+               "status file.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "commit") {
-        printf("%s commit <f.projeny>\n"
+        printf("%s commit <f.projeny|dir>\n"
                "\n"
                "Fold the workdir changes into the patch: diff the workdir\n"
                "against the base archive and store the new patch in both the\n"
@@ -3186,45 +3493,69 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "\n"
                "Requires the .projeny file to match the status copy exactly\n"
                "(else hard error: run `setup` to merge first) and refuses\n"
-               "while conflicts are pending (resolve them first).\n",
+               "while conflicts are pending (resolve them first).\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "add") {
-        printf("%s add <f.projeny> <path>\n"
+        printf("%s add <f.projeny|dir> <path>\n"
                "\n"
                "Mark a file in the workdir as added-but-not-committed (stored\n"
                "in the status file; folded into the patch by the next\n"
                "`commit`). The path may be CWD-relative, absolute, or\n"
                "workdir-relative (<Name>/...); it is stored relative to the\n"
                "workdir. The file must exist. If a later `setup` also adds\n"
-               "the same file, that is a merge conflict.\n",
+               "the same file, that is a merge conflict.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "rm") {
-        printf("%s rm <f.projeny> <path>\n"
+        printf("%s rm <f.projeny|dir> <path>\n"
                "\n"
                "Delete a file from the workdir and mark it as\n"
                "removed-but-not-committed (folded into the patch by the next\n"
-               "`commit`). Path forms are the same as for `add`.\n",
+               "`commit`). Path forms are the same as for `add`.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "mv") {
-        printf("%s mv <f.projeny> <src> <dst>\n"
+        printf("%s mv <f.projeny|dir> <src> <dst>\n"
                "\n"
                "Rename a file inside the workdir and record the rename as\n"
                "pending (folded into the patch by the next `commit`, which\n"
                "renders it as a rename diff — always, even when the moved\n"
                "file's content diverged beyond the rename similarity\n"
                "threshold). Moving a pending-added file keeps it added under\n"
-               "the new name. Path forms are the same as for `add`.\n",
+               "the new name. Path forms are the same as for `add`.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "resolve") {
-        printf("%s resolve <f.projeny> <path>\n"
+        printf("%s resolve <f.projeny|dir> <path>\n"
                "\n"
                "Drop a file from the status conflict list after you fixed\n"
                "its conflict markers by hand. Accepts the stored\n"
@@ -3232,12 +3563,18 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "form, a CWD-relative path, or an absolute path. If the file\n"
                "still contains conflict-marker lines, projeny warns on\n"
                "stderr but still resolves (committing markers would bake\n"
-               "them into the patch).\n",
+               "them into the patch).\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "rebase") {
-        printf("%s rebase <f.projeny> <new-tarball>\n"
+        printf("%s rebase <f.projeny|dir> <new-tarball>\n"
                "\n"
                "Point the project at a new tarball: apply the current patch\n"
                "onto the new base, rewrite the Archive:/Origname: headers,\n"
@@ -3247,12 +3584,18 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "Conflicts leave markers and are recorded in the status file.\n"
                "Pending add/rm/mv operations are preserved. When the new\n"
                "tarball reuses the current Archive basename with different\n"
-               "bytes, projeny warns on stderr and uses the new file.\n",
+               "bytes, projeny warns on stderr and uses the new file.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "status") {
-        printf("%s status <f.projeny>\n"
+        printf("%s status <f.projeny|dir>\n"
                "\n"
                "Show the setup state from the status file: the Status: line\n"
                "plus pending Conflict:/Added:/Removed:/Renamed: entries,\n"
@@ -3261,12 +3604,18 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "Disappeared: (tracked files missing on disk and not marked\n"
                "removed/renamed), and Untracked: (new files not marked\n"
                "added/renamed) lines.\n"
-               "Exits nonzero when never set up (no status file).\n",
+               "Exits nonzero when never set up (no status file).\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
                t);
         return 0;
     }
     if (topic == "diff") {
-        printf("%s diff <f.projeny>\n"
+        printf("%s diff <f.projeny|dir>\n"
                "%s diff <dir> <other-dir>\n"
                "\n"
                "With a .projeny file: print the checkout's uncommitted change\n"
@@ -3303,6 +3652,12 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "match the workdir. The exit status is 0 whenever the diff\n"
                "itself succeeds — even when it prints changes or warnings.\n"
                "stdout carries only the patch; warnings go to stderr.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically a missing checkout directory, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n"
                "\n"
                "With two directories: print the minimal unified diff between\n"
                "two on-disk trees to stdout (git-compatible: `diff --git\n"
@@ -3351,7 +3706,9 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "`add`ed) are left out — like `git archive` and\n"
                "package-source.sh. The first argument may be the .projeny\n"
                "file or a directory holding (or naming, as \"<dir>.projeny\"\n"
-               "for a \"<dir>\" workdir) exactly one .projeny file.\n"
+               "for a \"<dir>\" workdir) exactly one .projeny file, or a path\n"
+               "whose '<arg>.projeny' sibling exists (a missing checkout\n"
+               "directory also works then).\n"
                "The archive holds a single top-level directory named after\n"
                "the output file (pizlonated-libffi.tar.gz holds\n"
                "pizlonated-libffi/...). Compression is autodetected from the\n"
@@ -3373,8 +3730,10 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "variant of extract_source. The first argument may be the\n"
                ".projeny file or a directory holding (or naming, as\n"
                "\"<dir>.projeny\" for a \"<dir>\" workdir) exactly one\n"
-               ".projeny file. The destination must not exist or must be an\n"
-               "empty directory (remove it first to redo an extraction).\n"
+               ".projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (a missing checkout directory also works then). The\n"
+               "destination must not exist or must be an empty directory\n"
+               "(remove it first to redo an extraction).\n"
                "When `setup` reports conflicts the command prints them and\n"
                "exits nonzero without writing anything.\n",
                t);

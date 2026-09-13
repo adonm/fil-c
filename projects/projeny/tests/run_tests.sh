@@ -7682,6 +7682,732 @@ if [ ! -e "$T173/b/fake/src/orig.c" ]; then
 else
     fail "recommit-text setup keeps the old path gone"
 fi
+# ------------------------- 174. flexible project arguments on every command
+# Every project-taking command (setup, commit, add, rm, mv, resolve, rebase,
+# status, and the 1-arg diff) resolves its first argument the way
+# package/extract always have: the .projeny file itself, a directory holding
+# exactly one .projeny file, a directory (typically the workdir) next to a
+# "<dir>.projeny" sibling, or a bare name whose "<name>.projeny" sibling
+# exists - so a checkout directory that was never created works too.
+T174="$ROOT/t174"
+make_tarballs "$T174" fake
+write_projeny "$T174" fake 1.0 fake
+# The explicitly new shape: only fake.projeny exists, fake/ never created.
+run_in "$T174" expect_ok "setup accepts a never-set-up bare name" "$PROJENY" setup fake
+if [ -f "$T174/fake/README" ] && [ -f "$T174/fake/src/a.c" ] && \
+   [ -f "$T174/.fake.projeny.status" ]; then
+    ok "bare-name setup created the checkout and the status file"
+else
+    fail "bare-name setup created the checkout and the status file" \
+         "ls: $(ls -A "$T174" 2>&1)"
+fi
+expect_file_contains "bare-name setup checked out the tarball" "$T174/fake/README" "hello v1"
+# status on a never-set-up bare name: resolves the right status file and
+# reports not-set-up (exit 1) instead of crashing or reading the wrong file.
+T174NS="$ROOT/t174ns"
+mkdir -p "$T174NS"
+write_projeny "$T174NS" fake 1.0 fake
+out="$(cd "$T174NS" && "$PROJENY" status fake 2>&1)"; rc=$?
+if [ $rc -ne 0 ]; then
+    ok "status on a never-set-up bare name exits nonzero"
+else
+    fail "status on a never-set-up bare name exits nonzero" "out: $out"
+fi
+case "$out" in
+*"fake.projeny"*"not set up"*|*"not set up"*"fake.projeny"*)
+    ok "status on a never-set-up bare name resolves the .projeny file"
+    ;;
+*)
+    fail "status on a never-set-up bare name resolves the .projeny file" \
+         "out: $out"
+    ;;
+esac
+# The checkout-directory form must behave exactly like the .projeny form:
+# status output is identical either way.
+o1="$(cd "$T174" && "$PROJENY" status fake 2>&1)"
+o2="$(cd "$T174" && "$PROJENY" status fake.projeny 2>&1)"
+if [ -n "$o1" ] && [ "$o1" = "$o2" ]; then
+    ok "status via the workdir matches status via the .projeny file"
+else
+    fail "status via the workdir matches status via the .projeny file" \
+         "dir: $o1 | projeny: $o2"
+fi
+# diff via the workdir: identical output to the .projeny form (non-empty
+# diff, so an accidentally-empty result cannot pass).
+printf 'brand new file\n' > "$T174/fake/src/added.c"
+run_in "$T174" expect_ok "add via the workdir marks the file" "$PROJENY" add fake fake/src/added.c
+expect_file_contains "add via the workdir records the pending op" "$T174/.fake.projeny.status" "Added: src/added.c"
+d1="$(cd "$T174" && "$PROJENY" diff fake 2>&1)"
+d2="$(cd "$T174" && "$PROJENY" diff fake.projeny 2>&1)"
+if [ -n "$d1" ] && [ "$d1" = "$d2" ]; then
+    ok "diff via the workdir matches diff via the .projeny file"
+else
+    fail "diff via the workdir matches diff via the .projeny file" \
+         "dir: $d1 | projeny: $d2"
+fi
+# commit, mv, rm, rebase via the workdir.
+run_in "$T174" expect_ok "commit via the workdir folds the add" "$PROJENY" commit fake
+expect_file_contains "commit via the workdir stores the patch" "$T174/fake.projeny" "brand new file"
+run_in "$T174" expect_ok "mv via the workdir renames" "$PROJENY" mv fake fake/src/added.c fake/src/renamed.c
+expect_file_contains "mv via the workdir records the rename" "$T174/.fake.projeny.status" "Renamed: src/added.c -> src/renamed.c"
+run_in "$T174" expect_ok "commit via the workdir folds the rename" "$PROJENY" commit fake
+run_in "$T174" expect_ok "rm via the workdir deletes" "$PROJENY" rm fake fake/src/renamed.c
+expect_file_contains "rm via the workdir records the removal" "$T174/.fake.projeny.status" "Removed: src/renamed.c"
+run_in "$T174" expect_ok "commit via the workdir folds the rm" "$PROJENY" commit fake
+run_in "$T174" expect_ok "rebase via the workdir re-points the archive" "$PROJENY" rebase fake fake-2.0.tar.gz
+expect_file_contains "rebase via the workdir updates Archive" "$T174/fake.projeny" "Archive: fake-2.0.tar.gz"
+# setup via the workdir on an existing checkout (re-setup of v2).
+run_in "$T174" expect_ok "setup via the workdir re-sets up" "$PROJENY" setup fake
+expect_file_contains "workdir re-setup keeps the committed state" "$T174/fake/README" "hello v2"
+# resolve via the workdir, through the real conflict flow (test-4 style:
+# local commit, upstream commit touching the same line, then a merge).
+T174C="$ROOT/t174c"
+make_tarballs "$T174C" fake
+write_projeny "$T174C" fake 1.0 fake
+(cd "$T174C" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T174C/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 10;")
+open(p, "w").write(s)
+EOF
+(cd "$T174C" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T174C/fake.projeny" "$ROOT/t174-local.projeny"
+rm -rf "$T174C/fake" "$T174C/.fake.projeny.status"
+cp "$ROOT/t174-local.projeny" "$T174C/fake.projeny"
+(cd "$T174C" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T174C/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 999;")
+open(p, "w").write(s)
+EOF
+U174="$ROOT/t174up"
+mkdir -p "$U174"
+cp "$T174C/fake-1.0.tar.gz" "$U174/"
+cp "$ROOT/t174-local.projeny" "$U174/fake.projeny"
+(cd "$U174" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$U174/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 555;")
+open(p, "w").write(s)
+EOF
+(cd "$U174" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$U174/fake.projeny" "$T174C/fake.projeny"
+run_in "$T174C" expect_fail "conflicting merge via the workdir exits nonzero" "$PROJENY" setup fake
+expect_file_contains "conflict recorded in the status file" "$T174C/.fake.projeny.status" "Conflict: src/a.c"
+printf 'int alpha = 1;\n\nint beta = 777;\n\nint gamma = 1;\n\nint delta = 1;\n' > "$T174C/fake/src/a.c"
+run_in "$T174C" expect_ok "resolve via the workdir clears the conflict" "$PROJENY" resolve fake fake/src/a.c
+if grep -q "^Conflict:" "$T174C/.fake.projeny.status"; then
+    fail "resolve via the workdir removes the conflict entry" "$(cat "$T174C/.fake.projeny.status")"
+else
+    ok "resolve via the workdir removes the conflict entry"
+fi
+run_in "$T174C" expect_ok "commit via the workdir after resolve" "$PROJENY" commit fake
+# A directory holding exactly one .projeny file (test-95's proj/ fixture).
+T174D="$ROOT/t174d"
+mkdir -p "$T174D/proj"
+make_tarballs "$T174D/proj" fake
+write_projeny "$T174D/proj" fake 1.0 fake
+run_in "$T174D" expect_ok "setup accepts a directory holding one .projeny" "$PROJENY" setup proj
+run_in "$T174D" expect_ok "status accepts a directory holding one .projeny" "$PROJENY" status proj
+if [ -f "$T174D/proj/fake/README" ]; then
+    ok "single-projeny-dir setup checked out the workdir"
+else
+    fail "single-projeny-dir setup checked out the workdir" "ls: $(ls -R "$T174D/proj" 2>&1)"
+fi
+# Error shapes: a directory with no .projeny anywhere fails with the
+# resolver's message; a directory holding two .projeny files asks for one.
+T174E="$ROOT/t174e"
+mkdir -p "$T174E/lonely"
+out="$(cd "$T174E" && "$PROJENY" setup lonely 2>&1 || true)"
+case "$out" in
+*"directory holds no .projeny file"*)
+    ok "a projeny-less directory fails with the resolver message"
+    ;;
+*)
+    fail "a projeny-less directory fails with the resolver message" "out: $out"
+    ;;
+esac
+T174T="$ROOT/t174t"
+mkdir -p "$T174T/two"
+make_tarballs "$T174T/two" fake
+write_projeny "$T174T/two" fake 1.0 fake
+write_projeny "$T174T/two" other 1.0 fake
+out="$(cd "$T174T" && "$PROJENY" status two 2>&1 || true)"
+case "$out" in
+*"multiple .projeny files"*)
+    ok "a directory holding two .projeny files asks for one explicitly"
+    ;;
+*)
+    fail "a directory holding two .projeny files asks for one explicitly" \
+         "out: $out"
+    ;;
+esac
+# Consistency: package/extract take the never-set-up bare name too.
+T174P="$ROOT/t174p"
+make_tarballs "$T174P" fake
+write_projeny "$T174P" fake 1.0 fake
+run_in "$T174P" expect_ok "package accepts a never-set-up bare name" "$PROJENY" package fake pkg.tar.gz
+if [ -f "$T174P/pkg.tar.gz" ]; then
+    ok "bare-name package wrote the archive"
+else
+    fail "bare-name package wrote the archive" "ls: $(ls -A "$T174P")"
+fi
+run_in "$T174P" expect_ok "extract accepts a never-set-up bare name" "$PROJENY" extract fake dest
+expect_file_contains "bare-name extract holds the tracked files" "$T174P/dest/README" "hello v1"
+
+# --------------------- 175. setup reports honestly whether a merge happened
+# U is the diff of the workdir against base+patch, so a pristine checkout
+# diffs empty even when the committed patch is non-empty. setup used to
+# compare U against the whole patch and therefore claimed "merged local
+# changes" on every re-setup of every real (patched) project. These tests
+# pin the honest reporting: fresh re-setup says "no local changes",
+# untracked files ride along without being called a merge, and a real merge
+# prints one line per file. The committed edits here stay in the delta
+# region of src/a.c, which fake-2.0 leaves alone, so the rebase below stays
+# clean (v2 rewrites src/b.c and README).
+T175="$ROOT/t175"
+make_tarballs "$T175" fake
+write_projeny "$T175" fake 1.0 fake
+(cd "$T175" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+# A NON-EMPTY committed patch (the standard fixture's patch is empty).
+python3 - "$T175/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+(cd "$T175" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T175/fake.projeny" "$ROOT/t175-local.projeny"
+out="$(cd "$T175" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"no local changes"*)
+    ok "re-setup of a patched pristine checkout says no local changes"
+    ;;
+*)
+    fail "re-setup of a patched pristine checkout says no local changes" \
+         "out: $out"
+    ;;
+esac
+case "$out" in
+*"merged local changes"*)
+    fail "re-setup of a patched pristine checkout claims no merge" "out: $out"
+    ;;
+*)
+    ok "re-setup of a patched pristine checkout claims no merge"
+    ;;
+esac
+expect_file_contains "re-setup keeps the committed content" "$T175/fake/src/a.c" "delta = 100"
+# Only untracked files: still no merge, and the files survive.
+printf 'rider\n' > "$T175/fake/untracked.txt"
+out="$(cd "$T175" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"no local changes"*)
+    ok "untracked files alone do not claim a merge"
+    ;;
+*)
+    fail "untracked files alone do not claim a merge" "out: $out"
+    ;;
+esac
+case "$out" in
+*"merged local changes"*)
+    fail "untracked-file setup never says merged" "out: $out"
+    ;;
+*)
+    ok "untracked-file setup never says merged"
+    ;;
+esac
+if [ -f "$T175/fake/untracked.txt" ] && [ "$(cat "$T175/fake/untracked.txt")" = "rider" ]; then
+    ok "untracked file rides along the re-setup"
+else
+    fail "untracked file rides along the re-setup" \
+         "ls: $(ls -A "$T175/fake" 2>&1)"
+fi
+rm -f "$T175/fake/untracked.txt" # it would dirty the rebase below
+# A genuine merge: local base (v1, committed delta edit) plus an uncommitted
+# beta edit, upstream rebased onto v2 with its own committed gamma edit.
+(cd "$T175" && "$PROJENY" rebase fake.projeny fake-2.0.tar.gz >/dev/null 2>&1)
+python3 - "$T175/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int gamma = 1;", "int gamma = 200;")
+open(p, "w").write(s)
+EOF
+(cd "$T175" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T175/fake.projeny" "$ROOT/t175-up.projeny"
+rm -rf "$T175/fake" "$T175/.fake.projeny.status"
+cp "$ROOT/t175-local.projeny" "$T175/fake.projeny"
+(cd "$T175" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T175/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 300;")
+open(p, "w").write(s)
+EOF
+cp "$ROOT/t175-up.projeny" "$T175/fake.projeny"
+out="$(cd "$T175" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"merged local changes onto"*)
+    ok "a real merge says it merged"
+    ;;
+*)
+    fail "a real merge says it merged" "out: $out"
+    ;;
+esac
+case "$out" in
+*"src/a.c"*)
+    ok "the merge report names the merged file"
+    ;;
+*)
+    fail "the merge report names the merged file" "out: $out"
+    ;;
+esac
+expect_file_contains "the merge kept the local beta edit" "$T175/fake/src/a.c" "beta = 300"
+expect_file_contains "the merge kept the committed delta edit" "$T175/fake/src/a.c" "delta = 100"
+expect_file_contains "the merge took the upstream gamma edit" "$T175/fake/src/a.c" "gamma = 200"
+expect_file_contains "the merge took the v2 alpha" "$T175/fake/src/a.c" "alpha = 2"
+# A pending add carried through a merge is reported as added.
+printf 'added through a merge\n' > "$T175/fake/src/merged-add.c"
+run_in "$T175" expect_ok "pending add marked before the merge" "$PROJENY" add fake.projeny fake/src/merged-add.c
+cp "$ROOT/t175-up.projeny" "$ROOT/t175-up2.projeny"
+python3 - "$ROOT/t175-up2.projeny" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("gamma = 200", "gamma = 201")
+open(p, "w").write(s)
+EOF
+cp "$ROOT/t175-up2.projeny" "$T175/fake.projeny"
+out="$(cd "$T175" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"added: src/merged-add.c"*)
+    ok "the merge report lists the pending add as added"
+    ;;
+*)
+    fail "the merge report lists the pending add as added" "out: $out"
+    ;;
+esac
+expect_file_contains "the status keeps the pending add" "$T175/.fake.projeny.status" "Added: src/merged-add.c"
+if [ "$(cat "$T175/fake/src/merged-add.c")" = "added through a merge" ]; then
+    ok "the pending add survived the merge"
+else
+    fail "the pending add survived the merge" "$(cat "$T175/fake/src/merged-add.c" 2>&1)"
+fi
+expect_file_contains "the merge took the second upstream edit" "$T175/fake/src/a.c" "gamma = 201"
+# A pending rm carried through a merge is reported as deleted (v1-only
+# upstream pair, so the deleted file is identical on both sides and the
+# deletion applies cleanly).
+T175R="$ROOT/t175r"
+make_tarballs "$T175R" fake
+write_projeny "$T175R" fake 1.0 fake
+(cd "$T175R" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T175R/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+(cd "$T175R" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T175R/fake.projeny" "$ROOT/t175r-local.projeny"
+cp "$ROOT/t175r-local.projeny" "$T175R/fake.projeny"
+(cd "$T175R" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T175R/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int gamma = 1;", "int gamma = 200;")
+open(p, "w").write(s)
+EOF
+(cd "$T175R" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T175R/fake.projeny" "$ROOT/t175r-up.projeny"
+rm -rf "$T175R/fake" "$T175R/.fake.projeny.status"
+cp "$ROOT/t175r-local.projeny" "$T175R/fake.projeny"
+(cd "$T175R" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T175R" expect_ok "pending rm marked before the merge" "$PROJENY" rm fake.projeny fake/src/b.c
+cp "$ROOT/t175r-up.projeny" "$T175R/fake.projeny"
+out="$(cd "$T175R" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"deleted: src/b.c"*)
+    ok "the merge report lists the pending rm as deleted"
+    ;;
+*)
+    fail "the merge report lists the pending rm as deleted" "out: $out"
+    ;;
+esac
+if [ ! -e "$T175R/fake/src/b.c" ]; then
+    ok "the pending rm survived the merge"
+else
+    fail "the pending rm survived the merge" "ls: $(ls "$T175R/fake/src" 2>&1)"
+fi
+expect_file_contains "the rm merge took the upstream gamma edit" "$T175R/fake/src/a.c" "gamma = 200"
+# A conflicting merge reports the conflict per file and exits 1; after
+# resolve + commit everything is consistent again.
+T175C="$ROOT/t175c"
+make_tarballs "$T175C" fake
+write_projeny "$T175C" fake 1.0 fake
+(cd "$T175C" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T175C/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 10;")
+open(p, "w").write(s)
+EOF
+(cd "$T175C" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$T175C/fake.projeny" "$ROOT/t175c-local.projeny"
+rm -rf "$T175C/fake" "$T175C/.fake.projeny.status"
+cp "$ROOT/t175c-local.projeny" "$T175C/fake.projeny"
+(cd "$T175C" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$T175C/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 999;")
+open(p, "w").write(s)
+EOF
+U175C="$ROOT/t175cup"
+mkdir -p "$U175C"
+cp "$T175C/fake-1.0.tar.gz" "$U175C/"
+cp "$ROOT/t175c-local.projeny" "$U175C/fake.projeny"
+(cd "$U175C" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$U175C/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 555;")
+open(p, "w").write(s)
+EOF
+(cd "$U175C" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$U175C/fake.projeny" "$T175C/fake.projeny"
+out="$(cd "$T175C" && "$PROJENY" setup fake.projeny 2>&1)"; rc=$?
+if [ $rc -ne 0 ]; then
+    ok "a conflicting merge exits 1"
+else
+    fail "a conflicting merge exits 1" "out: $out"
+fi
+case "$out" in
+*"conflict: src/a.c"*)
+    ok "the merge report lists the conflict per file"
+    ;;
+*)
+    fail "the merge report lists the conflict per file" "out: $out"
+    ;;
+esac
+case "$out" in
+*"setup left conflicts (exit 1)"*)
+    ok "the conflicting merge keeps the closing guidance line"
+    ;;
+*)
+    fail "the conflicting merge keeps the closing guidance line" "out: $out"
+    ;;
+esac
+printf 'int alpha = 1;\n\nint beta = 777;\n\nint gamma = 1;\n\nint delta = 1;\n' > "$T175C/fake/src/a.c"
+run_in "$T175C" expect_ok "resolve after the reported conflict" "$PROJENY" resolve fake.projeny fake/src/a.c
+run_in "$T175C" expect_ok "commit after the reported conflict" "$PROJENY" commit fake.projeny
+expect_file_contains "the post-conflict commit stores the resolution" "$T175C/fake.projeny" "beta = 777"
+# Regression: with the plain (unpatched) fixture, a double setup still says
+# "(no local changes)".
+T175P="$ROOT/t175p"
+make_tarballs "$T175P" fake
+write_projeny "$T175P" fake 1.0 fake
+(cd "$T175P" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+out="$(cd "$T175P" && "$PROJENY" setup fake.projeny 2>&1)"
+case "$out" in
+*"(no local changes)"*)
+    ok "empty-patch double setup still says no local changes"
+    ;;
+*)
+    fail "empty-patch double setup still says no local changes" "out: $out"
+    ;;
+esac
+
+# ----------------- 176. harder conflicted setup reports each conflict once
+# Same fixture shape as the harder case in section 80: a conflicted .projeny
+# file (markers in the patch region) on top of a checkout that also carries
+# an uncommitted workdir edit — here to the very file (a.c) the merge
+# conflicts on, so both merge stages report it. The report must list each
+# conflicted file exactly once.
+T176="$ROOT/t176"
+mkdir -p "$T176"
+cp "$T81/w-1.0.tar.gz" "$T176/"
+cp "$ROOT/t81-local.projeny" "$T176/w.projeny"
+(cd "$T176" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+# uncommitted edit to a.c, the file the two sides conflict on.
+python3 - "$T176/w/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("delta 1", "delta UNCOMMITTED")
+open(p, "w").write(s)
+EOF
+make_conflicted "$ROOT/t81-local.projeny" "$ROOT/t81-up.projeny" "$T176/w.projeny"
+out="$(cd "$T176" && "$PROJENY" setup w.projeny 2>&1)"
+if [ $? -ne 0 ]; then
+    ok "harder conflicted setup (conflict in both stages) exits nonzero"
+else
+    fail "harder conflicted setup (conflict in both stages) exits nonzero" "out: $out"
+fi
+nconf="$(echo "$out" | grep -c 'conflict: a.c')"
+if [ "$nconf" -eq 1 ]; then
+    ok "harder conflicted setup lists 'conflict: a.c' exactly once"
+else
+    fail "harder conflicted setup lists 'conflict: a.c' exactly once" \
+        "count=$nconf out: $out"
+fi
+if echo "$out" | grep -q "setup left conflicts"; then
+    ok "harder conflicted setup prints the closing guidance"
+else
+    fail "harder conflicted setup prints the closing guidance" "out: $out"
+fi
+expect_file_contains "harder conflicted setup keeps uncommitted edit" \
+    "$T176/w/a.c" "delta UNCOMMITTED"
+expect_file_contains "harder conflicted setup leaves markers" \
+    "$T176/w/a.c" "<<<<<<<"
+
+# --------------- 177. setup reports a pending mv as renamed, not add+delete
+# A pending `projeny mv` alone makes the next setup a merge (U holds the
+# move's delete+add). The report must name the move as one "renamed:" line
+# — the status file records Renamed: and `projeny diff` renders the same
+# state as a rename — never a bare "added:" for the destination.
+T177="$ROOT/t177"
+make_tarballs "$T177" fake
+write_projeny "$T177" fake 1.0 fake
+(cd "$T177" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T177" expect_ok "setup-report mv records the rename" \
+    "$PROJENY" mv fake.projeny fake/src/b.c fake/src/moved.c
+out="$(cd "$T177" && "$PROJENY" setup fake.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "setup after a pending mv exits 0"
+else
+    fail "setup after a pending mv exits 0" "out: $out"
+fi
+case "$out" in
+*"renamed: src/b.c -> src/moved.c"*)
+    ok "setup report lists a pending mv as renamed"
+    ;;
+*)
+    fail "setup report lists a pending mv as renamed" "out: $out"
+    ;;
+esac
+case "$out" in
+*"added: src/moved.c"*)
+    fail "setup report never calls a pending mv added" "out: $out"
+    ;;
+*)
+    ok "setup report never calls a pending mv added"
+    ;;
+esac
+expect_file_contains "the mv merge keeps the renamed status" \
+    "$T177/.fake.projeny.status" "Renamed: src/b.c -> src/moved.c"
+if [ -f "$T177/fake/src/moved.c" ] &&
+   [ "$(cat "$T177/fake/src/moved.c")" = "line one v1" ] &&
+   [ ! -e "$T177/fake/src/b.c" ]; then
+    ok "the mv merge moved the file with its content"
+else
+    fail "the mv merge moved the file with its content" \
+        "ls: $(ls "$T177/fake/src" 2>&1)"
+fi
+
+# -------------- 178. setup reports a divergent pending mv as renamed
+# Regression: a pending `projeny mv` whose moved file was rewritten past
+# rename-similarity detection split into "deleted: <src>" plus
+# "added: <dst>" in the setup report (setup's workdir diff is a plain
+# diff without the forced-rename pairing `projeny diff`/`commit` use),
+# even though the status file records Renamed: and `projeny diff` renders
+# the same state as a rename. The report must pair the sides back up
+# from the pending rename list: one "renamed:" line, no add/delete.
+T178="$ROOT/t178"
+make_tarballs "$T178" fake
+write_projeny "$T178" fake 1.0 fake
+(cd "$T178" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+run_in "$T178" expect_ok "divergent mv records the rename" \
+    "$PROJENY" mv fake.projeny fake/src/b.c fake/src/moved.c
+# Rewrite the moved file completely so no content/similarity pairing can
+# rematch it against src/b.c in a plain diff: every line differs.
+python3 - "$T178/fake/src/moved.c" <<'EOF'
+import sys
+p = sys.argv[1]
+open(p, "w").write(
+    "".join("completely different content line %d\n" % i for i in range(12)))
+EOF
+out="$(cd "$T178" && "$PROJENY" setup fake.projeny 2>&1)"
+if [ $? -eq 0 ]; then
+    ok "setup after a divergent pending mv exits 0"
+else
+    fail "setup after a divergent pending mv exits 0" "out: $out"
+fi
+case "$out" in
+*"renamed: src/b.c -> src/moved.c"*)
+    ok "divergent pending mv reports renamed"
+    ;;
+*)
+    fail "divergent pending mv reports renamed" "out: $out"
+    ;;
+esac
+case "$out" in
+*"added: src/moved.c"*)
+    fail "divergent pending mv is not mis-reported as added" "out: $out"
+    ;;
+*)
+    ok "divergent pending mv is not mis-reported as added"
+    ;;
+esac
+case "$out" in
+*"deleted: src/b.c"*)
+    fail "divergent pending mv is not mis-reported as deleted" "out: $out"
+    ;;
+*)
+    ok "divergent pending mv is not mis-reported as deleted"
+    ;;
+esac
+expect_file_contains "divergent mv keeps the renamed status" \
+    "$T178/.fake.projeny.status" "Renamed: src/b.c -> src/moved.c"
+if [ -f "$T178/fake/src/moved.c" ] &&
+   grep -q "completely different content line 11" "$T178/fake/src/moved.c" &&
+   [ ! -e "$T178/fake/src/b.c" ]; then
+    ok "divergent mv keeps the edited content at the destination"
+else
+    fail "divergent mv keeps the edited content at the destination" \
+        "ls: $(ls "$T178/fake/src" 2>&1)"
+fi
+
+# -------- 179. conflicted .projeny setup reports a committed local add
+# A git-conflicted .projeny whose LOCAL side carries only a committed add
+# (no modifications): the stage-1 merge input is the committed patch, where
+# every block is a real change, so the add must be reported — and the setup
+# must never claim "no local changes to merge onto" when the merge brings
+# the added file into the workdir.
+T179="$ROOT/t179"
+make_tarballs "$T179" fake
+write_projeny "$T179" fake 1.0 fake
+(cd "$T179" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+printf 'committed by the local side\n' > "$T179/fake/src/new.c"
+run_in "$T179" expect_ok "fixture marks the local add" "$PROJENY" add fake.projeny fake/src/new.c
+run_in "$T179" expect_ok "fixture commits the local add" "$PROJENY" commit fake.projeny
+cp "$T179/fake.projeny" "$ROOT/t179-local.projeny"
+# upstream twin: same base, its own committed edit to a different file.
+U179="$ROOT/t179up"
+make_tarballs "$U179" fake
+write_projeny "$U179" fake 1.0 fake
+(cd "$U179" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$U179/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int gamma = 1;", "int gamma = 200;")
+open(p, "w").write(s)
+EOF
+(cd "$U179" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$U179/fake.projeny" "$ROOT/t179-up.projeny"
+# git-style conflict between the committed-add local side and the upstream.
+make_conflicted "$ROOT/t179-local.projeny" "$ROOT/t179-up.projeny" "$T179/fake.projeny"
+out="$(cd "$T179" && "$PROJENY" setup fake.projeny 2>&1)"
+if [ $? -ne 0 ]; then
+    fail "conflicted setup with a committed local add exits 0" "out: $out"
+else
+    ok "conflicted setup with a committed local add exits 0"
+fi
+case "$out" in
+*"added: src/new.c"*)
+    ok "the merge report lists the committed add as added"
+    ;;
+*)
+    fail "the merge report lists the committed add as added" "out: $out"
+    ;;
+esac
+case "$out" in
+*"merged local changes onto"*)
+    ok "the committed-add merge prints the merged header"
+    ;;
+*)
+    fail "the committed-add merge prints the merged header" "out: $out"
+    ;;
+esac
+case "$out" in
+*"no local changes to merge onto"*)
+    fail "committed-add merge never says no local changes" "out: $out"
+    ;;
+*)
+    ok "committed-add merge never says no local changes"
+    ;;
+esac
+if cmp -s "$T179/fake.projeny" "$ROOT/t179-up.projeny"; then
+    ok "committed-add setup force-takes upstream"
+else
+    fail "committed-add setup force-takes upstream" "$(cat "$T179/fake.projeny")"
+fi
+if [ -f "$T179/fake/src/new.c" ] &&
+   [ "$(cat "$T179/fake/src/new.c")" = "committed by the local side" ]; then
+    ok "the committed add landed in the workdir"
+else
+    fail "the committed add landed in the workdir" \
+        "ls: $(ls "$T179/fake/src" 2>&1)"
+fi
+expect_file_contains "the merge took the upstream edit alongside the add" \
+    "$T179/fake/src/a.c" "int gamma = 200;"
+expect_file_contains "the status embeds the upstream copy" \
+    "$T179/.fake.projeny.status" "int gamma = 200;"
+expect_file_not_contains "committed-add merge records no conflicts" \
+    "$T179/.fake.projeny.status" "Conflict:"
+run_in "$T179" expect_ok "status reads consistent state after the add merge" \
+    "$PROJENY" status fake.projeny
+
+# ---------- 180. conflicted .projeny setup with an empty local side
+# Markers between the base content and the upstream content: the local side
+# contributes no patch at all, so the merge brings nothing of ours in and
+# setup must say "no local changes to merge onto", exit 0, and leave the
+# workdir at the upstream content.
+T180="$ROOT/t180"
+make_tarballs "$T180" fake
+write_projeny "$T180" fake 1.0 fake
+cp "$T180/fake.projeny" "$ROOT/t180-pristine.projeny"
+(cd "$T180" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+# upstream twin: same base with one committed edit.
+U180="$ROOT/t180up"
+make_tarballs "$U180" fake
+write_projeny "$U180" fake 1.0 fake
+(cd "$U180" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$U180/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 77;")
+open(p, "w").write(s)
+EOF
+(cd "$U180" && "$PROJENY" commit fake.projeny >/dev/null 2>&1)
+cp "$U180/fake.projeny" "$ROOT/t180-up.projeny"
+# git-style conflict: pristine local side vs the upstream commit.
+make_conflicted "$ROOT/t180-pristine.projeny" "$ROOT/t180-up.projeny" "$T180/fake.projeny"
+out="$(cd "$T180" && "$PROJENY" setup fake.projeny 2>&1)"
+if [ $? -ne 0 ]; then
+    fail "conflicted setup with an empty local side exits 0" "out: $out"
+else
+    ok "conflicted setup with an empty local side exits 0"
+fi
+case "$out" in
+*"no local changes to merge onto"*)
+    ok "empty local side says no local changes to merge onto"
+    ;;
+*)
+    fail "empty local side says no local changes to merge onto" "out: $out"
+    ;;
+esac
+case "$out" in
+*"merged local changes"*)
+    fail "empty local side never claims a merge" "out: $out"
+    ;;
+*)
+    ok "empty local side never claims a merge"
+    ;;
+esac
+if cmp -s "$T180/fake.projeny" "$ROOT/t180-up.projeny"; then
+    ok "empty-local-side setup force-takes upstream"
+else
+    fail "empty-local-side setup force-takes upstream" "$(cat "$T180/fake.projeny")"
+fi
+expect_file_contains "the workdir ends at the upstream content" \
+    "$T180/fake/src/a.c" "int beta = 77;"
+expect_file_contains "the workdir keeps the untouched tarball content" \
+    "$T180/fake/README" "hello v1"
+expect_file_contains "the status embeds the upstream copy" \
+    "$T180/.fake.projeny.status" "int beta = 77;"
+expect_file_not_contains "empty-local-side merge records no conflicts" \
+    "$T180/.fake.projeny.status" "Conflict:"
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

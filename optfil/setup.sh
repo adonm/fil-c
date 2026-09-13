@@ -483,7 +483,12 @@ else
         /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
         /usr/lib64/ld-linux-x86-64.so.2 \
         /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
-        /lib/ld-linux-x86-64.so.2)
+        /lib/ld-linux-x86-64.so.2 \
+        /lib64/ld-linux-aarch64.so.1 \
+        /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 \
+        /usr/lib64/ld-linux-aarch64.so.1 \
+        /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 \
+        /lib/ld-linux-aarch64.so.1)
 
     # For lib_t we probe a list of widely-shipped libraries rather than
     # libc, because some distributions' SELinux policies use a more
@@ -497,7 +502,12 @@ else
         /lib64/libm.so.6 \
         /lib/x86_64-linux-gnu/libm.so.6 \
         /usr/lib64/libcrypt.so.1 \
-        /usr/lib/x86_64-linux-gnu/libcrypt.so.1)
+        /usr/lib/x86_64-linux-gnu/libcrypt.so.1 \
+        /lib/aarch64-linux-gnu/libz.so.1 \
+        /usr/lib/aarch64-linux-gnu/libz.so.1 \
+        /lib/aarch64-linux-gnu/libm.so.6 \
+        /lib/aarch64-linux-gnu/libcrypt.so.1 \
+        /usr/lib/aarch64-linux-gnu/libcrypt.so.1)
 
     # Tell the user what we found before we try to do anything, so a
     # missing reference is reported up-front instead of as one of N
@@ -600,15 +610,20 @@ else
             '/opt/fil/lib/.+\.so(\..+)?' \
             "/opt/fil/lib"
 
-        # /opt/fil/lib/ld-fil1-x86_64.so -> ld_so_t. Registered after the
+        # /opt/fil/lib/ld-fil1-$filc_arch.so -> ld_so_t. Registered after the
         # library rule (see comment above) so that semanage's most-recent
-        # entry wins for the loader file at restorecon time.
+        # entry wins for the loader file at restorecon time. The loader's
+        # name depends on the machine architecture (build_opt.sh names it
+        # ld-fil1-`uname -m`.so, e.g. ld-fil1-x86_64.so on x86_64 or
+        # ld-fil1-aarch64.so on aarch64).
+        filc_arch=$(uname -m)
+        filc_loader="/opt/fil/lib/ld-fil1-$filc_arch.so"
         selinux_run_rule selinux_label_file \
-            "/opt/fil/lib/ld-fil1-x86_64.so (loader)" \
+            "$filc_loader (loader)" \
             "$SYS_LOADER" \
             ld_so_t \
-            '/opt/fil/lib/ld-fil1-x86_64\.so' \
-            "/opt/fil/lib/ld-fil1-x86_64.so"
+            "/opt/fil/lib/ld-fil1-$filc_arch\.so" \
+            "$filc_loader"
 
         selinux_attempts_total=$((selinux_attempts_succeeded + selinux_attempts_failed))
 

@@ -63,7 +63,9 @@ test -e $FILCSRC/projects/user-glibc-2.44/pizlonated-user-glibc.tar.gz
 cd /opt/fil
 find . -mindepth 1 -maxdepth 1 -exec rm -rf {} \;
 
-cp -r $FILCSRC/optfil/kernel-include include
+KERNELINCLUDE=kernel-include-`uname -m`
+
+cp -r $FILCSRC/optfil/$KERNELINCLUDE include
 
 mkdir -v build
 cd build
@@ -88,7 +90,27 @@ mv -v bin etc include lib libexec sbin share var yolo
 mkdir -v lib
 
 ARCH=`uname -m`
-OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
+case $ARCH in
+    x86_64)
+        OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
+        OUTPUT_FORMAT=elf64-x86-64
+        # BLAKE3's cmake accepts amd64-asm, x86-intrinsics, neon-intrinsics,
+        # or none.  On x86_64 we use the intrinsics path.
+        BLAKE3_SIMD=x86-intrinsics
+        ;;
+    aarch64)
+        # On aarch64, glibc's dynamic loader is ld-linux-aarch64.so.1 (the
+        # .so.1 suffix is correct for aarch64; x86_64 uses .so.2).
+        OLDLDNAME=ld-linux-aarch64.so.1
+        OUTPUT_FORMAT=elf64-littleaarch64
+        # On aarch64 we use the NEON intrinsics path.
+        BLAKE3_SIMD=neon-intrinsics
+        ;;
+    *)
+        echo "Unsupported arch: $ARCH"
+        exit 1
+        ;;
+esac
 OLDLIBCIMPLNAME=libc.so.6
 OLDLIBCNONSHAREDNAME=libc_nonshared.a
 OLDLIBMIMPLNAME=libm.so.6
@@ -111,9 +133,9 @@ patchelf --set-soname $LDNAME lib/$LDNAME
 patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBMIMPLNAME
 patchelf --replace-needed $OLDLIBCIMPLNAME $LIBCIMPLNAME lib/$LIBMIMPLNAME
 patchelf --set-soname $LIBMIMPLNAME lib/$LIBMIMPLNAME
-echo "OUTPUT_FORMAT(elf64-x86-64)" > lib/$LIBCNAME
+echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBCNAME
 echo "GROUP ( /opt/fil/lib/$LIBCIMPLNAME /opt/fil/lib/$LIBCNONSHAREDNAME  AS_NEEDED ( /opt/fil/lib/$LDNAME ) )" >> lib/$LIBCNAME
-echo "OUTPUT_FORMAT(elf64-x86-64)" > lib/$LIBMNAME
+echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBMNAME
 echo "GROUP ( /opt/fil/lib/$LIBMIMPLNAME )" >> lib/$LIBMNAME
 unset OLDLDNAME
 unset OLDLIBCIMPLNAME
@@ -137,7 +159,7 @@ cp -v $FILCSRC/pizfix/lib/crtbegin.o lib/
 cp -v $FILCSRC/pizfix/lib/crtend.o lib/
 cp -v $FILCSRC/pizfix/lib/libyolort.a lib/
 cp -v $FILCSRC/pizfix/lib/libyolounwind.a lib/
-cp -r $FILCSRC/optfil/kernel-include include
+cp -r $FILCSRC/optfil/$KERNELINCLUDE include
 cp -v $FILCSRC/pizfix/stdfil-include/*.h include/
 
 mkdir -v bin
@@ -291,7 +313,7 @@ hash -r
 
 tar -xf $FILCSRC/projects/blake3/pizlonated-blake3.tar.gz
 cd pizlonated-blake3
-CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=/opt/fil -DBLAKE3_SIMD_TYPE=x86-intrinsics -DCMAKE_BUILD_TYPE=RelWithDebInfo
+CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=/opt/fil -DBLAKE3_SIMD_TYPE=$BLAKE3_SIMD -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build c/build --target install -j `nproc`
 cd ..
 rm -rf pizlonated-blake3

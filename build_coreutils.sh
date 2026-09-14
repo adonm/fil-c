@@ -28,9 +28,20 @@
 set -e
 set -x
 
-cd projects/coreutils-9.11
-extract_source
+cd projects
+rm -rf coreutils/extracted-source
+../filc/projeny extract coreutils.projeny coreutils/extracted-source
+cd coreutils/extracted-source
+
+# projeny applies the patch with fresh timestamps, which makes make think
+# that generated files (Makefile.in, man pages, ...) need to be regenerated
+# with tools we don't have. Put all the timestamps back in sync, just like
+# git archive would.
+find . -exec touch -r ./configure {} +
+
 FORCE_UNSAFE_CONFIGURE=1 CC=$PWD/../../../build/bin/clang CXX=$PWD/../../../build/bin/clang++ \
     ./configure --prefix=$PWD/../../../pizfix
 make -j $NCPU
 make -j $NCPU install
+cd ..
+rm -rf extracted-source

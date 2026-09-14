@@ -55,6 +55,6 @@ filc/projeny package projects/util-linux.projeny projects/util-linux/pizlonated-
 ./package-source.sh projects/tar-1.35 pizlonated-tar
 ./package-source.sh projects/meson-1.5.1 pizlonated-meson
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
-./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
+filc/projeny package projects/coreutils.projeny projects/coreutils/pizlonated-coreutils.tar.gz
 filc/projeny package projects/mg.projeny projects/mg/pizlonated-mg.tar.gz
 

@@ -68,7 +68,7 @@ cd ../..
 filc/projeny package projects/xz.projeny projects/xz/pizlonated-xz.tar.gz
 filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
-./package-source.sh projects/coreutils-9.11 pizlonated-coreutils
+filc/projeny package projects/coreutils.projeny projects/coreutils/pizlonated-coreutils.tar.gz
 filc/projeny package projects/openssl.projeny projects/openssl/pizlonated-openssl.tar.gz
 filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh

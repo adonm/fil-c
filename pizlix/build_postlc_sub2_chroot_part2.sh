@@ -241,6 +241,8 @@ hash -r
 
 tar -xf pizlonated-coreutils.tar.gz
 cd pizlonated-coreutils
+# See build_coreutils.sh for why this touch is needed.
+find . -exec touch -r ./configure {} +
 FORCE_UNSAFE_CONFIGURE=1 ./configure \
     --prefix=/usr \
     --enable-no-install-program=kill,uptime

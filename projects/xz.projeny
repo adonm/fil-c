@@ -1,8 +1,8 @@
-Archive: xz-5.8.3.tar.xz
-Origname: xz-5.8.3
+Archive: xz-5.8.4.tar.xz
+Origname: xz-5.8.4
 Name: xz
 
-    xz 5.8.3 with the Fil-C port.
+    xz 5.8.4 with the Fil-C port.
 diff --git a/xz/src/liblzma/Makefile.am b/xz/src/liblzma/Makefile.am
 --- a/xz/src/liblzma/Makefile.am
 +++ b/xz/src/liblzma/Makefile.am

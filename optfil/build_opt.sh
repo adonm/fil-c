@@ -278,7 +278,7 @@ tar -xf $FILCSRC/projects/xz/pizlonated-xz.tar.gz
 cd pizlonated-xz
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --disable-static \
-    --docdir=/opt/fil/share/doc/xz-5.8.3
+    --docdir=/opt/fil/share/doc/xz-5.8.4
 make -j `nproc`
 make -j `nproc` install
 cd ..

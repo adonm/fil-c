@@ -48,7 +48,7 @@ tar -xf pizlonated-xz.tar.gz
 cd pizlonated-xz
 ./configure --prefix=/usr \
     --disable-static \
-    --docdir=/usr/share/doc/xz-5.8.3
+    --docdir=/usr/share/doc/xz-5.8.4
 make
 make install
 cd ..

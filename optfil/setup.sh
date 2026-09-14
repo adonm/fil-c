@@ -28,10 +28,13 @@ set -e
 
 VERSION="0.685"
 
+# This gets replaced with a literal when we copy the script into the install package.
+ARCH=$(uname -m)
+
 usage() {
     echo "Usage: ./setup.sh [OPTIONS]"
     echo
-    echo "Install the Fil-C /opt/fil distribution version $VERSION."
+    echo "Install the Fil-C /opt/fil distribution version $VERSION for $ARCH."
     echo
     echo "Fil-C is a memory-safe implementation of C and C++ that prevents all memory"
     echo "safety errors (out-of-bounds access, use-after-free, type confusion, etc.)"
@@ -114,7 +117,7 @@ echo "==========================================================================
 if [ "$SSH_SETUP_ONLY" = true ]; then
     heading="Fil-C $VERSION SSH Setup (Re-run)"
 else
-    heading="Fil-C $VERSION /opt/fil Distribution"
+    heading="Fil-C $VERSION $ARCH /opt/fil Distribution"
 fi
 printf "%*s%s\n" $(((80 - ${#heading}) / 2)) "" "$heading"
 echo "================================================================================"
@@ -144,6 +147,12 @@ else
     echo "THIS SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND."
     echo "********************************************************************************"
     echo
+fi
+
+if [ "$ARCH" != "$(uname -m)" ]; then
+    echo "ERROR: This installer is intended for $ARCH, but you're on $(uname -m)."
+    echo "Visit https://fil-c.org/install_optfil to find the right package for your"
+    echo "system."
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -610,19 +619,18 @@ else
             '/opt/fil/lib/.+\.so(\..+)?' \
             "/opt/fil/lib"
 
-        # /opt/fil/lib/ld-fil1-$filc_arch.so -> ld_so_t. Registered after the
+        # /opt/fil/lib/ld-fil1-$ARCH.so -> ld_so_t. Registered after the
         # library rule (see comment above) so that semanage's most-recent
         # entry wins for the loader file at restorecon time. The loader's
         # name depends on the machine architecture (build_opt.sh names it
         # ld-fil1-`uname -m`.so, e.g. ld-fil1-x86_64.so on x86_64 or
         # ld-fil1-aarch64.so on aarch64).
-        filc_arch=$(uname -m)
-        filc_loader="/opt/fil/lib/ld-fil1-$filc_arch.so"
+        filc_loader="/opt/fil/lib/ld-fil1-$ARCH.so"
         selinux_run_rule selinux_label_file \
             "$filc_loader (loader)" \
             "$SYS_LOADER" \
             ld_so_t \
-            "/opt/fil/lib/ld-fil1-$filc_arch\.so" \
+            "/opt/fil/lib/ld-fil1-$ARCH\.so" \
             "$filc_loader"
 
         selinux_attempts_total=$((selinux_attempts_succeeded + selinux_attempts_failed))

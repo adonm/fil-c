@@ -65,7 +65,7 @@ rm -rf pizlonated-user-glibc
 cd ../..
 
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
-./package-source.sh projects/xz-5.8.3 pizlonated-xz
+filc/projeny package projects/xz.projeny projects/xz/pizlonated-xz.tar.gz
 filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
 ./package-source.sh projects/coreutils-9.11 pizlonated-coreutils

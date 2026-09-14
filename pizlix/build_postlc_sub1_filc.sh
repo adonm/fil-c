@@ -20,7 +20,7 @@ cd $FILCSRC
 rm -vf projects/*/pizlonated-*.tar.gz
 ./package-source.sh projects/lfs-bootscripts-20240825 pizlonated-lfs-bootscripts
 ./package-source.sh projects/kbd-2.6.4 pizlonated-kbd
-./package-source.sh projects/xz-5.8.3 pizlonated-xz
+filc/projeny package projects/xz.projeny projects/xz/pizlonated-xz.tar.gz
 filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils

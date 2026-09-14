@@ -274,7 +274,7 @@ cd ..
 rm -rf bzip2-1.0.8
 hash -r
 
-tar -xf $FILCSRC/projects/xz-5.8.3/pizlonated-xz.tar.gz
+tar -xf $FILCSRC/projects/xz/pizlonated-xz.tar.gz
 cd pizlonated-xz
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
     --disable-static \

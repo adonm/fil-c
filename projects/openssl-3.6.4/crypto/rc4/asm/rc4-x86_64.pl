@@ -234,12 +234,8 @@ $code.=<<___;
 	ror	\$8,%r8
 	sub	\$8,$len
 
-___
-$code.=<<___;
 	xor	($inp,$idx),%r8
 	mov	%r8,($out,$idx)
-___
-$code.=<<___;
 	add	\$8,$idx
 
 	test	\$-8,$len

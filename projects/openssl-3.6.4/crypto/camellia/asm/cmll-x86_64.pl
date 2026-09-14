@@ -756,14 +756,6 @@ $code.=<<___;
 
 .Lcbc_body:
 	lea	.LCamellia_SBOX(%rip),$Tbl
-___
-if ($ENV{SARCASM}) {
-  # SARCASM-only: drop the SBOX cache-warming prefetch below (perf-only:
-  # it leaves $Tbl unchanged via the trailing sub, writes no live flags,
-  # and its counter/web shape trips sarcasm's register allocator). The gas
-  # path keeps it.
-} else {
-$code.=<<___;
 
 	mov	\$32,%ecx
 .align	4
@@ -775,9 +767,6 @@ $code.=<<___;
 	lea	128($Tbl),$Tbl
 	loop	.Lcbc_prefetch_sbox
 	sub	\$4096,$Tbl
-___
-}
-$code.=<<___;
 	shl	\$6,$keyend
 	mov	%rdx,%rcx		# len argument
 	lea	($key,$keyend),$keyend
@@ -869,7 +858,7 @@ if ($ENV{SARCASM}) {
   $code.=<<___;
 	mov	$inp,%rsi
 	lea	8+$ivec,%rdi
-	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
+	.long	0x9066A4F3		# rep movsb
 ___
 } else {
 $code.=<<___;
@@ -976,7 +965,7 @@ if ($ENV{SARCASM}) {
   $code.=<<___;
 	lea	8+$ivec,%rsi
 	lea	($out),%rdi
-	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
+	.long	0x9066A4F3		# rep movsb
 ___
 } else {
 $code.=<<___;

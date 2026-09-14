@@ -71,6 +71,13 @@ M.globalSupport = true
 -- acceptance on this flag (arm64 rejects those forms "not yet supported").
 M.crossFunctionJumps = true
 
+-- This backend implements the `#! stack buffer (...)` annotations: declared
+-- stack byte ranges lowered into a dedicated region of the synthesized frame
+-- (indexed accesses bounds-checked, static accesses redirected, no
+-- capabilities). validateBody's annotation walk accepts the annotation only
+-- when this flag is set (arm64 rejects it as unsupported).
+M.stackBuffers = true
+
 -- Calling convention (numbers are register encodings; see x86_64_isa).
 -- Fast entrypoint: rdi=myth, (rdx,rcx)=arg0, (r8,r9)=arg1; ret al=flags, rdx=iv, rcx=lo.
 -- Runtime (SysV) calls: rdi,rsi,rdx,... ; result in rax.  yolo params arrive in SysV regs.
@@ -1176,8 +1183,11 @@ function M.make(ctx)
 		-- A materialized FP frame-slot operand (disp(%rsp) into sarcasm's synthesized
 		-- frame) is NOT an input-frame access; its positive offset can numerically
 		-- coincide with an alloca-region frame offset. Never redirect/reject it.
+		-- The same holds for a `#! stack buffer` operand (it addresses the buffer
+		-- region of the synthesized frame, in region-relative placeholder
+		-- coordinates until the transform's buffer-base shift runs).
 		local fsmem = M.memOperand(node.stmt)
-		if fsmem and fsmem.frameSlot then return false end
+		if fsmem and (fsmem.frameSlot or fsmem.stackBuf) then return false end
 		local m = isa.baseMnemonic(string.lower(node.stmt.mnemonic))
 		local ops = node.stmt.operands
 		-- Region membership, reproducing the frame rewrite exactly: inside an
@@ -1341,8 +1351,11 @@ function M.make(ctx)
 		-- own synthesized frame: the access is always in-bounds (the frame contains
 		-- its own slots), so it needs no access check — pass the instruction
 		-- through untouched. (`;! load/store ptr` on a stack access was already
-		-- rejected by the frame rewrite; keep a defensive copy here.)
-		if mem and mem.frameSlot then
+		-- rejected by the frame rewrite; keep a defensive copy here.) A
+		-- `#! stack buffer` operand is the same shape: a real disp(%rsp) (or
+		-- disp(%rsp,%idx,s)) into the lowered stack-buffer region, bounds-checked
+		-- separately by the transform for the indexed forms.
+		if mem and (mem.frameSlot or mem.stackBuf) then
 			local ann = node.stmt.annotation
 			if ann and sig.PTR_ANNOTATIONS[ann] then
 				error("sarcasm: `" .. ann .. "` on a stack-frame access is not supported"

@@ -235,8 +235,6 @@ $code.=<<___;
 ___
     push(@mm,shift(@mm));
 }
-$code.=<<___;
-___
 $code.=<<___ if (!$ENV{SARCASM});
 	lea	128(%rsp),%rbx
 ___

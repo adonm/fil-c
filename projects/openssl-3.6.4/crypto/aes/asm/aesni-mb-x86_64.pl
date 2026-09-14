@@ -172,8 +172,6 @@ $code.=<<___;
 
 	sub	\$48,%rsp
 	and	\$-64,%rsp
-___
-$code.=<<___;
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
 
@@ -397,47 +395,16 @@ $code.=<<___ if ($win64);
 	#movaps	-0x58(%rax),%xmm14
 	#movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
-___
-if ($ENV{SARCASM} && $win64) {
-  # win64 keeps the slot/add teardown below; gas and SARCASM-linux share
-  # the carrier recovery in the else branch.
-    $code.=<<___;
-	movaps	48(%rsp),%xmm6
-	movaps	64(%rsp),%xmm7
-	movaps	80(%rsp),%xmm8
-	movaps	96(%rsp),%xmm9
-	movaps	112(%rsp),%xmm10
-	movaps	128(%rsp),%xmm11
-	movaps	144(%rsp),%xmm12
-	mov	216(%rsp),%r15
-.cfi_restore	%r15
-	mov	224(%rsp),%r14
-.cfi_restore	%r14
-	mov	232(%rsp),%r13
-.cfi_restore	%r13
-	mov	240(%rsp),%r12
-.cfi_restore	%r12
-	mov	248(%rsp),%rbp
-.cfi_restore	%rbp
-	mov	256(%rsp),%rbx
-.cfi_restore	%rbx
-	add	\$0x108,%rsp
-.cfi_adjust_cfa_offset	-264
-___
-} else {
+if ($ENV{SARCASM}) {
   # SARCASM-linux reloads the saved stack pointer first: the body reused
   # %rax (it holds $rounds, not the saved rsp), so the carrier must be
   # re-materialized from its slot before the restores below can read through
-  # it. Sarcasm drops the reload with the restores and the recovery, and the
-  # synthesized epilogue owns the real rsp. (Gas skips the reload: %rax still
-  # holds the saved rsp on its paths.)
-  if ($ENV{SARCASM} && !$win64) {
-    $code.=<<___;
+  # it. (Gas skips the reload: %rax still holds the saved rsp on its paths.)
+  $code.=<<___;
 	mov	16(%rsp),%rax			# original %rsp
 ___
-  }
-  $code.=<<___;
+}
+$code.=<<___;
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -451,9 +418,6 @@ ___
 	mov	-8(%rax),%rbx
 .cfi_restore	%rbx
 	lea	(%rax),%rsp
-___
-}
-$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lenc4x_epilogue:
 	ret
@@ -514,8 +478,6 @@ $code.=<<___;
 
 	sub	\$48,%rsp
 	and	\$-64,%rsp
-___
-$code.=<<___;
 	mov	%rax,16(%rsp)			# original %rsp
 .cfi_cfa_expression	%rsp+16,deref,+8
 
@@ -729,47 +691,16 @@ $code.=<<___ if ($win64);
 	#movaps	-0x58(%rax),%xmm14
 	#movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
-___
-if ($ENV{SARCASM} && $win64) {
-  # win64 keeps the slot/add teardown below; gas and SARCASM-linux share
-  # the carrier recovery in the else branch.
-    $code.=<<___;
-	movaps	48(%rsp),%xmm6
-	movaps	64(%rsp),%xmm7
-	movaps	80(%rsp),%xmm8
-	movaps	96(%rsp),%xmm9
-	movaps	112(%rsp),%xmm10
-	movaps	128(%rsp),%xmm11
-	movaps	144(%rsp),%xmm12
-	mov	216(%rsp),%r15
-.cfi_restore	%r15
-	mov	224(%rsp),%r14
-.cfi_restore	%r14
-	mov	232(%rsp),%r13
-.cfi_restore	%r13
-	mov	240(%rsp),%r12
-.cfi_restore	%r12
-	mov	248(%rsp),%rbp
-.cfi_restore	%rbp
-	mov	256(%rsp),%rbx
-.cfi_restore	%rbx
-	add	\$0x108,%rsp
-.cfi_adjust_cfa_offset	-264
-___
-} else {
+if ($ENV{SARCASM}) {
   # SARCASM-linux reloads the saved stack pointer first: the body reused
   # %rax (it holds $rounds, not the saved rsp), so the carrier must be
   # re-materialized from its slot before the restores below can read through
-  # it. Sarcasm drops the reload with the restores and the recovery, and the
-  # synthesized epilogue owns the real rsp. (Gas skips the reload: %rax still
-  # holds the saved rsp on its paths.)
-  if ($ENV{SARCASM} && !$win64) {
-    $code.=<<___;
+  # it. (Gas skips the reload: %rax still holds the saved rsp on its paths.)
+  $code.=<<___;
 	mov	16(%rsp),%rax			# original %rsp
 ___
-  }
-  $code.=<<___;
+}
+$code.=<<___;
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -783,9 +714,6 @@ ___
 	mov	-8(%rax),%rbx
 .cfi_restore	%rbx
 	lea	(%rax),%rsp
-___
-}
-$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Ldec4x_epilogue:
 	ret
@@ -801,21 +729,18 @@ my @out=map("%xmm$_",(2..9));
 my @inp=map("%xmm$_",(10..13));
 my ($counters,$zero)=("%xmm14","%xmm15");
 # Scratch slots below hold output-position capabilities under SARCASM
-# (stored/loaded as `store ptr`/`load ptr`), which stack-frame accesses
-# cannot hold (virtualized, not real memory). Hence the 192/448-byte areas
-# live in 128/256-aligned GC '.alloca' buffers on the SARCASM path ($FR);
-# gas keeps plain %rsp slots. The sub/and/mov frame itself is unconditional
-# (plain) on both paths, and every teardown recovers through the saved-rsp
-# carrier (`mov 16(%rsp),%rax` re-materializes it after the body reused %rax;
-# `mov -K(%rax),%reg` restores the pushed saves; `lea (%rax),%rsp` revives the
-# entry rsp): an `add` can never invert the `and` alignment slack, so a
-# slot/add teardown would restore the wrong registers and return with rsp off
-# by the slack. All 16B vector slots stay 16-aligned on both paths (enc8x %rsp
+# (stored/loaded as `store ptr`/`load ptr`): sarcasm virtualizes frame slots
+# into register webs that carry capabilities, so the plain %rsp accesses work
+# on both paths. The sub/and/mov frame itself is unconditional (plain), and
+# every teardown recovers through the saved-rsp carrier (`mov 16(%rsp),%rax`
+# re-materializes it after the body reused %rax; `mov -K(%rax),%reg` restores
+# the pushed saves; `lea (%rax),%rsp` revives the entry rsp): an `add` can
+# never invert the `and` alignment slack, so a slot/add teardown would restore
+# the wrong registers and return with rsp off by the slack. All 16B vector
+# slots stay 16-aligned on both paths (sarcasm materializes the FP-touched
+# slot ranges into 16-aligned areas of its synthesized frame; enc8x %rsp is
 # 128-aligned, dec8x %rsp%256==64).
-my $FR = ($ENV{SARCASM} && !$win64) ? "%fil_mbencframe" : "%rsp";
-sub FRm { my ($d,$b) = @_; $b = ($ENV{SARCASM} && !$win64) ? $b : "%rsp"; return "`$d`($b)"; }
-
-
+my $FR = "%rsp";
 $code.=<<___;
 .type	aesni_multi_cbc_encrypt_avx,\@function,3
 .align	32
@@ -859,22 +784,9 @@ $code.=<<___;
 	# +64	distances between inputs and outputs
 	# +128	off-load area for @inp[0..3]
 
-___
-if ($ENV{SARCASM} && !$win64) {
-  # Capability slots (64+8*$i output positions) need real memory; the
-  # 192-byte area lives in a 128-aligned GC buffer on the SARCASM path
-  # (the sub/and/mov frame below stays unconditional/plain; the teardown
-  # recovers through the saved-rsp carrier, never a slot/add).
-  $code.=<<___;
-	.alloca	\$192,\$128,%fil_mbencframe
-___
-}
-$code.=<<___;
 	sub	\$192,%rsp
 	and	\$-128,%rsp
 	mov	%rax,16(%rsp)			# original %rsp
-___
-$code.=<<___;
 .cfi_cfa_expression	%rsp+16,deref,+8
 
 .Lenc8x_body:
@@ -904,7 +816,7 @@ for($i=0;$i<8;$i++) {
 	test	$one,$one
 	# load IV
 	vmovdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*4`($inp),@out[$i]
-	mov	$one,@{[FRm("32+4*$i","%fil_mbencframe")]}		# initialize counters
+	mov	$one,`32+4*$i`(%rsp)		# initialize counters
 ___
   if ($ENV{SARCASM}) {
     # $cancel_src cannot survive the load-ptr of the output pointer
@@ -922,7 +834,7 @@ ___
   if ($ENV{SARCASM}) {
     # output positions are kept as proper capabilities in the slots
     $code.=<<___;
-	mov	$temp,@{[FRm("64+8*$i","%fil_mbencframe")]}		#! store ptr
+	mov	$temp,`64+8*$i`(%rsp)		#! store ptr
 ___
   } else {
     $code.=<<___;
@@ -1236,50 +1148,17 @@ $code.=<<___ if ($win64);
 	movaps	-0x58(%rax),%xmm14
 	movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
-___
-if ($ENV{SARCASM} && $win64) {
-  # win64 keeps the slot/add teardown below; gas and SARCASM-linux share
-  # the carrier recovery in the else branch.
-    $code.=<<___;
-	movaps	192(%rsp),%xmm6
-	movaps	208(%rsp),%xmm7
-	movaps	224(%rsp),%xmm8
-	movaps	240(%rsp),%xmm9
-	movaps	256(%rsp),%xmm10
-	movaps	272(%rsp),%xmm11
-	movaps	288(%rsp),%xmm12
-	movaps	304(%rsp),%xmm13
-	movaps	320(%rsp),%xmm14
-	movaps	336(%rsp),%xmm15
-	mov	360($FR),%r15
-.cfi_restore	%r15
-	mov	368($FR),%r14
-.cfi_restore	%r14
-	mov	376($FR),%r13
-.cfi_restore	%r13
-	mov	384($FR),%r12
-.cfi_restore	%r12
-	mov	392($FR),%rbp
-.cfi_restore	%rbp
-	mov	400($FR),%rbx
-.cfi_restore	%rbx
-	add	\$0x198,%rsp
-.cfi_adjust_cfa_offset	-408
-___
-} else {
+my $FRd = "%rsp";
+if ($ENV{SARCASM}) {
   # SARCASM-linux reloads the saved stack pointer first: the body reused
   # %rax (it holds $rounds, not the saved rsp), so the carrier must be
   # re-materialized from its slot before the restores below can read through
-  # it. Sarcasm drops the reload with the restores and the recovery, and the
-  # synthesized epilogue owns the real rsp. (Gas skips the reload: %rax still
-  # holds the saved rsp on its paths.)
-  if ($ENV{SARCASM} && !$win64) {
-    $code.=<<___;
+  # it. (Gas skips the reload: %rax still holds the saved rsp on its paths.)
+  $code.=<<___;
 	mov	16(%rsp),%rax			# original %rsp
 ___
-  }
-  $code.=<<___;
+}
+$code.=<<___;
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -1293,10 +1172,6 @@ ___
 	mov	-8(%rax),%rbx
 .cfi_restore	%rbx
 	lea	(%rax),%rsp
-___
-}
-my $FRd = ($ENV{SARCASM} && !$win64) ? "%fil_mbdecframe" : "%rsp";
-$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Lenc8x_epilogue:
 	ret
@@ -1346,22 +1221,10 @@ $code.=<<___;
 	# +128	off-load area for @inp[0..3]
 	# +192	IV/input offload
 
-___
-if ($ENV{SARCASM} && !$win64) {
-  # As above (enc8x): capability slots need real memory; 448-byte area
-  # in a 256-aligned GC buffer on the SARCASM path (sub/and/sub+mov stay
-  # plain; the teardown recovers through the saved-rsp carrier).
-  $code.=<<___;
-	.alloca	\$448,\$256,%fil_mbdecframe
-___
-}
-$code.=<<___;
 	sub	\$256,%rsp
 	and	\$-256,%rsp
 	sub	\$192,%rsp
 	mov	%rax,16(%rsp)			# original %rsp
-___
-$code.=<<___;
 .cfi_cfa_expression	%rsp+16,deref,+8
 
 .Ldec8x_body:
@@ -1391,7 +1254,7 @@ for($i=0;$i<8;$i++) {
 	test	$one,$one
 	# load IV
 	vmovdqu	`$inp_elm_size*$i+2*$ptr_size+8-$inp_elm_size*4`($inp),@out[$i]
-	mov	$one,@{[FRm("32+4*$i","%fil_mbdecframe")]}		# initialize counters
+	mov	$one,`32+4*$i`(%rsp)		# initialize counters
 ___
   if ($ENV{SARCASM}) {
     # $cancel_src cannot survive the load-ptr of the output pointer
@@ -1409,8 +1272,8 @@ ___
   if ($ENV{SARCASM}) {
     # output positions are kept as proper capabilities in the slots
     $code.=<<___;
-	mov	$temp,@{[FRm("64+8*$i","%fil_mbdecframe")]}		#! store ptr
-	vmovdqu	@out[$i],@{[FRm("192+16*$i","%fil_mbdecframe")]}	# offload IV
+	mov	$temp,`64+8*$i`(%rsp)		#! store ptr
+	vmovdqu	@out[$i],`192+16*$i`(%rsp)	# offload IV
 ___
   } else {
     $code.=<<___;
@@ -1469,22 +1332,19 @@ $code.=<<___;
 	vmovdqu	@out[7],0x70($offload)
 	vpxor	$zero,@out[7],@out[7]
 ___
-if ($ENV{SARCASM}) {
-  # The original xor $0x80 ping-pong between the IV area (rsp+192) and
-  # the ciphertext area (rsp+320) relies on %rsp%256==64 produced by the
-  # sub256/and/sub192 frame.  The merged alloca frame yields %rsp%256==0,
-  # under which xor $0x80 would land at rsp+448.  Switch to explicit,
-  # alignment-independent arithmetic (identical results under the original
-  # frame, too).
-  # SARCASM heap buffer (see setup above): entry base is already the
-  # +128 ciphertext area, so nothing to do here.
-  $code.=<<___;
-___
-} else {
-  $code.=<<___;
+  # Gas ping-pongs $offload between the IV area (%rsp+192) and the ciphertext
+  # area (%rsp+320): the sub256/and/sub192 frame leaves %rsp%256==64, so the
+  # areas sit exactly 0x80 apart and the entry xor $0x80/$offload (matching
+  # xor $128 at the loop bottom) flips the base between them.  SARCASM
+  # rejects frames, so those areas live in the %fil_offd8 GC buffer (see
+  # setup above) and the loop-bottom branch re-materializes the base from
+  # the flag byte at 24($FRd) instead: flag 0 -> lea 128(%fil_offd8) (+128
+  # half), flag 1 -> mov %fil_offd8 (+0 half), so no entry xor is needed.
+  unless ($ENV{SARCASM}) {
+    $code.=<<___;
 	xor	\$0x80,$offload
 ___
-}
+  }
 $code.=<<___;
 	mov	\$1,$one			# constant of 1
 	jmp	.Loop_dec8x
@@ -1525,7 +1385,7 @@ ___
 	 lea		16(@ptr[$i]),@ptr[$i]	# advance input
 ___
     $code.=<<___ if ($i<4);
-	 vmovdqu	@inp[$i%4],@{[FRm("128+16*$i","%fil_mbdecframe")]}	# off-load
+	 vmovdqu	@inp[$i%4],`128+16*$i`(%rsp)	# off-load
 ___
   } else {
 $code.=<<___;
@@ -1796,50 +1656,16 @@ $code.=<<___ if ($win64);
 	movaps	-0x58(%rax),%xmm14
 	movaps	-0x48(%rax),%xmm15
 ___
-$code.=<<___;
-___
-if ($ENV{SARCASM} && $win64) {
-  # win64 keeps the slot/add teardown below; gas and SARCASM-linux share
-  # the carrier recovery in the else branch.
-    $code.=<<___;
-	movaps	448(%rsp),%xmm6
-	movaps	464(%rsp),%xmm7
-	movaps	480(%rsp),%xmm8
-	movaps	496(%rsp),%xmm9
-	movaps	512(%rsp),%xmm10
-	movaps	528(%rsp),%xmm11
-	movaps	544(%rsp),%xmm12
-	movaps	560(%rsp),%xmm13
-	movaps	576(%rsp),%xmm14
-	movaps	592(%rsp),%xmm15
-	mov	616(%rsp),%r15
-.cfi_restore	%r15
-	mov	624(%rsp),%r14
-.cfi_restore	%r14
-	mov	632(%rsp),%r13
-.cfi_restore	%r13
-	mov	640(%rsp),%r12
-.cfi_restore	%r12
-	mov	648(%rsp),%rbp
-.cfi_restore	%rbp
-	mov	656(%rsp),%rbx
-.cfi_restore	%rbx
-	add	\$0x298,%rsp
-.cfi_adjust_cfa_offset	-664
-___
-} else {
+if ($ENV{SARCASM}) {
   # SARCASM-linux reloads the saved stack pointer first: the body reused
   # %rax (it holds $rounds, not the saved rsp), so the carrier must be
   # re-materialized from its slot before the restores below can read through
-  # it. Sarcasm drops the reload with the restores and the recovery, and the
-  # synthesized epilogue owns the real rsp. (Gas skips the reload: %rax still
-  # holds the saved rsp on its paths.)
-  if ($ENV{SARCASM} && !$win64) {
-    $code.=<<___;
+  # it. (Gas skips the reload: %rax still holds the saved rsp on its paths.)
+  $code.=<<___;
 	mov	16(%rsp),%rax			# original %rsp
 ___
-  }
-  $code.=<<___;
+}
+$code.=<<___;
 	mov	-48(%rax),%r15
 .cfi_restore	%r15
 	mov	-40(%rax),%r14
@@ -1853,9 +1679,6 @@ ___
 	mov	-8(%rax),%rbx
 .cfi_restore	%rbx
 	lea	(%rax),%rsp
-___
-}
-$code.=<<___;
 .cfi_def_cfa_register	%rsp
 .Ldec8x_epilogue:
 	ret

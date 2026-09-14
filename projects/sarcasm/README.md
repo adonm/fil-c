@@ -69,7 +69,7 @@ incoming words.
 
 | Annotation | Applies to |
 |---|---|
-| `;! load ptr` / `;! store ptr` | plain 8-byte GPR pointer load/store |
+| `;! load ptr` / `;! store ptr` | plain 8-byte GPR pointer load/store. Also accepted on a plain 8-byte register<->frame-slot move (`movq %reg,-8(%rsp) ;! store ptr`): a virtualized slot is an ordinary GPR web, so the capability rides pointer flow exactly like a register move (see "Frames and the stack pointer") |
 | `;! atomic load ptr` / `;! atomic store ptr` | atomic pointer load/store through the Fil-C runtime, exactly like C11 `_Atomic` (x86_64 plain `movq`; arm64 `ldr`/`ldur`/`ldar`/`ldapr` and `str`/`stur`/`stlr`, 64-bit, no writeback) |
 | `;! atomic ptr` | pointer compare-exchange: x86_64 `cmpxchgq` with a memory destination (`lock` allowed and irrelevant), arm64 64-bit `cas` forms |
 | `;! load store ptr` | x86_64 non-atomic pointer RMW over a memory slot: 8-byte add/adc/and/or/sbb/sub/xor, inc/dec/neg/not |
@@ -382,6 +382,164 @@ it never touches `%rsp`/`sp`, so the input's own stack math keeps its meaning:
   `alloca` annotation is now a compile-time error.
 
 
+### Data directives in function bodies (x86_64)
+
+A contiguous run of data directives inside a function body is DISASSEMBLED:
+`.byte`, `.word`/`.short`/`.2byte`, `.long`/`.int`/`.4byte` and
+`.quad`/`.8byte` runs are decoded into the x86_64 instructions they encode
+(each directive contributes its values in little-endian byte order, so
+`.long 0x9066A4F3` decodes to `rep movsb` plus a 2-byte `nop` pad). This is
+what makes OpenSSL's perlasm output compile unmodified — it spells whole
+instructions as raw bytes (`0xf3,0xc3` rep ret, `243,15,30,250` endbr64, the
+AES-NI/SHA-NI/movbe families, `.long 0x9066A4F3`, ...).
+
+- Every byte of the run must decode into exactly one instruction whose text
+  re-parses like a spelled instruction; a run that cannot be fully decoded
+  stays data and is rejected (`data in a function body is not supported ...`)
+  — literal pools and jump tables are NOT supported. Only plain integer
+  literals count (decimal / `0x`-hex / `0b`-binary, optionally negative);
+  symbolic expressions (`.long .L1-.L0`) keep their data spelling.
+- Coverage: the legacy one-byte map (ALU/mov/inc/dec/push/pop/test/xchg/lea/
+  shifts/imul/div groups, flag ops, string ops incl. `rep` forms, setcc,
+  jcc/jmp/loop/jrcxz), the 0F map (jcc near, setcc, cmovcc, movzx/movsx,
+  imul, bt/bts/btr/btc, bsf/bsr/popcnt, shld/shrd, cmpxchg/xadd, bswap,
+  cmpxchg8b/16b, rdrand/rdseed, rdtsc/cpuid/xgetbv/monitor/mwait, and the
+  SSE/SSE2/SSE3/SSE4.1 FP and packed-integer maps with their 66/F2/F3
+  prefix selectors), the 0F 38 / 0F 3A maps (movbe, crc32, ptest, palignr,
+  pextr*/pinsr*, pclmulqdq, aeskeygenassist, sha1rnds4, ...), and the VEX/
+  EVEX shapes sarcasm models. Instructions sarcasm does not model
+  (`syscall`, `wrmsr`, ...) decode and then fail with the classifier's
+  per-instruction message — the same rejection a spelled instruction gets.
+- Soundness: prefixes are never dropped where they change semantics
+  (`fs`/`gs` overrides and a mid-run `0x67` make the run undecodable); a
+  `0xf0` lock byte joins the following instruction (in the run, or the
+  spelled instruction after the run); a branch decodes only when its target
+  is an instruction boundary inside the same run (a synthetic local label is
+  planted there); `call`, far transfers, RIP-relative and absolute forms
+  stay data (a data run has no symbol to name them).
+- An annotation on the run transfers to the first decoded instruction:
+  `.long 0x9066A4F3  #! stack buffer (f, %rsp, %rsp + 16)` is a decoded
+  `rep movsb` carrying that annotation (validated exactly like the spelled
+  form). Two annotations on one run are ambiguous and keep it data.
+
+
+### Stack buffers (x86_64)
+
+The `#! stack buffer (...)` annotation declares a byte range of the function's
+own frame as a RAW BYTE BUFFER — real memory in sarcasm's synthesized frame,
+addressed without capability checks:
+
+    #! stack buffer (name)                            # short form
+    #! stack buffer (name, %reg + lo, %reg + hi)      # long form
+
+- `<name>` matches `[A-Za-z_][A-Za-z0-9_]*`. In the long form both bounds use
+  the SAME base register; the offsets are integer literals (decimal or hex,
+  negative allowed), and a bare `%reg` means offset 0. Both orders of
+  `+`/`-` are accepted (`%rsp - 16`, `%rbp + 8`).
+- The annotation is only meaningful on (a) an instruction with a
+  stack-relative memory operand (base `%rsp`/`%rbp` or a live stack-alias
+  register) — which enables INDEXED accesses (`movl (%rsp,%rax),%ecx`,
+  scales 1/2/4/8) that are otherwise rejected — or (b) a `rep movs*` /
+  `rep stos*` instruction (and its bare single-step forms). Anywhere else it
+  is a compile error. It must be the instruction's only annotation.
+- The long form resolves to a normalized frame range: the base register's
+  stack offset at the declaring statement (%rsp at depth d: `D0 - d`; %rbp
+  with an established frame pointer: `rbpNorm`; any other register must be a
+  live saved-rsp stack alias) plus the written offsets. Every long form of a
+  given name — across the WHOLE FILE — must resolve to the same range
+  ("the offsets must match"); two long forms sharing one alias register that
+  aliases the stack at different offsets are rejected.
+  Two exceptions carve out B2 SHARED-TAIL CLONES (statements marked by the
+  cross-jump pass, e.g. the OpenSSL ChaCha20 variants' tails cloned into
+  ChaCha20_ctr32):
+    * A long form on a clone statement resolves IN THE CLONE'S OWN CONTEXT —
+      the clone executes at the jump site's rsp with its own `sub`/`and` as
+      ordinary code, so its depth marks are the natural continuation of the
+      jumper's tracking, and the same real bytes simply normalize to a
+      different range in the jumper's coordinates. Clone declarations do not
+      participate in the file-wide canonical table (they cannot satisfy short
+      forms and cannot conflict with them), and the clone's buffer accesses
+      key into the clone's own coordinate band (the same +band shift every
+      other clone access gets), so a clone entered above the jumper's
+      prologue never collides with the jumper's own slots. Clone
+      declarations must use %rsp as their base.
+    * A short form on a clone statement is REJECTED (a clone's window is
+      private to its own frame context; declare the buffer with the long
+      form inside the cloned region).
+- The SHORT form references a buffer some long form declared: it is valid
+  only if the name has a long form somewhere in the file, and the using
+  function independently re-checks that the range fits ITS OWN frame.
+- Alignment: an aligned access (movdqa-class) whose range falls inside a
+  buffer must land on an aligned byte of the lowered region. Every aligned
+  access contributes its own (offset, requirement) pair; a group is
+  placeable iff its pairs are jointly congruent (one output base exists) and
+  the synthesized frame's effective alignment backs the widest requirement.
+  The effective alignment is the widest requirement any materialized cluster
+  OR buffer group carries (16 when none needs more) — so an `and $-N, %rsp`
+  frame (the perlasm dynamic-alignment idiom) admits aligned buffer traffic:
+  all of a buffer's post-`and` accesses shift together with the and's
+  dynamic slack, so their relative offsets carry the whole alignment story.
+  A buffer in a frame whose effective alignment is only 16 rejects aligned
+  >16-byte accesses (use the unaligned form); GPR traffic carries no
+  alignment promise and always works. Traffic that can REACH a mid-function
+  `and` (pre-and numbering) may not share bytes with a buffer: the same
+  modeled offset names different real addresses on the two sides of the
+  and's slack.
+- Validity (compile errors otherwise): the range must sit inside the
+  function's own carved frame — at or above the declaring statement's
+  provably-allocated stack floor (`lo >= D0 - dDecl`, which is `lo >= 0` for
+  an ordinary frame: no red zone), past the outstanding push/callee-save
+  slot area, disjoint from the outgoing call-argument area, and out of any
+  `.alloca` region. The floor rule admits the mid-function INNER-FRAME
+  shape (the prologue scan ends in a leading half of the function, so a
+  later push+sub keys as an inner frame whose bytes normalize to negative
+  offsets — the aesni CBC decrypt tail): at a provable rsp depth `d` the
+  function's own pushes/subs have allocated every byte from `entry_rsp - d`
+  up, so a buffer over `[D0 - d, ...)` covers the function's own allocated
+  bytes; anything below the floor was never allocated on that path and
+  stays rejected. Overlapping (or touching) buffers are allowed and merge
+  into ONE larger lowered region. The push-slot rule is checked exactly
+  against the declaring statement's own outstanding saves (a clone's own
+  pushes park their slots below the jumper's frame, where the transient
+  prologue pad model cannot see them).
+- Accesses: every static (non-indexed) stack access whose normalized byte
+  range falls fully inside a buffer is automatically redirected into the
+  lowered region — no annotation needed, and GPR, SIMD and alias-based
+  spellings of the same bytes all hit the same memory. rsp-based accesses
+  key at `disp + D0 - d` at a KNOWN perturbed depth, exactly like the
+  rewrite's slot keying, so inner-frame buffer traffic is recognized. An
+  access straddling a buffer boundary is a compile error (ambiguous).
+  `store ptr` / `load ptr` on buffer-range accesses are rejected: buffer
+  memory never holds a capability — loading from it always yields a
+  null-capability scalar.
+- Indexed accesses annotated with the buffer get a runtime BOUNDS CHECK on
+  the index — one overflow-safe unsigned compare,
+  `idx_min = ceil((lo - disp)/scale)`, `idx_max = floor((hi - size -
+  disp)/scale)`, fail iff `(idx - idx_min) >=u count` — then the instruction
+  runs verbatim with its displacement translated into the lowered region
+  (`disp'(%rsp,%idx,s)`). An out-of-range index traps with the usual
+  `filc safety error: cannot read/write pointer with ptr >= upper.`
+  attribution over a `stack_optimized(offset=...,size=...)` pointer (the
+  same shape the C compiler's stack checks report).
+- Rep string ops: when a `rep movs*`/`rep stos*` (or bare single-step) has a
+  stack-alias carrier as its source (%rsi) or destination (%rdi) — e.g. the
+  aesni CBC `movdqu %xmm0,(%rsp); leaq (%rsp),%rsi; rep movsb` shape — it
+  MUST carry a `#! stack buffer (id, ...)` annotation covering the alias's
+  stack offset. Sarcasm emits a dynamic count check (`N <= hi - K`, with
+  `N = %rcx * element` computed exactly as the hardware does) before the
+  rep, materializes the alias into the physical register from the lowered
+  region, and keeps the OTHER side's capability checks (a heap pointer stays
+  fully checked, including the dynamic count). A count of zero copies
+  nothing and traps nothing, like the hardware. The alias register's value
+  after the rep is the lowered (advanced) buffer address.
+- Notes: buffers are real per-call frame memory — recursive calls get fresh
+  bytes. A rep whose sides are BOTH stack aliases of the same buffer is
+  accepted (each side is checked against the buffer's range independently).
+  The bounds are on the BYTE range only: alignment guarantees of
+  movdqa-class input accesses are preserved by the lowering, and aligned
+  accesses wider than 16 bytes are rejected (use the unaligned form).
+
+
 ### Frames and the stack pointer
 
 - The prologue is the leading run of callee-saved pushes, `movq %rsp,%rbp`,
@@ -403,12 +561,23 @@ it never touches `%rsp`/`sp`, so the input's own stack math keeps its meaning:
   another) is a static error at the access, as are returning or storing it.
 - Frame slots (x86_64 spellings; sp/x29 analogous on arm64) are
   virtualized into register-allocated locals with compile-time bounds —
-  no capability needed; the 128-byte SysV red zone is legal. Accesses
+  the 128-byte SysV red zone is legal. Accesses
   outside the frame, caller-argument-area writes, and taking the frame's
   address are rejected. Aligned vector accesses wider than 16 bytes
   (vmovdqa32/64) need a covering `and $-N,%rsp` note plus an aligned offset
   (the frame is then emitted aligned); otherwise they are compile errors
   suggesting the unaligned form.
+- Frame slots CAN hold pointers with capabilities: `store ptr` / `load ptr`
+  on a plain 8-byte register<->slot move are accepted, and the capability
+  rides pointer flow exactly like a register move (a store seeds the slot
+  web from the source's capability, a load hands the slot web's capability
+  to the destination, and two origins stored into one slot widen it to a
+  dynamic lower). A narrower scalar store to the same offset is a full
+  zero-extending def that kills the slot's pointer-ness — a later `load
+  ptr` then carries a null capability and traps at the deref. The rest of
+  the ptr family (atomics, `load store ptr`) stays rejected on frame
+  accesses: a slot is not real memory, so the invisicap sidecar-byte
+  protocol has nothing to point at.
 - A body that can fall off its end without `ret`, and a branch to the
   function's own entry label, are rejected.
 

@@ -292,8 +292,6 @@ ___
 $code.=<<___;
 	lea	24-112($FR,$num,8),%r10# place the mask after tp[num+3] (+ICache optimization)
 	and	\$-16,%r10
-___
-$code.=<<___;
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
 	movdqa	%xmm1,%xmm4
@@ -446,8 +444,6 @@ ___
 $code.=<<___;
 	lea	24+128($FR,$num,8),%rdx	# where 256-byte mask is (+size optimization)
 	and	\$-16,%rdx
-___
-$code.=<<___;
 	pxor	%xmm4,%xmm4
 	pxor	%xmm5,%xmm5
 ___
@@ -631,8 +627,6 @@ bn_mul4x_mont_gather5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
 .Lmul4x_enter:
-___
-$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -794,8 +788,6 @@ ___
 # consume must agree on the slot; the displacement above is that slot.
 $code.=<<___;
 	lea	$maskoff($FR,$num),%r10	# place the mask after tp[num+1] (+ICache optimization)
-___
-$code.=<<___;
 	lea	128(%rdx),$bp		# size optimization
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
@@ -1483,8 +1475,6 @@ ___
 }
 $code.=<<___;
 	mov	$aptr,$rptr
-___
-$code.=<<___;
 	mov	$RSAVE,%rax		# reload entry %rsp for the clone's 7th-arg read
 $power5_pass_n0
 	call	mul4x_internal
@@ -2620,8 +2610,6 @@ ___
 # num_bytes and is also the destination (index read first).
 $code.=<<___;
 	lea	$maskoff($FR,%r10),%r10	# place the mask after tp[num+1] (+ICache optimization)
-___
-$code.=<<___;
 	lea	128($bp),$bptr		# size optimization
 
 	pshufd	\$0,%xmm5,%xmm5		# broadcast index
@@ -3134,8 +3122,6 @@ if ($ENV{SARCASM}) { $code.="\tmovq\t%xmm3,%r11\t\t# -\$num\n\tneg\t%r11\n\tlea\
 else { $code.="\tmovq\t%xmm4,$bptr\n"; }
 $code.=<<___;
 
-___
-$code.=<<___;
 	mov	$RSAVE,%rax		# reload entry %rsp for the clone's 7th-arg read
 
 	call	mulx4x_internal

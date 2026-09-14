@@ -2,9 +2,10 @@
 # (crypto/aes/asm/aesni-x86_64.pl): the alias is the entry-adjacent second
 # label of the signatured set_encrypt_key, so an unannotated call to it is a
 # local call whose clone is the function's whole body (frame setup included),
-# and that clone inlines the body's calls to the top-level .Lkey_expansion_*
-# locals (that is why the "End the function body here" split must precede
-# them: a call to a mid-body label of a signatured function is rejected, see
+# and that clone inlines the body's local calls (here spelled as a top-level
+# .Lexpand_like subroutine, which stays valid; the pristine OpenSSL layout
+# calls the .Lkey_expansion_* routines as MID-BODY labels of the signatured
+# function instead — supported the same way via mid-body clones, see
 # sarcasm-localcall-midfn-att). The caller then uses the %esi side channel
 # the callee returns beside %eax (shl $4,$bits for rounds-1, then the end of
 # the key schedule): a signature-marshalled call would preserve only %eax.

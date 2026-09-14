@@ -97,8 +97,6 @@ ___
 # the 8-byte capability-word load below works in both modes.
 $code .= <<___;
     mov OPENSSL_ia32cap_P+8(%rip), %rcx
-___
-$code .= <<___;
     # avx512vpclmulqdq + avx512vaes + avx512vl + avx512bw + avx512dq + avx512f
     mov \$`1<<42|1<<41|1<<31|1<<30|1<<17|1<<16`,%rdx
     xor %eax,%eax

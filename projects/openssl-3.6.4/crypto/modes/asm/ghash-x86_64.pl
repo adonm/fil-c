@@ -371,8 +371,6 @@ if ($ENV{SARCASM}) {
 	# accesses are ordinary checked accesses.
 	.alloca	\$272,\$16,%fil_gh4
 ___
-$code.=<<___;
-___
 } else {
   $code.=<<___;
 	sub	\$280,%rsp

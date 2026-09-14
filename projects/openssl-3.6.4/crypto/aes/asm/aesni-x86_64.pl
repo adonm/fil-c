@@ -3789,50 +3789,18 @@ $code.=<<___;
 
 .Lcbc_enc_tail:
 	mov	$len,%rcx	# zaps $key
-___
-# Dual rep-vs-.long below is intentional: gas `.long 0x9066A4F3/0x9066AAF3`
-# encodes `rep movsb/stosb` plus a 2-byte nop pad (`66 90`, `xchg %ax,%ax`;
-# objdump shows `f3 a4 66 90`), while plain `rep movsb/stosb` is 2 bytes
-# (`f3 a4`). Sarcasm rejects data directives in function bodies, so it spells
-# the ops out (`rep movsb`/`rep stosb` lower to checked copies/fills); gas
-# keeps the legacy padded encoding. The xchg-then-re-enter-loop shape itself
-# needs no workaround (sarcasm's dynamic lower tracks the merged web in
-# lockstep; see filc/tests/sarcasm-xchg-loop-att).
-$code.=<<___;
 	xchg	$inp,$out	# $inp is %rsi and $out is %rdi now
-___
-if ($ENV{SARCASM}) {
-  $code.=<<___;
-	rep	movsb
-___
-} else {
-  $code.=<<___;
 	.long	0x9066A4F3	# rep movsb
-___
-}
-$code.=<<___;
 	mov	\$16,%ecx	# zero tail
 	sub	$len,%rcx
 	xor	%eax,%eax
-___
-if ($ENV{SARCASM}) {
-  $code.=<<___;
-	rep	stosb
-___
-} else {
-  $code.=<<___;
 	.long	0x9066AAF3	# rep stosb
-___
-}
-$code.=<<___;
 	lea	-16(%rdi),%rdi	# rewind $out by 1 block
 	mov	$rnds_,$rounds	# restore $rounds
 	mov	%rdi,%rsi	# $inp and $out are the same
 	mov	$key_,$key	# restore $key
 	xor	$len,$len	# len=16
 	jmp	.Lcbc_enc_loop	# one more spin
-___
-$code.=<<___;
 #--------------------------- CBC DECRYPT ------------------------------#
 .align	16
 .Lcbc_decrypt:
@@ -4265,25 +4233,15 @@ $code.=<<___;
 	pxor	$inout0,$inout0
 	jmp	.Lcbc_dec_ret
 .align	16
-___
-# Unconditional streaming copy (no frame temp, no `.long`): gas accepts the
-# plain movd/mov/psrldq loop, and sarcasm requires it (frame takes like
-# `lea (%rsp),%rsi` plus data directives are rejected). Single path for both.
-$code.=<<___;
 .Lcbc_dec_tail_partial:
-	mov	$out,%rdi
-	mov	\$16,%rcx
-	sub	$len,%rcx
-.Lcbc_dec_tail_copy:
-	movd	$inout0,%eax
-	mov	%al,(%rdi)
-	lea	1(%rdi),%rdi
-	psrldq	\$1,$inout0
-	sub	\$1,%ecx
-	jnz	.Lcbc_dec_tail_copy
+	movaps	$inout0,(%rsp)
 	pxor	$inout0,$inout0
-___
-$code.=<<___;
+	mov	\$16,%rcx
+	mov	$out,%rdi
+	sub	$len,%rcx
+	lea	(%rsp),%rsi
+	.long	0x9066A4F3		#! stack buffer (cbcdec, %rsp, %rsp + 16) # rep movsb
+	movdqa	$inout0,(%rsp)
 
 .Lcbc_dec_ret:
 	xorps	$rndkey0,$rndkey0	# %xmm0
@@ -4709,22 +4667,6 @@ __aesni_set_encrypt_key:
 .cfi_adjust_cfa_offset	-8
 	ret
 .LSEH_end_set_encrypt_key:
-___
-if ($ENV{SARCASM}) {
-  # End the function body here: the key-expansion subroutines below are
-  # file-local call/ret routines, and sarcasm's local-subroutine
-  # discovery works on unconsumed top-level statements (a call to a
-  # mid-body label of a signatured function is rejected; see
-  # filc/tests/sarcasm-localcall-midfn-att). The alias-clone of this
-  # function for `call __aesni_set_encrypt_key` inlines those calls, so
-  # the subroutines must be top-level local subroutines under sarcasm.
-  $code.=<<___;
-.cfi_endproc
-.size	${PREFIX}_set_encrypt_key,.-${PREFIX}_set_encrypt_key
-.size	__aesni_set_encrypt_key,.-__aesni_set_encrypt_key
-___
-}
-$code.=<<___;
 
 .align	16
 .Lkey_expansion_128:
@@ -4794,15 +4736,9 @@ $code.=<<___;
 	shufps	\$0b10101010,%xmm1,%xmm1	# critical path
 	xorps	%xmm1,%xmm2
 	ret
-___
-if (!$ENV{SARCASM}) {
-  $code.=<<___;
 .cfi_endproc
 .size	${PREFIX}_set_encrypt_key,.-${PREFIX}_set_encrypt_key
 .size	__aesni_set_encrypt_key,.-__aesni_set_encrypt_key
-___
-}
-$code.=<<___;
 ___
 }
 
@@ -5223,8 +5159,7 @@ sub aesni {
 }
 
 sub movbe {
-	# any modern gas (>=2.22) assembles movbe, and sarcasm models it
-	"movbe	%eax,".shift."(%rsp)";
+	".byte	0x0f,0x38,0xf1,0x44,0x24,".shift;
 }
 
 $code =~ s/\`([^\`]*)\`/eval($1)/gem;

@@ -3271,8 +3271,6 @@ ecp_nistz256_point_doublex: #! void(ptr,ptr)
 .Lpoint_doublex:
 ___
     }
-$code.=<<___;
-___
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rsp, %rax
 ___
@@ -3479,8 +3477,6 @@ ___
 # Single-step negative-offset frame lea (see load_for_mul).
 $code.=<<___;
 	lea	$S-$bias($FR), $a_ptr
-___
-$code.=<<___;
 	cmovz	$acc1, $acc4
 	mov	$acc1, $S+8*3($FR)
 	mov	$acc6, $acc1
@@ -3565,8 +3561,6 @@ ecp_nistz256_point_addx: #! void(ptr,ptr,ptr)
 .Lpoint_addx:
 ___
     }
-$code.=<<___;
-___
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rsp, %rax
 ___
@@ -4016,8 +4010,6 @@ ecp_nistz256_point_add_affinex: #! void(ptr,ptr,ptr)
 .Lpoint_add_affinex:
 ___
     }
-$code.=<<___;
-___
 $code.=<<___ if ($ENV{SARCASM});
 	movq	%rsp, %rax
 ___
@@ -4123,8 +4115,6 @@ ___
 # Single-step negative-offset frame lea (see load_for_mul).
 $code.=<<___;
 	lea	$Z1sqr-$bias($FR), $a_ptr
-___
-$code.=<<___;
 	mov	$acc7, $acc4
 	lea	$U2($FR), $r_ptr		# U2 = X2*Z1^2
 	call	__ecp_nistz256_mul_mont$x	# p256_mul_mont(U2, Z1sqr, in2_x);

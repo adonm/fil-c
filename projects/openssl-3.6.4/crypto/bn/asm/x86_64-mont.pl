@@ -389,8 +389,6 @@ $code.=<<___;
 	sub	\$1,$j
 	jnz	.Lcopy
 
-___
-$code.=<<___;
 	mov	$RSAVE,%rsi		# restore %rsp
 .cfi_def_cfa	%rsi,8
 	mov	\$1,%rax
@@ -1454,8 +1452,6 @@ $code.=<<___;
 	movq	%r15,%xmm1
 	pxor	%xmm0,%xmm0
 	pshufd	\$0,%xmm1,%xmm1
-___
-$code.=<<___;
 	mov	$RSAVE40,%rsi		# restore %rsp
 .cfi_def_cfa	%rsi,8
 	jmp	.Lmulx4x_cond_copy

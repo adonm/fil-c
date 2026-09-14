@@ -236,11 +236,7 @@ ___
 }
 $code.=<<___;
 .Lsqr_1024_no_n_copy:
-___
-$code.=<<___;
 	and		\$-1024, %rsp
-___
-$code.=<<___;
 
 	vmovdqu		32*1-128($ap), $ACC1
 	vmovdqu		32*2-128($ap), $ACC2
@@ -1051,11 +1047,7 @@ ___
 }
 $code.=<<___;
 .Lmul_1024_no_n_copy:
-___
-$code.=<<___;
 	and	\$-64,%rsp
-___
-$code.=<<___;
 
 	mov	($bp), %rbx
 	vpbroadcastq ($bp), $Bi
@@ -1724,18 +1716,10 @@ $code.=<<___ if ($win64);
 	.byte	0xc5,0x78,0x29,0x78,0x70	# vmovaps %xmm15,0x70(%rax)
 ___
 $code.=<<___;
-___
-$code.=<<___;
 	lea	-0x100(%rsp),%rsp
 	and	\$-32, %rsp
-___
-$code.=<<___;
 	lea	.Linc(%rip), %r10
-___
-$code.=<<___;
 	lea	-128(%rsp),%rax			# control u-op density
-___
-$code.=<<___;
 
 	vmovd		$power, %xmm4
 	vmovdqa		(%r10),%ymm0

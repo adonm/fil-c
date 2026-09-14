@@ -163,6 +163,91 @@ local function parseUseNewCapAnnot(ann)
 	return { kind = kind, reg = rest }
 end
 
+-- `#! stack buffer (...)` — the annotated STACK BUFFER feature (x86_64). Two forms:
+--   `#! stack buffer (name)`                              (short form)
+--   `#! stack buffer (name, %reg + LO, %reg + HI)`        (long form)
+-- The long form declares that the bytes [reg+LO, reg+HI) of the function's stack
+-- frame are a raw byte buffer: indexed stack accesses annotated with the buffer
+-- (and plain static stack accesses that fall inside the range) are lowered into a
+-- dedicated region of sarcasm's synthesized output frame, with runtime bounds
+-- checks for the indexed forms, and never hold capabilities. The short form
+-- references a buffer whose range a long form (anywhere in the file) declared.
+-- Returns nil when `ann` is not a stack buffer annotation; a malformed one is a
+-- compile error (the caller surfaces it with the statement's raw text).
+--   { id = <name>, short = true }
+--   { id = <name>, short = false, base = <reg name without %>, lo = <bytes>, hi = <bytes> }
+function transform.parseStackBufAnno(ann)
+	if not ann then return nil end
+	local rest = string.match(ann, "^%s*stack%s+buffer%s*(.*)$")
+	if not rest then return nil end
+	local body = string.match(rest, "^%((.*)%)%s*$")
+	if not body then
+		error("sarcasm: malformed `stack buffer` annotation (expected "
+			.. "`stack buffer (name)` or `stack buffer (name, %reg + lo, %reg + hi)`)")
+	end
+	-- Split the top-level commas (the grammar has no nested parentheses, so a
+	-- plain split is exact; trailing/leading whitespace is trimmed per part).
+	local parts = {}
+	for part in string.gmatch(body, "[^,]+") do
+		table.insert(parts, (string.gsub(part, "^%s+", ""):gsub("%s+$", "")))
+	end
+	local id = parts[1]
+	if id == nil or not string.match(id, "^[A-Za-z_][A-Za-z0-9_]*$") then
+		error("sarcasm: malformed `stack buffer` annotation (the buffer name must match"
+			.. " [A-Za-z_][A-Za-z0-9_]*): '" .. tostring(id or "") .. "'")
+	end
+	if #parts == 1 then
+		return { id = id, short = true }
+	end
+	if #parts ~= 3 then
+		error("sarcasm: malformed `stack buffer` annotation (expected 1 field for the"
+			.. " short form or 3 fields `name, base, base` for the long form; got "
+			.. tostring(#parts) .. ")")
+	end
+	-- One base expression parser: `%reg`, `%reg + N`, or `%reg - N` (N decimal or
+	-- 0x hex; a leading sign inside the literal composes with the operator).
+	local REGPAT = "^(%%[A-Za-z_][A-Za-z0-9_]*)"
+	local function parseBound(text, which)
+		local reg = string.match(text, REGPAT .. "%s*$")
+		if reg then
+			local name = string.match(reg, "^%%([A-Za-z_][A-Za-z0-9_]*)$")
+			if not name then
+				error("sarcasm: malformed `stack buffer` annotation ('" .. reg
+					.. "' is not a register name)")
+			end
+			return string.lower(name), 0
+		end
+		local reg2, op, numText = string.match(text, REGPAT .. "%s*([+%-])%s*(%S+)$")
+		if not (reg2 and numText) then
+			error("sarcasm: malformed `stack buffer` annotation (the " .. which
+				.. " bound must be `%reg`, `%reg + N` or `%reg - N`): '" .. text .. "'")
+		end
+		local value = tonumber(numText)
+		if value == nil then
+			error("sarcasm: malformed `stack buffer` annotation (the " .. which
+				.. " offset '" .. numText .. "' is not an integer literal)")
+		end
+		if op == "-" then value = -value end
+		local name = string.match(reg2, "^%%([A-Za-z_][A-Za-z0-9_]*)$")
+		if not name then
+			error("sarcasm: malformed `stack buffer` annotation ('" .. reg2
+				.. "' is not a register name)")
+		end
+		return string.lower(name), value
+	end
+	local baseLo, lo = parseBound(parts[2], "lower")
+	local baseHi, hi = parseBound(parts[3], "upper")
+	if baseLo ~= baseHi then
+		error("sarcasm: malformed `stack buffer` annotation (both bounds must use the"
+			.. " same base register: '%" .. baseLo .. "' vs '%" .. baseHi .. "')")
+	end
+	if hi < lo then
+		error("sarcasm: malformed `stack buffer` annotation (the upper bound "
+			.. tostring(hi) .. " is below the lower bound " .. tostring(lo) .. ")")
+	end
+	return { id = id, short = false, base = baseLo, lo = lo, hi = hi }
+end
+
 -- Resolve the register named by a `use capability` clause to a GPR use
 -- occurrence of the classified instruction `c` (for temp resolution the
 -- caller re-resolves against its own classify result and reads opTemp).
@@ -361,6 +446,33 @@ local function validateBody(body, cgm, funcName)
 						.. "`alloca result size=N`) were removed; allocate with the `.alloca size, "
 						.. "alignment, result` directive instead (see README.md): " .. raw)
 				end
+				-- `#! stack buffer (...)`: parse the grammar now (a malformed one is a
+				-- clean compile error here) and record it on the statement. The
+				-- annotation is then STRIPPED from st.annotation: it is not a pointer
+				-- flow annotation, so neither the lift's string-op classification nor
+				-- the transform's annotation walk below may see it. Placement rules
+				-- that need frame analysis (which stack alias the base names, whether
+				-- the range fits the frame) are enforced by the frame pass.
+				local sb = transform.parseStackBufAnno(ann)
+				if sb then
+					if not cgm.stackBuffers then
+						error("sarcasm: `stack buffer` annotations are not supported on this"
+							.. " target: " .. raw)
+					end
+					local isRepString = c.rep ~= nil
+					local mem = cgm.memOperand(st)
+					if not isRepString and not (mem and mem.base and mem.base.kind == "reg") then
+						error("sarcasm: `stack buffer` annotation is only meaningful on an"
+							.. " instruction with a stack-relative memory operand (base"
+							.. " %rsp/%rbp or a stack-alias register) or on a rep movs*/stos*"
+							.. " instruction: " .. raw)
+					end
+					st.stackBufAnno = sb
+					st.annotation = nil
+					-- The rest of the annotation walk must not see this annotation
+					-- (it is not a pointer-flow or signature annotation).
+					ann = nil
+				end
 				local useNew = parseUseNewCapAnnot(ann)
 				local cap = nil
 				if not useNew then cap = parseCapAnnot(ann) end
@@ -533,12 +645,12 @@ local function validateBody(body, cgm, funcName)
 					-- to reject malformed sigs early (the transform re-parses via
 					-- callSigOf when marshalling).
 					sig.parseSignature(ann)
-				elseif string.find(ann, "%(") then
+				elseif ann and string.find(ann, "%(") then
 					error("sarcasm: signature annotation '" .. ann
 						.. "' on a non-call instruction is not supported: " .. raw)
 				elseif ann == "" then
 					error("sarcasm: empty annotation: " .. raw)
-				else
+				elseif ann then
 					error("sarcasm: unrecognized annotation '" .. ann
 						.. "' (expected 'load ptr', 'store ptr', or a callsite"
 						.. " signature like 'int(ptr)'): " .. raw)
@@ -868,6 +980,14 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	prof.mark("  [" .. name .. "] pre-preprocess")
 	body = framePass.preprocess(body, allocaRegions, framePolicy, sigDesc)
 	prof.mark("  [" .. name .. "] framePass.preprocess")
+	-- `#! stack buffer (...)`: the frame pass's buffer scan produced the lowered
+	-- buffer region layout for this function (merged groups with region-relative
+	-- placeholder bases). Its total size rides out on tr for the frame layout
+	-- (the region sits right below the spill slots), and the region's final base
+	-- is computed after the walk (once numRoots is known) to shift every
+	-- stackBuf-tagged operand into place.
+	local stackBufLayout = (framePolicy.stackBufLayout and framePolicy.stackBufLayout()) or nil
+	local bufBytes = (stackBufLayout and stackBufLayout.bytes) or 0
 
 	-- per-call signature info
 	local callSigCache = {}
@@ -3292,6 +3412,103 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- rdi/rsi, so the webs stay virtual and colorable); the pin-out also
 	-- defines the post-instruction webs (rsi/rdi advanced by the count, rcx
 	-- zeroed), so later reads see the hardware values.
+	-- Annotated STACK BUFFER indexed access (`#! stack buffer (id, ...)` on an
+	-- indexed stack-relative memory operand, lowered by the frame rewrite into
+	-- disp'(%rsp,%idx,s) inside the buffer region): emit the runtime BOUNDS
+	-- CHECK on the index register before the verbatim instruction.
+	--
+	-- The effective buffer-relative offset is dispEff + idx*scale (dispEff is the
+	-- statically known part, normalized). The check is ONE unsigned compare:
+	--   idx_min = ceil((lo - dispEff)/scale)
+	--   idx_max = floor((hi - size - dispEff)/scale)
+	--   fail  iff  (idx - idx_min) >=u (idx_max - idx_min + 1)
+	-- which is overflow-safe in both directions: an index below the range wraps
+	-- the subtraction to a huge unsigned value (fails), an index above it exceeds
+	-- the count (fails), and the wrap-around case an index of ~2^64 legitimately
+	-- representing a small negative displacement is handled by the same modular
+	-- arithmetic the hardware's SIB addressing uses — the buffer's index set is
+	-- contiguous MOD 2^64, exactly what the single unsigned compare expresses.
+	-- The failure marshals filc_optimized_stack_access_fail(offset-in-buffer,
+	-- buffer-size, origin): the runtime prints the usual
+	-- "filc safety error: cannot read/write pointer with ptr >= upper."
+	-- attribution over a stack_optimized(offset=...,size=...) pointer, where the
+	-- offset is recomputed in the stub from the (wrapped) difference.
+	local stackBufFailCounter = 0
+	local function emitStackBufBoundsCheck(node, mem, bi)
+		local raw = node.stmt.raw or node.stmt.mnemonic
+		local idxOp = mem and mem.index or nil
+		if not idxOp then
+			error("sarcasm: internal error: stack-buffer bounds check without an index"
+				.. " operand: " .. raw)
+		end
+		local idxT = node.opTemp[idxOp]
+		if not idxT then
+			error("sarcasm: internal error: indexed buffer access index has no web"
+				.. " temp: " .. raw)
+		end
+		-- A 32-bit index register contributes its LOW 32 bits (zero-extended) to
+		-- the address. Materialize exactly that into a fresh temp without writing
+		-- the index web itself (a self-movl would corrupt other readers of the
+		-- web): `movl %idxreg, %temp32` reads the low 32 bits and zero-extends.
+		local valT = idxT
+		if (idxOp.width or 64) == 32 then
+			valT = allocTemp({ role = "stackbufidx" })
+			emit(build.insn("mov", { build.rt(valT, 32), build.rt(idxT, 32) },
+				{ defs = { valT }, uses = { idxT } }))
+		end
+		local s = bi.scale
+		local idxMin = math.ceil((bi.lo - bi.dispEff) / s)
+		local idxMax = math.floor((bi.hi - bi.size - bi.dispEff) / s)
+		local count = idxMax - idxMin + 1
+		if count <= 0 then
+			error("sarcasm: internal error: empty index range for a buffer access: "
+				.. raw)
+		end
+		stackBufFailCounter += 1
+		local lbl = ".Lsbfail_" .. name .. "_" .. stackBufFailCounter
+		local aco = ".Lfilc_saco_" .. name .. "_" .. stackBufFailCounter
+		table.insert(accessOrigins, { sym = aco, size = bi.size,
+			align = math.min(bi.align or 1, 8), write = bi.write and true or false,
+			line = curLine })
+		local diffT = allocTemp({ role = "stackbufdiff" })
+		cg.move(diffT, valT)
+		if idxMin ~= 0 then cg.subImm(diffT, diffT, idxMin) end
+		cg.cmpImmBranchWidened(diffT, count, "uge", lbl)
+		-- The fail stub: recompute the (possibly wrapped) buffer-relative offset
+		-- of the access start — off = diff*scale + C, C = idxMin*scale + dispEff
+		-- - lo — and hand it to the runtime's stack-access failure with the
+		-- buffer's static size, so the panic attributes the real range.
+		local C = idxMin * s + bi.dispEff - bi.lo
+		local bufSize = bi.hi - bi.lo
+		table.insert(failStubs, build.label(lbl))
+		local offT = allocTemp({ role = "stackbufoff" })
+		table.insert(failStubs, build.insn("mov", { build.rt(offT), build.rt(diffT) },
+			{ defs = { offT }, uses = { diffT } }))
+		if s > 1 then
+			for _ = 1, ({ [2] = 1, [4] = 2, [8] = 3 })[s] do
+				table.insert(failStubs, build.insn("add", { build.rt(offT), build.rt(offT) },
+					{ defs = { offT }, uses = { offT } }))
+			end
+		end
+		if C ~= 0 then
+			table.insert(failStubs, build.insn("lea",
+				{ build.rt(offT), build.memx(build.rt(offT), { dispVal = C }) },
+				{ defs = { offT }, uses = { offT } }))
+		end
+		local a1, a2, a3 = cc.rtArg(1), cc.rtArg(2), cc.rtArg(3)
+		table.insert(failStubs, build.insn("mov", { build.rp(a1), build.rt(offT) },
+			{ defs = { pColored(a1) }, uses = { offT } }))
+		table.insert(failStubs, build.insn("mov", { build.rp(a2), build.imm(bufSize) },
+			{ defs = { pColored(a2) } }))
+		table.insert(failStubs, build.insn("lea",
+			{ build.rp(a3), build.memx({ kind = "reg", rc = "rip" }, { dispSym = aco }) },
+			{ defs = { pColored(a3) } }))
+		table.insert(failStubs, build.insn("call",
+			{ build.sym("filc_optimized_stack_access_check_fail", "plt") },
+			{ control = "call", noreturnCall = true,
+				uses = { pColored(a1), pColored(a2), pColored(a3) } }))
+	end
+
 	local function emitRepString(node)
 		local rep = node.c.rep
 		local raw = node.stmt.raw or node.stmt.mnemonic
@@ -3307,6 +3524,25 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local rdiT = repTemp(rep.rdi, "%rdi")
 		local rsiT = rep.rsi and repTemp(rep.rsi, "%rsi") or nil
 		local raxT = rep.rax and repTemp(rep.rax, "%rax") or nil
+		-- A STACK-ALIAS side (the frame pass marked the statement when the
+		-- annotated rep's implicit %rsi/%rdi use names a live saved-rsp carrier):
+		-- the side does not hold a pointer — it holds a stack address inside the
+		-- annotated buffer. The checks and pin moves below treat it separately:
+		-- a dynamic count check against the buffer's range replaces the
+		-- capability checks, and the pin materializes the LOWERED buffer address
+		-- (the phantom carrier value does not exist in the output).
+		local repStack = node.stmt.x86StackBufRep
+		local rsiAlias = (rsiT and repStack and repStack["rsi"]) or nil
+		local rdiAlias = (rdiT and repStack and repStack["rdi"]) or nil
+		local repStackBase = nil
+		if repStack then
+			repStackBase = framePolicy.stackBufGroupBaseFor(repStack.lo, repStack.hi)
+		end
+		-- Materialized buffer address (placeholder disp inside the buffer region;
+		-- the transform's buffer-base shift finalizes it) of an alias side.
+		local function aliasDisp(alias)
+			return repStackBase + (alias.K - repStack.lo)
+		end
 		-- Byte count N: %rcx * elem under `rep` (by doubling adds — elem is
 		-- 1/2/4/8), or exactly one element for the bare single-step form
 		-- (which ignores %rcx entirely, like the hardware).
@@ -3375,9 +3611,53 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					pColored(a3), pColored(a4), pColored(a5), pColored(a6) } }))
 			return lbl
 		end
-		local dstFail = repFailStub(rdiT, pf.lowerTemp[rdiT], true)
+		-- Fail stub for a STACK-ALIAS side's count failure: the side holds no
+		-- capability (its value is a phantom stack address), so the panic is
+		-- marshalled through filc_check_aligned_access_fail with a NULL lower --
+		-- the runtime's "cannot read/write pointer with null object" safety error,
+		-- attributed to the materialized buffer address of the side and the true
+		-- (dynamic) byte count.
+		local function repStackFailStub(alias, isWrite)
+			failCounter += 1
+			local lbl = ".Lrepsbfail_" .. name .. "_" .. failCounter
+			local a1, a2, a3 = cc.rtArg(1), cc.rtArg(2), cc.rtArg(3)
+			local a4, a5, a6 = cc.rtArg(4), cc.rtArg(5), cc.rtArg(6)
+			table.insert(failStubs, build.label(lbl))
+			-- ptr = the materialized buffer address of the side (a placeholder
+			-- disp inside the buffer region; the buffer-base shift finalizes it).
+			local addrMem = build.memx(build.rp(4),
+				{ dispVal = aliasDisp(alias) ~= 0 and aliasDisp(alias) or nil })
+			addrMem.stackBuf = true
+			table.insert(failStubs, build.insn("lea", { build.rp(a1), addrMem },
+				{ defs = { pColored(a1) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(a2), build.imm(0) },
+				{ defs = { pColored(a2) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(a3), build.rt(nT) },
+				{ defs = { pColored(a3) }, uses = { nT } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(a4), build.imm(1) },
+				{ defs = { pColored(a4) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(a5),
+				build.imm(isWrite and 1 or 0) }, { defs = { pColored(a5) } }))
+			table.insert(failStubs, build.insn("mov", { build.rp(a6), build.imm(0) },
+				{ defs = { pColored(a6) } }))
+			local nameLoSlot = build.memx(build.rp(4), { dispVal = -16 })
+			nameLoSlot.size = 8
+			table.insert(failStubs, build.insn("mov", { nameLoSlot, build.imm(0) }, {}))
+			table.insert(failStubs, build.insn("sub", { build.rp(4), build.imm(16) }, {}))
+			table.insert(failStubs, build.insn("call",
+				{ build.sym("filc_check_aligned_access_fail", "plt") },
+				{ control = "call", noreturnCall = true, uses = { pColored(a1), pColored(a2),
+					pColored(a3), pColored(a4), pColored(a5), pColored(a6) } }))
+			return lbl
+		end
+		local dstFail = nil
+		if rdiAlias then dstFail = repStackFailStub(rdiAlias, true)
+		else dstFail = repFailStub(rdiT, pf.lowerTemp[rdiT], true) end
 		local srcFail = nil
-		if rsiT then srcFail = repFailStub(rsiT, pf.lowerTemp[rsiT], false) end
+		if rsiT then
+			if rsiAlias then srcFail = repStackFailStub(rsiAlias, false)
+			else srcFail = repFailStub(rsiT, pf.lowerTemp[rsiT], false) end
+		end
 		-- Count-overflow guard: under `rep` with elem = 2^k > 1, N is
 		-- computed as %rcx << k by doubling adds, which wraps mod 2^64 for
 		-- %rcx >= 2^(64-k) (e.g. 2^61 qwords). The wrapped N would pass the
@@ -3452,8 +3732,28 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			cg.subReg(room, upper, ptrT)
 			cg.cmpBranch(nT, room, "ugt", fail)
 		end
-		if rsiT then checkRange(rsiT, pf.lowerTemp[rsiT], false, srcFail) end
-		checkRange(rdiT, pf.lowerTemp[rdiT], true, dstFail)
+		-- A stack-alias side's DYNAMIC count check: the buffer's range covers the
+		-- alias's stack offset statically (proved by the frame pass), so only the
+		-- byte count N can leave the range: fail when N > hi - K (an unsigned
+		-- compare against the static room; N is the same doubling-adds count the
+		-- hardware's element multiply computes, and the overflow guard above has
+		-- already rejected counts whose N would wrap).
+		local function checkStackRange(alias, isWrite, fail)
+			local room = repStack.hi - alias.K
+			if room <= 0 then
+				-- Statically impossible (the frame pass rejects K >= hi), but
+				-- fail closed rather than assume.
+				cg.jump(fail)
+				return
+			end
+			cg.cmpImmBranchWidened(nT, room, "ugt", fail)
+		end
+		if rsiT then
+			if rsiAlias then checkStackRange(rsiAlias, false, srcFail)
+			else checkRange(rsiT, pf.lowerTemp[rsiT], false, srcFail) end
+		end
+		if rdiAlias then checkStackRange(rdiAlias, true, dstFail)
+		else checkRange(rdiT, pf.lowerTemp[rdiT], true, dstFail) end
 		cg.label(doneLbl)
 		-- Pin the webs into the implicit registers, run the instruction, and
 		-- pin the results back out into the post-instruction webs. Two webs
@@ -3467,11 +3767,41 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		--   * post count pinned: pin the count straight into it (a same-color
 		--     move the emitter drops when count and post coincide); the
 		--     hardware then leaves the post value in place — no pin-out.
-		-- (No counter save/restore is needed either way: a counter live
-		-- across the rep IS the count web — its post value is exactly what
-		-- the pins model — and otherwise no counter is live here.)
+		-- Otherwise the pin-in writes physical rcx from an UNRELATED web (the
+		-- rep's count), which destroys the value of any OTHER counter web
+		-- live across the instruction — a counter web is pinned to physical
+		-- rcx for its whole live range, and its liveness extends past this
+		-- sequence whenever the function keeps it alive across later
+		-- injected calls (every call saves/restores the counter, chaining the
+		-- web's live range through the whole function). The pin sequence is
+		-- therefore bracketed with the same counter save/restore every call
+		-- uses (see counterGuardArm above): the counter web's value
+		-- round-trips through a scratch web, making it dead across the pin —
+		-- exactly the shape the allocator expects around any physical-rcx
+		-- write. When the count or post web is itself pinned, no foreign
+		-- value is written (a counter web is the one being consumed or
+		-- defined, hardware-faithfully) and no guard is emitted; functions
+		-- without counters emit nothing.
 		local countPinned = temps[rcxT] and temps[rcxT].precolor == "rcx"
 		local defPinned = temps[rcxDefT] and temps[rcxDefT].precolor == "rcx"
+		local rcxGuard
+		if not countPinned and not defPinned then rcxGuard = counterGuardArm() end
+		-- A stack-alias side's web is defined by the MATERIALIZED lea the frame
+		-- rewrite emitted in place of the (formerly phantom) save: its value is
+		-- the lowered buffer address, so the ordinary pin moves work — pin-in
+		-- puts the buffer address in the implicit register, the hardware
+		-- advances it, and the pin-out defines the fresh web with the honest
+		-- post-rep address. (Without the materialization — an alias side whose
+		-- web would be the shared entry-argument web — we refuse: the pin-out
+		-- would corrupt the argument value that shares the web.)
+		if rsiAlias and not rsiAlias.materialized then
+			error("sarcasm: internal error: rep stack-alias source was not"
+				.. " materialized: " .. raw)
+		end
+		if rdiAlias and not rdiAlias.materialized then
+			error("sarcasm: internal error: rep stack-alias destination was not"
+				.. " materialized: " .. raw)
+		end
 		if rsiT then cg.move(pColored(6), rsiT) end
 		cg.move(pColored(7), rdiT)
 		if defPinned then cg.move(rcxDefT, rcxT)
@@ -3488,6 +3818,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				cg.move(rcxDefT, pColored(1))
 			end
 		end
+		counterGuardRestore(rcxGuard)
 	end
 
 	-- `.alloca size, alignment, result`: allocate `size` bytes with `alignment`
@@ -3720,6 +4051,15 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				local fref = funcrefNodes[node]
 				local glea = globalLeaNodes[node]
 				local gget = globalGetterNodes[node]
+				-- Annotated STACK BUFFER indexed access: emit the runtime bounds
+				-- check on the index register first (the instruction itself is
+				-- passed through verbatim further below — lowerSpecial's
+				-- stackBuf/frameSlot arm, or emitPinned for the pinned forms).
+				if node.stmt.x86StackBufIdx then
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitStackBufBoundsCheck(node, mem, node.stmt.x86StackBufIdx)
+					end)
+				end
 				if fref then
 					-- `#! funcref` lea (x86_64): define (iv, lower) as the
 					-- function's flight pointer. This is a pointer seed (ptrflow
@@ -3889,6 +4229,14 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				elseif atomicRmwPtrNodes[node] then
 					local gEff, gLo = materializeGlobalPtrAccess(node, mem, true)
 					emitAtomicLoadStorePtr(node, mem, gEff, gLo)
+				elseif mem and mem.stackBuf then
+					-- A `#! stack buffer` access: real memory in the lowered buffer
+					-- region, no capability to check. lowerSpecial already passed the
+					-- non-pinned forms through verbatim; a PINNED form (div/mul/
+					-- cmpxchg with an indexed buffer operand) lands here — emit its
+					-- pin moves around the verbatim instruction. (The bounds check
+					-- for the indexed forms was emitted just above.)
+					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
 				elseif mem then
 					cg.checkMemInsn(node, mem)
 					local effTemp, capLo = cg.computeAddr(node, mem)
@@ -4023,15 +4371,23 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			shift += 8
 		end
 		-- Mirror computeLayout's widened pad: the shift must be a multiple of
-		-- the EFFECTIVE frame alignment (the cluster-based width the layout
-		-- uses: max cluster areq capped at 64, 16 when none needs more) so the
-		-- clusters' alignment residues survive it. The raw `and $-N` note max
-		-- (fctx.fp.alignReq, uncapped e.g. 1024) must NOT be used here: the
-		-- layout pads only to the effective width, so a raw-width shift would
-		-- land shifted slots/saveOff outside the laid-out FP region.
+		-- the EFFECTIVE frame alignment (the width the layout uses: max
+		-- materialized-cluster areq and max stack-buffer group areq, each
+		-- capped at 64, 16 when none needs more) so the clusters' and the
+		-- buffer groups' alignment residues survive it. The raw `and $-N`
+		-- note max (fctx.fp.alignReq, uncapped e.g. 1024) must NOT be used
+		-- here: the layout pads only to the effective width, so a raw-width
+		-- shift would land shifted slots/saveOff outside the laid-out FP
+		-- region.
 		local alignMod = 16
 		for _, c in ((fctx and fctx.fp and fctx.fp.clusters) or {}) do
 			if c.areq and c.areq > alignMod then alignMod = math.min(c.areq, 64) end
+		end
+		local sblShift = framePolicy.stackBufLayout and framePolicy.stackBufLayout() or nil
+		if sblShift then
+			for _, g in (sblShift.groups or {}) do
+				if g.areq and g.areq > alignMod then alignMod = math.min(g.areq, 64) end
+			end
 		end
 		if alignMod > 16 then
 			while (shift % alignMod) ~= 0 do shift += 8 end
@@ -4053,11 +4409,59 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		end
 	end
 
+	-- Stack-buffer base fixup (x86_64 `#! stack buffer`): the buffer region sits
+	-- right below the spill slots, at frame offset
+	--   16 + 8*numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes
+	-- (mirroring computeLayout, whose spillBase adds bufBytes after the yolo
+	-- area). Every stackBuf-tagged memory operand carries a region-relative
+	-- placeholder displacement until this shift lands it on the real frame
+	-- offset. fpPad mirrors computeLayout exactly (including the widened pad for
+	-- a >16-byte frame alignment), so the shift is a multiple of 16 and the
+	-- groups' alignment residues survive.
+	if bufBytes > 0 then
+		local nRoots = #rootTemps
+		local fpSaveB = (fctx and fctx.fp and fctx.fp.saveBytes) or 0
+		local fpB = (fctx and fctx.fp and fctx.fp.bytes) or 0
+		local yoloB = (fctx and fctx.yolo and fctx.yolo.bytes) or 0
+		local fpPad = ((fpSaveB + fpB + yoloB + bufBytes) > 0 and nRoots % 2 == 1) and 8 or 0
+		local alignMod = 16
+		for _, cl in ((fctx and fctx.fp and fctx.fp.clusters) or {}) do
+			if cl.areq and cl.areq > alignMod then alignMod = math.min(cl.areq, 64) end
+		end
+		for _, g in (stackBufLayout and stackBufLayout.groups or {}) do
+			if g.areq and g.areq > alignMod then alignMod = math.min(g.areq, 64) end
+		end
+		if alignMod > 16 then
+			while ((8 * nRoots + fpPad) % alignMod) ~= 0 do fpPad += 8 end
+		end
+		local bufShift = 16 + 8 * nRoots + fpPad + fpSaveB + fpB + yoloB
+		local seenBuf = {}
+		local function shiftBufOps(ops)
+			for _, o in (ops or {}) do
+				if o.kind == "mem" and o.stackBuf and not seenBuf[o] then
+					seenBuf[o] = true
+					o.dispVal = (o.dispVal or 0) + bufShift
+				end
+			end
+		end
+		for _, node in out do
+			shiftBufOps(node.operands)
+			if node.stmt then shiftBufOps(node.stmt.operands) end
+		end
+		for _, node in failStubs do
+			shiftBufOps(node.operands)
+			if node.stmt then shiftBufOps(node.stmt.operands) end
+		end
+	end
+
 	return {
 		name = name, sigDesc = sigDesc, fipNodes = out, temps = temps, vMyth = vMyth,
 		originSym = originSym, numRoots = #rootTemps, funcLine = funcLine, nextTemp = nextTemp,
 		rootTemps = rootTemps, accessOrigins = accessOrigins, calledExterns = externsList,
 		lf = lf, pf = pf,
+		-- `#! stack buffer` region size for the frame layout (0 when the function
+		-- declares none).
+		bufBytes = bufBytes,
 		-- Fixed colors of the function's implicit-counter webs (empty unless the
 		-- body contains loop/loopl/jrcxz/jecxz): the allocator removes these from
 		-- its color pool and never coalesces into them, so nothing else can ever
@@ -4075,10 +4479,20 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- proved each such cluster's input offsets aligned under an
 		-- `and $-N, %rsp` note; the layout dynamically aligns the synthesized
 		-- frame to this width so they stay aligned in the output.
+		-- `#! stack buffer` groups count too: a group's aligned accesses need
+		-- the output frame backed to their widest requirement even when no
+		-- materialized cluster needs it (the OpenSSL ChaCha20_16x shape — its
+		-- only 64-byte-aligned stack traffic lives inside the buffer).
 		frameAlignReq = (function()
 			local effA = 16
 			for _, c in ((fctx and fctx.fp and fctx.fp.clusters) or {}) do
 				if c.areq and c.areq > effA then effA = math.min(c.areq, 64) end
+			end
+			local sbl = framePolicy.stackBufLayout and framePolicy.stackBufLayout() or nil
+			if sbl then
+				for _, g in (sbl.groups or {}) do
+					if g.areq and g.areq > effA then effA = math.min(g.areq, 64) end
+				end
 			end
 			return effA
 		end)(),

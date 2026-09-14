@@ -1,0 +1,9 @@
+return:
+  compileFailure
+only-on-platform:
+  x86_64
+# Rejects with: "aligned 32-byte stack access cannot be proven safe (the
+# stack is only guaranteed 16-byte aligned; align the frame with
+# `and $-32, %rsp` in the prologue, or else or use the unaligned form
+# (e.g. vmovdqu/vmovups))" — the buffer's 32-byte vmovdqa cannot be backed by
+# a frame whose effective alignment is 16.

@@ -274,6 +274,232 @@ local cloneRetProofRan = false
 local yoloCount = 0
 local yoloBase = nil
 
+-- ---------------------------------------------------------------------------
+-- `#! stack buffer (...)` — annotated STACK BUFFERS (x86_64).
+--
+-- A long-form declaration `#! stack buffer (id, %reg + lo, %reg + hi)` on a stack
+-- access (or a rep movs*/stos*) declares the normalized frame byte range
+-- [K + lo, K + hi) — K is the base register's normalized stack offset at the
+-- declaring statement (%rsp at depth d: D0 - d; %rbp with an established frame
+-- pointer: rbpNorm; any other register: a live saved-rsp carrier from the smap,
+-- K = D0 - carrier depth) — as a RAW BYTE BUFFER. Every stack access whose
+-- normalized byte range falls fully inside a declared buffer is lowered into a
+-- dedicated region of the synthesized output frame (real memory, no capability
+-- webs); indexed accesses get runtime bounds checks; nothing in the region can
+-- hold a pointer capability. Short forms `#! stack buffer (id)` reference a
+-- buffer declared by a long form ANYWHERE in the file (the driver pre-pass
+-- collects the long forms and hands us the canonical ranges via
+-- beginStackBufResolution/endStackBufResolution below).
+--
+-- All long-form declarations of one id across the file must resolve to the SAME
+-- normalized range (the driver pre-pass enforces it; per-function re-resolution
+-- re-checks, so a pre-pass/rewrite disagreement — e.g. through an alloca region
+-- the pre-pass could not see — is a compile error, never a miscompile).
+--
+-- Module state, same single-threaded discipline as D0 above:
+local sbCanon = nil       -- id -> { lo = loN, hi = hiN, fn = <declaring function> }
+local sbResolving = false -- true during the driver pre-pass (long forms only)
+local sbLayout = nil      -- { groups = { {lo, hi, areq, base} }, bytes = total } (this function)
+
+-- Driver pre-pass entry: reset the canonical-range table and switch to
+-- resolution-only mode (analyzeFrame runs triggered by the pre-pass skip the
+-- buffer group scan, because the canonical ranges are not complete yet).
+function x86_64_frame.beginStackBufResolution()
+	sbCanon = {}
+	sbResolving = true
+	sbLayout = nil
+end
+
+-- Driver pre-pass exit: keep the canonical table, re-enable the full scan.
+function x86_64_frame.endStackBufResolution()
+	sbResolving = false
+end
+
+-- The canonical (normalized) range declared for `id`, or nil. Used by the driver
+-- pre-pass after resolving a declaration, and by the per-function scan for short
+-- forms.
+function x86_64_frame.stackBufCanonOf(id)
+	if sbCanon then return sbCanon[id] end
+	return nil
+end
+
+function x86_64_frame.recordStackBufCanon(id, lo, hi, fnName)
+	sbCanon[id] = { lo = lo, hi = hi, fn = fnName }
+end
+
+-- The buffer layout of the most recently analyzed function: groups (merged,
+-- sorted by low offset) with region-relative placeholder bases, and the total
+-- region size. Consumed by the transform (tr.bufBytes and the buffer-base shift).
+function x86_64_frame.stackBufLayout()
+	return sbLayout
+end
+
+-- The placeholder base (within the buffer region) of the group containing the
+-- normalized range [lo, hi). Used by the transform's rep lowering.
+function x86_64_frame.stackBufGroupBaseFor(lo, hi)
+	if not sbLayout then
+		error("sarcasm: internal error: no stack buffer layout for the rep alias")
+	end
+	for _, g in sbLayout.groups do
+		if lo >= g.lo and hi <= g.hi then return g.base end
+	end
+	error("sarcasm: internal error: stack buffer range [" .. tostring(lo) .. ", "
+		.. tostring(hi) .. ") is not covered by any lowered buffer group")
+end
+
+-- Resolve a statement's `#! stack buffer (...)` annotation to the normalized
+-- frame byte range it declares: returns (loN, hiN), or nil when the annotation
+-- is a short form whose canonical range is not available yet (the driver
+-- pre-pass runs before the canonical table is complete — the caller skips the
+-- statement then; the real per-function runs always have the table).
+--   d        — the provable rsp depth at the statement (transfer arg or mark)
+--   smap     — the saved-rsp carrier map at the statement
+--   fpState  — the frame-pointer state ("est" = established)
+--   inPrologue — whether the statement sits in the prologue prefix
+-- A long form names its base register directly: %rsp resolves against the
+-- statement's depth, %rbp against the frame pointer (or an rbp carrier), any
+-- other register must be a live saved-rsp carrier in `smap`. The resolved range
+-- is cross-checked against the file-wide canonical entry for its id (recorded by
+-- the driver pre-pass; two declarations resolving differently are a compile
+-- error — the "same id declared twice with different offsets" rejection).
+--
+-- B2 shared-tail clones (tailcall.luau's st.b2clone) are the one exception to
+-- the canonical rule. A clone's statements execute at the JUMP SITE's rsp with
+-- the clone's own `sub`/`and` setup as ordinary code, so the clone's depth marks
+-- are the natural continuation of the jumper's depth tracking — the same
+-- address-identical normalization every other clone access uses
+-- (disp + D0 - d). A declaration inside a clone therefore resolves IN THE
+-- CLONE'S OWN CONTEXT and must NOT participate in the file-wide canonical
+-- table: the same buffer id declared in the source function's own body
+-- resolves to [0, N) there and to a negative (below-the-jumper-frame) range in
+-- each jumper's clone — both are correct, because they describe the same real
+-- bytes in two coordinate systems (the clone runs at the jumper's rsp). Clone
+-- declarations also cannot satisfy short forms (a short form names a
+-- canonical file-wide range, which is a property of the declaring function's
+-- own frame, not of a clone's private window).
+local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
+	local sb = st.stackBufAnno
+	if not sb then return nil end
+	local loN, hiN
+	if sb.short then
+		if st.b2clone then
+			error("sarcasm: `stack buffer (" .. sb.id .. ")` short form on a"
+				.. " shared-tail clone statement is not supported (a clone's"
+				.. " buffer window is private to the clone's own frame context;"
+				.. " declare it with the long form `#! stack buffer (" .. sb.id
+				.. ", %rsp, %rsp + N)` on an access inside the cloned region): "
+				.. (st.raw or st.mnemonic))
+		end
+		local canon = sbCanon and sbCanon[sb.id] or nil
+		if canon == nil then
+			if sbResolving then return nil end
+			error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long form"
+				.. " anywhere in this file (declare the buffer with e.g. `#! stack buffer ("
+				.. sb.id .. ", %rsp, %rsp + N)` on a buffer access in some function): "
+				.. (st.raw or st.mnemonic))
+		end
+		loN, hiN = canon.lo, canon.hi
+	else
+		if d == nil then
+			error("sarcasm: `stack buffer` annotation on an unreachable (dead-code)"
+				.. " statement cannot be resolved: " .. (st.raw or st.mnemonic))
+		end
+		if st.localClone then
+			error("sarcasm: `stack buffer` annotation on a local subroutine clone"
+				.. " statement is not supported (only shared-tail (B2) clone"
+				.. " statements may declare a buffer): " .. (st.raw or st.mnemonic))
+		end
+		local k
+		if sb.base == "rsp" then
+			if isDynDepth(d) then
+				error("sarcasm: `stack buffer` annotation at an unprovable (dynamic or"
+					.. " unknown) stack depth cannot be resolved: " .. (st.raw or st.mnemonic))
+			end
+			if st.b2clone then
+				-- A clone statement is never in the prologue prefix (clones are
+				-- appended after the jumper body), and its depth is the natural
+				-- continuation of the jumper's tracking — resolve exactly like
+				-- any other clone access: k = D0 - d.
+				k = D0 - d
+			else
+				if inPrologue and d ~= D0 then
+					-- A statement in the prologue prefix at a depth other than the
+					-- frame base (mid-setup: between the pushes and the sub) — the
+					-- prefix's rsp-relative addressing keys differently there. A
+					-- prefix statement AT the frame-base depth (the leaf-function
+					-- shape: a straight-line body the prologue scan never exits) is
+					-- fine.
+					error("sarcasm: `stack buffer` annotation inside the prologue prefix"
+						.. " at a perturbed stack depth is not supported: "
+						.. (st.raw or st.mnemonic))
+				end
+				k = D0 - d
+			end
+		elseif st.b2clone then
+			error("sarcasm: `stack buffer` annotation on a shared-tail clone"
+				.. " statement must use %rsp as its base (%" .. sb.base
+				.. " names a register whose clone-context binding the analysis"
+				.. " cannot attribute to the clone's own frame): " .. (st.raw or st.mnemonic))
+		elseif sb.base == "rbp" then
+			if fpState == "est" then
+				k = rbpNorm
+			else
+				local e = smap and smap["rbp"] or nil
+				if not (e and not e.redefined and not e.slot and not e.roff and not e.conflict) then
+					error("sarcasm: `stack buffer` annotation base %rbp is neither an"
+						.. " established frame pointer nor a live saved-rsp carrier here: "
+						.. (st.raw or st.mnemonic))
+				end
+				k = D0 - e.depth
+			end
+		else
+			local e = smap and smap[sb.base] or nil
+			if not (e and not e.redefined and not e.slot and not e.roff and not e.conflict) then
+				error("sarcasm: `stack buffer` annotation base %" .. sb.base .. " is not a"
+					.. " live saved-rsp stack alias at this statement (create one with"
+					.. " `mov %" .. "rsp, %" .. sb.base .. "` or `lea K(%rsp), %" .. sb.base
+					.. "`): " .. (st.raw or st.mnemonic))
+			end
+			k = D0 - e.depth
+		end
+		loN, hiN = k + sb.lo, k + sb.hi
+		if not st.b2clone then
+			local canon = sbCanon and sbCanon[sb.id] or nil
+			if canon then
+				if canon.lo ~= loN or canon.hi ~= hiN then
+					error("sarcasm: `stack buffer (" .. sb.id .. ")` long forms disagree: the"
+						.. " declaration in function '" .. tostring(canon.fn) .. "' resolves"
+						.. " to [" .. tostring(canon.lo) .. ", " .. tostring(canon.hi)
+						.. ") but this one resolves to [" .. tostring(loN) .. ", "
+						.. tostring(hiN) .. ") (the offsets must match): "
+						.. (st.raw or st.mnemonic))
+				end
+			elseif not sbResolving then
+				-- The driver pre-pass records every long form it can see (function
+				-- bodies). A miss here means this declaration was invisible to it.
+				error("sarcasm: `stack buffer (" .. sb.id .. ")` long form was not seen by"
+					.. " the file-wide declaration scan (long forms inside local subroutine"
+					.. " bodies are not supported): " .. (st.raw or st.mnemonic))
+			end
+		end
+	end
+	if hiN <= loN then
+		error("sarcasm: `stack buffer (" .. sb.id .. ")` declares an empty range: "
+			.. (st.raw or st.mnemonic))
+	end
+	return loN, hiN
+end
+
+-- Driver pre-pass: resolve the long-form declaration on `st` (the caller has run
+-- analyzeFrame on the statement's body, so the statement marks, D0 and the smap
+-- discipline are current) and return the normalized range. Short forms return
+-- nil (they contribute no declaration).
+function x86_64_frame.resolveStackBufDeclAt(st)
+	if not (st.stackBufAnno and not st.stackBufAnno.short) then return nil end
+	return resolveBufRangeAt(st, st.x86_depth, st.x86_smap, st.x86_fp,
+		st.x86_prologue == true)
+end
+
 -- Map a memory read to its incoming yolo stack-argument slot: return the 0-based
 -- slot index i when `st` is a LOAD-LIKE instruction (the memory operand is a pure
 -- source — not a store/RMW destination, not an address-taking lea) whose memory
@@ -386,6 +612,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86_preAnd = nil
 		st.x86_smap = nil
 		st.x86_b2band = nil
+		st.x86StackBufAccess = nil
+		st.x86StackBufIdx = nil
+		st.x86StackBufRep = nil
+		st.x86StackBufLea = nil
 	end
 	frameAlignReq = 16
 	frameAndDepth = 0
@@ -576,7 +806,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				elseif b == "add" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "imm"
 					and immVal(ops[2]) <= subBytes then
 					-- undoes part of the prologue allocation: net it out (an epilogue add
-					-- is never reached here — the scan has long stopped at the body)
+					-- is never reached here — the scan has long stopped at the body).
+					-- EXCEPTION: a degenerate body whose traffic never syntactically
+					-- touches rsp/rbp (alias-register-only traffic, string ops aside)
+					-- lets the scan run all the way into the epilogue: an `add` whose
+					-- NEXT instruction is a `ret` IS the epilogue teardown, so end the
+					-- prefix there instead of netting (netting would make D0 the
+					-- epilogue depth and degenerate every frame coordinate).
+					do
+						local ni = nextInsn[i]
+						if ni and body[ni] and body[ni].kind == "insn"
+							and x86.baseMnemonic(string.lower(body[ni].mnemonic)) == "ret" then
+							prologueEnd = i break
+						end
+					end
 					depth -= immVal(ops[2]); subBytes -= immVal(ops[2])
 				elseif b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2]
 					and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
@@ -646,6 +889,17 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- virtualize against a frame pointer it does not have.
 				elseif b == "jmp" or b == "call" or b == "ret" or b == "leave"
 					or string.match(m, "^loop") then
+					prologueEnd = i break
+				elseif st.repPrefix ~= nil
+					or (#ops == 0 and (string.match(m, "^movs[bwlqd]?$")
+						or string.match(m, "^stos[bwlqd]?$"))) then
+					-- A string op (rep movs*/stos* or the bare single-step form):
+					-- implicit %rsi/%rdi/%rcx memory traffic — never prologue-
+					-- transparent even though it names no operands. (Without this,
+					-- a body whose only frame traffic is through a stack-alias
+					-- register and a rep would swallow its own epilogue into the
+					-- prefix: the teardown `add` nets out, D0 becomes the epilogue
+					-- depth, and every frame coordinate degenerates.)
 					prologueEnd = i break
 				elseif insnTouchesFrame(st, usesRbp) then
 					prologueEnd = i break
@@ -1438,7 +1692,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			local out = {}
 			for k, e in pairs(smap) do out[k] = e end
 			out[ops[1].name] = { name = ops[1].name, num = ops[1].num, depth = copySrc.depth,
-				saveIdx = copySrc.saveIdx,
+				-- saveIdx points at THIS copy statement: the `#! stack buffer`
+				-- machinery may materialize the carrier's defining instruction
+				-- (a plain lea into the buffer region), and for a copy the
+				-- defining statement is the copy itself, not the original save.
+				saveIdx = idx,
 				redefined = false, form = copySrc.form }
 			return nd, nsv, clearDynSlots(out), nfp
 		end
@@ -1608,7 +1866,72 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						end
 					end
 				end
-				if nUses > 0 and not zeroing
+				-- An ANNOTATED REP (`rep movs*`/`rep stos*` carrying
+				-- `#! stack buffer (id, ...)`): the implicit %rsi/%rdi use of a
+				-- live register carrier is the STACK-ALIAS side of the copy —
+				-- allowed (and recorded on the statement for the transform's rep
+				-- lowering) when the buffer's declared range covers the alias's
+				-- stack offset statically (the dynamic byte-count check is emitted
+				-- at the rep itself). The carrier's value is phantom, so the pin
+				-- moves around the rep materialize the LOWERED buffer address
+				-- instead — the transform owns that; here we only prove the side
+				-- is covered and record it.
+				-- An ANNOTATED INDEXED access through the carrier (`#! stack buffer
+				-- (...)` on an indexed stack-relative access whose base is this
+				-- carrier): the frame pass's buffer scan resolves the annotation
+				-- and the rewrite lowers the access into the buffer with a runtime
+				-- bounds check — the base use vanishes like every other legal
+				-- carrier use. (The buffer's base register may also name this
+				-- carrier directly.)
+				local idxBufOk = false
+				if nUses == 1 and st.stackBufAnno and not owned
+					and bb ~= "call" and bb ~= "jmp" then
+					local amem = nil
+					for _, o in (st.operands or {}) do if o.kind == "mem" then amem = o end end
+					if amem and amem.index and amem.base and amem.base.kind == "reg"
+						and amem.base.name == name then
+						idxBufOk = true
+					end
+				end
+				local repSide = false
+				if nUses == 1 and st.stackBufAnno and c.rep and not owned then
+					local sideNum = nil
+					local isWrite = nil
+					if c.rep.kind == "movs" then
+						if e.num == 6 then sideNum, isWrite = 6, false
+						elseif e.num == 7 then sideNum, isWrite = 7, true end
+					else
+						if e.num == 7 then sideNum, isWrite = 7, true end
+					end
+					if sideNum then
+						local loN, hiN = resolveBufRangeAt(st, d, smap, fp, idx < prologueEnd)
+						if loN == nil then
+							-- A short form during the driver's resolution-only run
+							-- (the canonical table is not complete yet): allow
+							-- provisionally — the real per-function run re-resolves
+							-- (and errors on a long-form-less id).
+							repSide = sbResolving
+						else
+							local k = D0 - e.depth
+							if k < loN then
+								error("sarcasm: rep string's stack-alias side %" .. name
+									.. " (stack offset " .. tostring(k) .. ") is below the"
+									.. " stack buffer (" .. st.stackBufAnno.id .. ") range ["
+									.. tostring(loN) .. ", " .. tostring(hiN) .. "): "
+									.. (st.raw or st.mnemonic))
+							end
+							-- Rebuild the mark each iteration (idempotent per
+							-- fixpoint round; the per-register side keys accumulate
+							-- across this loop's iterations for both %rsi and %rdi).
+							st.x86StackBufRep = { lo = loN, hi = hiN,
+								id = st.stackBufAnno.id }
+							st.x86StackBufRep[name] = { K = k, num = sideNum,
+								isWrite = isWrite }
+							repSide = true
+						end
+					end
+				end
+				if nUses > 0 and not zeroing and not repSide and not idxBufOk
 					and not (nUses == 1 and yoloArgSlotOf(st, name, e.depth))
 					and not (restoreSave and nUses == 1)
 					-- A memory access through the carrier that lands inside the
@@ -2154,7 +2477,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				and st.operands[2].base.name ~= "rbp"
 				and not st.operands[2].index and not st.operands[2].dispSym then
 				local e = smapIn[i] and smapIn[i][st.operands[2].base.name]
-				if e and not e.redefined and not e.slot
+				if e and not e.redefined and not e.slot and e.depth ~= nil
 					and e.depth - (st.operands[2].dispVal or 0) >= 0 then
 					st.x86_spRecover = true
 				end
@@ -2246,7 +2569,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						local k = mem.dispVal or 0
 						local pk = st.localClone and (k - 8) or k
 						local rkey = st.localClone and (k + D0 - depthIn[i] - 8) or k
-						if (pk == depthIn[i] or pk <= 0) and not regionOf(rkey, false)
+								if (pk == depthIn[i] or pk <= 0) and not regionOf(rkey, false)
 							and not (yoloCount > 0 and k == 0) then
 							st.x86_leaSave = true
 						end
@@ -2427,6 +2750,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 	end
 
+	local andDomOf = {}
 	-- Direct rsp-relative slot traffic positioned BEFORE the first mid-function
 	-- `and $-N, %rsp` keys pre-and numbering, which the and shifts by a dynamic
 	-- slack: the rewrite rejects it (alias-carrier and rbp-relative accesses are
@@ -2508,6 +2832,83 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					end
 				end
 			end
+				-- Governing-`and` dataflow: for every instruction, the depth of the
+				-- `and $-N, %rsp` that governs its rsp alignment — the most recent
+				-- and on EVERY path reaching it — or "none" (no and yet on any
+				-- path), or "dyn" (paths disagree, or an absolute rsp restore
+				-- (pop/teardown/recover) intervenes and the slack story is no
+				-- longer that and's). Consumed by the FP-cluster keying for
+				-- B2-clone statements: a clone's own `and` is NOT the jumper's
+				-- prologue note (frameAndDepth), but its slack story is identical,
+				-- so post-and clone traffic must key at the clone's own and depth
+				-- rather than the SysV base (the aesni-mb shared 4x/8x bodies: the
+				-- 8x body is cloned into the 4x function and re-runs its own
+				-- `and $-128, %rsp`; keying it SysV placed its vmovdqa counters
+				-- spills at 8-mod-16 homes and they faulted at runtime).
+				local gand = {}
+				local function gandJoin(a, b)
+					if a == nil then return b end
+					if b == nil then return a end
+					if a == b then return a end
+					return "dyn"
+				end
+				local gwork, gqueued = {}, {}
+				local gentry
+				for i, st in body do
+					if st.kind == "insn" then gentry = i break end
+				end
+				if gentry then
+					-- the function entry sees no and yet; the worklist spreads from
+					-- there across every edge (clone entries ride their jump edges
+					-- like any other edge). Unreached statements are dead code.
+					gand[gentry] = "none"
+					table.insert(gwork, gentry)
+					gqueued[gentry] = true
+				end
+				while #gwork > 0 do
+					local i = table.remove(gwork)
+					local st = body[i]
+					local out
+					if st.kind ~= "insn" then
+						out = gand[i]
+					elseif isAnd[i] then
+						out = depthIn[i]
+					elseif depthIn[i] == "dyn" then
+						-- already at an unprovable depth: the and story is moot
+						-- (table depths are {anchored}/{dynreg} scopes — provable
+						-- contexts that carry the and story like numbers do)
+						out = "dyn"
+					else
+						local bm = x86.baseMnemonic(string.lower(st.mnemonic))
+						local spDst = st.operands[1] and st.operands[1].rc == "sp"
+						if bm == "pop" or bm == "ret" or bm == "leave"
+							or (bm == "add" and spDst)
+							or ((bm == "mov" or bm == "lea") and spDst) then
+							-- rsp moves back UP (epilogue pop, teardown add, absolute
+							-- rsp restore through a carrier or the frame pointer): the
+							-- and's N-alignment no longer describes rsp, so later
+							-- traffic loses the and-keyed residue identity
+							out = "dyn"
+						else
+							-- everything else propagates unchanged: in particular the
+							-- frame-setup `subq $N, %rsp` between a clone's and and its
+							-- body traffic (the dec8x `and $-256` then `sub $192` shape)
+							-- goes DEEPER and keeps rsp N-aligned minus a 16-multiple,
+							-- so the and-keyed residue identity survives
+							out = gand[i]
+						end
+					end
+					if out ~= nil then
+						for _, s2 in successors(i) do
+							local merged = gandJoin(gand[s2], out)
+							if merged ~= gand[s2] then
+								gand[s2] = merged
+								if not gqueued[s2] then gqueued[s2] = true; table.insert(gwork, s2) end
+							end
+						end
+					end
+				end
+				andDomOf = gand
 			-- Alias-carrier accesses CROSSING a mid-function `and` cannot be proven
 			-- safe: pre- and post-and traffic share one numbering, but
 			-- each and shifts rsp by a dynamic slack (0..N-1), so the same key
@@ -3017,6 +3418,511 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 	end
 
+	-- -----------------------------------------------------------------------
+	-- STACK BUFFER scan, phase 1 (x86_64 `#! stack buffer (...)`): resolve the
+	-- declarations, validate the ranges against this function's frame, and mark
+	-- the accesses that must be lowered into the buffer region. The taint scan
+	-- below skips buffer accesses (they are redirected, never clustered).
+	--
+	-- A buffer's declared range must lie inside the function's own carved frame
+	-- but EXCLUDE:
+	--   * the red zone (normalized offsets < 0) — conservative: a buffer in the
+	--     red zone would be clobbered by any call's argument-register spills
+	--     (a function with buffers is not necessarily a leaf);
+	--   * the transient prologue push pad (the outstanding pushed-register save
+	--     slots at [D0 - 8*maxSaves, D0)) — those slots' bytes are the pushed
+	--     registers' webs while the pad is outstanding, and the save-slot model
+	--     must not compete with the buffer redirect;
+	--   * the outgoing call-argument area ([0, 8*maxStackArgs)) — the body's
+	--     outgoing stack-argument stores key the callsite marshalling's slot
+	--     webs; redirecting them into the buffer would feed the callee garbage;
+	--   * any fixed `.alloca` region (region coordinates and buffer coordinates
+	--     must not collide).
+	-- Overlapping/touching declarations merge into one lowered GROUP (one
+	-- region, union size) — "multiple stack buffers may overlap, in which case
+	-- you get a single larger stack buffer that encompasses both".
+	--
+	-- The scan runs only on the REGION-CARRYING runs: the early geometry run
+	-- (regions == nil) records no caller-saved carriers / lea-saves in the smap,
+	-- so alias-base declarations could not resolve there (and need not — the
+	-- region-carrying runs inside the transform always follow).
+	local sbRanges = {}    -- { {lo, hi, areq, aligns, id} } declarations in this function
+	local sbGroups = nil   -- merged groups (phase (d1)); bases assigned in (d2)
+	local sbOutgoing = 0   -- largest outgoing stack-argument area (bytes)
+	local maxSaves = 0     -- largest outstanding push count anywhere
+	local anyDynSaves = false
+	sbLayout = nil
+	-- (During the driver's resolution-only runs (sbResolving) the buffer scan is
+	-- skipped entirely: the canonical ranges are not complete yet, so neither
+	-- the consistency checks nor the frame-fit checks can run meaningfully —
+	-- the driver resolves the long forms directly via resolveStackBufDeclAt.)
+	if regions ~= nil and not sbResolving then
+	do
+		-- Outgoing stack-argument area: every annotated callsite's integer-class
+		-- arguments beyond the 6 SysV register arguments travel in slots at
+		-- [0, 8*count) in this function's frame.
+		for _, st in body do
+			if st.kind == "insn" and st.annotation and string.find(st.annotation, "%(") then
+				local okcs, cs = pcall(sig.parseSignature, st.annotation)
+				if okcs and cs then
+					local intWords = 0
+					for k = 1, cs.argWords do
+						if not sig.isFpClass(cs.argTypes[k]) then intWords += 1 end
+					end
+					local stackWords = intWords - 6
+					if stackWords > 0 and 8 * stackWords > sbOutgoing then
+						sbOutgoing = 8 * stackWords
+					end
+				end
+			end
+			local sv = st.x86_saves
+			if sv == "dyn" then
+				anyDynSaves = true
+			elseif sv then
+				if #sv > maxSaves then maxSaves = #sv end
+			end
+		end
+		local pushTop = D0 - 8 * maxSaves
+		local function checkRangeFits(loN, hiN, homeLo, homeHi, id, dDecl, st)
+			-- `loN`/`hiN` are the declaring statement's UNBANDED normalized
+			-- range; `homeLo`/`homeHi` are the range in the coordinate space
+			-- the buffer's home lives in — identical for ordinary statements
+			-- and shifted by the statement's B2 band for shared-tail clones
+			-- (a clone entered above the jumper's prologue builds its frame
+			-- INSIDE the jumper's normalized frame territory on mutually
+			-- exclusive paths, so its buffer must not be checked against — or
+			-- merged with — the jumper's own slots in unbanded coordinates;
+			-- banding moves its home into the clone's private band, exactly
+			-- like every other clone access's).
+			-- NOTE: there is deliberately NO `and $-N, %rsp` rejection here. A
+			-- dynamically-aligned frame used to fail closed for all buffers
+			-- ("the dynamic alignment slack breaks the buffer's alignment
+			-- identity"), which blocked every OpenSSL-style shared-tail body
+			-- that aligns its own frame. The alignment identity is now proven
+			-- per access instead: every ALIGNED access contributes its own
+			-- offset/requirement pair, and the group placement in phase (d2)
+			-- proves the group's offsets are jointly congruent (one output
+			-- base exists) and that the synthesized frame backs the widest
+			-- requirement. Post-`and` traffic shifts as a unit, so its
+			-- relative residues carry the whole story whatever dynamic slack
+			-- the `and` baked into rsp.
+			-- A buffer may reach BELOW the frame base only down to the declaring
+			-- statement's own provably-allocated stack: at a provable rsp depth d
+			-- the function's own pushes/subs have allocated every byte from
+			-- entry_rsp - d upward, i.e. normalized offsets [D0 - d, ...). The
+			-- aesni CBC decrypt shape (the prologue scan ends in the leading
+			-- encrypt half, so the decrypt frame's push+sub key as a mid-function
+			-- inner frame at normalized [-24, 0)) declares its 16-byte rep-movs
+			-- temp exactly at [-24, -8) — the function's own allocated bytes,
+			-- ending where the outstanding pushed-register slot begins. Bytes
+			-- below that floor were never allocated on the declaring path (red
+			-- zone at best) and stay rejected. For an ordinary frame (d == D0)
+			-- the floor is 0 — the pre-existing no-red-zone rule. The same holds
+			-- for a B2 clone declaration: the clone's own `sub`/`and` are
+			-- ordinary statements of the augmented body, so the clone's
+			-- declaring depth proves exactly its own allocated bytes.
+			local frameFloor = 0
+			if dDecl ~= nil and not isDynDepth(dDecl) then frameFloor = D0 - dDecl end
+			if loN < frameFloor then
+				error("sarcasm: stack buffer (" .. id .. ") reaches below the"
+					.. " function's own allocated stack (normalized offset "
+					.. tostring(loN) .. " < floor " .. tostring(frameFloor)
+					.. (frameFloor == 0
+						and "; buffers must live inside the function's own frame"
+						or "; the declaring statement's rsp depth " .. tostring(dDecl)
+							.. " only proves the bytes at or above " .. tostring(frameFloor))
+					.. "): " .. tostring(loN) .. " < " .. tostring(frameFloor))
+			end
+			if homeLo < D0 and homeHi > pushTop then
+				error("sarcasm: stack buffer (" .. id .. ") extends to normalized"
+					.. " offset " .. tostring(homeHi) .. ", past the frame's usable top "
+					.. tostring(pushTop) .. " (the frame is [0, " .. tostring(D0)
+					.. ") and its top " .. tostring(8 * maxSaves) .. " bytes are the"
+					.. " outstanding push/callee-save slots): " .. tostring(homeHi)
+					.. " > " .. tostring(pushTop))
+			end
+			-- The push-pad model above covers the JUMPER's own pushes (their
+			-- slots are exactly the pad [D0 - 8*maxSaves, D0)). A B2 clone's own
+			-- pushes park their save slots BELOW the jumper's frame — at
+			-- normalized [D0 - s.depth, D0 - s.depth + 8) for each outstanding
+			-- save (`s.depth` is the post-push rsp depth, matching the save-slot alias
+			-- model) — where the pad model cannot see them. A buffer overlapping
+			-- such a slot would split the slot's bytes between the save-slot
+			-- web model (the rewrite's alias path) and the buffer region — two
+			-- homes for one byte. Check the declaring statement's own
+			-- outstanding saves exactly. (Saves pushed AFTER the declaration are
+			-- deeper than it, so their slots land below the buffer's low bound
+			-- and can never intersect it; checking the declaration's state is
+			-- therefore sufficient.) Run for non-clone declarations too — it is
+			-- a strictly more precise restatement of the pad rule for them.
+			if st then
+				local sv = st.x86_saves
+				if sv == "dyn" then
+					error("sarcasm: stack buffer (" .. id .. ") is declared at a"
+						.. " statement whose outstanding-save state cannot be proven"
+						.. " (the buffer's bytes must be provably disjoint from every"
+						.. " pushed-register save slot): " .. (st.raw or st.mnemonic))
+				elseif sv then
+					for _, s in sv do
+						if usesRbp and s.name == "rbp" then continue end  -- saved frame pointer
+						if s.spill then continue end  -- a spill slot is an ordinary slot
+						local slo, shi = D0 - s.depth, D0 - s.depth + 8
+						if loN < shi and hiN > slo then
+							error("sarcasm: stack buffer (" .. id .. ") overlaps a"
+								.. " pushed register's save slot at normalized ["
+								.. tostring(slo) .. ", " .. tostring(shi) .. ") (the"
+								.. " slot's bytes are the pushed register's web while"
+								.. " the push is outstanding; move the buffer below the"
+								.. " push or pop it first): " .. (st.raw or st.mnemonic))
+						end
+					end
+				end
+			end
+			-- Precise intersection with the outgoing call-argument area [0,
+			-- sbOutgoing): a buffer entirely below the frame base (an inner-frame
+			-- buffer, see the frameFloor comment) cannot overlap it.
+			if homeLo < sbOutgoing and homeHi > 0 then
+				error("sarcasm: stack buffer (" .. id .. ") overlaps the outgoing"
+					.. " call-argument area [0, " .. tostring(sbOutgoing)
+					.. "): " .. tostring(homeLo) .. " < " .. tostring(sbOutgoing))
+			end
+			for _, r in (regions or {}) do
+				if not r.anchored and r.base < homeHi and r.base + r.size > homeLo then
+					error("sarcasm: stack buffer (" .. id .. ") overlaps a fixed"
+						.. " alloca region at normalized offsets ["
+						.. tostring(math.max(r.base, homeLo)) .. ", "
+						.. tostring(math.min(r.base + r.size, homeHi))
+						.. ") (buffer region and alloca region coordinates must not"
+						.. " collide)")
+				end
+			end
+		end
+		local function widthOf(st, mem)
+			local m = string.lower(st.mnemonic)
+			local fpe = fp.lookup(m)
+			if isFpInsn(fpe, st) then
+				local fw, fa = fp.accessWidth(m, st.operands, st.raw)
+				if fw == nil then return nil, nil end
+				return fw, fa
+			end
+			return gprStackWidth(m, mem) or mem.size, nil
+		end
+		-- (a) declarations FIRST (all of them, before any access is classified
+		-- against the ranges — a declaration may appear after the accesses that
+		-- fall inside it).
+		for _, st in body do
+			if st.kind == "insn" and st.stackBufAnno then
+				local loN, hiN = resolveBufRangeAt(st, st.x86_depth, st.x86_smap,
+					st.x86_fp, st.x86_prologue == true)
+				if loN then
+					if string.lower(st.mnemonic) == "lea" then
+						error("sarcasm: `stack buffer` annotation on a lea is not"
+							.. " supported (a lea takes no memory access; annotate the"
+							.. " accesses or the rep instead): " .. (st.raw or st.mnemonic))
+					end
+					-- The range the buffer's HOME lives in: unbanded for ordinary
+					-- statements, shifted by the statement's B2 band for
+					-- shared-tail clones (see checkRangeFits).
+					local band = st.x86_b2band or 0
+					checkRangeFits(loN, hiN, loN + band, hiN + band,
+						st.stackBufAnno.id, st.x86_depth, st)
+					table.insert(sbRanges, { lo = loN + band, hi = hiN + band,
+						areq = 1, aligns = {}, id = st.stackBufAnno.id })
+				end
+			end
+		end
+		for _, st in body do
+			if st.kind ~= "insn" then continue end
+			local mem = nil
+			for _, o in st.operands do if o.kind == "mem" then mem = o end end
+			-- (b) static accesses: mark the ones inside a declared buffer, reject
+			-- the ones straddling a boundary. (rsp-based accesses key at the
+			-- frame-base depth, or — at a KNOWN perturbed depth — at disp + D0 - d,
+			-- exactly the rewrite's perturbed-depth slot keying and the same
+			-- normalization the declaration/rep resolution uses; the aesni CBC
+			-- decrypt shape declares its buffer against a mid-function inner
+			-- frame, so its stores must key the same way or they silently miss
+			-- the buffer. Pre-and accesses stay excluded (the outer gate);
+			-- rbp- and alias-based accesses normalize absolutely at any
+			-- provable depth.)
+			if mem and not mem.index and not mem.dispSym
+				and string.lower(st.mnemonic) ~= "lea"
+				and not st.localClone
+				and st.x86_depth ~= nil and not isDynDepth(st.x86_depth)
+				and #sbRanges > 0 then
+				local off, wb = nil, nil
+				local d = st.x86_depth
+				-- Clone statements key into their band's coordinate space, so
+				-- their buffer offsets (and their declarations above) live in
+				-- the band: the same +band shift every other clone access
+				-- gets. Band bases are multiples of 64, so all the alignment
+				-- residues the group placement consumes are preserved.
+				local band = st.x86_b2band or 0
+				if mem.base and mem.base.kind == "reg" and mem.base.rc == "sp" then
+					if d == D0 and band == 0 then off = mem.dispVal or 0
+					else off = (mem.dispVal or 0) + D0 - d + band end
+					if st.x86_preAnd and off ~= nil then
+						-- Pre-`and` rsp traffic keys PRE-and numbering while the
+						-- buffer's declared range keys on the declaring
+						-- statement's depth: on a path that executes the `and`,
+						-- the same modeled offset names a real address shifted
+						-- by the and's dynamic slack, so a pre-and access
+						-- sharing bytes with a buffer would give those bytes
+						-- two homes. Fail closed on any intersection; pre-and
+						-- traffic that touches no buffer keeps its pre-existing
+						-- handling (the rewrite's preAnd rejection).
+						local wPre = widthOf(st, mem)
+						if wPre then
+							for _, r in sbRanges do
+								if off < r.hi and off + wPre > r.lo then
+									error("sarcasm: stack access before a mid-function"
+										.. " `and $-N, %rsp` overlaps a stack buffer"
+										.. " (pre-and numbering and the buffer's"
+										.. " coordinate system name different real"
+										.. " bytes for the same modeled offset): "
+										.. (st.raw or st.mnemonic))
+								end
+							end
+						end
+						off = nil  -- not buffer-classified; normal handling applies
+					end
+				elseif mem.base and mem.base.kind == "reg" and mem.base.name == "rbp"
+					and usesRbp and st.x86_fp == "est" then
+					off = rbpNorm + (mem.dispVal or 0)
+				elseif mem.base and mem.base.kind == "reg" and st.x86_aliasOff ~= nil then
+					off = st.x86_aliasOff
+				end
+				if off == nil and st.stackBufAnno then
+					-- An annotated access that resolves to no stack address at all
+					-- (a heap access or an alias the analysis could not prove):
+					-- never let the annotation silently vanish.
+					error("sarcasm: `stack buffer`-annotated access does not address"
+						.. " the stack through %rsp, %rbp or a live saved-rsp alias"
+						.. " register: " .. (st.raw or st.mnemonic))
+				end
+				if off ~= nil then
+					local fa
+					wb, fa = widthOf(st, mem)
+					if wb then
+						-- group membership / straddle (against the CURRENT range
+						-- list; merged groups are computed after this loop)
+						local inside, straddles = false, false
+						for _, r in sbRanges do
+							if off < r.hi and off + wb > r.lo then
+								if off >= r.lo and off + wb <= r.hi then
+									inside = true
+								else
+									straddles = true
+								end
+							end
+						end
+						if straddles then
+							error("sarcasm: stack access straddles a stack buffer"
+								.. " boundary (normalized [" .. tostring(off) .. ", "
+								.. tostring(off + wb) .. ") partially overlaps a declared"
+								.. " buffer; it cannot be proven which side it is on): "
+								.. (st.raw or st.mnemonic))
+						end
+						if inside then
+							-- an explicitly annotated access must sit inside its OWN
+							-- buffer's declared range
+							if st.stackBufAnno then
+								local loN, hiN = resolveBufRangeAt(st, st.x86_depth,
+									st.x86_smap, st.x86_fp, st.x86_prologue == true)
+								if loN and not (off >= loN + band and off + wb <= hiN + band) then
+									error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+										.. ")`-annotated access at normalized ["
+										.. tostring(off) .. ", " .. tostring(off + wb)
+										.. ") lies outside the buffer's declared range ["
+										.. tostring(loN) .. ", " .. tostring(hiN) .. "): "
+										.. (st.raw or st.mnemonic))
+								end
+							end
+							-- capabilities never live in buffer memory
+							if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
+								error("sarcasm: `" .. st.annotation .. "` on a stack access"
+									.. " inside a stack buffer is not supported (buffer"
+									.. " slots cannot hold capabilities; loading from a"
+									.. " buffer always yields a null capability): "
+									.. (st.raw or st.mnemonic))
+							end
+							-- Only FP/SIMD forms carry an alignment promise the
+							-- lowering must preserve (movdqa-class); the knowledge
+							-- module's alignment is authoritative. Scalar GPR accesses
+							-- are unaligned-tolerant. The lowering places each buffer
+							-- group at one output base, so every ALIGNED access in a
+							-- group must land on an aligned byte: record each aligned
+							-- access's (offset, requirement) pair and let phase (d2)
+							-- prove the group's offsets are jointly congruent (a
+							-- single base exists) and that the synthesized frame
+							-- backs the widest requirement. This is what makes
+							-- buffers work in `and $-N, %rsp`-aligned frames: the
+							-- post-`and` traffic's own offsets carry its alignment
+							-- identity, whatever dynamic slack the `and` baked into
+							-- rsp — all its accesses shift together, so their
+							-- relative residues are exactly what the placement
+							-- consumes.
+							local areq = 1
+							local isFP = isFpInsn(fp.lookup(string.lower(st.mnemonic)), st)
+							if isFP and fa and fa > 1 then
+								areq = fa
+								for _, r in sbRanges do
+									if off >= r.lo and off + wb <= r.hi then
+										table.insert(r.aligns, { off = off, areq = areq })
+									end
+								end
+							end
+							st.x86StackBufAccess = { off = off, w = wb, areq = areq }
+							-- contribute alignment to the enclosing declaration
+							for _, r in sbRanges do
+								if off >= r.lo and off + wb <= r.hi and r.areq < areq then
+									r.areq = areq
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		-- (c) annotated INDEXED accesses: the bounds-check marks. These need the
+		-- merged group base, which phase 2 assigns; the mark carries the resolved
+		-- range and the access shape, and the rewrite computes the displacement.
+		for _, st in body do
+			if st.kind == "insn" and st.stackBufAnno and not st.localClone
+				and string.lower(st.mnemonic) ~= "lea" then
+				local mem = nil
+				for _, o in st.operands do if o.kind == "mem" then mem = o end end
+				if mem and mem.index then
+					local d = st.x86_depth
+					if d == nil or isDynDepth(d) then
+						error("sarcasm: `stack buffer`-annotated indexed access at an"
+							.. " unprovable stack depth is not supported: "
+							.. (st.raw or st.mnemonic))
+					end
+					if st.x86_preAnd then
+						error("sarcasm: `stack buffer`-annotated indexed access before a"
+							.. " mid-function `and $-N, %rsp` cannot be proven safe: "
+							.. (st.raw or st.mnemonic))
+					end
+					local kBase
+					-- Clone statements key into their band's coordinate space
+					-- (matching the declarations and the static classification).
+					local band = st.x86_b2band or 0
+					if mem.base and mem.base.kind == "reg" and mem.base.rc == "sp" then
+						-- The frame-base depth keys disp directly; a KNOWN perturbed
+						-- depth keys disp + D0 - d, exactly like the rewrite's slot
+						-- keying, the static-buffer classification, and the rep's
+						-- alias resolution (the aesni CBC inner-frame shape). Clone
+						-- statements add their band.
+						kBase = D0 - d + band
+					elseif mem.base and mem.base.kind == "reg" and mem.base.name == "rbp"
+						and usesRbp and st.x86_fp == "est" then
+						kBase = rbpNorm
+					elseif mem.base and mem.base.kind == "reg" and st.x86_smap then
+						local e = st.x86_smap[mem.base.name]
+						if not (e and not e.redefined and not e.slot and not e.roff
+							and not e.conflict) then
+							error("sarcasm: indexed access base %" .. tostring(mem.base.name)
+								.. " is not a live saved-rsp stack alias: "
+								.. (st.raw or st.mnemonic))
+						end
+						kBase = D0 - e.depth
+					else
+						error("sarcasm: internal error: unresolvable indexed buffer"
+							.. " access base: " .. (st.raw or st.mnemonic))
+					end
+					local scale = mem.scale or 1
+					if scale ~= 1 and scale ~= 2 and scale ~= 4 and scale ~= 8 then
+						error("sarcasm: indexed buffer access has scale " .. tostring(scale)
+							.. " (only 1/2/4/8 are encodable): " .. (st.raw or st.mnemonic))
+					end
+					local wb, fa = widthOf(st, mem)
+					if not wb then
+						error("sarcasm: cannot determine the access width of an indexed"
+							.. " buffer access: " .. (st.raw or st.mnemonic))
+					end
+					local loN, hiN = resolveBufRangeAt(st, st.x86_depth, st.x86_smap,
+						st.x86_fp, st.x86_prologue == true)
+					if loN == nil then
+						-- A short form during the driver's resolution-only run
+						-- (the canonical table is not complete yet): skip; the real
+						-- per-function run always resolves (and errors on a
+						-- long-form-less id).
+						continue
+					end
+					-- The resolved range is unbanded; band it to the coordinate
+					-- space the declarations/groups live in (band-invariant for
+					-- the size check below).
+					loN, hiN = loN + band, hiN + band
+					if wb > hiN - loN then
+						error("sarcasm: indexed buffer access is " .. tostring(wb)
+							.. " bytes but the buffer (" .. st.stackBufAnno.id .. ") is only "
+							.. tostring(hiN - loN) .. " bytes: " .. (st.raw or st.mnemonic))
+					end
+					-- capabilities never live in buffer memory
+					if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
+						error("sarcasm: `" .. st.annotation .. "` on a stack-buffer access"
+							.. " is not supported (buffer slots cannot hold capabilities;"
+							.. " loading from a buffer always yields a null capability): "
+							.. (st.raw or st.mnemonic))
+					end
+					local areq = 1
+					if fa and fa > 1 then
+						-- An indexed access's alignment promise comes from the
+						-- FP form and is capped by the index scale (the byte
+						-- address moves in scale steps, so a scale-1 index
+						-- cannot carry a 16-byte promise). The access's
+						-- alignment anchor is its EFFECTIVE displacement
+						-- (dispEff — the address is dispEff + idx*scale), which
+						-- phase (d2) consumes exactly like a static access's
+						-- offset.
+						areq = math.min(fa, 64)
+						if scale < areq then areq = scale end
+						for _, r in sbRanges do
+							if loN >= r.lo and hiN <= r.hi then
+								table.insert(r.aligns, {
+									off = kBase + (mem.dispVal or 0), areq = areq })
+							end
+						end
+					end
+					st.x86StackBufIdx = { lo = loN, hi = hiN,
+						dispEff = kBase + (mem.dispVal or 0), scale = scale, size = wb,
+						write = (st.operands[1] == mem) or x86.isMemRmw(st),
+						align = areq }
+					-- the range's areq must cover the indexed access's alignment
+					for _, r in sbRanges do
+						if loN >= r.lo and hiN <= r.hi and r.areq < areq then
+							r.areq = areq
+						end
+					end
+				end
+			end
+		end
+		-- (d1) merge overlapping/touching declarations into groups. The groups'
+		-- region-relative placeholder BASES are assigned in phase (d2), after
+		-- the FP cluster/yolo layout has run: the buffer region sits above the
+		-- materialized clusters in the synthesized frame, so a group's
+		-- alignment residue needs the region-start residue (phase (d2) below
+		-- for the full identity).
+		table.sort(sbRanges, function(a, b)
+			if a.lo ~= b.lo then return a.lo < b.lo end
+			return a.hi < b.hi
+		end)
+		sbGroups = {}
+		for _, r in sbRanges do
+			local last = sbGroups[#sbGroups]
+			if last and r.lo <= last.hi then
+				if r.hi > last.hi then last.hi = r.hi end
+				if r.areq > last.areq then last.areq = r.areq end
+				for _, a in r.aligns do table.insert(last.aligns, a) end
+			else
+				table.insert(sbGroups, { lo = r.lo, hi = r.hi, areq = r.areq,
+					aligns = { table.unpack(r.aligns) }, base = 0 })
+			end
+		end
+	end
+	end
+
 	-- FP/SIMD stack-slot taint scan. FP/vector instructions cannot ride the GPR slot
 	-- virtualization (their operands are real vector registers, not temps — the slot
 	-- pseudo-register would render as garbage), so every stack range an FP
@@ -3038,14 +3944,25 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- incoming yolo stack argument (a depth-0 %rsp read) is irrelevant too:
 			-- it is redirected to the arguments' own materialized area, not to an
 			-- FP cluster.
-			if mem and (isStackReg(mem.base, usesRbp) or st.x86_aliasOff ~= nil) and not mem.dispSym and not mem.index
+			-- A lea has no memory traffic (it computes an address): it never
+			-- materializes into a cluster home (the rewrite drops lea-saves and
+			-- rejects other stack-address leas; the spill sweep below skips leas
+			-- for the same reason), so it contributes no interval here.
+			if mem and x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea"
+				and (isStackReg(mem.base, usesRbp) or st.x86_aliasOff ~= nil) and not mem.dispSym and not mem.index
 				and not (mem.base.rc == "sp" and st.x86_depth ~= nil and not isDynDepth(st.x86_depth)
 					and yoloArgSlotOf(st, "rsp", st.x86_depth))
 				-- Phantom saved-rsp traffic (save-stores / carrier-loads) is dropped by
 				-- the rewrite — no real memory exists for it — and an access landing
 				-- in a fixed alloca region rides the region pointer instead of a
 				-- frame slot (region coordinates never collide with cluster offsets).
-				and not st.x86_saveStore and not st.x86_carrierLoad then
+				and not st.x86_saveStore and not st.x86_carrierLoad
+				-- a lea-save is dropped by the rewrite too (no real memory exists
+				-- for its phantom 8-byte "read"), so it must not join a cluster
+				and not st.x86_leaSave
+				-- A stack-buffer access is redirected into the buffer region by
+				-- the rewrite — never materialized into an FP cluster.
+				and st.x86StackBufAccess == nil then
 				local m = string.lower(st.mnemonic)
 				local fpe = fp.lookup(m)
 				-- Region membership in the rewrite's exact coordinates/classification.
@@ -3123,7 +4040,62 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 									.. (body[si].raw or body[si].mnemonic))
 							end
 						end
-						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq, si = si })
+						-- Which alignment coordinate system the access keys off
+						-- (drives the cluster residue below). An rsp-relative
+						-- access in a frame WITH an `and $-N,%rsp` note executes
+						-- at the POST-AND rsp -- N-aligned (N >= 32 is what gets
+						-- recorded), so its alignment residue is `disp mod areq`,
+						-- keyed at the note's base. Every other access keys at
+						-- the SysV base: rsp-relative without a note, normalized
+						-- rbp-relative (absolute -- rbp = entry_rsp - fpDepth),
+						-- and the carrier/clone coordinate spaces. The cluster
+						-- placement must use the right base for its members and
+						-- refuses to mix them (one cluster, one base).
+						local keyed
+						local andBase
+						if frameAndDepth == 0 then
+							-- no `and $-N,%rsp` note: every access keys at the SysV base
+							keyed = "d0"
+						-- A stack-alias carrier access (a GPR base holding a parked rsp+K
+						-- value): the access is and-keyed iff the SAVE executed after the
+						-- and (a post-and save parks the rounded rsp); a pre-and save
+						-- parks the unrounded (SysV-keyed) value. A dyn save depth cannot
+						-- be proven either way.
+						elseif st.x86_aliasOff ~= nil then
+							local e = st.x86_smap and st.x86_smap[mem.base.name]
+							if e and type(e.depth) == "number" and e.depth >= frameAndDepth then
+								keyed = "and"
+							elseif e and type(e.depth) == "number" then
+								keyed = "d0"
+							else
+								keyed = "ambig"
+							end
+						-- A direct rsp access at or below the note's depth executes at the
+						-- rounded (post-and) rsp; the access depth cancels in the residue
+						-- identity (the model's off carries disp + D0 - d).
+						elseif mem.base.rc == "sp" and not st.localClone and not st.b2clone
+						and type(st.x86_depth) == "number" and st.x86_depth >= frameAndDepth then
+							keyed = "and"
+							andBase = frameAndDepth
+						elseif mem.base.rc == "sp" and st.b2clone
+						and type(st.x86_depth) == "number" then
+							-- A B2 clone re-runs the frame setup of the body it clones,
+							-- including its own `and $-N, %rsp` — which is not the
+							-- jumper's prologue note. When the clone's governing and is
+							-- provable, post-and clone traffic keys at THAT and's depth
+							-- (same slack identity as the jumper's note); otherwise it
+							-- keeps the historical ambig (SysV-residue) keying.
+							local g = andDomOf[si]
+							if type(g) == "number" and st.x86_depth >= g then
+								keyed = "and"
+								andBase = g
+							else
+								keyed = "ambig"
+							end
+						else
+							keyed = "ambig"
+						end
+						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq, si = si, keyed = keyed, andBase = andBase })
 					end
 				end
 			end
@@ -3141,8 +4113,21 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				if iv.hi > cur.hi then cur.hi = iv.hi end
 				if iv.fp then cur.fp = true end
 				if iv.areq > cur.areq then cur.areq = iv.areq end
+				if iv.keyed ~= cur.keyed or (iv.keyed == "and" and iv.andBase ~= cur.andBase) then
+					-- One cluster, one alignment base: rsp-relative traffic
+					-- under an `and $-N,%rsp` note aligns to the note's base,
+					-- absolute/rbp-relative traffic to the SysV base. A cluster
+					-- mixing them has no single correct placement (fail closed;
+					-- the old code silently picked the SysV base and could emit
+					-- a misaligned movdqa-class access that traps at runtime).
+					error("sarcasm: stack accesses through different coordinate systems"
+						.. " (post-`and` rsp-relative and absolute/rbp-relative) share one"
+						.. " materialized cluster and cannot be proven safe (split the"
+						.. " vector scratch area): "
+						.. (body[iv.si].raw or body[iv.si].mnemonic))
+				end
 			else
-				cur = { lo = iv.lo, hi = iv.hi, fp = iv.fp, areq = iv.areq }
+				cur = { lo = iv.lo, hi = iv.hi, fp = iv.fp, areq = iv.areq, keyed = iv.keyed, andBase = iv.andBase }
 				table.insert(tainted, cur)
 			end
 		end
@@ -3240,6 +4225,16 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- per cluster below); the reserved bytes ride fpBytes into the layout.
 	local needAlignSave = false
 	for _, c in tainted do if c.areq > 16 then needAlignSave = true break end end
+	-- A `#! stack buffer` group needing more than 16-byte alignment drives the
+	-- output frame's dynamic alignment too (the transform folds the groups'
+	-- requirements into tr.frameAlignReq), so the 8-byte pre-alignment rsp
+	-- save must be reserved for it exactly as for a wide cluster — otherwise
+	-- the prologue's save would land on the first cluster's bytes.
+	if not needAlignSave and sbGroups then
+		for _, g in sbGroups do
+			if g.areq > 16 then needAlignSave = true break end
+		end
+	end
 	local cursor = base0 + (needAlignSave and 8 or 0)
 	for _, c in tainted do
 		local areq = math.max(c.areq, 1)
@@ -3254,7 +4249,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- Clusters needing more than 16-byte alignment (covered by an
 		-- `and $-N, %rsp` note): input offsets align to (D0 - andDepth),
 		-- the note's base, rather than the SysV (D0 - 8) residue.
-		local baseRes = areq > 16 and frameAndDepth or 8
+		-- The residue base: post-`and` rsp-relative accesses align to the
+		-- note's base (the post-and rsp is N-aligned, N >= 32); everything
+		-- else to the SysV entry_rsp = 8 (mod 16) base. (Keying was decided
+		-- per interval above and checked for conflicts at cluster merge.)
+		local baseRes = (c.keyed == "and") and (c.andBase or frameAndDepth) or 8
 		local residue = ((c.lo - D0 + baseRes) % areq + areq) % areq
 		local delta = ((residue - cursor % areq) % areq + areq) % areq
 		c.finalBase = cursor + delta
@@ -3307,6 +4306,156 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	if hasFpYolo then
 		yoloBase = math.ceil(cursor / 16) * 16
 		yoloBytes = 8 * yoloCount
+	end
+
+	-- (d2) STACK BUFFER group base assignment (runs after the FP cluster and
+	-- yolo layout above, whose sizes the buffer region's start depends on).
+	-- The buffer region sits in the synthesized frame at
+	--   regionStart = 16 + 8*numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes
+	-- (mirroring computeLayout / the transform's bufShift), and every
+	-- stackBuf-tagged operand is shifted by exactly that once numRoots is
+	-- known. fpPad is widened so (8*numRoots + fpPad) ≡ 0 (mod A) with A the
+	-- effective frame alignment (the widest materialized cluster requirement,
+	-- 16 when none needs more) — so modulo any areq dividing A,
+	--   regionStart ≡ 16 + fpSaveBytes + fpBytes + yoloBytes   (=: T)
+	-- which is fully known here. A group placed at base g receives an access
+	-- at absolute frame offset regionStart + g.base + (off - g.lo); an access
+	-- whose ISA form promises areq-byte alignment must land on an areq-aligned
+	-- byte, i.e. the group base must satisfy
+	--   g.base ≡ g.lo - off_i   (mod areq_i)     for every aligned access i
+	-- — solvable exactly when the accesses' offsets are jointly congruent
+	-- (checked below by pairwise CRT over the power-of-two requirements).
+	-- This is what makes buffers work in `and $-N, %rsp`-aligned frames: the
+	-- `and` shifts every post-and rsp by one dynamic slack, so all of a
+	-- buffer's post-and accesses shift together and their RELATIVE residues
+	-- carry the whole alignment story; a group mixing incompatible residues
+	-- (e.g. and-shifted and and-free traffic with disagreeing offsets) is
+	-- rejected here rather than silently misaligned. (The historical formula
+	-- was the special case T ≡ 0 (mod 16) with a single SysV residue; groups
+	-- with areq 1 are indifferent to all of this.) A group whose widest
+	-- requirement does not divide A cannot be placed — the fpPad widening
+	-- would not cancel numRoots, which is not known here — so it is rejected
+	-- (fail closed).
+	if sbGroups and #sbGroups > 0 then
+		local alignA = 16
+		for _, c in tainted do
+			if c.areq and c.areq > alignA then alignA = math.min(c.areq, 64) end
+		end
+		-- The buffer groups drive the output frame's effective alignment too
+		-- (the transform folds them into tr.frameAlignReq the same way), so a
+		-- group's requirement is placeable whenever it divides the widest
+		-- requirement in the body — which its own contribution guarantees for
+		-- the power-of-two requirements the ISA produces.
+		for _, g2 in sbGroups do
+			if g2.areq > alignA then alignA = math.min(g2.areq, 64) end
+		end
+		local sbCursor = 0
+		for _, g in sbGroups do
+			if g.areq > 1 then
+				if g.areq > alignA or alignA % g.areq ~= 0 then
+					error("sarcasm: stack buffer group ["
+						.. tostring(g.lo) .. ", " .. tostring(g.hi)
+						.. ") needs " .. tostring(g.areq) .. "-byte alignment but"
+						.. " the synthesized frame only guarantees "
+						.. tostring(alignA) .. " (a materialized cluster would"
+						.. " have to need the same width); use unaligned or"
+						.. " narrower accesses into this buffer")
+				end
+			end
+			-- CRT over the aligned accesses' requirements (all powers of two):
+			-- `want` is the required g.base residue modulo `wantMod`, widened
+			-- as accesses with wider requirements are consumed. Groups with no
+			-- aligned accesses (areq 1) are indifferent to the base and keep
+			-- the historical placement exactly.
+			local want, wantMod = nil, 1
+			for _, a in g.aligns do
+				local w2 = ((g.lo - a.off) % a.areq + a.areq) % a.areq
+				if want == nil then
+					want, wantMod = w2, a.areq
+				elseif a.areq >= wantMod then
+					if w2 % wantMod ~= want then
+						error("sarcasm: stack buffer group ["
+							.. tostring(g.lo) .. ", " .. tostring(g.hi)
+							.. ") holds aligned accesses whose offsets cannot all"
+							.. " land on aligned bytes (one output base exists but"
+							.. " the accesses' alignment residues disagree); split"
+							.. " the buffer or use unaligned forms")
+					end
+					want, wantMod = w2, a.areq
+				else
+					if want % a.areq ~= w2 then
+						error("sarcasm: stack buffer group ["
+							.. tostring(g.lo) .. ", " .. tostring(g.hi)
+							.. ") holds aligned accesses whose offsets cannot all"
+							.. " land on aligned bytes (one output base exists but"
+							.. " the accesses' alignment residues disagree); split"
+							.. " the buffer or use unaligned forms")
+					end
+				end
+			end
+			if want == nil then
+				-- No aligned accesses (areq 1): the base is indifferent; keep
+				-- the historical SysV placement (which is a no-op modulo 1).
+				wantMod = g.areq
+				want = ((g.lo - D0 + 8) % wantMod + wantMod) % wantMod
+			end
+			local t = (16 + saveBytes + fpBytes + yoloBytes) % wantMod
+			local residue = ((want - t) % wantMod + wantMod) % wantMod
+			local delta = ((residue - sbCursor % wantMod) % wantMod + wantMod) % wantMod
+			g.base = sbCursor + delta
+			sbCursor = g.base + (g.hi - g.lo)
+		end
+		sbLayout = { groups = sbGroups, bytes = sbCursor }
+		-- (e) Materialize the defining save of each rep's stack-alias side. The
+		-- save (`mov %rsp, %reg` / `lea K(%rsp), %reg` / a carrier copy) would be
+		-- dropped as a phantom value; an annotated rep CONSUMES the address, so
+		-- the rewrite emits a real `lea disp'(%rsp), %reg` in its place (tagged
+		-- stackBuf, shifted by the transform once the frame base is known). The
+		-- rep's implicit register then has a FRESH web (defined by that lea)
+		-- instead of the shared entry-argument web, so the pin moves around the
+		-- rep cannot corrupt an argument value that happens to share the
+		-- register, and the post-rep (hardware-advanced) value lands in the
+		-- fresh web honestly.
+		local function groupBaseFor(lo, hi)
+			for _, g in sbGroups do
+				if lo >= g.lo and hi <= g.hi then return g.base end
+			end
+			error("sarcasm: internal error: rep buffer range has no group")
+		end
+		for _, st in body do
+			if st.kind == "insn" and st.x86StackBufRep then
+				local rep = st.x86StackBufRep
+				local base = groupBaseFor(rep.lo, rep.hi)
+				for reg, side in pairs(rep) do
+					if type(side) == "table" and side.K then
+						local e = st.x86_smap and st.x86_smap[reg] or nil
+						local saveSt = (e and e.saveIdx and body[e.saveIdx]) or nil
+						local okSave = false
+						if saveSt and saveSt.kind == "insn" and saveSt.operands
+							and saveSt.operands[1] and saveSt.operands[1].kind == "reg"
+							and saveSt.operands[1].name == reg
+							and (x86.baseMnemonic(string.lower(saveSt.mnemonic)) == "mov"
+								or x86.baseMnemonic(string.lower(saveSt.mnemonic)) == "lea") then
+							okSave = true
+						end
+						if not okSave then
+							error("sarcasm: cannot materialize the defining stack-alias"
+								.. " save for a rep's %" .. reg .. " side: "
+								.. (st.raw or st.mnemonic))
+						end
+						local disp = base + (side.K - rep.lo)
+						if saveSt.x86StackBufLea and saveSt.x86StackBufLea.disp ~= disp then
+							error("sarcasm: one stack-alias register cannot be"
+								.. " materialized at two different buffer offsets ("
+								.. tostring(saveSt.x86StackBufLea.disp) .. " vs "
+								.. tostring(disp) .. "): " .. (st.raw or st.mnemonic))
+						end
+						saveSt.x86StackBufLea = { reg = reg, disp = disp }
+						side.materialized = true
+					end
+				end
+			end
+		end
 	end
 
 	local fpInfo = {
@@ -3507,6 +4656,21 @@ function x86_64_frame.rewrite(st, ctx)
 			error("sarcasm: vector-indexed memory access (gather/scatter) is not supported"
 				.. " (cannot prove memory safety): " .. (st.raw or m))
 		end
+	end
+
+	-- A stack-alias save that an annotated rep consumes (see the buffer scan's
+	-- phase (e)): emitted as a REAL `lea disp'(%rsp), %reg` into the lowered
+	-- buffer region instead of being dropped as a phantom value. The lea gives
+	-- the register a fresh web whose value is the materialized buffer address;
+	-- the transform's rep lowering pins that web into the implicit register.
+	if st.x86StackBufLea then
+		local ml = st.x86StackBufLea
+		local memop = { kind = "mem",
+			base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+			scale = 1, dispVal = ml.disp, stackBuf = true }
+		emit({ kind = "insn", mnemonic = "lea", operands = { ops[1], memop },
+			raw = st.raw, line = st.line })
+		return
 	end
 
 	-- `.alloca size, align, result`: convert frame-relative (spill-slot) memory
@@ -3941,10 +5105,10 @@ function x86_64_frame.rewrite(st, ctx)
 	-- pseudo-register, so they materialize into the reserved area the transform
 	-- fills with the same incoming words (see analyzeFrame).
 	local function emitYoloRead(i)
-		-- The `;! ... ptr` annotation family operates on REAL memory (invisicap
-		-- loads/stores/RMWs); the argument slot is virtualized/materialized, not
-		-- real memory, so the annotation can never be honored here — reject it
-		-- exactly like an annotated ordinary frame-slot access.
+		-- The `;! ... ptr` annotation family: unlike an ordinary (writable) frame
+		-- slot, an incoming stack-argument read has no store direction to seed
+		-- (the argument's capability comes from the entry unpack, not from any
+		-- annotated access), so no family member is honored here — reject it.
 		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
 			error("sarcasm: `" .. st.annotation .. "` on an incoming stack-argument read is not"
 				.. " supported (the argument is redirected to a frame slot, not real memory): "
@@ -4074,7 +5238,11 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 	end
 
-	if mem and (isStackReg(mem.base, usesRbp) or aliasOff ~= nil) and not mem.dispSym then
+	if mem and (isStackReg(mem.base, usesRbp) or aliasOff ~= nil
+		-- An annotated INDEXED stack-buffer access (the base may be %rsp, %rbp or
+		-- an alias carrier; the buffer scan marked it): handled inside the block
+		-- below by the dedicated indexed branch.
+		or (mem.index and st.x86StackBufIdx ~= nil)) and not mem.dispSym then
 		-- A `lock` prefix on a stack-frame access can never be honored: this rewrite
 		-- runs BEFORE classify (which owns the lockAllows validation), and the slot
 		-- is about to be virtualized into a pseudo-register or materialized into the
@@ -4278,9 +5446,40 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		-- lea of a stack address computes/escapes a pointer into the frame: reject.
 		if b == "lea" then ctx.rejectEscape(st.raw or m) end
+		-- ANNOTATED INDEXED stack-buffer access (`#! stack buffer (...)` on an
+		-- indexed stack-relative memory operand): the scan marked it with its
+		-- resolved range and access shape. Rewrite the operand in place to a
+		-- disp'(%rsp,%idx,s) into the buffer region (tagged stackBuf so the
+		-- transform emits it verbatim — no capability checks, no slot webs — and
+		-- shifts it once the frame's root count is known), and mark the
+		-- statement for the transform's runtime bounds check on the index.
+		if mem.index and st.x86StackBufIdx then
+			local bi = st.x86StackBufIdx
+			local g = nil
+			for _, gr in (sbLayout and sbLayout.groups or {}) do
+				if bi.lo >= gr.lo and bi.hi <= gr.hi then g = gr break end
+			end
+			if not g then
+				error("sarcasm: internal error: indexed buffer access range ["
+					.. tostring(bi.lo) .. ", " .. tostring(bi.hi)
+					.. ") has no lowered group: " .. (st.raw or m))
+			end
+			local mat = { kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				index = mem.index, scale = mem.scale or 1,
+				dispVal = g.base + (bi.dispEff - g.lo), size = bi.size,
+				stackBuf = true, deco = mem.deco, bcastN = mem.bcastN }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
+				raw = st.raw, line = st.line, x86StackBufIdx = bi })
+			return
+		end
 		-- only plain base+disp slots are virtualizable (no index register)
 		if mem.index then
-			error("sarcasm: indexed stack-relative access is not supported on x86: " .. (st.raw or m))
+			error("sarcasm: indexed stack-relative access is not supported on x86"
+				.. " (annotate it with `#! stack buffer (name, %rsp, %rsp + N)` to"
+				.. " lower it into a bounds-checked stack buffer): " .. (st.raw or m))
 		end
 		-- The slot virtualization rewrites ONLY the memory operand. Any other operand that
 		-- is (or contains) a stack register would leak the live sp/fp value into a virtual
@@ -4295,13 +5494,64 @@ function x86_64_frame.rewrite(st, ctx)
 				end
 			end
 		end
-		-- The `;! ... ptr` annotation family operates on REAL memory (invisicap
-		-- loads/stores/RMWs); a frame slot is virtualized/materialized, not real
-		-- memory, so the annotation can never be honored here. Reject cleanly
-		-- (used to crash the transform).
+		-- The `;! ... ptr` annotation family. A VIRTUALIZED frame slot is an
+		-- ordinary GPR web, so a capability rides the same pointer flow a
+		-- register move uses: `store ptr` / `load ptr` on a plain 8-byte
+		-- register<->slot move are ACCEPTED — the move's pointer-flow
+		-- propagation IS the capability transfer. A store hands the source
+		-- web's capability to the slot web; a load hands the slot web's
+		-- capability to the destination web; two different origins stored into
+		-- one slot widen the web to a dynamic (lockstep) lower exactly like
+		-- conflicting register moves; and every lower stays rooted at its seed,
+		-- so GC safety is unchanged. The annotation itself is dropped below —
+		-- the plain move is the whole story (no invisicap sequence is involved).
+		-- A narrower scalar store to the same offset is a FULL def of the slot
+		-- web (the colored register zero-extends), so it kills the slot's
+		-- pointer-ness on that path: a later `load ptr` then carries a null
+		-- capability and traps at the deref — sound. Everything else in the
+		-- family (the atomic forms, `load store ptr`) stays rejected: a frame
+		-- slot is virtualized/materialized, not REAL memory, so the invisicap
+		-- sidecar-byte protocol has nothing to point at.
+		local slotPtrAnno = nil
 		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-			error("sarcasm: `" .. st.annotation .. "` on a stack-frame access is not supported"
-				.. " (frame slots are virtualized/materialized, not real memory): " .. (st.raw or m))
+			if st.annotation == "store ptr" or st.annotation == "load ptr" then
+				slotPtrAnno = st.annotation
+				if st.lockPrefix then
+					error("sarcasm: `lock`-prefixed `" .. st.annotation .. "` on a stack-frame"
+						.. " access is not supported (the slot is virtualized, not real"
+						.. " memory — atomics need real memory): " .. (st.raw or m))
+				end
+				if isFpInsn(fpEntry, st) then
+					error("sarcasm: `" .. st.annotation .. "` on an FP/SIMD stack-frame access is"
+						.. " not supported (a capability is an 8-byte general-register value;"
+						.. " vector slots materialize into real memory and cannot hold one): "
+						.. (st.raw or m))
+				end
+				if b ~= "mov" then
+					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires a"
+						.. " plain mov (the slot virtualizes into a register, so only a"
+						.. " register<->slot move can carry the capability): " .. (st.raw or m))
+				end
+				local w0 = gprStackWidth(m, mem)
+				if w0 ~= 8 then
+					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires an"
+						.. " 8-byte (64-bit) move (a capability is an 8-byte GPR value); this"
+						.. " access is " .. tostring(w0) .. " bytes: " .. (st.raw or m))
+				end
+				local regOp = (ops[1] == mem) and ops[2] or ops[1]
+				if not (regOp and regOp.kind == "reg" and regOp.rc == "gpr"
+						and (regOp.width or 64) == 64) then
+					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires the"
+						.. " other operand to be a 64-bit general register (a capability is an"
+						.. " 8-byte GPR value): " .. (st.raw or m))
+				end
+			else
+				error("sarcasm: `" .. st.annotation .. "` on a stack-frame access is not supported"
+					.. " (only `store ptr` / `load ptr` on a plain 8-byte register<->slot move"
+					.. " hold a capability; frame slots are virtualized/materialized, not real"
+					.. " memory, so the atomic/invisicap forms have nothing to point at): "
+					.. (st.raw or m))
+			end
 		end
 		-- cmpxchg8b/cmpxchg16b have no register form: a frame slot cannot be
 		-- virtualized for them (a slot pseudo-register is not a memory operand),
@@ -4428,8 +5678,14 @@ function x86_64_frame.rewrite(st, ctx)
 			if not okC or (c2 and c2.unknown) then
 				aliasReject("by an instruction whose register form sarcasm does not model exactly")
 			end
+			-- A `store ptr` / `load ptr` on an aliasing access stays sound with the
+			-- annotation DROPPED: the slot's content IS the pushed register's web, and
+			-- the rewritten register<->register move propagates the capability through
+			-- pointer flow exactly like the slot move would.
+			local aliasAnno = st.annotation
+			if slotPtrAnno then aliasAnno = nil end
 			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
-				raw = st.raw, line = st.line, annotation = st.annotation })
+				raw = st.raw, line = st.line, annotation = aliasAnno })
 			return
 		end
 		-- A KNOWN-perturbed-depth rsp-relative access that aliases no outstanding save
@@ -4493,6 +5749,33 @@ function x86_64_frame.rewrite(st, ctx)
 		local lowB = -128
 		if perturbedRsp then lowB = math.min(-128, D0 - d - 128) end
 		ctx.checkBounds(off, wb, ops[1] == mem, st.raw, lowB)
+		-- A STATIC stack access whose normalized byte range falls fully inside a
+		-- declared stack-buffer group is lowered into the buffer region: real
+		-- memory, no slot web, no capability (the scan rejected capabilities and
+		-- boundary straddles already). The operand becomes disp'(%rsp) — even for
+		-- an rbp- or alias-based original, the buffer lives at a fixed offset of
+		-- the synthesized frame's %rsp — tagged stackBuf so the transform passes
+		-- it through verbatim and shifts it once the root count is known.
+		if st.x86StackBufAccess then
+			local ba = st.x86StackBufAccess
+			local g = nil
+			for _, gr in (sbLayout and sbLayout.groups or {}) do
+				if ba.off >= gr.lo and ba.off + ba.w <= gr.hi then g = gr break end
+			end
+			if not g then
+				error("sarcasm: internal error: buffer access at normalized offset "
+					.. tostring(ba.off) .. " has no lowered group: " .. (st.raw or m))
+			end
+			local mat = { kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				scale = 1, dispVal = g.base + (ba.off - g.lo), size = wb,
+				stackBuf = true, deco = mem.deco, bcastN = mem.bcastN }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
+				raw = st.raw, line = st.line, annotation = st.annotation })
+			return
+		end
 		-- Aligned >16-byte stack accesses cannot be materialized at their required
 		-- alignment: the synthesized frame guarantees 16-byte body-rsp alignment,
 		-- or the recorded `and $-N, %rsp` alignment when the analysis saw one.
@@ -4532,6 +5815,16 @@ function x86_64_frame.rewrite(st, ctx)
 						.. " bytes) of '" .. m .. "': " .. (st.raw or m))
 				end
 			end
+			-- A `store ptr` / `load ptr` on a MATERIALIZED slot access is rejected:
+			-- the access rides real memory in sarcasm's synthesized frame, and the
+			-- invisicap sidecar bytes have no home there (only the transform's
+			-- heap/region memory does). Move the pointer into a virtualized slot
+			-- (outside the FP-tainted ranges) or through a real pointer instead.
+			if slotPtrAnno then
+				error("sarcasm: `" .. slotPtrAnno .. "` on a stack-frame access that"
+					.. " materializes into real frame memory (an FP/vector scratch cluster)"
+					.. " is not supported: " .. (st.raw or m))
+			end
 			-- AVX512 decorators ({1toN} embedded broadcast) MUST ride along on the
 			-- materialized operand: the slot was sized by the DECORATED access width
 			-- (fp.accessWidth applies bcastN), so dropping the decorator would emit a
@@ -4546,6 +5839,15 @@ function x86_64_frame.rewrite(st, ctx)
 			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = st.annotation })
 			return
 		end
+		-- The accepted `store ptr` / `load ptr` shape (plain 8-byte GPR
+		-- register<->slot move, virtualized slot): drop the annotation — the
+		-- move's pointer-flow propagation IS the capability transfer (see the
+		-- acceptance comment above). Everything else about the rewrite is
+		-- unchanged; a narrower scalar store to the same offset is a full
+		-- zero-extending def of the slot web, so it kills the capability on its
+		-- path and a later `load ptr` traps at the deref (null capability).
+		local emitAnno = st.annotation
+		if slotPtrAnno then emitAnno = nil end
 		if not slotOffSafe(off) then
 			error("sarcasm: mid-function inner frame reaches the incoming stack-argument"
 				.. " slot band (a frame slot there would alias an argument slot; cannot"
@@ -4554,7 +5856,7 @@ function x86_64_frame.rewrite(st, ctx)
 		local slot = ctx.slotReg(off, wb * 8)
 		local newops = {}
 		for _, o in ops do table.insert(newops, (o == mem) and slot or o) end
-		emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = st.annotation })
+		emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = emitAnno })
 		return
 	end
 

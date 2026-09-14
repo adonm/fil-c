@@ -780,18 +780,19 @@ end
 -- the frame (sub total, and $-A) and saves the pre-alignment rsp at saveOff
 -- for the epilogue to restore; static sizing cannot align since the entry
 -- rsp's mod-A residue is dynamic (only mod-16 is fixed by the ABI).
-local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes, yoloBytes, alignReq)
+local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpBytes, yoloBytes, alignReq, bufBytes)
 	spillBytes = spillBytes or 0
 	fpSaveBytes = fpSaveBytes or 0
 	fpBytes = fpBytes or 0
 	yoloBytes = yoloBytes or 0
+	bufBytes = bufBytes or 0
 	local A = alignReq or 16
 	if A < 16 then A = 16 end
 	local p = #calleeSaved
 	local rootBase = 16
-	local fpPadBase = ((fpSaveBytes + fpBytes + yoloBytes) > 0 and numRoots % 2 == 1) and 8 or 0
+	local fpPadBase = ((fpSaveBytes + fpBytes + yoloBytes + bufBytes) > 0 and numRoots % 2 == 1) and 8 or 0
 	-- Widen the pad so the root-area shift (8*numRoots + fpPad, mirrored by the
-	-- transform's frameSlot shift) is a multiple of the frame alignment: the
+	-- transform's frameSlot/stackBuf shifts) is a multiple of the frame alignment: the
 	-- materialized clusters' alignment residues survive it. At the default
 	-- 16-byte alignment the historical pad already qualifies, so outputs are
 	-- unchanged there.
@@ -799,8 +800,8 @@ local function computeLayout(calleeSaved, numRoots, spillBytes, fpSaveBytes, fpB
 	if A > 16 then
 		while ((8 * numRoots + fpPad) % A) ~= 0 do fpPad += 8 end
 	end
-	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes
-	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+yolo+spills)
+	local spillBase = 16 + 8 * numRoots + fpPad + fpSaveBytes + fpBytes + yoloBytes + bufBytes
+	local base = spillBase + spillBytes  -- prev+origin+roots(+pad+save+fp+yolo+buf+spills)
 	local N, total, saveOff = base, base, nil
 	if A > 16 then
 		-- Dynamic alignment: the content (base bytes) sits at the aligned rsp,

@@ -831,7 +831,13 @@ function x86.classifyStringOp(insn)
 			error("sarcasm: `" .. rep .. "` prefix is not supported on '" .. rawMnem
 				.. "' (only `rep`/`repe`/`repz`, which repeat while %rcx != 0): " .. raw)
 		end
-		if insn.annotation then
+		if insn.annotation
+			-- `#! stack buffer (...)` on a string op is the annotated-STACK-BUFFER
+			-- feature (a rep whose source/destination side is a stack-alias
+			-- carrier): validateBody parses it, records it on the statement and
+			-- strips it from st.annotation, so the transform never sees a string op
+			-- carrying an annotation. Any OTHER annotation stays rejected here.
+			and not string.match(insn.annotation, "^%s*stack%s+buffer") then
 			error("sarcasm: annotation `" .. insn.annotation .. "` is not supported on '"
 				.. rawMnem .. "' (string instructions need no annotation — their"
 				.. " accesses are capability-checked against %rsi/%rdi): " .. raw)

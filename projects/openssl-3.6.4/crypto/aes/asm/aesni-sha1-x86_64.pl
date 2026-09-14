@@ -199,8 +199,6 @@ $code.=<<___;
 .align	32
 aesni_cbc_sha1_enc_ssse3: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
-___
-$code.=<<___;
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
 	#shr	\$6,$len			# debugging artefact
 	#jz	.Lepilogue_ssse3		# debugging artefact
@@ -1100,8 +1098,6 @@ $code.=<<___;
 .align	32
 aesni_cbc_sha1_enc_avx: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
-___
-$code.=<<___;
 	mov	`($win64?56:8)`(%rsp),$inp	# load 7th argument
 	#shr	\$6,$len			# debugging artefact
 	#jz	.Lepilogue_avx			# debugging artefact

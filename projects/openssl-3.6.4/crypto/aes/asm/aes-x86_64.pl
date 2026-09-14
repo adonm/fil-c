@@ -662,14 +662,10 @@ $code.=<<___;
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
 
-___
-$code.=<<___;
 	mov	0(%rdi),$s0	# load input vector
 	mov	4(%rdi),$s1
 	mov	8(%rdi),$s2
 	mov	12(%rdi),$s3
-___
-$code.=<<___;
 
 	shl	\$4,$rnds
 	lea	($key,$rnds),%rbp
@@ -706,14 +702,10 @@ $code.=<<___;
 	mov	16(%rsp),$out	# restore out
 	mov	24(%rsp),%rsi	# restore saved stack pointer
 .cfi_def_cfa	%rsi,8
-___
-$code.=<<___;
 	mov	$s0,0($out)	# write output vector
 	mov	$s1,4($out)
 	mov	$s2,8($out)
 	mov	$s3,12($out)
-___
-$code.=<<___;
 
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -1328,14 +1320,10 @@ $code.=<<___;
 	mov	%rdx,$key
 	mov	240($key),$rnds	# load rounds
 
-___
-$code.=<<___;
 	mov	0(%rdi),$s0	# load input vector
 	mov	4(%rdi),$s1
 	mov	8(%rdi),$s2
 	mov	12(%rdi),$s3
-___
-$code.=<<___;
 
 	shl	\$4,$rnds
 	lea	($key,$rnds),%rbp
@@ -1371,14 +1359,10 @@ $code.=<<___;
 	mov	16(%rsp),$out	# restore out
 	mov	24(%rsp),%rsi	# restore saved stack pointer
 .cfi_def_cfa	%rsi,8
-___
-$code.=<<___;
 	mov	$s0,0($out)	# write output vector
 	mov	$s1,4($out)
 	mov	$s2,8($out)
 	mov	$s3,12($out)
-___
-$code.=<<___;
 
 	mov	-48(%rsi),%r15
 .cfi_restore	%r15
@@ -1987,7 +1971,7 @@ ___
 		lea	$aes_key,%rdi
 		lea	$aes_key,$key
 		mov	\$240/8,%ecx
-		rep	movsq	# upstream '.long 0x90A548F3' (rep movsq + nop pad)
+		.long	0x90A548F3	# rep movsq
 		mov	%eax,(%rdi)	# copy aes_key->rounds
 .Lcbc_skip_ecopy:
 ___
@@ -2152,7 +2136,7 @@ ___
 	je	.Lcbc_exit
 		mov	\$240/8,%ecx
 		xor	%rax,%rax
-		rep	stosq	# upstream '.long 0x90AB48F3' (rep stosq + nop pad)
+		.long	0x90AB48F3	# rep stosq
 
 	jmp	.Lcbc_exit
 
@@ -2284,11 +2268,11 @@ $code.=<<___;
 	mov	%r10,%rcx
 	mov	$inp,%rsi
 	mov	$out,%rdi
-	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
+	.long	0x9066A4F3		# rep movsb
 	mov	\$16,%rcx		# zero tail
 	sub	%r10,%rcx
 	xor	%rax,%rax
-	rep	stosb	# upstream '.long 0x9066AAF3' (rep stosb + nop pad)
+	.long	0x9066AAF3		# rep stosb
 	mov	$out,$inp		# this is not a mistake!
 	mov	\$16,%r10		# len=16
 	mov	%r11,%rax
@@ -2369,7 +2353,7 @@ $code.=<<___;
 	mov	$out,%rdi
 	lea	$ivec,%rsi
 	lea	16(%r10),%rcx
-	rep	movsb	# upstream '.long 0x9066A4F3' (rep movsb + nop pad)
+	.long	0x9066A4F3	# rep movsb
 	jmp	.Lcbc_exit
 
 .align	16

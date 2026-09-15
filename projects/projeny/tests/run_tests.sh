@@ -8408,6 +8408,104 @@ expect_file_contains "the status embeds the upstream copy" \
 expect_file_not_contains "empty-local-side merge records no conflicts" \
     "$T180/.fake.projeny.status" "Conflict:"
 
+# ----------------- 181. '.' and '..' (any relative path) project arguments
+# From inside the workdir, '.' names the project; from a workdir
+# subdirectory, '..' does too. The argument is lexically normalized FIRST,
+# so it cannot mutate into a bogus "<arg>.projeny" sibling ('.' ->
+# '..projeny') or scan the wrong directory ('..' listing the parent). The
+# workdir-sibling rule runs before the directory scan, so a workdir is
+# recognized even when it holds stray .projeny files, and a plain workdir
+# name keeps resolving the same way.
+T181="$ROOT/t181"
+make_tarballs "$T181" fake
+write_projeny "$T181" fake 1.0 fake
+run_in "$T181" expect_ok "dot setup from the project dir" "$PROJENY" setup .
+if [ -f "$T181/fake/README" ] && [ -f "$T181/fake/src/a.c" ]; then
+    ok "dot setup checked out the workdir"
+else
+    fail "dot setup checked out the workdir" "ls: $(ls -R "$T181" 2>&1)"
+fi
+# status with '.' from inside the workdir must match status via the file.
+o1="$(cd "$T181/fake" && "$PROJENY" status . 2>&1)"
+o2="$(cd "$T181" && "$PROJENY" status fake.projeny 2>&1)"
+if [ -n "$o1" ] && [ "$o1" = "$o2" ]; then
+    ok "dot status inside the workdir matches status via the file"
+else
+    fail "dot status inside the workdir matches status via the file" \
+         "dot: $o1 | file: $o2"
+fi
+# edit + commit with '.' (the path argument is CWD-relative here, which also
+# exercises workdir-relative path resolution against a '.' project argument).
+printf 'dot arg file\n' > "$T181/fake/src/dotarg.c"
+run_in "$T181/fake" expect_ok "dot add from inside the workdir" "$PROJENY" add . src/dotarg.c
+expect_file_contains "dot add recorded the pending op" "$T181/.fake.projeny.status" "Added: src/dotarg.c"
+run_in "$T181/fake" expect_ok "dot commit from inside the workdir" "$PROJENY" commit .
+expect_file_contains "dot commit stored the patch" "$T181/fake.projeny" "dot arg file"
+expect_file_contains "dot commit refreshed the status copy" \
+    "$T181/.fake.projeny.status" "dot arg file"
+run_in "$T181/fake" expect_ok "dot diff from inside the workdir" "$PROJENY" diff .
+# '..' from a workdir subdirectory.
+run_in "$T181/fake/src" expect_ok "dotdot status from a subdir" "$PROJENY" status ..
+run_in "$T181/fake/src" expect_ok "dotdot diff from a subdir" "$PROJENY" diff ..
+run_in "$T181/fake/src" expect_ok "dotdot setup from a subdir" "$PROJENY" setup ..
+# Trailing slashes and './' spelling name the same project.
+o1="$(cd "$T181/fake" && "$PROJENY" status ./ 2>&1)"
+o2="$(cd "$T181" && "$PROJENY" status fake.projeny 2>&1)"
+if [ "$o1" = "$o2" ]; then
+    ok "trailing-slash dot status matches too"
+else
+    fail "trailing-slash dot status matches too" "dot: $o1 | file: $o2"
+fi
+# A plain workdir name still resolves via the sibling rule.
+run_in "$T181" expect_ok "plain workdir name still resolves" "$PROJENY" status fake
+# The workdir-sibling rule wins over a scan: a stray .projeny inside the
+# workdir must not hijack '.' (pre-fix, the scan would see two .projeny
+# files and die asking for one explicitly; with the rule, the project
+# resolves normally — the stray file itself merely shows up as untracked).
+cp "$T181/fake.projeny" "$T181/fake/stray.projeny"
+o1="$(cd "$T181/fake" && "$PROJENY" status . 2>&1)"
+rm -f "$T181/fake/stray.projeny"
+case "$o1" in
+*"multiple .projeny files"*)
+    fail "dot ignores a stray .projeny inside the workdir" "out: $o1"
+    ;;
+*"Status: setup"*)
+    ok "dot ignores a stray .projeny inside the workdir"
+    ;;
+*)
+    fail "dot ignores a stray .projeny inside the workdir" "out: $o1"
+    ;;
+esac
+# Error shapes: '.' in a directory with no .projeny anywhere fails with the
+# resolver's message (now naming the correct sibling), and a directory
+# holding two .projeny files still asks for one explicitly.
+T181L="$ROOT/t181l"
+mkdir -p "$T181L/lonely"
+out="$(cd "$T181L/lonely" && "$PROJENY" setup . 2>&1 || true)"
+case "$out" in
+*"directory holds no .projeny file"*)
+    ok "dot in a projeny-less directory fails with the resolver message"
+    ;;
+*)
+    fail "dot in a projeny-less directory fails with the resolver message" \
+         "out: $out"
+    ;;
+esac
+T181T="$ROOT/t181t"
+mkdir -p "$T181T/two"
+write_projeny "$T181T/two" one 1.0 fake
+write_projeny "$T181T/two" other 1.0 fake
+out="$(cd "$T181T/two" && "$PROJENY" status . 2>&1 || true)"
+case "$out" in
+*"multiple .projeny files"*)
+    ok "dot in a multi-projeny directory asks for one explicitly"
+    ;;
+*)
+    fail "dot in a multi-projeny directory asks for one explicitly" \
+         "out: $out"
+    ;;
+esac
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

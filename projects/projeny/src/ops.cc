@@ -1626,22 +1626,94 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     return 0;
 }
 
+// Express the absolute path `abs` relative to the current directory,
+// lexically (both sides normalized first): the shared component prefix is
+// dropped, one ".." is emitted per remaining current-directory component,
+// and the rest of `abs` follows. The workdir-sibling rule below uses this to
+// keep returning relative .projeny paths for relative arguments — so
+// messages keep naming files the way the user does — including the shapes
+// that make '.' and '..' work: from inside the workdir, '.' yields
+// "../<workdir>.projeny"; from a workdir subdirectory, '..' yields
+// "../<workdir>.projeny" too. Paths that share no prefix (different roots)
+// come back absolute.
+std::string rel_to_cwd(const std::string& abs)
+{
+    std::string cwd = normalize_lexical(get_cwd());
+    std::string a = normalize_lexical(abs);
+    if (a == cwd)
+        return ".";
+    auto comps = [](const std::string& p) {
+        std::vector<std::string> out;
+        size_t i = 0;
+        while (i <= p.size()) {
+            size_t j = p.find('/', i);
+            std::string c = (j == std::string::npos) ? p.substr(i)
+                                                     : p.substr(i, j - i);
+            if (j == std::string::npos)
+                i = p.size() + 1;
+            else
+                i = j + 1;
+            if (c.empty() || c == ".")
+                continue;
+            out.push_back(c);
+        }
+        return out;
+    };
+    std::vector<std::string> cv = comps(cwd), av = comps(a);
+    size_t common = 0;
+    while (common < cv.size() && common < av.size() && cv[common] == av[common])
+        ++common;
+    std::string out;
+    for (size_t i = common; i < cv.size(); ++i) {
+        if (!out.empty())
+            out += "/";
+        out += "..";
+    }
+    for (size_t i = common; i < av.size(); ++i) {
+        if (!out.empty())
+            out += "/";
+        out += av[i];
+    }
+    if (out.empty())
+        return a; // nothing shared and no climb: keep the absolute form
+    return out;
+}
+
 // Resolve a project argument to a .projeny file path. Accepts either the
-// .projeny file itself or a directory: a directory holding exactly one
-// "*.projeny" file names it implicitly, otherwise a "<dir>.projeny"
-// sibling is used (so both the workdir and a project dir work). A
-// non-directory path also resolves to its "<arg>.projeny" sibling when one
-// exists (the checkout directory was never created, or a bare name was
-// given). Anything else comes back unchanged so the caller's own error
-// reports it — including a missing "*.projeny" path, whose read failure
-// carries recovery guidance no generic resolver error can improve on. Dies
-// otherwise.
+// .projeny file itself or a directory: a directory next to a
+// "<dir>.projeny" sibling names it implicitly (the workdir rule — this is
+// what makes '.' from inside the workdir and '..' from a workdir
+// subdirectory work), otherwise a directory holding exactly one
+// "*.projeny" file names that one. A non-directory path also resolves to
+// its "<arg>.projeny" sibling when one exists (the checkout directory was
+// never created, or a bare name was given). Anything else comes back
+// unchanged so the caller's own error reports it — including a missing
+// "*.projeny" path, whose read failure carries recovery guidance no generic
+// resolver error can improve on. Dies otherwise.
 std::string resolve_projeny_path(const std::string& arg, const char* cmd)
 {
     std::string a = strip_trailing_slashes(arg);
     if (a.empty())
         a = ".";
+    // Lexically normalize BEFORE anything else (trailing slashes stripped
+    // above, then "."/".."/duplicate-slash collapse), so '.' from inside the
+    // workdir names the workdir, '..' from a workdir subdirectory names the
+    // workdir, and "./x/../y" names y: none of these may mutate into a
+    // bogus "<arg>.projeny" sibling or scan the wrong directory. Relative
+    // arguments stay relative; only the sibling computation below absolutizes.
+    a = normalize_lexical(a);
+    bool absolute_arg = !a.empty() && a[0] == '/';
     if (is_dir(a)) {
+        // Workdir-sibling rule, checked BEFORE the scan: a directory sitting
+        // next to a "<dir>.projeny" file IS that project's workdir. This is
+        // what makes '.' and '..' resolve, and it wins even when the
+        // directory happens to hold stray .projeny files of its own.
+        std::string abs = absolutize(a);
+        std::string sib_abs = join_path(dirname_of(abs),
+                                        basename_of(abs) + ".projeny");
+        std::string sib = absolute_arg ? sib_abs : rel_to_cwd(sib_abs);
+        if (path_exists(sib_abs) && !is_dir(sib_abs))
+            return sib;
         std::vector<std::string> cands;
         for (const std::string& n : list_dir_names(a)) {
             if (ends_with(n, ".projeny"))
@@ -1650,9 +1722,6 @@ std::string resolve_projeny_path(const std::string& arg, const char* cmd)
         if (cands.size() == 1)
             return cands[0];
         if (cands.empty()) {
-            std::string sib = a + ".projeny";
-            if (path_exists(sib) && !is_dir(sib))
-                return sib;
             die(std::string("cannot ") + cmd + " '" + arg +
                 "': directory holds no .projeny file (nor a '" + sib +
                 "' sibling); name the .projeny file explicitly");

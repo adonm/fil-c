@@ -211,9 +211,13 @@ tarball wants:
   the header in the regenerated patch and refresh the stored values from
   the archive (after a rebase: the *new* archive's members), so the
   invariant holds that a frozen value is always the archive's member
-  mtime for that file. A setup that ends in conflicts skips the stamp
-  pass; the next clean setup re-stamps. `freeze-mtime` itself re-stamps
-  all frozen files of the project, not just the ones it names.
+  mtime for that file. Every setup that can parse the `.projeny` file
+  stamps frozen files — including setups that end in conflicts — so a
+  frozen file keeps the archive's mtime even when its content ends up
+  with conflict markers. Only a `.projeny` file that itself contains git
+  conflict markers defers stamping to the next clean setup.
+  `freeze-mtime` itself re-stamps all frozen files of the project, not
+  just the ones it names.
   `package`/`extract` then carry those mtimes into
   output tarballs / extracted trees, because tracked files are staged
   with their times preserved.

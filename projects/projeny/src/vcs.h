@@ -99,7 +99,9 @@ struct VcsDiffOpts {
     // absent from the set never carry the header, so a frozen entry whose
     // file was deleted (or renamed away) dies naturally. Header emission is
     // skipped for a path whose new side does not exist (a delete) and for
-    // symlinks (freezing is a regular-file attribute).
+    // symlinks (freezing is a regular-file attribute); a frozen path that
+    // is now a symlink warns, so its pin is dropped noisily, never
+    // silently.
     const std::map<std::string, uint64_t>* frozen_mtimes = nullptr;
     // When true, a path in `frozen_mtimes` whose content and mode are
     // UNCHANGED between the two trees still gets a block: a bare

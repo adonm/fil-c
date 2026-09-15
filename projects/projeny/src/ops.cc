@@ -1907,13 +1907,14 @@ bool is_tracked_rel(const std::string& rel, const std::string& fresh_root,
     return path_exists(join_path(fresh_root, rel));
 }
 
-} // namespace
-
 // The setup body, factored out so cmd_setup can run its frozen-mtime stamp
 // pass after every setup flavor (fresh, adopt, re-setup, merge, conflicted
-// recovery) has put the workdir in place. Takes the ALREADY-RESOLVED and
-// absolutized .projeny path (see cmd_setup).
-int setup_impl(const std::string& pj);
+// recovery) has put the workdir in place. Takes the Ctx of the
+// ALREADY-RESOLVED and absolutized .projeny path (see cmd_setup), which
+// resolves the Ctx exactly once for the whole command.
+int setup_impl(const Ctx& ctx);
+
+} // namespace
 
 int cmd_setup(const std::string& projeny_arg)
 {
@@ -1924,7 +1925,7 @@ int cmd_setup(const std::string& projeny_arg)
     // otherwise fail on a dead CWD.
     std::string pj = absolutize(resolve_projeny_path(projeny_arg, "setup"));
     Ctx ctx = resolve_ctx(pj);
-    int rc = setup_impl(pj);
+    int rc = setup_impl(ctx);
     // setup must ALWAYS leave frozen-mtime files stamped (the whole point of
     // the attribute: whatever the checkout went through — fresh unpack,
     // adopt-into-existing, re-setup, merge, or conflicted recovery — the
@@ -1942,9 +1943,10 @@ int cmd_setup(const std::string& projeny_arg)
     return rc;
 }
 
-int setup_impl(const std::string& pj)
+namespace {
+
+int setup_impl(const Ctx& ctx)
 {
-    Ctx ctx = resolve_ctx(pj);
     std::string raw;
     if (!try_read_file_bytes(ctx.projeny_arg, &raw)) {
         die("cannot read '" + ctx.projeny_arg +
@@ -2224,6 +2226,8 @@ int setup_impl(const std::string& pj)
     }
     return 0;
 }
+
+} // namespace
 
 int cmd_commit(const std::string& projeny_arg)
 {
@@ -3690,7 +3694,7 @@ int cmd_freeze_mtime(const std::string& projeny_arg,
         struct stat st;
         if (lstat(full.c_str(), &st) != 0)
             die("cannot freeze '" + f + "': no such file in the workdir '" +
-                t.workdir + "'");
+                rel_to_cwd(t.workdir) + "'");
         if (S_ISDIR(st.st_mode))
             die("cannot freeze '" + f +
                 "': it is a directory; only regular files can be frozen");
@@ -3829,7 +3833,8 @@ int cmd_get_attributes(const std::string& projeny_arg,
             struct stat pst;
             if (lstat(full.c_str(), &pst) != 0)
                 die("cannot get attributes of '" + p +
-                    "': no such file in the workdir '" + workdir + "'");
+                    "': no such file in the workdir '" + rel_to_cwd(workdir) +
+                    "'");
             if (!S_ISDIR(pst.st_mode) && !is_tracked_rel(rel, fresh, st))
                 die("'" + p +
                     "' is not a tracked file in '" + ctx.projeny_arg + "'");
@@ -4296,8 +4301,12 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "`rebase` refresh the stored values from the archive (after\n"
                "a rebase: the NEW archive's members), so the invariant\n"
                "holds that a frozen value is always the archive's member\n"
-               "mtime for that file. A setup that ends in conflicts skips\n"
-               "the stamp pass; the next clean setup re-stamps. Freezing\n"
+               "mtime for that file. Every setup that can parse the\n"
+               ".projeny file stamps frozen files — including setups that\n"
+               "end in conflicts — so a frozen file keeps the archive's\n"
+               "mtime even when its content ends up with conflict markers;\n"
+               "only a .projeny file that itself contains git conflict\n"
+               "markers defers stamping to the next clean setup. Freezing\n"
                "itself re-stamps ALL frozen files of the project, not just\n"
                "the ones this command names.\n"
                "\n"

@@ -39,6 +39,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <set>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -453,12 +454,26 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
     // Frozen-mtime attribute header for the block's live path (the rename
     // destination when both sides exist, since that is the path the checkout
     // uses). Deleted blocks carry no attribute: the file is gone, and a
-    // frozen entry for it dies with the block. Symlinks are skipped too —
-    // freezing is a regular-file attribute.
-    if (frozen && new_c && !new_c->is_symlink) {
-        auto it = frozen->find(new_rel.empty() ? old_rel : new_rel);
-        if (it != frozen->end())
-            out += kFrozenMtimeHeader + std::to_string(it->second) + "\n";
+    // frozen entry for it dies with the block (deletion is an explicit op
+    // that prunes the pin, so no warning there). Symlinks are skipped too —
+    // freezing is a regular-file attribute — but a frozen path whose new
+    // side is a symlink (a typechange in place, or a pending mv re-keyed to
+    // a destination that is now a symlink; symlink flips never pair as
+    // renames, so the add-block path covers that) loses its pin when this
+    // patch replaces the stored one, so warn instead of dropping it
+    // silently. Only callers that thread a frozen map (commit, rebase, the
+    // uncommitted diff) can reach the warning.
+    if (frozen && new_c) {
+        std::string live = new_rel.empty() ? old_rel : new_rel;
+        if (new_c->is_symlink) {
+            if (frozen->count(live))
+                warn("dropping the frozen mtime for '" + live +
+                     "': the file is now a symlink");
+        } else {
+            auto it = frozen->find(live);
+            if (it != frozen->end())
+                out += kFrozenMtimeHeader + std::to_string(it->second) + "\n";
+        }
     }
     std::string om = old_c ? mode_of(*old_c) : "";
     std::string nm = new_c ? mode_of(*new_c) : "";
@@ -1743,7 +1758,7 @@ std::string vcs_set_frozen_mtimes(const std::string& patch, const std::string& w
         return patch;
     std::vector<PBlock> blocks = parse_patch(patch, wid);
     std::string out;
-    std::map<std::string, bool> covered;
+    std::set<std::string> covered;
     for (const PBlock& b : blocks) {
         std::string key = !b.new_rel.empty() ? b.new_rel : b.old_rel;
         auto it = key.empty() ? frozen.end() : frozen.find(key);
@@ -1754,7 +1769,7 @@ std::string vcs_set_frozen_mtimes(const std::string& patch, const std::string& w
         std::string raw = keep_header ? block_set_frozen(b.raw, true, it->second)
                                       : block_set_frozen(b.raw, false, 0);
         if (keep_header)
-            covered[key] = true;
+            covered.insert(key);
         if (block_is_husk(raw))
             continue; // attribute-only block whose freeze was removed
         out += raw;

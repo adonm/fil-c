@@ -14,8 +14,10 @@
 # copy-on-fallback from the tarball (setup and status).
 # The frozen-mtime sections cover freeze/unfreeze/list/get-attributes
 # (ordering, dual attributes, scope filtering), pin survival across
-# commit/rebase/package, pin movement on rename, pin pruning on rm, and
-# malformed-header rejection; the path-resolution sections cover the
+# commit/rebase/package, pin movement on rename, pin pruning on rm, the
+# stamp pass running even on setups that end in conflicts, the loud pin
+# drop when a frozen file becomes a symlink, and malformed-header
+# rejection; the path-resolution sections cover the
 # physical (symlink-aware) resolver and '.'/'..' arguments on every
 # workdir-mutating command.
 #
@@ -9453,6 +9455,131 @@ case "$out" in
     fail "patch names the conflicted file as a bullet" "out: $out"
     ;;
 esac
+
+# ------------------- 199. conflicted setup still stamps frozen mtimes
+# Every setup that can parse the .projeny file runs the frozen-mtime stamp
+# pass — including a setup that ends in workdir conflicts — so a frozen
+# file keeps the archive's mtime even when its content ends up with
+# conflict markers. Only a .projeny file that itself contains git conflict
+# markers defers stamping to the next clean setup.
+T199="$ROOT/t199"
+mkdir -p "$T199/fake-1.0/src"
+cat > "$T199/fake-1.0/src/a.c" <<'EOF'
+int alpha = 1;
+
+int beta = 1;
+
+int gamma = 1;
+
+int delta = 1;
+EOF
+printf 'line one v1\n' > "$T199/fake-1.0/src/b.c"
+printf 'hello v1\n' > "$T199/fake-1.0/README"
+touch -d @1700001500 "$T199/fake-1.0/src/a.c"
+(cd "$T199" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+write_projeny "$T199" fake 1.0 fake
+run_in "$T199" expect_ok "conflict-stamp fixture setup" "$PROJENY" setup fake.projeny
+run_in "$T199" expect_ok "conflict-stamp freeze" \
+    "$PROJENY" freeze-mtime fake.projeny fake/src/a.c
+if [ "$(stat -c %Y "$T199/fake/src/a.c")" = "1700001500" ]; then
+    ok "the freeze pinned the archive's member mtime"
+else
+    fail "the freeze pinned the archive's member mtime" \
+         "$(stat -c %Y "$T199/fake/src/a.c")"
+fi
+# local committed change (beta region), like section 4
+python3 - "$T199/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 10;")
+open(p, "w").write(s)
+EOF
+run_in "$T199" expect_ok "conflict-stamp local commit" "$PROJENY" commit fake.projeny
+cp "$T199/fake.projeny" "$ROOT/t199-local.projeny"
+rm -rf "$T199/fake" "$T199/.fake.projeny.status"
+cp "$ROOT/t199-local.projeny" "$T199/fake.projeny"
+run_in "$T199" expect_ok "conflict-stamp re-setup" "$PROJENY" setup fake.projeny
+# uncommitted edit to the same region the upstream patch rewrites, then the
+# upstream twin: same base, same region changed the other way (section 4's
+# conflict recipe), so the re-setup's 3-way merge conflicts on the FROZEN
+# file.
+python3 - "$T199/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 999;")
+open(p, "w").write(s)
+EOF
+U199="$ROOT/t199up"
+mkdir -p "$U199"
+cp "$T199/fake-1.0.tar.gz" "$U199/"
+cp "$ROOT/t199-local.projeny" "$U199/fake.projeny"
+(cd "$U199" && "$PROJENY" setup fake.projeny >/dev/null 2>&1)
+python3 - "$U199/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 10;", "int beta = 555;")
+open(p, "w").write(s)
+EOF
+run_in "$U199" expect_ok "upstream twin commit" "$PROJENY" commit fake.projeny
+cp "$U199/fake.projeny" "$T199/fake.projeny"
+run_in "$T199" expect_fail "conflicted re-setup exits nonzero" \
+    "$PROJENY" setup fake.projeny
+expect_file_contains "conflicted workdir has markers" "$T199/fake/src/a.c" "<<<<<<<"
+if [ "$(stat -c %Y "$T199/fake/src/a.c")" = "1700001500" ]; then
+    ok "conflicted setup still stamps the frozen file"
+else
+    fail "conflicted setup still stamps the frozen file" \
+         "$(stat -c %Y "$T199/fake/src/a.c")"
+fi
+expect_file_contains "the taken patch keeps the frozen-mtime header" \
+    "$T199/fake.projeny" "frozen-mtime"
+# resolve by taking the upstream side (the patch's own content), so the
+# next setup is clean; the stamp pass keeps the frozen ts.
+printf 'int alpha = 1;\n\nint beta = 555;\n\nint gamma = 1;\n\nint delta = 1;\n' \
+    > "$T199/fake/src/a.c"
+run_in "$T199" expect_ok "resolve the frozen conflict" \
+    "$PROJENY" resolve fake.projeny fake/src/a.c
+run_in "$T199" expect_ok "clean setup after resolve" "$PROJENY" setup fake.projeny
+if [ "$(stat -c %Y "$T199/fake/src/a.c")" = "1700001500" ]; then
+    ok "clean setup after resolve keeps the frozen ts"
+else
+    fail "clean setup after resolve keeps the frozen ts" \
+         "$(stat -c %Y "$T199/fake/src/a.c")"
+fi
+
+# ------------------- 200. commit warns when a frozen file becomes a symlink
+# Freezing is a regular-file attribute, so a frozen file the workdir turned
+# into a symlink loses its pin when commit regenerates the patch — loudly,
+# never silently (vcs.h's standard for dropped attributes).
+T200="$ROOT/t200"
+make_project "$T200" tiny 3
+run_in "$T200" expect_ok "symlink-pin fixture setup" "$PROJENY" setup tiny.projeny
+run_in "$T200" expect_ok "symlink-pin freeze" \
+    "$PROJENY" freeze-mtime tiny.projeny tiny/README
+rm "$T200/tiny/README"
+ln -s src/a.c "$T200/tiny/README"
+run_in "$T200" expect_out "commit warns about the dropped frozen mtime" \
+    "dropping the frozen mtime for 'README'" "$PROJENY" commit tiny.projeny
+run_in "$T200" expect_fail "the typechanged file no longer holds the pin" \
+    "$PROJENY" list-frozen-mtimes tiny.projeny
+expect_file_not_contains "the committed patch carries no frozen-mtime header" \
+    "$T200/tiny.projeny" "frozen-mtime"
+# A pending mv whose destination is now a symlink rides the same skip path:
+# symlink flips never pair as renames, so the move renders as delete+add
+# and the re-keyed pin dies on the add block — with the same warning.
+T200B="$ROOT/t200b"
+make_project "$T200B" tiny 3
+run_in "$T200B" expect_ok "rename-to-symlink fixture setup" "$PROJENY" setup tiny.projeny
+run_in "$T200B" expect_ok "rename-to-symlink freeze" \
+    "$PROJENY" freeze-mtime tiny.projeny tiny/README
+run_in "$T200B" expect_ok "rename-to-symlink mv" \
+    "$PROJENY" mv tiny.projeny tiny/README tiny/RENAMED
+rm "$T200B/tiny/RENAMED"
+ln -s src/a.c "$T200B/tiny/RENAMED"
+run_in "$T200B" expect_out "commit warns about the re-keyed pin on the symlink" \
+    "dropping the frozen mtime for 'RENAMED'" "$PROJENY" commit tiny.projeny
+run_in "$T200B" expect_fail "no pins left after the rename-to-symlink commit" \
+    "$PROJENY" list-frozen-mtimes tiny.projeny
 
 # ------------------------------------------------------------- summary
 echo "---"

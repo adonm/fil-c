@@ -69,8 +69,13 @@ void require_text_patch(const std::string& patch, const std::string& what);
 // callers pass normalize_patch_text output, so stored patches observe this.
 std::string normalize_patch_text(const std::string& patch);
 
-// Same but between two on-disk trees (used at commit). Includes rename
-// detection so pending Renamed ops render as rename diffs.
+// Diff two on-disk trees (a plain vcs_diff_trees wrapper: no pending-op or
+// frozen-mtime options — commit and rebase regenerate patches through
+// vcs_diff_trees_ex instead). Used by setup's re-merge paths (the user diff
+// against the recorded base, both the normal merge and the journal-recovery
+// variant), rebase's clean-workdir check, and the dir-vs-dir `projeny diff
+// A B` form. Includes rename detection so moved files render as rename
+// diffs.
 std::string diff_trees(const std::string& base_tree, const std::string& workdir,
                        const std::string& wid);
 

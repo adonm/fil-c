@@ -131,6 +131,7 @@ std::string make_tempdir(const std::string& parent, const std::string& prefix);
 // failure: callers invoke it only for paths that already exist on disk, so
 // an error here is a race (the path vanished) or an unreadable ancestor.
 std::string physical_path(const std::string& path);
+
 // System scratch parent for temp dirs/files that must never live inside a
 // workdir (crashed runs would otherwise pollute the next diff): $TMPDIR when
 // it names an existing absolute directory, else /tmp.

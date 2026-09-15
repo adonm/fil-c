@@ -23,9 +23,15 @@ Every command that names a project takes a project argument (relative or
 absolute): the `.projeny` file itself, the work tree (or any directory
 holding exactly one `.projeny` file), or a path whose `<arg>.projeny`
 sibling exists — typically the checkout directory before it was ever
-created, or a bare name like `lua` for `lua.projeny`. Relative arguments
+created, or a bare name like `lua` for `lua.projeny`. The work-tree
+sibling rule wins over the scan: a directory sitting next to a
+`<dir>.projeny` file IS that project's workdir, even when it holds stray
+`.projeny` files of its own. Relative arguments
 are lexically normalized first, so from inside the work tree `.` names
-the project and, from a work tree subdirectory, `..` does too. The
+the project and, from a work tree subdirectory, `..` does too; an
+argument that exists on disk is resolved physically (symlinks and all),
+so `sym/..` through a symlinked intermediate names the directory the
+symlink really leads to. The
 tarball is
 looked up next to the `.projeny` file, and the work tree is created next
 to it as well (named by the `Name:` header).
@@ -137,7 +143,7 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   then). The archive holds a
   single top-level directory named after the output file, and compression
   is autodetected from its extension (`.tar`, `.tar.gz`/`.tgz`,
-  `.tar.bz2`, `.tar.xz`, `.tar.zst`).
+  `.tar.bz2`/`.tbz2`/`.tbz`, `.tar.xz`/`.txz`, `.tar.zst`/`.tzst`).
 - `extract <f.projeny|dir> <dest-dir>`: like `package`, except the tracked
   files are copied into `<dest-dir>` instead of archived — the projeny
   variant of `extract_source`, for building outside the checkout. The
@@ -154,11 +160,15 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
 - `list-frozen-mtimes <f.projeny|dir>`: one line per frozen file,
   `<workdir-relative path> <unix-epoch timestamp>`; hard-errors when
   nothing is frozen.
-- `get-attributes <f.projeny|dir> [<path or paths or directories>]`: print
+- `get-attributes <f.projeny|dir> [<path>...]`: print
   the special attributes (frozen mtime, nonstandard mode — see below) of
   the requested tracked files: all of them when no paths are given, a
   directory's subtree recursively, or a single file. Files without special
-  attributes are not printed.
+  attributes are not printed; a project with nothing to report prints
+  nothing (the command is silent by design, unlike `list-frozen-mtimes`,
+  which hard-errors when nothing is frozen). The mode line reports the
+  current workdir mode, and a disappeared tracked file only ever reports
+  a frozen mtime.
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
 
@@ -189,14 +199,22 @@ tarball wants:
   attribute-only block (`diff --git` line plus the `frozen-mtime` line,
   no hunks — the analogue of a mode-only block). Re-freezing updates the
   value; a delete block never carries the header, so a frozen entry dies
-  with the file, and a rename records the header on its destination only.
+  with the file. A rename moves the pin: `commit` and `rebase` re-key the
+  frozen entry to the rename's destination (keeping the original
+  timestamp), so `freeze f`, `mv f g`, `commit` leaves `g` frozen. The
+  `frozen-mtime` header is projeny-internal: plain `git apply` does not
+  understand it and rejects attribute-only patches outright, while
+  `patch -p1` applies the same patches fine.
 - Every `setup` (and `rebase`, and the setups `package`/`extract` run)
   re-stamps frozen files after the workdir is in place, so a file the
   patch rewrote ends at the archive's mtime. `commit` and `rebase` keep
   the header in the regenerated patch and refresh the stored values from
   the archive (after a rebase: the *new* archive's members), so the
   invariant holds that a frozen value is always the archive's member
-  mtime for that file. `package`/`extract` then carry those mtimes into
+  mtime for that file. A setup that ends in conflicts skips the stamp
+  pass; the next clean setup re-stamps. `freeze-mtime` itself re-stamps
+  all frozen files of the project, not just the ones it names.
+  `package`/`extract` then carry those mtimes into
   output tarballs / extracted trees, because tracked files are staged
   with their times preserved.
 - `unfreeze-mtime` removes the attribute (a block that held nothing but
@@ -342,7 +360,6 @@ drop it).
 ## `.status` format
 
 Text file `.<f>.projeny.status` (untracked by git; older projenies wrote
-
 `<f>.projeny.status`, which is renamed into the dotted form on first use):
 
 ```

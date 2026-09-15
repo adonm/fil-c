@@ -650,6 +650,26 @@ namespace {
 // defined further down (same unnamed namespace, so these complete there).
 struct PBlock;
 std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid);
+
+// Strictly parse a `frozen-mtime` header value: decimal digits only — no
+// sign, no whitespace, no other characters, and no overflow. strtoull would
+// silently clamp out-of-range values to ULLONG_MAX and map garbage to 0,
+// which reads as "no header" and would silently disable the attribute.
+// Dies otherwise.
+uint64_t parse_frozen_mtime_value(const std::string& v)
+{
+    if (v.empty() || v.find_first_not_of("0123456789") != std::string::npos ||
+        v.size() > 20)
+        die("malformed frozen-mtime header '" + v +
+            "' (expected a unix-epoch timestamp in seconds)");
+    errno = 0;
+    unsigned long long val = strtoull(v.c_str(), nullptr, 10);
+    if (errno == ERANGE)
+        die("malformed frozen-mtime header '" + v +
+            "' (timestamp overflows 64 bits)");
+    return (uint64_t)val;
+}
+
 std::vector<std::pair<std::string, std::string>> committed_rename_pairs(
     const std::string& patch, const std::string& wid);
 
@@ -1375,7 +1395,7 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
             else if (t.compare(0, 9, "new mode ") == 0)
                 blk.new_mode = t.substr(9);
             else if (t.compare(0, 13, "frozen-mtime ") == 0)
-                blk.frozen_mtime = strtoull(t.substr(13).c_str(), nullptr, 10);
+                blk.frozen_mtime = parse_frozen_mtime_value(t.substr(13));
             else if (t.compare(0, 17, "deleted file mode") == 0) {
                 blk.is_deleted = true;
                 std::string v = t.size() > 18 ? ltrim(t.substr(17)) : "";

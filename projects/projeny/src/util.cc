@@ -549,6 +549,14 @@ std::string get_cwd()
     return buf;
 }
 
+std::string physical_path(const std::string& path)
+{
+    char buf[8192];
+    if (!realpath(path.c_str(), buf))
+        die("cannot resolve '" + path + "': " + strerror(errno));
+    return buf;
+}
+
 std::string absolutize(const std::string& p)
 {
     if (!p.empty() && p[0] == '/')

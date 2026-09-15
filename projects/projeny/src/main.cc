@@ -54,7 +54,7 @@ int usage(const char* arg0, bool err)
             "  freeze-mtime <f.projeny|dir> <filenames...>\n"
             "  unfreeze-mtime <f.projeny|dir> <filenames...>\n"
             "  list-frozen-mtimes <f.projeny|dir>\n"
-            "  get-attributes <f.projeny|dir> [<path or paths or directories>]\n"
+            "  get-attributes <f.projeny|dir> [<path>...]\n"
             "  help [command]\n",
             arg0);
     return err ? 1 : 0;

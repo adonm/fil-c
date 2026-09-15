@@ -114,6 +114,11 @@ LinkResolve resolve_link_target(const std::string& base_dir,
 
 // Create a unique temp dir parent/prefixXXXXXX (mkdtemp). Dies on failure.
 std::string make_tempdir(const std::string& parent, const std::string& prefix);
+
+// Physical (symlink-resolved) form of `path` via realpath(3). Dies on
+// failure: callers invoke it only for paths that already exist on disk, so
+// an error here is a race (the path vanished) or an unreadable ancestor.
+std::string physical_path(const std::string& path);
 // System scratch parent for temp dirs/files that must never live inside a
 // workdir (crashed runs would otherwise pollute the next diff): $TMPDIR when
 // it names an existing absolute directory, else /tmp.

@@ -41,6 +41,14 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+namespace {
+
+// Defined below the conflicted-setup paths that display it; it converts an
+// absolute path to the user-relative spelling for messages.
+std::string rel_to_cwd(const std::string& abs);
+
+} // namespace
+
 Ctx resolve_ctx(const std::string& projeny_arg)
 {
     Ctx c;
@@ -1141,7 +1149,7 @@ int setup_recover(const Ctx& ctx, const std::string& raw)
     }
     printf("projeny: found setup journal '%s'; recovering the interrupted "
            "conflicted setup\n",
-           journal_path.c_str());
+           rel_to_cwd(journal_path).c_str());
     // Union bookkeeping from the current status file when it parses (it
     // may be the pre-crash copy or the already-overwritten one — both are
     // well-formed, and the union is idempotent either way). The harder
@@ -1570,11 +1578,12 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     if (!have_workdir && union_status == nullptr)
         printf("projeny: conflicted '%s' had no checkout; checked out upstream "
                "with local patch merged in\n",
-               ctx.projeny_arg.c_str());
+               rel_to_cwd(ctx.projeny_arg).c_str());
     else
         printf("projeny: resolved conflicted '%s' by taking upstream for the "
                ".projeny file and merging local changes into '%s'\n",
-               ctx.projeny_arg.c_str(), cur_workdir.c_str());
+               rel_to_cwd(ctx.projeny_arg).c_str(),
+               rel_to_cwd(cur_workdir).c_str());
     // Per-file report of what the merge brought in: the local side's
     // committed patch (stage 1) plus, in the harder case, the uncommitted
     // workdir-vs-status diff (stage 2). Untracked riders in the harder diff
@@ -1613,10 +1622,11 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         // this branch: merge_report_lines appends one "conflict:" line per
         // entry, so any unresolved conflict keeps the report non-empty.
         printf("projeny: no local changes to merge onto '%s'\n",
-               cur_workdir.c_str());
+               rel_to_cwd(cur_workdir).c_str());
         return 0;
     }
-    printf("projeny: merged local changes onto '%s':\n", cur_workdir.c_str());
+    printf("projeny: merged local changes onto '%s':\n",
+           rel_to_cwd(cur_workdir).c_str());
     for (const auto& l : report)
         printf("  %s\n", l.c_str());
     if (!sd.conflicts.empty()) {
@@ -1639,7 +1649,14 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
 // come back absolute.
 std::string rel_to_cwd(const std::string& abs)
 {
-    std::string cwd = normalize_lexical(get_cwd());
+    // get_cwd() can fail here: setup/package/extract replace the workdir,
+    // which may delete the directory the process's CWD sits in, and these
+    // displays run after that. With no CWD there is nothing to be relative
+    // to, so keep the absolute spelling.
+    char buf[8192];
+    if (!getcwd(buf, sizeof(buf)))
+        return normalize_lexical(abs);
+    std::string cwd = normalize_lexical(buf);
     std::string a = normalize_lexical(abs);
     if (a == cwd)
         return ".";
@@ -1691,48 +1708,63 @@ std::string rel_to_cwd(const std::string& abs)
 // unchanged so the caller's own error reports it — including a missing
 // "*.projeny" path, whose read failure carries recovery guidance no generic
 // resolver error can improve on. Dies otherwise.
+//
+// Arguments that exist on disk are resolved PHYSICALLY first, on the raw
+// (trailing-slash-stripped) spelling, BEFORE lexical normalization:
+// normalize_lexical collapses ".." lexically, so a directory arg like
+// "sym/.." (a symlinked intermediate) would examine the wrong directory —
+// silently resolving, say, `setup` against a sibling project. realpath
+// resolves symlinks and ".." physically, so the sibling rule and the
+// .projeny scan run on the directory the argument really names. Results are
+// spelled the way the user spells paths: relative arguments come back as
+// rel_to_cwd forms, absolute arguments stay absolute. Arguments that do NOT
+// exist keep the lexical path so typo errors report the user's spelling.
 std::string resolve_projeny_path(const std::string& arg, const char* cmd)
 {
-    std::string a = strip_trailing_slashes(arg);
-    if (a.empty())
-        a = ".";
-    // Lexically normalize BEFORE anything else (trailing slashes stripped
-    // above, then "."/".."/duplicate-slash collapse), so '.' from inside the
-    // workdir names the workdir, '..' from a workdir subdirectory names the
-    // workdir, and "./x/../y" names y: none of these may mutate into a
-    // bogus "<arg>.projeny" sibling or scan the wrong directory. Relative
-    // arguments stay relative; only the sibling computation below absolutizes.
-    a = normalize_lexical(a);
-    bool absolute_arg = !a.empty() && a[0] == '/';
-    if (is_dir(a)) {
-        // Workdir-sibling rule, checked BEFORE the scan: a directory sitting
-        // next to a "<dir>.projeny" file IS that project's workdir. This is
-        // what makes '.' and '..' resolve, and it wins even when the
-        // directory happens to hold stray .projeny files of its own.
-        std::string abs = absolutize(a);
-        std::string sib_abs = join_path(dirname_of(abs),
-                                        basename_of(abs) + ".projeny");
-        std::string sib = absolute_arg ? sib_abs : rel_to_cwd(sib_abs);
-        if (path_exists(sib_abs) && !is_dir(sib_abs))
-            return sib;
-        std::vector<std::string> cands;
-        for (const std::string& n : list_dir_names(a)) {
-            if (ends_with(n, ".projeny"))
-                cands.push_back(join_path(a, n));
-        }
-        if (cands.size() == 1)
-            return cands[0];
-        if (cands.empty()) {
+    std::string raw = strip_trailing_slashes(arg);
+    if (raw.empty())
+        raw = ".";
+    bool absolute_arg = !raw.empty() && raw[0] == '/';
+    // Spell a resolved absolute path the way the user spelled the argument.
+    auto spell = [&](const std::string& abs_path) -> std::string {
+        return absolute_arg ? abs_path : rel_to_cwd(abs_path);
+    };
+    // The lexical form is still used for the file/sibling checks and for
+    // arguments that name nothing on disk.
+    std::string a = normalize_lexical(raw);
+    if (path_exists(raw)) {
+        std::string phys = physical_path(raw);
+        if (is_dir(phys)) {
+            // Workdir-sibling rule, checked BEFORE the scan: a directory
+            // sitting next to a "<dir>.projeny" file IS that project's
+            // workdir. This is what makes '.' and '..' resolve, and it wins
+            // even when the directory happens to hold stray .projeny files
+            // of its own.
+            std::string sib_abs = join_path(dirname_of(phys),
+                                            basename_of(phys) + ".projeny");
+            if (path_exists(sib_abs) && !is_dir(sib_abs))
+                return spell(sib_abs);
+            std::vector<std::string> cands;
+            for (const std::string& n : list_dir_names(phys)) {
+                if (ends_with(n, ".projeny"))
+                    cands.push_back(spell(join_path(phys, n)));
+            }
+            if (cands.size() == 1)
+                return cands[0];
+            if (cands.empty()) {
+                die(std::string("cannot ") + cmd + " '" + arg +
+                    "': directory holds no .projeny file (nor a '" +
+                    spell(sib_abs) + "' sibling); name the .projeny file "
+                    "explicitly");
+            }
+            std::string detail;
+            for (auto& c : cands)
+                detail += "  " + c + "\n";
             die(std::string("cannot ") + cmd + " '" + arg +
-                "': directory holds no .projeny file (nor a '" + sib +
-                "' sibling); name the .projeny file explicitly");
+                "': directory holds multiple .projeny files; name one "
+                "explicitly",
+                detail);
         }
-        std::string detail;
-        for (auto& c : cands)
-            detail += "  " + c + "\n";
-        die(std::string("cannot ") + cmd + " '" + arg +
-            "': directory holds multiple .projeny files; name one explicitly",
-            detail);
     }
     if (ends_with(a, ".projeny"))
         return arg;
@@ -1937,7 +1969,7 @@ int setup_impl(const std::string& pj)
         sd.status = "setup";
         sd.embedded = cur.raw;
         write_status(ctx, sd);
-        printf("projeny: set up '%s' from '%s'\n", workdir.c_str(),
+        printf("projeny: set up '%s' from '%s'\n", rel_to_cwd(workdir).c_str(),
                cur.archive.c_str());
         return 0;
     }
@@ -1960,7 +1992,7 @@ int setup_impl(const std::string& pj)
         sd.embedded = cur.raw;
         write_status(ctx, sd);
         printf("projeny: set up '%s' from '%s' (into existing directory)\n",
-               workdir.c_str(), cur.archive.c_str());
+               rel_to_cwd(workdir).c_str(), cur.archive.c_str());
         return 0;
     }
 
@@ -2053,13 +2085,14 @@ int setup_impl(const std::string& pj)
         if (!sd.conflicts.empty()) {
             printf("projeny: re-set up '%s' from '%s' (no local changes) but "
                    "%zu conflict(s) are still unresolved:\n",
-                   workdir.c_str(), cur.archive.c_str(), sd.conflicts.size());
+                   rel_to_cwd(workdir).c_str(), cur.archive.c_str(),
+                   sd.conflicts.size());
             for (auto& c : sd.conflicts)
                 printf("  %s\n", c.c_str());
             return 1;
         }
         printf("projeny: re-set up '%s' from '%s' (no local changes)\n",
-               workdir.c_str(), cur.archive.c_str());
+               rel_to_cwd(workdir).c_str(), cur.archive.c_str());
         return 0;
     }
 
@@ -2112,7 +2145,7 @@ int setup_impl(const std::string& pj)
             printf("projeny: re-set up '%s' from '%s' (no local changes; "
                    "kept %zu untracked file(s)) but %zu conflict(s) are "
                    "still unresolved:\n",
-                   workdir.c_str(), cur.archive.c_str(), untracked,
+                   rel_to_cwd(workdir).c_str(), cur.archive.c_str(), untracked,
                    sd.conflicts.size());
             for (auto& c : sd.conflicts)
                 printf("  %s\n", c.c_str());
@@ -2120,7 +2153,7 @@ int setup_impl(const std::string& pj)
         }
         printf("projeny: re-set up '%s' from '%s' (no local changes; kept "
                "%zu untracked file(s))\n",
-               workdir.c_str(), cur.archive.c_str(), untracked);
+               rel_to_cwd(workdir).c_str(), cur.archive.c_str(), untracked);
         return 0;
     }
     // Real local changes were merged: report what happened per file. Every
@@ -2131,7 +2164,8 @@ int setup_impl(const std::string& pj)
     std::vector<std::string> report =
         merge_report_lines(ubs, oldpf.name, &add_keep, sd.conflicts,
                            &old.renamed);
-    printf("projeny: merged local changes onto '%s':\n", workdir.c_str());
+    printf("projeny: merged local changes onto '%s':\n",
+           rel_to_cwd(workdir).c_str());
     for (const auto& l : report)
         printf("  %s\n", l.c_str());
     if (!sd.conflicts.empty()) {
@@ -2339,6 +2373,20 @@ int cmd_commit(const std::string& projeny_arg)
     // the stored value always equals the archive's member mtime.
     std::map<std::string, uint64_t> frozen = refresh_frozen_from_tree(
         vcs_frozen_mtimes(cur.patch, cur.name), base);
+    // A rename moves the file, so it must move the pin: the frozen map is
+    // keyed by the path the user froze (the rename SOURCE), but diff blocks
+    // carry the attribute on their live path (the DESTINATION — see
+    // emit_block). Remap each pending rename's entry forward, in order so
+    // chains (a->b, b->c) compose; the moved value overwrites any
+    // destination entry, and the source entry dies with the path.
+    for (const auto& rn : st.renamed) {
+        auto it = frozen.find(rn.first);
+        if (it == frozen.end())
+            continue;
+        uint64_t ts = it->second;
+        frozen.erase(it);
+        frozen[rn.second] = ts;
+    }
     VcsDiffOpts dopts;
     dopts.forced_renames = &st.renamed;
     dopts.committed_patch = &cur.patch;
@@ -2396,7 +2444,10 @@ int cmd_add(const std::string& projeny_arg, const std::string& path)
 
 int cmd_rm(const std::string& projeny_arg, const std::string& path)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "rm");
+    // Absolutize before any workdir mutation (like cmd_setup): this command
+    // can move/delete the directory the process's CWD sits in, and every
+    // later path — the status file included — must not need the CWD again.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "rm"));
     Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
@@ -2436,7 +2487,11 @@ int cmd_rm(const std::string& projeny_arg, const std::string& path)
 int cmd_mv(const std::string& projeny_arg, const std::string& src,
            const std::string& dst)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "mv");
+    // Absolutize before any workdir mutation (like cmd_setup): the move
+    // itself can relocate the directory the process's CWD sits in, which
+    // would silently re-point every relative path — the status file write
+    // included — so the rename would be applied but never recorded.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "mv"));
     Ctx ctx = resolve_ctx(pj);
     if (!path_exists(ctx.statusfile))
         die("status file '" + ctx.statusfile + "' is missing; run setup first");
@@ -2553,15 +2608,9 @@ int cmd_resolve(const std::string& projeny_arg, const std::string& path)
     std::string full = join_path(workdir, rel);
     std::string content;
     if (try_read_file_bytes(full, &content)) {
-        bool has_markers = false;
-        for (const std::string& line : split_lines(content)) {
-            if (starts_with(line, "<<<<<<<") || starts_with(line, "=======") ||
-                starts_with(line, ">>>>>>>") || starts_with(line, "|||||||")) {
-                has_markers = true;
-                break;
-            }
-        }
-        if (has_markers)
+        // The precise marker grammar (marker at column 0, the full seven
+        // characters): a line like "=======x" is content, not a marker.
+        if (projeny_has_conflict_markers(content))
             warn("'" + rel + "' still contains conflict markers");
     }
     write_status(ctx, st);
@@ -2757,6 +2806,19 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     }
     for (const auto& r : st.removed)
         remove_recursive(join_path(tree, r));
+
+    // Same rename-forwarding as commit: a frozen pin follows the file it
+    // was frozen under, so a pending mv re-keys the entry to the
+    // destination before the regenerated patch is built (emit_block stamps
+    // the live path). Order matters so chains compose.
+    for (const auto& rn : st.renamed) {
+        auto it = frozen.find(rn.first);
+        if (it == frozen.end())
+            continue;
+        uint64_t ts = it->second;
+        frozen.erase(it);
+        frozen[rn.second] = ts;
+    }
 
     // Update headers: Archive: -> new basename, Origname: -> new top dir.
     // The patch body's wid labels already use Name (unchanged).
@@ -3446,7 +3508,7 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
                 std::string detail;
                 for (auto& c : pre.conflicts)
                     detail += "  " + c + "\n";
-                die("cannot package '" + pj +
+                die("cannot package '" + rel_to_cwd(pj) +
                     "' with unresolved conflicts from a previous setup; fix "
                     "them and `projeny resolve` each file first",
                     detail);
@@ -3455,7 +3517,7 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
     }
     int rc = cmd_setup(pj);
     if (rc != 0) {
-        warn("not packaging '" + pj + "': setup reported conflicts");
+        warn("not packaging '" + rel_to_cwd(pj) + "': setup reported conflicts");
         return rc;
     }
     Ctx ctx = resolve_ctx(pj);
@@ -3464,7 +3526,8 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
         std::string detail;
         for (auto& c : st.conflicts)
             detail += "  " + c + "\n";
-        die("cannot package '" + pj + "' with unresolved conflicts", detail);
+        die("cannot package '" + rel_to_cwd(pj) + "' with unresolved conflicts",
+            detail);
     }
     ProjenyFile cur = ProjenyFile::parse(pj);
     std::string workdir = join_path(ctx.pdir, cur.name);
@@ -3499,7 +3562,8 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
         die("failed to create archive '" + output + "'", r.output);
     fsync_dir(dd.empty() ? "." : dd);
     printf("projeny: packaged %zu file(s) from '%s' into '%s' (%s/)\n",
-           count, workdir.c_str(), output.c_str(), kind.prefix.c_str());
+           count, rel_to_cwd(workdir).c_str(), output.c_str(),
+           kind.prefix.c_str());
     return 0;
 }
 
@@ -3520,7 +3584,7 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
                 std::string detail;
                 for (auto& c : pre.conflicts)
                     detail += "  " + c + "\n";
-                die("cannot extract '" + pj +
+                die("cannot extract '" + rel_to_cwd(pj) +
                     "' with unresolved conflicts from a previous setup; fix "
                     "them and `projeny resolve` each file first",
                     detail);
@@ -3529,7 +3593,7 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
     }
     int rc = cmd_setup(pj);
     if (rc != 0) {
-        warn("not extracting '" + pj + "': setup reported conflicts");
+        warn("not extracting '" + rel_to_cwd(pj) + "': setup reported conflicts");
         return rc;
     }
     Ctx ctx = resolve_ctx(pj);
@@ -3538,7 +3602,8 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
         std::string detail;
         for (auto& c : st.conflicts)
             detail += "  " + c + "\n";
-        die("cannot extract '" + pj + "' with unresolved conflicts", detail);
+        die("cannot extract '" + rel_to_cwd(pj) + "' with unresolved conflicts",
+            detail);
     }
     ProjenyFile cur = ProjenyFile::parse(pj);
     std::string workdir = join_path(ctx.pdir, cur.name);
@@ -3566,7 +3631,7 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
     stage_tracked(workdir, ref, st, "", dest, &count);
     fsync_dir(dest);
     printf("projeny: extracted %zu file(s) from '%s' to '%s'\n", count,
-           workdir.c_str(), dest.c_str());
+           rel_to_cwd(workdir).c_str(), dest.c_str());
     return 0;
 }
 
@@ -4320,7 +4385,10 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "`rebase` refresh the stored values from the archive (after\n"
                "a rebase: the NEW archive's members), so the invariant\n"
                "holds that a frozen value is always the archive's member\n"
-               "mtime for that file.\n"
+               "mtime for that file. A setup that ends in conflicts skips\n"
+               "the stamp pass; the next clean setup re-stamps. Freezing\n"
+               "itself re-stamps ALL frozen files of the project, not just\n"
+               "the ones this command names.\n"
                "\n"
                "A file may be frozen without any content or mode change:\n"
                "that stores an attribute-only block (`diff --git a/X b/X`\n"
@@ -4373,24 +4441,32 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
         return 0;
     }
     if (topic == "get-attributes") {
-        printf("%s get-attributes <f.projeny|dir> [<path or paths or directories>]\n"
+        printf("%s get-attributes <f.projeny|dir> [<path>...]\n"
                "\n"
                "Print the special attributes of tracked files, one line per\n"
                "attribute, sorted by path:\n"
                "\n"
                "  <path>: frozen-mtime <ts>   the file's mtime is frozen\n"
-               "  <path>: mode 100755         a regular file with any exec bit\n"
+               "  <path>: mode 100755         the workdir file currently\n"
+               "                              has an exec bit\n"
                "\n"
-               "Files with no special attribute are left out entirely\n"
-               "(100644 regular files and symlinks are standard and never\n"
-               "reported). With no paths, all tracked files of the project\n"
-               "are considered; a path that names a directory considers\n"
-               "everything tracked under it, recursively; a path that names\n"
-               "a file considers just that file. Path forms are the same as\n"
-               "for `add` (CWD-relative, absolute, or workdir-relative), and\n"
-               "a path naming the workdir itself means the whole tree. A\n"
-               "requested file that does not exist in the workdir, or is not\n"
-               "tracked in the project, is a hard error naming it.\n",
+               "The mode line reports the CURRENT workdir mode (what\n"
+               "`commit` would store), not a stored attribute. Files with\n"
+               "no special attribute are left out entirely (100644 regular\n"
+               "files and symlinks are standard and never reported), so a\n"
+               "project with nothing to report prints nothing: this\n"
+               "command is silent by design, unlike `list-frozen-mtimes`,\n"
+               "which hard-errors when nothing is frozen. With no paths,\n"
+               "all tracked files of the project are considered; a path\n"
+               "that names a directory considers everything tracked under\n"
+               "it, recursively; a path that names a file considers just\n"
+               "that file. Path forms are the same as for `add`\n"
+               "(CWD-relative, absolute, or workdir-relative), and a path\n"
+               "naming the workdir itself means the whole tree. A\n"
+               "requested file that does not exist in the workdir, or is\n"
+               "not tracked in the project, is a hard error naming it. A\n"
+               "tracked file that has disappeared from the workdir only\n"
+               "ever reports frozen-mtime (its mode is gone with it).\n",
                t);
         return 0;
     }

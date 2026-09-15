@@ -3,7 +3,8 @@
 # tarballs v1/v2. Covers fresh setup, edit+commit roundtrips, setup-again
 # noops, divergent merges (clean + conflicting, the latter exiting nonzero),
 # add/rm/mv + commit, rebase (clean + conflict), package/extract (tracked-only
-# payloads, compression autodetect, conflict refusal), and the hard-error paths.
+# payloads, compression autodetect incl. the short .tbz/.tbz2/.txz/.tzst
+# forms, conflict refusal), and the hard-error paths.
 # Later sections cover the dot-prefixed bookkeeping names: legacy undotted
 # .projeny.status / .snapshot migration on first use, stale-state
 # reconciliation (.stale, .stale2, ...) when the workdir is gone (both
@@ -11,6 +12,12 @@
 # setup-journal crash window (nothing is staled while recovery state is
 # needed), the workdir-without-status hard error, and snapshot
 # copy-on-fallback from the tarball (setup and status).
+# The frozen-mtime sections cover freeze/unfreeze/list/get-attributes
+# (ordering, dual attributes, scope filtering), pin survival across
+# commit/rebase/package, pin movement on rename, pin pruning on rm, and
+# malformed-header rejection; the path-resolution sections cover the
+# physical (symlink-aware) resolver and '.'/'..' arguments on every
+# workdir-mutating command.
 #
 # Bash is required (process substitution in the status-copy comparisons
 # below); /bin/sh (dash) cannot run this suite.
@@ -88,6 +95,64 @@ expect_fail() {
     else
         fail "$name" "expected failure but exited 0 (out: $out)"
     fi
+}
+
+# expect_out <name> <fixed-substring> <command...>: command must exit 0 AND
+# its combined output must contain the fixed substring (case-match, like
+# the `case ... in *"$want"*)` blocks used throughout this suite).
+expect_out() {
+    name="$1"
+    want="$2"
+    shift 2
+    out="$("$@" 2>&1)"
+    rc=$?
+    case "$out" in
+    *"$want"*)
+        if [ $rc -eq 0 ]; then
+            ok "$name"
+        else
+            fail "$name" "output matched but exit=$rc out: $out"
+        fi
+        ;;
+    *)
+        fail "$name" "exit=$rc output lacks '$want' out: $out"
+        ;;
+    esac
+}
+
+# expect_no_out <name> <command...>: command must exit 0 AND print nothing
+# on either stream (the documented empty-output policy, e.g. get-attributes
+# with nothing to report).
+expect_no_out() {
+    name="$1"
+    shift
+    out="$("$@" 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ] && [ -z "$out" ]; then
+        ok "$name"
+    else
+        fail "$name" "exit=$rc expected silence, got: $out"
+    fi
+}
+
+# make_project <dir> <name> <version>: create the tiny fake project fixture
+# (a <name>-<version>.tar.gz holding README + src/a.c + src/b.c, and a
+# <name>.projeny pointing at it) in <dir>, which is created fresh. The same
+# dance the earlier sections perform by hand, factored out for the later
+# fixtures.
+make_project() {
+    _dir="$1"
+    _name="$2"
+    _ver="$3"
+    mkdir -p "$_dir"
+    rm -rf "$_dir/$_name-$_ver"
+    mkdir -p "$_dir/$_name-$_ver/src"
+    printf 'int alpha = %s;\n' "$_ver" > "$_dir/$_name-$_ver/src/a.c"
+    printf 'line one v%s\n' "$_ver" > "$_dir/$_name-$_ver/src/b.c"
+    printf 'hello v%s\n' "$_ver" > "$_dir/$_name-$_ver/README"
+    (cd "$_dir" && tar -czf "$_name-$_ver.tar.gz" "$_name-$_ver" && rm -rf "$_name-$_ver")
+    printf 'Archive: %s-%s.tar.gz\nOrigname: %s-%s\nName: %s\n\n    Fake project %s for projeny tests.\n\n' \
+        "$_name" "$_ver" "$_name" "$_ver" "$_name" "$_name" > "$_dir/$_name.projeny"
 }
 
 # expect_file_contains <name> <file> <fixed-string>
@@ -3565,6 +3630,21 @@ for t in "setup:setup" "commit:commit" "patch:patch" "diff:diff" "rebase:rebase"
         fail "help $topic mentions $want"
     fi
 done
+# Every topic must carry a real content marker, not just its own name
+# (non-empty output alone proves nothing).
+for t in "setup:conflict" "commit:diff the workdir" \
+         "add:added-but-not-committed" "rm:removed-but-not-committed" \
+         "mv:record the rename" "resolve:conflict" "rebase:tarball" \
+         "status:Status:" "diff:uncommitted" "patch:fuzz" \
+         "help:command name"; do
+    topic="${t%%:*}"
+    want="${t##*:}"
+    if "$PROJENY" help "$topic" 2>&1 | grep -qF -- "$want"; then
+        ok "help $topic explains '$want'"
+    else
+        fail "help $topic explains '$want'"
+    fi
+done
 if "$PROJENY" help setup 2>&1 | grep -q "conflict"; then
     ok "help setup explains conflicts"
 else
@@ -4299,6 +4379,8 @@ done
 if command -v zstd >/dev/null 2>&1 && tar --help 2>/dev/null | grep -q -- --zstd; then
     run_in "$TFMT" expect_ok "package .tar.zst exits 0" "$PROJENY" package pkg.projeny o.tar.zst
     (cd "$TFMT" && tar --zstd -tf o.tar.zst | sort > m.zst)
+else
+    ok "zstd absent; .tar.zst checks skipped"
 fi
 (cd "$TFMT" && tar -tf o.tar | sort > m.tar)
 (cd "$TFMT" && tar -tzf o.tgz | sort > m.tgz)
@@ -4316,6 +4398,8 @@ if [ -f "$TFMT/m.zst" ]; then
     else
         fail "zstd holds the same members"
     fi
+else
+    ok "zstd absent; member comparison skipped"
 fi
 mkdir -p "$TFMT/u1" "$TFMT/u2" && (cd "$TFMT/u1" && tar -xf ../o.tar) && (cd "$TFMT/u2" && tar -xzf ../o.tar.gz)
 if diff -r "$TFMT/u1" "$TFMT/u2" >/dev/null 2>&1; then
@@ -8787,9 +8871,11 @@ done
 printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Frozen roundtrip.\n' > "$T184/w.projeny"
 run_in "$T184" expect_ok "roundtrip fixture setup" "$PROJENY" setup w.projeny
 run_in "$T184" expect_ok "roundtrip freeze" "$PROJENY" freeze-mtime w.projeny w/src/a.c w/README
-# A no-op commit keeps both headers (unchanged files get attribute-only
-# blocks) and leaves the values at the tarball's mtimes.
-run_in "$T184" expect_ok "no-op commit with frozen files" "$PROJENY" commit w.projeny
+# A commit that regenerates nothing but frozen attribute-only blocks is a
+# content no-op: both headers survive and the values stay at the tarball's
+# mtimes.
+run_in "$T184" expect_ok "commit with only frozen mtimes is a content no-op" \
+    "$PROJENY" commit w.projeny
 expect_file_contains "commit keeps the frozen header (modified never)" \
     "$T184/w.projeny" "frozen-mtime 1700000100"
 expect_file_contains "commit keeps the frozen header (README)" \
@@ -8834,11 +8920,15 @@ else
          "$(ls "$T184/w"; stat -c %Y "$T184/w/extra.c" 2>&1)"
 fi
 # Rebase to v2: the frozen values refresh to the NEW archive's mtimes and
-# the workdir is re-stamped.
+# the workdir is re-stamped. The old values must be gone from the patch
+# entirely (a stale ts would re-stamp the file backwards on the next setup).
 run_in "$T184" expect_ok "rebase the frozen checkout" "$PROJENY" rebase w.projeny w-2.0.tar.gz
-expect_file_contains "rebase keeps the frozen set" "$T184/w.projeny" "frozen-mtime 1700009900"
 expect_file_contains "rebase refreshes the value from the new archive" \
     "$T184/w.projeny" "frozen-mtime 1700009900"
+expect_file_not_contains "rebase drops the old archive's value (a.c)" \
+    "$T184/w.projeny" "frozen-mtime 1700000100"
+expect_file_not_contains "rebase drops the old archive's value (README)" \
+    "$T184/w.projeny" "frozen-mtime 1700000200"
 if [ "$(stat -c %Y "$T184/w/src/a.c")" = "1700009900" ]; then
     ok "rebase re-stamps the workdir to the new archive's mtime"
 else
@@ -8864,7 +8954,7 @@ run_in "$T184" expect_ok "extract a frozen checkout" "$PROJENY" extract w.projen
 if [ "$(stat -c %Y "$T184/ext/src/a.c")" = "1700009900" ]; then
     ok "extract output preserves the frozen mtime"
 else
-    fail "extract output preserves the fixed mtime" "$(stat -c %Y "$T184/ext/src/a.c")"
+    fail "extract output preserves the frozen mtime" "$(stat -c %Y "$T184/ext/src/a.c")"
 fi
 
 # ------------------------------- 185. get-attributes
@@ -8948,6 +9038,421 @@ esac
 # The whole-tree form via `.` from inside the workdir (feature A interplay).
 run_in "$T185/w" expect_ok "get-attributes with the whole-tree dot form" \
     "$PROJENY" get-attributes . README
+
+# ------------------- 186. package re-stamps the frozen file before staging
+# package runs setup first, and setup re-stamps frozen files; so a workdir
+# file whose mtime drifted after the freeze is repaired, and the output
+# tarball carries the frozen ts (package -> setup -> stamp -> stage_tracked).
+TPR="$ROOT/t186"
+mkdir -p "$TPR/w-1.0/src"
+printf 'int alpha = 1;\n' > "$TPR/w-1.0/src/a.c"
+printf 'hello v1\n' > "$TPR/w-1.0/README"
+touch -d @1700001100 "$TPR/w-1.0/src/a.c"
+touch -d @1700001200 "$TPR/w-1.0/README"
+(cd "$TPR" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Package restamp.\n' > "$TPR/w.projeny"
+run_in "$TPR" expect_ok "package restamp fixture setup" "$PROJENY" setup w.projeny
+run_in "$TPR" expect_ok "package restamp freeze" "$PROJENY" freeze-mtime w.projeny w/README
+# Drift the workdir stamp away from the frozen value, then package.
+touch -d @202012312359 "$TPR/w/README"
+run_in "$TPR" expect_ok "package a drifted frozen checkout" "$PROJENY" package w.projeny out.tar.gz
+if [ "$(stat -c %Y "$TPR/w/README")" = "1700001200" ]; then
+    ok "package's setup re-stamped the drifted workdir file"
+else
+    fail "package's setup re-stamped the drifted workdir file" \
+         "$(stat -c %Y "$TPR/w/README")"
+fi
+rm -rf "$TPR/unp"
+mkdir -p "$TPR/unp"
+(cd "$TPR" && tar -xzf out.tar.gz -C unp)
+if [ "$(stat -c %Y "$TPR/unp/out/README")" = "1700001200" ]; then
+    ok "package output member keeps the frozen ts"
+else
+    fail "package output member keeps the frozen ts" \
+         "$(stat -c %Y "$TPR/unp/out/README")"
+fi
+
+# ------------------- 187. a rename moves the frozen pin to the destination
+# The frozen map is keyed by the path the user froze (the rename SOURCE),
+# but diff blocks carry the attribute on their live path (the DESTINATION).
+# commit and rebase re-key the entry, so `freeze f; mv f g; commit` leaves
+# g frozen at f's original ts and the next setup re-stamps g.
+TRN="$ROOT/t187"
+make_project "$TRN" w 1.0
+run_in "$TRN" expect_ok "rename-pin fixture setup" "$PROJENY" setup w.projeny
+run_in "$TRN" expect_ok "rename-pin freeze" "$PROJENY" freeze-mtime w.projeny w/src/a.c
+PINNED="$("$PROJENY" list-frozen-mtimes "$TRN/w.projeny" | awk '{print $2}')"
+if [ -n "$PINNED" ]; then
+    ok "rename-pin read the frozen ts"
+else
+    fail "rename-pin read the frozen ts" \
+         "$("$PROJENY" list-frozen-mtimes "$TRN/w.projeny" 2>&1)"
+fi
+run_in "$TRN" expect_ok "rename-pin mv" "$PROJENY" mv w.projeny w/src/a.c w/src/renamed.c
+run_in "$TRN" expect_ok "rename-pin commit" "$PROJENY" commit w.projeny
+out="$("$PROJENY" list-frozen-mtimes "$TRN/w.projeny" 2>&1)"
+case "$out" in
+*"src/renamed.c $PINNED"*)
+    ok "commit moves the pin to the rename destination with the original ts"
+    ;;
+*)
+    fail "commit moves the pin to the rename destination with the original ts" \
+         "want src/renamed.c $PINNED, got: $out"
+    ;;
+esac
+case "$out" in
+*"src/a.c "*)
+    fail "the moved-away path no longer holds the pin" "$out"
+    ;;
+*)
+    ok "the moved-away path no longer holds the pin"
+    ;;
+esac
+touch -d @2000000000 "$TRN/w/src/renamed.c"
+run_in "$TRN" expect_ok "rename-pin setup" "$PROJENY" setup w.projeny
+if [ "$(stat -c %Y "$TRN/w/src/renamed.c")" = "$PINNED" ]; then
+    ok "setup re-stamps the renamed destination"
+else
+    fail "setup re-stamps the renamed destination" \
+         "$(stat -c %Y "$TRN/w/src/renamed.c")"
+fi
+
+# ------------------- 188. rm then commit prunes the pin
+# A delete block never carries the header, so `freeze f; rm f; commit`
+# drops the attribute entirely: list-frozen-mtimes hard-errors.
+TRP="$ROOT/t188"
+make_project "$TRP" w 1.0
+run_in "$TRP" expect_ok "rm-pin fixture setup" "$PROJENY" setup w.projeny
+run_in "$TRP" expect_ok "rm-pin freeze" "$PROJENY" freeze-mtime w.projeny w/src/b.c
+run_in "$TRP" expect_ok "rm-pin rm" "$PROJENY" rm w.projeny w/src/b.c
+run_in "$TRP" expect_ok "rm-pin commit" "$PROJENY" commit w.projeny
+out="$("$PROJENY" list-frozen-mtimes "$TRP/w.projeny" 2>&1 || true)"
+case "$out" in
+*"no frozen mtimes"*)
+    ok "rm then commit prunes the pin"
+    ;;
+*)
+    fail "rm then commit prunes the pin" "out: $out"
+    ;;
+esac
+
+# ------------------- 189. a symlinked parent resolves physically
+# normalize_lexical collapses ".." lexically, so `sym/..` through a
+# symlinked intermediate used to examine the wrong directory (silently
+# resolving setup/status against a sibling project). An argument that
+# exists on disk is resolved with realpath first: `l/w/..` names the
+# physical target dir, whose <dir>.projeny sibling is the real project.
+TSYM="$ROOT/t189"
+mkdir -p "$TSYM/target" "$TSYM/other"
+make_project "$TSYM/target" w 1.0
+ln -sfn ../target "$TSYM/other/l"
+# A decoy project file in the lexically-collapsed directory: resolving it
+# would be a silent wrong-project answer.
+printf 'Name: decoy\n' > "$TSYM/other/decoy.projeny"
+run_in "$TSYM/target" expect_ok "symlink fixture setup" "$PROJENY" setup w.projeny
+run_in "$TSYM/other" expect_out "status resolves through the symlinked parent" \
+    "Status: setup" "$PROJENY" status l/w/..
+run_in "$TSYM/other" expect_ok "setup resolves through the symlinked parent" \
+    "$PROJENY" setup l/w/..
+# `l/..` physically names the target's parent, which holds no .projeny at
+# all: refuse loudly rather than silently picking the decoy the lexical
+# collapse would have found.
+out="$(cd "$TSYM/other" && "$PROJENY" status l/.. 2>&1 || true)"
+case "$out" in
+*"directory holds no .projeny file"*)
+    ok "status through the symlink refuses rather than picking the decoy"
+    ;;
+*"decoy"*)
+    fail "status through the symlink refuses rather than picking the decoy" \
+         "resolved the decoy: $out"
+    ;;
+*)
+    fail "status through the symlink refuses rather than picking the decoy" \
+         "out: $out"
+    ;;
+esac
+
+# ------------------- 190. mv from inside the moved directory
+# cmd_mv absolutizes the project path up front, so moving the very
+# directory the CWD sits in cannot re-point the relative status-file path
+# mid-command (pre-fix, the rename was applied but never recorded).
+TMV="$ROOT/t190"
+make_project "$TMV" w 1.0
+run_in "$TMV" expect_ok "mv-inside fixture setup" "$PROJENY" setup w.projeny
+run_in "$TMV/w/src" expect_ok "mv the directory the CWD sits in" \
+    "$PROJENY" mv .. . ../src2
+run_in "$TMV" expect_out "the rename is recorded" "Renamed: src -> src2" \
+    "$PROJENY" status w.projeny
+run_in "$TMV" expect_ok "commit folds the recorded rename" "$PROJENY" commit w.projeny
+
+# ------------------- 191. duplicate freeze/unfreeze arguments count once
+TDUP="$ROOT/t191"
+make_project "$TDUP" w 1.0
+run_in "$TDUP" expect_ok "dup-args fixture setup" "$PROJENY" setup w.projeny
+run_in "$TDUP" expect_out "duplicate freeze args count once" \
+    "froze the mtime of 1 file(s)" \
+    "$PROJENY" freeze-mtime w.projeny w/README w/README
+run_in "$TDUP" expect_out "duplicate unfreeze args count once" \
+    "unfroze the mtime of 1 file(s)" \
+    "$PROJENY" unfreeze-mtime w.projeny w/README w/README
+
+# ------------------- 192. frozen-mtime negative paths
+TNEG="$ROOT/t192"
+make_project "$TNEG" w 1.0
+run_in "$TNEG" expect_ok "negatives fixture setup" "$PROJENY" setup w.projeny
+# A file registered as removed is refused even though it exists on disk
+# again (the user re-created it): the removal still owns the path.
+run_in "$TNEG" expect_ok "negatives rm" "$PROJENY" rm w.projeny w/src/b.c
+printf 'recreated\n' > "$TNEG/w/src/b.c"
+out="$(cd "$TNEG" && "$PROJENY" freeze-mtime w.projeny w/src/b.c 2>&1 || true)"
+case "$out" in
+*"removed or renamed away"*)
+    ok "freezing a pending-removed file is refused"
+    ;;
+*)
+    fail "freezing a pending-removed file is refused" "out: $out"
+    ;;
+esac
+# list-frozen-mtimes with nothing frozen hard-errors (empty-output policy).
+TNEG2="$ROOT/t192b"
+make_project "$TNEG2" w 1.0
+run_in "$TNEG2" expect_ok "empty-pin fixture setup" "$PROJENY" setup w.projeny
+out="$(cd "$TNEG2" && "$PROJENY" list-frozen-mtimes w.projeny 2>&1 || true)"
+case "$out" in
+*"no frozen mtimes"*)
+    ok "list-frozen-mtimes with nothing frozen dies"
+    ;;
+*)
+    fail "list-frozen-mtimes with nothing frozen dies" "out: $out"
+    ;;
+esac
+# get-attributes on a never-set-up project errors.
+TNEG3="$ROOT/t192c"
+make_project "$TNEG3" w 1.0
+out="$(cd "$TNEG3" && "$PROJENY" get-attributes w.projeny 2>&1 || true)"
+case "$out" in
+*"run setup first"*)
+    ok "get-attributes on a never-set-up project errors"
+    ;;
+*)
+    fail "get-attributes on a never-set-up project errors" "out: $out"
+    ;;
+esac
+# A malformed frozen-mtime header dies instead of silently disabling the
+# attribute: overflow used to clamp to ULLONG_MAX, garbage used to map to 0
+# (= no header). Freeze to plant a valid header, corrupt it, then check.
+TNEG4="$ROOT/t192d"
+make_project "$TNEG4" w 1.0
+run_in "$TNEG4" expect_ok "malformed-header fixture setup" "$PROJENY" setup w.projeny
+run_in "$TNEG4" expect_ok "malformed-header freeze" "$PROJENY" freeze-mtime w.projeny w/README
+sed -i 's/^frozen-mtime [0-9][0-9]*$/frozen-mtime 99999999999999999999999/' "$TNEG4/w.projeny"
+out="$(cd "$TNEG4" && "$PROJENY" list-frozen-mtimes w.projeny 2>&1 || true)"
+case "$out" in
+*"malformed frozen-mtime header"*)
+    ok "an overflowing frozen-mtime header is rejected"
+    ;;
+*)
+    fail "an overflowing frozen-mtime header is rejected" "out: $out"
+    ;;
+esac
+sed -i 's/^frozen-mtime .*/frozen-mtime garbage/' "$TNEG4/w.projeny"
+out="$(cd "$TNEG4" && "$PROJENY" get-attributes w.projeny 2>&1 || true)"
+case "$out" in
+*"malformed frozen-mtime header"*)
+    ok "a non-numeric frozen-mtime header is rejected"
+    ;;
+*)
+    fail "a non-numeric frozen-mtime header is rejected" "out: $out"
+    ;;
+esac
+# A valid value parses again (only malformed values are refused).
+sed -i 's/^frozen-mtime .*/frozen-mtime 1700001234/' "$TNEG4/w.projeny"
+run_in "$TNEG4" expect_ok "a valid header still lists" \
+    "$PROJENY" list-frozen-mtimes w.projeny
+
+# ------------------- 193. get-attributes report shape
+# Sorted output; a file holding both attributes prints both lines (frozen
+# first, then the current-workdir mode); untracked files inside a directory
+# scope are filtered out; an attribute-less scope is silent.
+TGA="$ROOT/t193"
+mkdir -p "$TGA/w-1.0/src/deep"
+printf 'frozen content\n' > "$TGA/w-1.0/src/a.c"
+printf '#!/bin/sh\necho hi\n' > "$TGA/w-1.0/src/tool.sh"
+printf 'plain\n' > "$TGA/w-1.0/src/b.c"
+printf 'nested\n' > "$TGA/w-1.0/src/deep/n.c"
+printf 'hello v1\n' > "$TGA/w-1.0/README"
+(cd "$TGA" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Report shape.\n' > "$TGA/w.projeny"
+run_in "$TGA" expect_ok "report-shape fixture setup" "$PROJENY" setup w.projeny
+run_in "$TGA" expect_ok "report-shape freeze" \
+    "$PROJENY" freeze-mtime w.projeny w/src/a.c w/README
+chmod 755 "$TGA/w/src/a.c"
+$PROJENY get-attributes "$TGA/w.projeny" > "$ROOT/t193-all.out"
+if [ "$(cat "$ROOT/t193-all.out")" = "$(LC_ALL=C sort "$ROOT/t193-all.out")" ] &&
+   [ -s "$ROOT/t193-all.out" ]; then
+    ok "get-attributes output is sorted"
+else
+    fail "get-attributes output is sorted" "$(cat "$ROOT/t193-all.out")"
+fi
+expect_file_contains "a frozen exec file reports its frozen-mtime" \
+    "$ROOT/t193-all.out" "src/a.c: frozen-mtime "
+expect_file_contains "a frozen exec file reports its current mode" \
+    "$ROOT/t193-all.out" "src/a.c: mode 100755"
+if [ "$(grep -n '^src/a.c: frozen-mtime' "$ROOT/t193-all.out" | cut -d: -f1)" -lt \
+     "$(grep -n '^src/a.c: mode' "$ROOT/t193-all.out" | cut -d: -f1)" ]; then
+    ok "the frozen-mtime line precedes the mode line"
+else
+    fail "the frozen-mtime line precedes the mode line" \
+         "$(cat "$ROOT/t193-all.out")"
+fi
+# An untracked file inside a directory scope is filtered from the report.
+printf 'junk\n' > "$TGA/w/src/junk.c"
+$PROJENY get-attributes "$TGA/w.projeny" "$TGA/w/src" > "$ROOT/t193-dir.out"
+if grep -q "junk.c" "$ROOT/t193-dir.out"; then
+    fail "an untracked file inside a scope is filtered" \
+         "$(cat "$ROOT/t193-dir.out")"
+else
+    ok "an untracked file inside a scope is filtered"
+fi
+run_in "$TGA" expect_no_out "an attribute-less scope is silent" \
+    "$PROJENY" get-attributes w.projeny w/src/deep
+
+# ------------------- 194. rebase refuses on unresolved conflicts
+# The conflicts die in cmd_rebase fires before any tree work; `resolve`
+# with a '.' project arg then clears the entry.
+TRB="$ROOT/t194"
+make_project "$TRB" w 1.0
+run_in "$TRB" expect_ok "rebase-refusal fixture setup" "$PROJENY" setup w.projeny
+printf 'alpha = 1\nbeta LOCAL\ngamma = 1\n' > "$TRB/w/src/a.c"
+run_in "$TRB" expect_ok "rebase-refusal local commit" "$PROJENY" commit w.projeny
+cp "$TRB/w.projeny" "$ROOT/t194-local.projeny"
+U194="$ROOT/t194up"
+mkdir -p "$U194"
+cp "$TRB/w-1.0.tar.gz" "$U194/"
+cp "$ROOT/t194-local.projeny" "$U194/w.projeny"
+(cd "$U194" && "$PROJENY" setup w.projeny >/dev/null 2>&1)
+printf 'alpha = 1\nbeta UPSTREAM\ngamma = 1\n' > "$U194/w/src/a.c"
+(cd "$U194" && "$PROJENY" commit w.projeny >/dev/null 2>&1)
+cp "$U194/w.projeny" "$ROOT/t194-up.projeny"
+make_conflicted "$ROOT/t194-local.projeny" "$ROOT/t194-up.projeny" "$TRB/w.projeny"
+run_in "$TRB" expect_fail "conflicted setup exits nonzero" "$PROJENY" setup w.projeny
+expect_file_contains "the conflict is recorded" \
+    "$TRB/.w.projeny.status" "Conflict: src/a.c"
+out="$(cd "$TRB" && "$PROJENY" rebase w.projeny w-1.0.tar.gz 2>&1 || true)"
+case "$out" in
+*"unresolved conflicts; resolve them before rebasing"*)
+    ok "rebase refuses while conflicts are unresolved"
+    ;;
+*)
+    fail "rebase refuses while conflicts are unresolved" "out: $out"
+    ;;
+esac
+run_in "$TRB/w" expect_ok "resolve with a dot project arg" \
+    "$PROJENY" resolve . src/a.c
+if grep -q "Conflict:" "$TRB/.w.projeny.status"; then
+    fail "the dot resolve cleared the conflict" \
+         "$(cat "$TRB/.w.projeny.status")"
+else
+    ok "the dot resolve cleared the conflict"
+fi
+
+# ------------------- 195. package output naming: short suffixes and degenerates
+TSUF="$ROOT/t195"
+make_project "$TSUF" pkg 1.0
+run_in "$TSUF" expect_ok "short-suffix fixture setup" "$PROJENY" setup pkg.projeny
+for ext in tbz tbz2 txz; do
+    run_in "$TSUF" expect_ok "package .$ext exits 0" "$PROJENY" package pkg.projeny "o.$ext"
+done
+if command -v zstd >/dev/null 2>&1 && tar --help 2>/dev/null | grep -q -- --zstd; then
+    run_in "$TSUF" expect_ok "package .tzst exits 0" "$PROJENY" package pkg.projeny o.tzst
+else
+    ok "zstd absent; .tzst check skipped"
+fi
+(cd "$TSUF" && tar -tjf o.tbz | sort > s.tbz && tar -tjf o.tbz2 | sort > s.tbz2 && tar -tJf o.txz | sort > s.txz)
+if cmp -s "$TSUF/s.tbz" "$TSUF/s.tbz2" && cmp -s "$TSUF/s.tbz" "$TSUF/s.txz"; then
+    ok "the short suffixes hold the same members"
+else
+    fail "the short suffixes hold the same members" "$(cat "$TSUF/s.tbz" 2>&1)"
+fi
+# Degenerate names: the stem before the suffix would be empty or dotted.
+run_in "$TSUF" expect_fail "a bare .tar.gz output name dies" \
+    "$PROJENY" package pkg.projeny .tar.gz
+run_in "$TSUF" expect_fail "a dotted prefix dies" \
+    "$PROJENY" package pkg.projeny ..tar.gz
+if [ -e "$TSUF/.tar.gz" ] || [ -e "$TSUF/..tar.gz" ]; then
+    fail "failed package writes no archive" "$(ls -a "$TSUF")"
+else
+    ok "failed package writes no archive"
+fi
+
+# ------------------- 196. help topics for the attribute commands
+for t in "package:tracked files" "extract:dest-dir" "freeze-mtime:frozen-mtime" \
+         "unfreeze-mtime:frozen-mtime" "list-frozen-mtimes:Hard-errors" \
+         "get-attributes:mode 100755"; do
+    topic="${t%%:*}"
+    want="${t##*:}"
+    if "$PROJENY" help "$topic" 2>&1 | grep -qF -- "$want"; then
+        ok "help $topic explains '$want'"
+    else
+        fail "help $topic explains '$want'"
+    fi
+done
+run_in "$ROOT/t195" expect_out "help freeze-mtime mentions frozen-mtime" \
+    "frozen-mtime" "$PROJENY" help freeze-mtime
+
+# ------------------- 197. '.' and '..' project arguments on the rest
+# §181 covers setup/status/add/commit/diff; the remaining commands accept
+# the same forms. package/extract from inside the workdir replace that
+# workdir (and the CWD) mid-command, so their output/destination args must
+# be absolute — the project argument itself is absolutized up front.
+TDOT="$ROOT/t197"
+make_project "$TDOT" w 1.0
+mkdir -p "$TDOT/w-2.0/src"
+printf 'int alpha = 2;\n' > "$TDOT/w-2.0/src/a.c"
+printf 'line one v2\n' > "$TDOT/w-2.0/src/b.c"
+printf 'hello v2\n' > "$TDOT/w-2.0/README"
+(cd "$TDOT" && tar -czf w-2.0.tar.gz w-2.0 && rm -rf w-2.0)
+run_in "$TDOT" expect_ok "dot-args fixture setup" "$PROJENY" setup w.projeny
+run_in "$TDOT/w" expect_ok "rm with a dot project arg" "$PROJENY" rm . src/b.c
+run_in "$TDOT/w" expect_ok "rebase with a dot project arg" \
+    "$PROJENY" rebase . ../w-2.0.tar.gz
+run_in "$TDOT/w" expect_ok "package with a dot project arg" \
+    "$PROJENY" package . "$TDOT/pkg-out.tar.gz"
+run_in "$TDOT/w" expect_ok "extract with a dot project arg" \
+    "$PROJENY" extract . "$TDOT/ext-out"
+if [ -f "$TDOT/ext-out/src/a.c" ]; then
+    ok "the dot extract produced the tree"
+else
+    fail "the dot extract produced the tree" "$(ls "$TDOT/ext-out" 2>&1)"
+fi
+run_in "$TDOT/w/src" expect_ok "get-attributes with a dotdot project arg" \
+    "$PROJENY" get-attributes .. w/README
+
+# ------------------- 198. patch reports the exact conflict count
+TPC="$ROOT/t198"
+mkdir -p "$TPC/A" "$TPC/B"
+printf 'one\ntwo\nthree\n' > "$TPC/A/f.c"
+printf 'one\nTWO\nthree\n' > "$TPC/B/f.c"
+(cd "$TPC" && "$PROJENY" diff A B > f.diff 2>&1)
+mkdir -p "$TPC/T"
+printf 'one\nCHANGED\nthree\n' > "$TPC/T/f.c"
+out="$(cd "$TPC" && "$PROJENY" patch T f.diff 2>&1 || true)"
+case "$out" in
+*"patched 'T' with 1 conflict(s):"*)
+    ok "patch reports the exact conflict count"
+    ;;
+*)
+    fail "patch reports the exact conflict count" "out: $out"
+    ;;
+esac
+case "$out" in
+*"  f.c"*)
+    ok "patch names the conflicted file as a bullet"
+    ;;
+*)
+    fail "patch names the conflicted file as a bullet" "out: $out"
+    ;;
+esac
 
 # ------------------------------------------------------------- summary
 echo "---"

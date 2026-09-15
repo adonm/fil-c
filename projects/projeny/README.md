@@ -23,7 +23,10 @@ Every command that names a project takes a project argument (relative or
 absolute): the `.projeny` file itself, the work tree (or any directory
 holding exactly one `.projeny` file), or a path whose `<arg>.projeny`
 sibling exists — typically the checkout directory before it was ever
-created, or a bare name like `lua` for `lua.projeny`. The tarball is
+created, or a bare name like `lua` for `lua.projeny`. Relative arguments
+are lexically normalized first, so from inside the work tree `.` names
+the project and, from a work tree subdirectory, `..` does too. The
+tarball is
 looked up next to the `.projeny` file, and the work tree is created next
 to it as well (named by the `Name:` header).
 

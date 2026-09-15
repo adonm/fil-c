@@ -27,10 +27,13 @@
 # (git-compatible unified diffs); projeny never invokes git.
 # Build requires only a C++17 compiler.
 CXX ?= g++
-CC ?= cc
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra
 CPPFLAGS ?=
 LDFLAGS ?=
+
+# Abort a target the moment one of its recipe commands fails, so a failing
+# compile never leaves a truncated .o (or binary) behind to be linked later.
+.DELETE_ON_ERROR:
 
 # Set BUILD_DIR to build out-of-tree: all build products (object files, dep
 # files, and the projeny binary) land in $(BUILD_DIR) instead of next to the

@@ -488,7 +488,8 @@ make test           # builds (if needed) and runs tests/run_tests.sh
 make clean          # removes the binary and all .o/.d files
 ```
 
-The Makefile supports `CXX`/`CC` overrides and generates header
+The Makefile honors `CXX` overrides (only the C++ compiler is used; build_projeny.sh
+passes both spellings) and generates header
 dependencies (`-MMD -MP`) so parallel builds work. The code is warning-free
 with `-Wall -Wextra` under both system `g++` and the Fil-C compiler:
 

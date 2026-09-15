@@ -27,7 +27,6 @@
 #pragma once
 
 #include <string>
-#include <utility>
 #include <vector>
 
 #include <cstdint>
@@ -119,9 +118,6 @@ std::string make_tempdir(const std::string& parent, const std::string& prefix);
 // workdir (crashed runs would otherwise pollute the next diff): $TMPDIR when
 // it names an existing absolute directory, else /tmp.
 std::string system_scratch_parent();
-// Create a temp file containing data; returns path (caller removes it).
-std::string write_temp_input(const std::string& parent, const std::string& prefix,
-                             const std::string& data);
 
 // Temp dir tracking so die() can clean up even on hard-error paths.
 void register_tempdir(const std::string& path);

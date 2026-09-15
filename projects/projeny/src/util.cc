@@ -374,7 +374,7 @@ bool try_copy_file_bytes(const std::string& src, const std::string& dst,
 // "same basename, different content" tarballs in rebase — not cryptographic.
 std::string file_hash_hex(const std::string& path)
 {
-    uint64_t h = 1469598103934665603ULL;
+    uint64_t h = 14695981039346656037ULL;
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0)
         die("cannot read file '" + path + "': " + strerror(errno));
@@ -687,35 +687,6 @@ std::string make_tempdir(const std::string& parent, const std::string& prefix) {
     return buf.data();
 }
 
-std::string write_temp_input(const std::string& parent, const std::string& prefix,
-                             const std::string& data)
-{
-    make_dirs(parent);
-    std::string tmpl = join_path(parent, prefix + "XXXXXX");
-    std::vector<char> buf(tmpl.begin(), tmpl.end());
-    buf.push_back('\0');
-    int fd = mkstemp(buf.data());
-    if (fd < 0)
-        die("cannot create temp file in '" + parent + "': " + strerror(errno));
-    size_t off = 0;
-    while (off < data.size()) {
-        ssize_t w = write(fd, data.data() + off, data.size() - off);
-        if (w < 0) {
-            if (errno == EINTR)
-                continue;
-            int e = errno;
-            close(fd);
-            die("cannot write temp file: " + std::string(strerror(e)));
-        }
-        off += (size_t)w;
-    }
-    close(fd);
-    // Return an absolute path: callers pass this to children that run with a
-    // different cwd (git apply runs with cwd=treedir), where a relative
-    // path would resolve to the wrong place.
-    return absolutize(buf.data());
-}
-
 TempDir::TempDir(const std::string& parent, const std::string& prefix)
     : path(make_tempdir(parent, prefix)), owned_(true)
 {
@@ -724,8 +695,12 @@ TempDir::TempDir(const std::string& parent, const std::string& prefix)
 
 TempDir::~TempDir()
 {
-    if (owned_)
+    if (owned_) {
+        // Unregister first: remove_recursive dies on failure, and the die()
+        // cleanup pass must not try to re-remove a (partially) deleted tree.
+        unregister_tempdir(path);
         remove_recursive(path);
+    }
 }
 
 void TempDir::release()

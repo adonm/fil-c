@@ -51,7 +51,8 @@ struct ProjenyFile {
     std::string header_value(const std::string& key) const; // "" if absent
 
     // Rebuild raw from head/middle/patch (headers kept verbatim, patch body
-    // replaced). Used by commit/rebase to preserve the user's headers.
+    // replaced). Used by commit/rebase/freeze-mtime/unfreeze-mtime to
+    // preserve the user's headers.
     void rebuild(const std::string& new_patch);
 };
 

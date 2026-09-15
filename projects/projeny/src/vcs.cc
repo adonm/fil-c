@@ -37,10 +37,8 @@
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <dirent.h>
 #include <fcntl.h>
 #include <map>
-#include <set>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -102,7 +100,8 @@ std::string join_content(const std::vector<std::string>& lines, bool ends_nl)
 // inside workdirs by older crashed runs; scratch now lives outside).
 bool is_scratch_rel(const std::string& rel)
 {
-    if (rel == ".projeny-tmp" || rel.compare(0, 13, ".projeny-tmp") == 0)
+    // The prefix compare covers ".projeny-tmp" itself and every suffix.
+    if (rel.compare(0, 13, ".projeny-tmp") == 0)
         return true;
     if (rel.find("/.projeny-tmp") != std::string::npos)
         return true;
@@ -450,21 +449,18 @@ std::string diff_label(const std::string& side, const std::string& wid,
 // frozen_mtimes map) adds the `frozen-mtime <ts>` extended header for a
 // frozen path, immediately after the `diff --git` line and before any
 // old/new mode lines — the same header region the parser scans for modes.
-// Returns block text ending with '\n'.
+// Returns block text ending with '\n'. Callers never invoke this for a pair
+// with identical content, mode, and path: those are skipped before dispatch.
 std::string emit_block(const std::string& wid, const std::string& old_rel,
                        const std::string& new_rel, const Collected* old_c,
                        const Collected* new_c, bool rename, int similarity,
                        const std::map<std::string, uint64_t>* frozen = nullptr)
 {
     std::string out;
-    // For deletes the b-side label is /dev/null; for adds the a-side is.
+    // For adds and deletes the `diff --git` line repeats the live path on
+    // both sides (like git); /dev/null appears only on the ---/+++ lines.
     std::string da = old_c ? diff_label("a", wid, old_rel) : "/dev/null";
     std::string db = new_c ? diff_label("b", wid, new_rel) : "/dev/null";
-    // The `diff --git` line names both sides (absent side shown as /dev/null
-    // only when the other side is also /dev/null-free; for adds/deletes git
-    // repeats the present path on both sides — we emit /dev/null form which
-    // git apply and patch both accept... but to stay closest to git output,
-    // repeat the present path like git does).
     if (!old_c)
         da = diff_label("a", wid, new_rel);
     if (!new_c)
@@ -544,9 +540,6 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
         if (fl.lines.empty())
             return out;
     }
-    if (old_c && new_c && om == nm && !rename) {
-        // Fast path: identical handled by caller (no block at all).
-    }
     std::string minus = old_c ? quote_git_path("a/" + wid + "/" + old_rel) : "/dev/null";
     std::string plus = new_c ? quote_git_path("b/" + wid + "/" + new_rel) : "/dev/null";
     if (rename) {
@@ -557,17 +550,10 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
     if (old_c && new_c && entry_lines(*old_c).lines == entry_lines(*new_c).lines &&
         ((old_c->is_symlink == new_c->is_symlink) &&
          entry_lines(*old_c).ends_nl == entry_lines(*new_c).ends_nl)) {
-        // Content identical (only mode differs, or pure rename without edits
-        // when hunks would be empty).
-        if (om != nm || rename) {
-            if (!rename) {
-                // mode-only: git emits no ---/+++/hunks.
-                return out;
-            }
-            // Pure rename: git emits no ---/+++/hunks either.
-            return out;
-        }
-        return out; // identical: caller should not have asked
+        // Content identical: mode-only changes and pure renames emit no
+        // hunks (like git). A fully identical pair should never reach here
+        // (the caller skips it), so a header-only block is the fallback.
+        return out;
     }
     out += "--- " + minus + "\n";
     out += "+++ " + plus + "\n";
@@ -804,7 +790,7 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
                                     opts.frozen_mtimes);
                 jobs.push_back(std::move(j));
             }
-            continue; // unchanged
+            continue; // unchanged: identical pairs never reach emit_block
         }
         if (ob.is_symlink != nw.is_symlink) {
             // Typechange: emit as delete+add hunks in one block (mode lines
@@ -1122,7 +1108,10 @@ struct PBlock {
     std::string rename_from, rename_to;
     std::string old_mode, new_mode; // "" if absent
     // Frozen-mtime attribute (unix-epoch seconds) from the `frozen-mtime`
-    // extended header; 0 when the block carries none.
+    // extended header. 0 means "no header" (the sentinel vcs_frozen_mtimes
+    // and emit_block test for), so an archive mtime of epoch-0 can never be
+    // frozen — practically impossible, and treated as absent if it ever
+    // appears in a patch.
     uint64_t frozen_mtime = 0;
     bool is_new = false, is_deleted = false;
     bool is_binary = false;
@@ -1943,11 +1932,9 @@ bool apply_hunks(const FileLines& file, const std::vector<PHunk>& hunks,
     } else if (last_touches_eof) {
         result->ends_nl = !hunks.back().new_no_nl;
     } else {
+        // If some hunk carried a new marker but did not touch EOF (should
+        // not happen in well-formed diffs), honor it conservatively.
         result->ends_nl = new_no_nl_file ? false : file.ends_nl;
-        // If some hunk carried a new marker but did not touch EOF (should not
-        // happen in well-formed diffs), honor it conservatively.
-        if (new_no_nl_file)
-            result->ends_nl = false;
     }
     return true;
 }
@@ -2810,15 +2797,12 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
     // enforcing effective mode and trailing-newline state even when the
     // content already matches so retry/re-setup repairs drift.
     if (hunks_match_all(cur.lines, blk.hunks, true)) {
-        std::string dst = blk.is_rename ? dst_full : src_full;
         // For renames the content lives at dst when src is gone; here src
-        // exists, so the content is at src. Enforce there (and on dst when
-        // both exist with equal content? src is the live copy).
+        // exists, so the content is at src. Enforce there.
         // Gate the rewrite/chmod like any other: never write through a link.
         if (!confined_for_write(treedir, src_full))
             return BlkStatus::Failed;
         ensure_already_state(src_full, cur, blk, is_link);
-        (void)dst;
         return BlkStatus::Already;
     }
     FileLines res;
@@ -4218,20 +4202,9 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
             ++q;
         } else if (c1 && c2) {
             size_t u_end = c1->base_end > c2->base_end ? c1->base_end : c2->base_end;
-            // Ours/theirs versions of the union range.
-            std::vector<std::string> ov, tv;
-            // Ours version: its fresh lines plus base lines in union gaps it
-            // does not cover.
-            if (c1->base_start == i && c1->base_end == i) {
-                ov = c1->fresh; // pure insertion
-            } else {
-                ov = c1->fresh;
-            }
-            if (c2->base_start == i && c2->base_end == i) {
-                tv = c2->fresh;
-            } else {
-                tv = c2->fresh;
-            }
+            // Ours/theirs versions of the union range: each is the chunk's
+            // fresh lines (plus base tail lines spliced in below).
+            std::vector<std::string> ov = c1->fresh, tv = c2->fresh;
             // For overlapping ranges with different extents, splice base tail
             // lines the shorter side does not cover so both versions span the
             // union (diff3 semantics for adjacent-but-unequal edits).

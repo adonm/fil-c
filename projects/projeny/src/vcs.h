@@ -37,7 +37,6 @@
 // never as a hard error and never silently.
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <string>

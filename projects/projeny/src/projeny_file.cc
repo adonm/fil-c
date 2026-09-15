@@ -483,8 +483,12 @@ void ProjenyFile::rebuild(const std::string& new_patch)
     // byte-exactly (a patch-less .projeny file must round-trip without
     // gaining a newline, so commit/rebase no-ops stay byte-identical).
     // The patch body itself is replaced verbatim, so trailing whitespace
-    // inside the new patch is preserved byte-for-byte. Rebuilt files end
-    // with exactly one '\n' when a patch is present.
+    // inside the new patch is preserved byte-for-byte. Trailing-newline
+    // shape: a non-empty patch always ends with '\n' (one is added when
+    // missing), and a patch whose content ends with a blank line ends with
+    // '\n\n' — that blank line is part of the patch and is preserved (e.g.
+    // the blank line after a binary block). All rebuild callers pass
+    // normalize_patch_text output, so stored patches already observe this.
     std::string out = head;
     out += "\n";
     out += middle;

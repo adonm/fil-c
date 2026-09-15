@@ -34,7 +34,6 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
-#include <iostream>
 #include <map>
 #include <set>
 #include <unistd.h>
@@ -1912,8 +1911,6 @@ int setup_impl(const std::string& pj)
     std::string workdir = join_path(ctx.pdir, cur.name);
 
     if (!path_exists(workdir)) {
-        if (is_dir(workdir))
-            die("internal error"); // unreachable
         // The checkout directory is gone, so the status file and any
         // archive snapshots are stale state from the removed checkout:
         // disregard them (warn + rename to '<name>.stale', '.stale2', ...)
@@ -2600,12 +2597,10 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     if (!is_dir(workdir))
         die("workdir '" + workdir + "' is missing; run setup first");
 
-    // Require a clean tree: workdir diff must equal the current patch. The
-    // workdir diff MUST be computed with the same wid as the stored patch
-    // (diff_workdir_vs_base uses the workdir basename, which differs when
-    // Name != Origname... actually wid IS Name in both; but be explicit:
-    // compare canonical forms). Also refuse when conflicts are pending:
-    // conflict markers in the tree would otherwise be diffed as content.
+    // Require a clean tree: the workdir must match the expected tree — i.e.
+    // diffing it against base+patch using the stored patch's wid must come
+    // back empty. Also refuse when conflicts are pending: conflict markers
+    // in the tree would otherwise be diffed as content.
     // Pending add/rm/mv ops are honored: the tree is "clean" when it matches
     // base+patch modulo exactly the recorded pending ops (verified below by
     // replaying the ops onto a fresh base+patch tree and diffing).
@@ -3345,8 +3340,7 @@ ArchiveKind classify_package_output(const std::string& output)
         if (base.size() > suf.size() &&
             base.compare(base.size() - suf.size(), suf.size(), suf) == 0) {
             std::string prefix = base.substr(0, base.size() - suf.size());
-            if (prefix.empty() || prefix == "." || prefix == ".." ||
-                prefix.find('/') != std::string::npos)
+            if (prefix.empty() || prefix == "." || prefix == "..")
                 die("bad package output name '" + output + "'");
             return ArchiveKind{e.comp, prefix};
         }

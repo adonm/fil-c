@@ -68,7 +68,7 @@ Watch out for a build-system trap when the patch updates a file that the build u
 
 The surgical fix is to freeze the file's mtime to whatever the tarball wants:
 
-- Run `projeny freeze-mtime projects/foo.projeny <file>` for each offending file. This stamps the checkout file with the archive member's mtime and records a `frozen-mtime <ts>` extended header in that file's diff block in the .projeny file. `projeny setup`, `projeny commit`, `projeny rebase`, and `projeny package` all preserve it and re-stamp the file after applying the patch (after a rebase, the value comes from the NEW archive), and the packaged tarball carries the frozen mtime too.
+- Run `projeny freeze-mtime projects/foo.projeny <file>` for each offending file. This stamps the checkout file with the archive member's mtime and records a `frozen-mtime <ts>` extended header in that file's diff block in the .projeny file. `projeny setup`, `projeny rebase`, and `projeny package` re-stamp the file after applying the patch (after a rebase, the value comes from the NEW archive), `projeny commit` preserves the header as-is (it never touches the workdir), and the packaged tarball carries the frozen mtime too.
 - Inspect the pins with `projeny list-frozen-mtimes projects/foo.projeny` and `projeny get-attributes projects/foo.projeny [<paths>]`; drop one with `projeny unfreeze-mtime projects/foo.projeny <file>`.
 
 Because of this, build scripts must NOT use `find . -exec touch -r ./configure {} +` hacks to fake consistent timestamps anymore; frozen mtimes in the patch do that job. See build_coreutils.sh, optfil/build_opt.sh, and pizlix/build_postlc_sub2_chroot_part2.sh for the coreutils example.

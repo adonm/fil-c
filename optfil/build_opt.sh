@@ -571,8 +571,6 @@ hash -r
 
 tar -xf $FILCSRC/projects/coreutils/pizlonated-coreutils.tar.gz
 cd pizlonated-coreutils
-# See build_coreutils.sh for why this touch is needed.
-find . -exec touch -r ./configure {} +
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ FORCE_UNSAFE_CONFIGURE=1 ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install

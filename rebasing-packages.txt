@@ -64,6 +64,15 @@ ONCE THE PROJECT IS IN PROJENY MODE, this means that rebasing the project in pro
 
 LOTS of projects are in projeny mode at this point, so you're likely to encounter the workflow where you're rebasing something that already uses projeny. But MOST projects still use the legacy mode.
 
+Watch out for a build-system trap when the patch updates a file that the build uses as a regeneration prerequisite. Example: coreutils' patch touches tests/local.mk, which is an automake input for Makefile.in. projeny applies the patch with fresh mtimes, so tests/local.mk ends up newer than the shipped Makefile.in, and make then insists on regenerating Makefile.in with automake. We don't have automake, the build's `missing` wrapper exits 127, and the build dies. The same trap applies to configure.ac inputs, man pages, and anything else the build wants to regenerate with tools that may be absent.
+
+The surgical fix is to freeze the file's mtime to whatever the tarball wants:
+
+- Run `projeny freeze-mtime projects/foo.projeny <file>` for each offending file. This stamps the checkout file with the archive member's mtime and records a `frozen-mtime <ts>` extended header in that file's diff block in the .projeny file. `projeny setup`, `projeny commit`, `projeny rebase`, and `projeny package` all preserve it and re-stamp the file after applying the patch (after a rebase, the value comes from the NEW archive), and the packaged tarball carries the frozen mtime too.
+- Inspect the pins with `projeny list-frozen-mtimes projects/foo.projeny` and `projeny get-attributes projects/foo.projeny [<paths>]`; drop one with `projeny unfreeze-mtime projects/foo.projeny <file>`.
+
+Because of this, build scripts must NOT use `find . -exec touch -r ./configure {} +` hacks to fake consistent timestamps anymore; frozen mtimes in the patch do that job. See build_coreutils.sh, optfil/build_opt.sh, and pizlix/build_postlc_sub2_chroot_part2.sh for the coreutils example.
+
 Note that some projects are *extremely special*, like projects/usermusl, projects/yolomusl, projects/yolo-glibc-2.44, and projects/user-glibc-2.44. Don't worry about those! We don't need to rebase them right now! (Also, they should be up to date.)
 
 AVOID EDITING THE CONTENTS OF SOURCE DISTRIBUTION TARBALLS. Do not unpack them, edit them, and repack them. If you have a patch to make to a source distro tarball, make it by doing a `projeny setup`, editing the projeny checkout, and then `projeny commit`.

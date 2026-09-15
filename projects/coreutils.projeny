@@ -11314,6 +11314,7 @@ new file mode 100644
 +
 +Exit $fail
 diff --git a/coreutils/tests/local.mk b/coreutils/tests/local.mk
+frozen-mtime 1789351525
 --- a/coreutils/tests/local.mk
 +++ b/coreutils/tests/local.mk
 @@ -456,6 +456,8 @@

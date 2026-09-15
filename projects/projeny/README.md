@@ -41,6 +41,10 @@ projeny diff <dir> <other-dir>              print the diff between two trees
 projeny patch <dir> <patch-file>            apply a patch file to a tree
 projeny package <f.projeny|dir> <out>       setup, then tar the tracked files
 projeny extract <f.projeny|dir> <dest>      setup, then copy tracked files to a dir
+projeny freeze-mtime <f.projeny|dir> <file>...
+projeny unfreeze-mtime <f.projeny|dir> <file>...
+projeny list-frozen-mtimes <f.projeny|dir>
+projeny get-attributes <f.projeny|dir> [<path or paths or directories>]
 projeny help [command]                      show help (per-command with a name)
 ```
 
@@ -135,8 +139,78 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   files are copied into `<dest-dir>` instead of archived — the projeny
   variant of `extract_source`, for building outside the checkout. The
   destination must not exist or must be empty.
+- `freeze-mtime <f.projeny|dir> <filenames...>`: pin the mtimes of tracked
+  regular files to what the tarball wants (see
+  [Frozen mtimes](#frozen-mtimes)). At the time the command runs, the
+  checked out files are stamped with the archive member's mtimes, and the
+  attribute is recorded in the `.projeny` patch as a `frozen-mtime <ts>`
+  extended header so every later setup restores it.
+- `unfreeze-mtime <f.projeny|dir> <filenames...>`: drop the attribute again
+  (future setups stop re-stamping the file; the current mtime is left
+  alone). A block that held nothing but the attribute is removed entirely.
+- `list-frozen-mtimes <f.projeny|dir>`: one line per frozen file,
+  `<workdir-relative path> <unix-epoch timestamp>`; hard-errors when
+  nothing is frozen.
+- `get-attributes <f.projeny|dir> [<path or paths or directories>]`: print
+  the special attributes (frozen mtime, nonstandard mode — see below) of
+  the requested tracked files: all of them when no paths are given, a
+  directory's subtree recursively, or a single file. Files without special
+  attributes are not printed.
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
+
+## Frozen mtimes
+
+A patched file gets a fresh timestamp when the patch is applied, which
+makes timestamp-driven build machinery (autoconf comparing `configure.ac`
+against a generated `tests/local.mk`, make comparing sources against
+generated files) rebuild things it need not rebuild. `projeny freeze-mtime
+<project> <filenames...>` pins a tracked file's checkout mtime to what the
+tarball wants:
+
+- At the time the command runs, the workdir file is stamped with the
+  archive member's mtime.
+- The attribute is recorded in the `.projeny` patch (and the status copy,
+  which stays byte-identical to it) as an extended header inside the
+  file's `diff --git` block, placed right after the `diff --git` line and
+  before any `old mode`/`new mode` lines — the same region the parser
+  scans for modes:
+
+  ```
+  diff --git a/lua/tests/local.mk b/lua/tests/local.mk
+  frozen-mtime 1734567890
+  ```
+
+  The value is the tarball's own member mtime as unix-epoch seconds. A
+  file may be frozen without any content or mode change: that stores an
+  attribute-only block (`diff --git` line plus the `frozen-mtime` line,
+  no hunks — the analogue of a mode-only block). Re-freezing updates the
+  value; a delete block never carries the header, so a frozen entry dies
+  with the file, and a rename records the header on its destination only.
+- Every `setup` (and `rebase`, and the setups `package`/`extract` run)
+  re-stamps frozen files after the workdir is in place, so a file the
+  patch rewrote ends at the archive's mtime. `commit` and `rebase` keep
+  the header in the regenerated patch and refresh the stored values from
+  the archive (after a rebase: the *new* archive's members), so the
+  invariant holds that a frozen value is always the archive's member
+  mtime for that file. `package`/`extract` then carry those mtimes into
+  output tarballs / extracted trees, because tracked files are staged
+  with their times preserved.
+- `unfreeze-mtime` removes the attribute (a block that held nothing but
+  the attribute is dropped whole) and leaves the current file mtime
+  alone; `list-frozen-mtimes` prints `<path> <ts>` per frozen file.
+- `get-attributes` reports the special attributes of tracked files:
+  `frozen-mtime <ts>` and a nonstandard mode — `mode 100755` for a
+  regular file with any exec bit (symlinks are standard and never
+  reported). Files with no special attribute are not printed.
+
+The file arguments of `freeze-mtime`/`unfreeze-mtime`/`get-attributes` use
+the same forms as `add`/`rm`/`mv` (CWD-relative, absolute, or
+workdir-relative `<Name>/...`). Freezing refuses directories, symlinks,
+untracked files, and pending (uncommitted) adds; a file the committed
+patch adds (no archive member) freezes at its current workdir mtime. The
+mutating commands require the `.projeny` file to match the status copy
+and refuse while conflicts are pending, like `commit`.
 
 ## The uncommitted diff
 
@@ -399,7 +473,9 @@ tree — only pending removals and pending rename sources are re-applied as
 deletions. Timestamps from the tarball are preserved end to end: files the
 patch never touches keep their archive mtimes through `setup`, `package`,
 and `extract` (so builds like libffi's skip up-to-date steps, e.g. `doc`),
-while files rewritten by patch application get fresh timestamps.
+while files rewritten by patch application get fresh timestamps — except
+files with a [frozen mtime](#frozen-mtimes), which are re-stamped to the
+archive's mtime after every setup.
 
 ## Build and test
 

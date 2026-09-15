@@ -36,8 +36,10 @@
 #include <functional>
 #include <iostream>
 #include <map>
+#include <set>
 #include <unistd.h>
 
+#include <fcntl.h>
 #include <sys/stat.h>
 
 Ctx resolve_ctx(const std::string& projeny_arg)
@@ -1741,11 +1743,127 @@ std::string resolve_projeny_path(const std::string& arg, const char* cmd)
     return arg;
 }
 
+// ---- frozen-mtime support ----
+//
+// A frozen mtime pins a tracked file's checkout timestamp to what the
+// archive wants it to be (so builds that would otherwise see a patched file
+// as newer than its inputs — autoconf's "configure.ac is newer than
+// local.mk" dance — keep skipping their up-to-date steps). The attribute is
+// recorded in the .projeny patch as an extended header `frozen-mtime <ts>`
+// (unix-epoch seconds) inside the file's `diff --git` block, right where the
+// mode lines live, so it survives every patch regeneration. The invariant
+// maintained by setup/commit/rebase: the stored value is always the
+// archive's own member mtime for that file (refreshed from a fresh unpack),
+// and after any setup/rebase the workdir copy is stamped to it.
+
+// Stamp every frozen-mtime file named by `patch` (wid-label form) inside
+// `workdir` to its recorded unix-epoch timestamp. Files missing from the
+// workdir (deleted) or not regular files are skipped; a stat failure on a
+// regular file dies. Called after setup/rebase put the workdir in place, so
+// files the applier rewrote (which get a "now" timestamp from
+// write_file_bytes) end up with the archive's mtime, like the tarball
+// wanted.
+void stamp_frozen_mtimes(const std::string& workdir, const std::string& patch,
+                         const std::string& wid)
+{
+    std::map<std::string, uint64_t> frozen = vcs_frozen_mtimes(patch, wid);
+    for (const auto& kv : frozen) {
+        std::string full = join_path(workdir, kv.first);
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+            continue; // gone (or replaced by something else): nothing to stamp
+        struct timespec ts[2];
+        ts[0].tv_sec = (time_t)kv.second;
+        ts[0].tv_nsec = 0;
+        ts[1] = ts[0];
+        if (utimensat(AT_FDCWD, full.c_str(), ts, 0) != 0)
+            die("cannot set the frozen mtime on '" + full + "': " +
+                strerror(errno));
+    }
+}
+
+// The frozen set recorded in `patch`, refreshed against `tree` (a freshly
+// unpacked archive): each entry's value becomes that member's mtime, so the
+// invariant "frozen value == archive member mtime" holds after commit and
+// rebase regenerate the patch. Entries whose file is not in `tree` (a
+// committed patch-added file, or one the new archive no longer ships) keep
+// their previous value: there is no archive mtime to refresh from, and the
+// applier will create the file before the stamp pass pins it.
+std::map<std::string, uint64_t> refresh_frozen_from_tree(
+    const std::map<std::string, uint64_t>& frozen, const std::string& tree)
+{
+    std::map<std::string, uint64_t> out = frozen;
+    for (auto& kv : out) {
+        std::string full = join_path(tree, kv.first);
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+            continue;
+        kv.second = (uint64_t)st.st_mtim.tv_sec;
+    }
+    return out;
+}
+
+// True when workdir-relative `rel` is a tracked file of the project
+// described by the current patch and status: present in the fresh base+patch
+// tree, or a committed/pending add (or rename destination), and not
+// pending-removed or a rename source. This is package's tracking rule; the
+// frozen-mtime and get-attributes commands use it so a path that projeny
+// does not manage dies with a clear name instead of being frozen/listed.
+bool is_tracked_rel(const std::string& rel, const std::string& fresh_root,
+                    const StatusData& st)
+{
+    for (auto& r : st.removed)
+        if (rel == r || starts_with(rel, r + "/"))
+            return false;
+    for (auto& rn : st.renamed) {
+        if (rel == rn.first || starts_with(rel, rn.first + "/"))
+            return false;
+        if (rel == rn.second || starts_with(rel, rn.second + "/"))
+            return true;
+    }
+    for (auto& a : st.added)
+        if (rel == a || starts_with(rel, a + "/"))
+            return true;
+    return path_exists(join_path(fresh_root, rel));
+}
+
 } // namespace
+
+// The setup body, factored out so cmd_setup can run its frozen-mtime stamp
+// pass after every setup flavor (fresh, adopt, re-setup, merge, conflicted
+// recovery) has put the workdir in place. Takes the ALREADY-RESOLVED and
+// absolutized .projeny path (see cmd_setup).
+int setup_impl(const std::string& pj);
 
 int cmd_setup(const std::string& projeny_arg)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "setup");
+    // Resolve and ABSOLUTIZE before any tree work: a setup can remove the
+    // directory the process's CWD sits in (`projeny setup ..` from a workdir
+    // subdirectory deletes the whole workdir, CWD included), and every path
+    // resolution after that point — including the stamp pass below — would
+    // otherwise fail on a dead CWD.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "setup"));
+    Ctx ctx = resolve_ctx(pj);
+    int rc = setup_impl(pj);
+    // setup must ALWAYS leave frozen-mtime files stamped (the whole point of
+    // the attribute: whatever the checkout went through — fresh unpack,
+    // adopt-into-existing, re-setup, merge, or conflicted recovery — the
+    // file's mtime ends at what the archive wants). The stamp pass reads the
+    // FINAL .projeny file (setup may have replaced it) and needs no archive
+    // access: by the invariant above, the stored value is the archive's
+    // member mtime.
+    std::string raw;
+    if (try_read_file_bytes(ctx.projeny_arg, &raw) &&
+        !projeny_has_conflict_markers(raw)) {
+        ProjenyFile cur =
+            ProjenyFile::parse_bytes(raw, "'" + ctx.projeny_arg + "'");
+        stamp_frozen_mtimes(join_path(ctx.pdir, cur.name), cur.patch, cur.name);
+    }
+    return rc;
+}
+
+int setup_impl(const std::string& pj)
+{
     Ctx ctx = resolve_ctx(pj);
     std::string raw;
     if (!try_read_file_bytes(ctx.projeny_arg, &raw)) {
@@ -2218,10 +2336,18 @@ int cmd_commit(const std::string& projeny_arg)
     // the disappeared check above is the sole deletion authority: no
     // delete block is ever dropped here, and a resolved rename's delete
     // side may name an archive path that no pending op mentions.
+    // frozen_mtimes keeps every frozen-mtime attribute in the regenerated
+    // patch (attribute-only blocks for unchanged frozen files, the header
+    // on modified ones), with values refreshed from this archive unpack so
+    // the stored value always equals the archive's member mtime.
+    std::map<std::string, uint64_t> frozen = refresh_frozen_from_tree(
+        vcs_frozen_mtimes(cur.patch, cur.name), base);
     VcsDiffOpts dopts;
     dopts.forced_renames = &st.renamed;
     dopts.committed_patch = &cur.patch;
     dopts.add_keep = &keep;
+    dopts.frozen_mtimes = &frozen;
+    dopts.frozen_attribute_blocks = true;
     std::string raw_patch = vcs_diff_trees_ex(base, workdir, cur.name, dopts);
     std::string new_patch = normalize_patch_text(raw_patch);
 
@@ -2448,7 +2574,11 @@ int cmd_resolve(const std::string& projeny_arg, const std::string& path)
 
 int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "rebase");
+    // Absolutize up front: this command replaces the workdir, which can
+    // delete the directory the process's CWD sits in (`projeny rebase ..`
+    // from a workdir subdirectory); every later path must not need the
+    // CWD again.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "rebase"));
     Ctx ctx = resolve_ctx(pj);
 
     // If status/workdir are missing, do a setup first.
@@ -2557,6 +2687,13 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-rebase-");
     unpack_single_top(dest_archive, tmp.path, new_origname);
     std::string tree = join_path(tmp.path, new_origname);
+    // Frozen mtimes must be REFRESHED from the new archive before the patch
+    // is applied (application rewrites files with a "now" timestamp): the
+    // frozen set of the current patch is re-valued against the freshly
+    // unpacked members, so the regenerated patch carries the new archive's
+    // mtimes and the stamp pass at the end pins the workdir to them.
+    std::map<std::string, uint64_t> frozen =
+        refresh_frozen_from_tree(vcs_frozen_mtimes(cur.patch, cur.name), tree);
     std::vector<std::string> conflicts;
     if (!normalize_patch_text(cur.patch).empty() &&
         !apply_patch_whole(tree, cur.patch, cur.name,
@@ -2633,14 +2770,19 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     cur.archive = new_base;
     cur.origname = new_origname;
     // Regenerate the patch against the new base so hunk positions/counts are
-    // exact (content is base+patch by construction).
+    // exact (content is base+patch by construction). The regenerated patch
+    // carries the refreshed frozen-mtime headers, including attribute-only
+    // blocks for frozen files the new base and the patched tree agree on.
     {
         TempDir tB(scratch_parent_for(ctx.pdir), "projeny-rebase-base-");
         unpack_single_top(dest_archive, tB.path, new_origname);
-        // diff_trees already returns canonical labels; normalize ends with
-        // exactly one newline.
-        std::string regen = normalize_patch_text(
-            diff_trees(join_path(tB.path, new_origname), tree, cur.name));
+        VcsDiffOpts ropts;
+        ropts.frozen_mtimes = &frozen;
+        ropts.frozen_attribute_blocks = true;
+        // vcs_diff_trees_ex already returns canonical labels; normalize
+        // ends with exactly one newline.
+        std::string regen = normalize_patch_text(vcs_diff_trees_ex(
+            join_path(tB.path, new_origname), tree, cur.name, ropts));
         cur.rebuild(regen);
     }
     write_file_bytes(ctx.projeny_arg, cur.raw);
@@ -2663,6 +2805,10 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     sd.renamed = st.renamed;
     sd.embedded = cur.raw;
     write_status(ctx, sd);
+    // The rebased tree's frozen files may have been rewritten by the applier
+    // ("now" timestamps): re-stamp them to the refreshed values the new
+    // patch carries (the new archive's member mtimes).
+    stamp_frozen_mtimes(workdir, cur.patch, cur.name);
     if (!sd.conflicts.empty()) {
         printf("projeny: rebased onto '%s' with %zu conflict(s):\n",
                new_base.c_str(), sd.conflicts.size());
@@ -2949,11 +3095,19 @@ int cmd_diff_projeny(const std::string& projeny_arg)
         add_keep.push_back(rn.second);
     }
     std::vector<std::string> disappeared;
+    // Frozen-mtime headers ride on modified frozen files so the printed
+    // diff matches what commit would store for them. No attribute-only
+    // blocks here (frozen_attribute_blocks stays false): a frozen mtime is
+    // not a local change, so a clean checkout of a frozen project must
+    // still diff empty.
+    std::map<std::string, uint64_t> frozen =
+        vcs_frozen_mtimes(cur.patch, cur.name);
     VcsDiffOpts dopts;
     dopts.forced_renames = &st.renamed;
     dopts.add_keep = &add_keep;
     dopts.delete_keep = &del_keep;
     dopts.disappeared = &disappeared;
+    dopts.frozen_mtimes = &frozen;
     std::string raw = vcs_diff_trees_ex(Etree, workdir, cur.name, dopts);
 
     // Files that vanished without `projeny rm` are unregistered deletions:
@@ -3281,7 +3435,11 @@ void stage_tracked(const std::string& workdir, const std::string& fresh_root,
 
 int cmd_package(const std::string& projeny_arg, const std::string& output)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "package");
+    // Absolutize up front: this command replaces the workdir, which can
+    // delete the directory the process's CWD sits in (`projeny package ..`
+    // from a workdir subdirectory); every later path must not need the
+    // CWD again.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "package"));
     ArchiveKind kind = classify_package_output(output); // fail fast on bad names
     // Like `commit`, refuse upfront when a previous setup left unresolved
     // conflicts: re-running setup here would otherwise re-merge the marker
@@ -3353,7 +3511,11 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
 
 int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
 {
-    std::string pj = resolve_projeny_path(projeny_arg, "extract");
+    // Absolutize up front: this command replaces the workdir, which can
+    // delete the directory the process's CWD sits in (`projeny extract ..`
+    // from a workdir subdirectory); every later path must not need the
+    // CWD again.
+    std::string pj = absolutize(resolve_projeny_path(projeny_arg, "extract"));
     // Like `commit`, refuse upfront on conflicts left by a previous setup
     // (see cmd_package: re-running setup would absorb the markers silently).
     {
@@ -3414,6 +3576,327 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
     return 0;
 }
 
+// ---- frozen-mtime and attribute commands ----
+//
+// freeze-mtime pins a tracked file's checkout timestamp to what the archive
+// wants (so timestamp-driven rebuild machinery — autoconf comparing
+// configure.ac against tests/local.mk — keeps skipping its steps); the
+// attribute is stored in the .projeny patch as a `frozen-mtime <ts>`
+// extended header and re-stamped by every setup/rebase. unfreeze-mtime
+// removes the attribute. list-frozen-mtimes and get-attributes report what
+// is recorded.
+
+namespace {
+
+// Everything the mutating frozen-mtime commands need, with commit's guards:
+// the project must be set up, the .projeny file must match the status copy
+// exactly (both are rewritten together and must stay byte-identical), and
+// no conflicts may be pending.
+struct FreezeTarget {
+    Ctx ctx;
+    StatusData st;
+    ProjenyFile cur;
+    std::string workdir;
+};
+
+FreezeTarget resolve_frozen_target(const std::string& projeny_arg,
+                                   const char* cmd)
+{
+    std::string pj = resolve_projeny_path(projeny_arg, cmd);
+    FreezeTarget t;
+    t.ctx = resolve_ctx(pj);
+    if (!path_exists(t.ctx.statusfile))
+        die("status file '" + t.ctx.statusfile + "' is missing; run setup first");
+    t.st = StatusData::parse(t.ctx.statusfile);
+    std::string cur_raw = read_file_bytes(t.ctx.projeny_arg);
+    if (cur_raw != t.st.embedded)
+        die("'" + t.ctx.projeny_arg +
+            "' differs from the copy in '" + t.ctx.statusfile +
+            "'; run setup to merge first");
+    if (!t.st.conflicts.empty()) {
+        std::string detail;
+        for (auto& c : t.st.conflicts)
+            detail += "  " + c + "\n";
+        die(std::string("cannot ") + cmd + " with unresolved conflicts",
+            detail);
+    }
+    t.cur = ProjenyFile::parse_bytes(cur_raw, "'" + t.ctx.projeny_arg + "'");
+    t.workdir = join_path(t.ctx.pdir, t.cur.name);
+    if (!is_dir(t.workdir))
+        die("workdir '" + t.workdir + "' is missing; run setup first");
+    return t;
+}
+
+// Resolve a get-attributes path to a workdir-relative scope: "" means the
+// whole workdir (the path named the workdir itself, e.g. '.'), otherwise a
+// workdir-relative file or directory prefix. Same path forms as add/rm/mv.
+std::string attr_scope(const std::string& workdir, const std::string& wid,
+                       const std::string& user_path)
+{
+    std::string abs = normalize_lexical(absolutize(user_path));
+    std::string wabs = normalize_lexical(absolutize(workdir));
+    if (abs == wabs)
+        return "";
+    return normalize_workdir_rel(workdir, wid, user_path);
+}
+
+// True when workdir-relative `rel` is inside `scope` ("" covers everything).
+bool in_scope(const std::string& rel, const std::string& scope)
+{
+    return scope.empty() || rel == scope || starts_with(rel, scope + "/");
+}
+
+// True when a workdir-relative path is one of the applier's scratch
+// entries (a crashed run's leftovers), which no diff ever describes.
+bool attr_is_scratch(const std::string& rel)
+{
+    if (rel == ".projeny-tmp" || rel.compare(0, 13, ".projeny-tmp") == 0)
+        return true;
+    return rel.find("/.projeny-tmp") != std::string::npos;
+}
+
+// Collect the regular/symlink files under `prefix` in `root` (recursive),
+// keeping those inside every scope, into `out`.
+void attr_walk(const std::string& root, const std::string& prefix,
+               const std::vector<std::string>& scopes,
+               std::set<std::string>* out)
+{
+    std::string dir = prefix.empty() ? root : join_path(root, prefix);
+    for (const std::string& name : list_dir_names(dir)) {
+        std::string rel = prefix.empty() ? name : prefix + "/" + name;
+        if (attr_is_scratch(rel))
+            continue;
+        std::string full = join_path(root, rel);
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0)
+            continue; // raced deletion; nothing to report
+        if (S_ISDIR(st.st_mode)) {
+            attr_walk(root, rel, scopes, out);
+            continue;
+        }
+        for (const auto& s : scopes) {
+            if (in_scope(rel, s)) {
+                out->insert(rel);
+                break;
+            }
+        }
+    }
+}
+
+} // namespace
+
+int cmd_freeze_mtime(const std::string& projeny_arg,
+                     const std::vector<std::string>& files)
+{
+    if (files.empty())
+        die("freeze-mtime needs at least one file to freeze");
+    FreezeTarget t = resolve_frozen_target(projeny_arg, "freeze-mtime");
+
+    // Every requested path must name a tracked regular file of the workdir.
+    // The frozen value is the mtime the ARCHIVE has for the file
+    // (snapshot-aware unpack, like setup's tree reconstruction): unpack it
+    // once and stat the members. A tracked file the archive does not ship
+    // (a committed patch-add) freezes at its current workdir mtime instead;
+    // a pending (uncommitted) add is refused — the attribute needs a block
+    // the committed patch can carry.
+    std::vector<std::string> del;
+    for (const auto& r : t.st.removed)
+        del.push_back(r);
+    for (const auto& rn : t.st.renamed)
+        del.push_back(rn.first);
+    for (const auto& p : vcs_deleted_paths(t.cur.patch, t.cur.name))
+        del.push_back(p);
+    std::vector<std::string> adds = vcs_add_paths(t.cur.patch, t.cur.name);
+    std::vector<std::string> pending_adds = t.st.added;
+    for (const auto& rn : t.st.renamed)
+        pending_adds.push_back(rn.second);
+
+    TempDir tmp(scratch_parent_for(t.ctx.pdir), "projeny-freeze-");
+    std::string archive_path = resolve_status_archive(
+        join_path(t.ctx.pdir, t.cur.archive),
+        "freeze mtimes from the archive of '" + t.ctx.projeny_arg + "'");
+    unpack_single_top(archive_path, tmp.path, t.cur.origname);
+    std::string rawtree = join_path(tmp.path, t.cur.origname);
+
+    std::map<std::string, uint64_t> frozen =
+        vcs_frozen_mtimes(t.cur.patch, t.cur.name);
+    for (const std::string& f : files) {
+        std::string rel = normalize_workdir_rel(t.workdir, t.cur.name, f);
+        std::string full = join_path(t.workdir, rel);
+        struct stat st;
+        if (lstat(full.c_str(), &st) != 0)
+            die("cannot freeze '" + f + "': no such file in the workdir '" +
+                t.workdir + "'");
+        if (S_ISDIR(st.st_mode))
+            die("cannot freeze '" + f +
+                "': it is a directory; only regular files can be frozen");
+        if (S_ISLNK(st.st_mode))
+            die("cannot freeze '" + f +
+                "': it is a symlink; only regular files can be frozen");
+        if (!S_ISREG(st.st_mode))
+            die("cannot freeze '" + f + "': not a regular file");
+        if (vcs_covers_keep_path(del, rel))
+            die("cannot freeze '" + f +
+                "': it is not a tracked file in this project (it is removed "
+                "or renamed away)");
+        if (vcs_covers_keep_path(pending_adds, rel))
+            die("cannot freeze '" + f +
+                "': it is a pending (uncommitted) add; commit it first");
+        std::string member = join_path(rawtree, rel);
+        struct stat mst;
+        if (lstat(member.c_str(), &mst) == 0 && S_ISREG(mst.st_mode)) {
+            // The tarball's own mtime for the file (GNU tar preserves member
+            // mtimes on unpack), refreshed even on a re-freeze: idempotent.
+            frozen[rel] = (uint64_t)mst.st_mtim.tv_sec;
+        } else if (vcs_covers_keep_path(adds, rel)) {
+            // A committed patch-add has no archive member; freeze the mtime
+            // the checkout currently has.
+            frozen[rel] = (uint64_t)st.st_mtim.tv_sec;
+        } else {
+            die("cannot freeze '" + f +
+                "': it is not a tracked file in this project (only files the "
+                "archive ships or the committed patch adds can be frozen)");
+        }
+    }
+
+    std::string new_patch = normalize_patch_text(
+        vcs_set_frozen_mtimes(t.cur.patch, t.cur.name, frozen));
+    t.cur.rebuild(new_patch);
+    write_file_bytes(t.ctx.projeny_arg, t.cur.raw);
+    StatusData sd = t.st;
+    sd.embedded = t.cur.raw;
+    write_status(t.ctx, sd);
+    // "At the time when this command is issued, projeny should set the mtime
+    // of the checked out file to be whatever the tarball wanted for that
+    // file": stamp now (a no-op for files the archive already timestamps).
+    stamp_frozen_mtimes(t.workdir, t.cur.patch, t.cur.name);
+    printf("projeny: froze the mtime of %zu file(s) in '%s'\n", files.size(),
+           t.ctx.projeny_arg.c_str());
+    return 0;
+}
+
+int cmd_unfreeze_mtime(const std::string& projeny_arg,
+                       const std::vector<std::string>& files)
+{
+    if (files.empty())
+        die("unfreeze-mtime needs at least one file to unfreeze");
+    FreezeTarget t = resolve_frozen_target(projeny_arg, "unfreeze-mtime");
+    std::map<std::string, uint64_t> frozen =
+        vcs_frozen_mtimes(t.cur.patch, t.cur.name);
+    for (const std::string& f : files) {
+        std::string rel = normalize_workdir_rel(t.workdir, t.cur.name, f);
+        if (!frozen.count(rel))
+            die("cannot unfreeze '" + f + "': its mtime is not frozen (see "
+                "'projeny list-frozen-mtimes')");
+        frozen.erase(rel);
+    }
+    // Dropping a header from an attribute-only block leaves a bare
+    // `diff --git` husk; vcs_set_frozen_mtimes drops such blocks entirely.
+    std::string new_patch = normalize_patch_text(
+        vcs_set_frozen_mtimes(t.cur.patch, t.cur.name, frozen));
+    t.cur.rebuild(new_patch);
+    write_file_bytes(t.ctx.projeny_arg, t.cur.raw);
+    StatusData sd = t.st;
+    sd.embedded = t.cur.raw;
+    write_status(t.ctx, sd);
+    // The workdir file's mtime is deliberately left as it is: unfreezing
+    // changes future setups only.
+    printf("projeny: unfroze the mtime of %zu file(s) in '%s'\n", files.size(),
+           t.ctx.projeny_arg.c_str());
+    return 0;
+}
+
+int cmd_list_frozen_mtimes(const std::string& projeny_arg)
+{
+    std::string pj = resolve_projeny_path(projeny_arg, "list-frozen-mtimes");
+    Ctx ctx = resolve_ctx(pj);
+    ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
+    std::map<std::string, uint64_t> frozen =
+        vcs_frozen_mtimes(cur.patch, cur.name);
+    if (frozen.empty())
+        die("no frozen mtimes in '" + ctx.projeny_arg + "' (freeze one with "
+            "'projeny freeze-mtime " + ctx.projeny_arg + " <file>')");
+    // One line per frozen file: "<workdir-relative path> <unix-epoch ts>".
+    for (const auto& kv : frozen)
+        printf("%s %llu\n", kv.first.c_str(), (unsigned long long)kv.second);
+    return 0;
+}
+
+int cmd_get_attributes(const std::string& projeny_arg,
+                       const std::vector<std::string>& paths)
+{
+    std::string pj = resolve_projeny_path(projeny_arg, "get-attributes");
+    Ctx ctx = resolve_ctx(pj);
+    ProjenyFile cur = ProjenyFile::parse(ctx.projeny_arg);
+    std::string workdir = join_path(ctx.pdir, cur.name);
+    if (!is_dir(workdir))
+        die("workdir '" + workdir + "' is missing; run setup first");
+    StatusData st;
+    if (path_exists(ctx.statusfile))
+        st = StatusData::parse(ctx.statusfile);
+
+    // The tracking rule needs the fresh base+patch tree (one unpack, like
+    // status's live diff): a file is tracked when the fresh tree, a pending
+    // add, or a rename destination holds it and no removal or rename source
+    // takes it away.
+    TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-attrs-");
+    std::string fresh = build_tree_from_patch(
+        tmp, resolve_status_archive(join_path(ctx.pdir, cur.archive),
+                                    "get the attributes of '" + pj + "'"),
+        cur.origname, cur.name, cur.patch, "patch in '" + pj + "'");
+
+    // Scopes: "" for the whole workdir, else workdir-relative file or
+    // directory prefixes. No paths means every tracked file of the project.
+    // A requested file must exist and be tracked; a requested directory may
+    // hold no tracked files at all.
+    std::vector<std::string> scopes;
+    if (paths.empty())
+        scopes.push_back("");
+    for (const std::string& p : paths) {
+        std::string rel = attr_scope(workdir, cur.name, p);
+        if (!rel.empty()) {
+            std::string full = join_path(workdir, rel);
+            struct stat pst;
+            if (lstat(full.c_str(), &pst) != 0)
+                die("cannot get attributes of '" + p +
+                    "': no such file in the workdir '" + workdir + "'");
+            if (!S_ISDIR(pst.st_mode) && !is_tracked_rel(rel, fresh, st))
+                die("'" + p +
+                    "' is not a tracked file in '" + ctx.projeny_arg + "'");
+        }
+        scopes.push_back(rel);
+    }
+
+    std::map<std::string, uint64_t> frozen =
+        vcs_frozen_mtimes(cur.patch, cur.name);
+    std::set<std::string> cands;
+    attr_walk(workdir, "", scopes, &cands);
+    // The fresh tree can hold tracked files the workdir lost (disappeared):
+    // they still carry their attributes, so walk it too.
+    attr_walk(fresh, "", scopes, &cands);
+
+    // One line per attribute, sorted by path: "<path>: frozen-mtime <ts>"
+    // and "<path>: mode 100755" (a regular file with any exec bit; symlinks
+    // are standard and never reported). Paths with no special attribute are
+    // left out entirely.
+    for (const std::string& rel : cands) {
+        if (!is_tracked_rel(rel, fresh, st))
+            continue; // a workdir file the fresh tree never tracked
+        auto it = frozen.find(rel);
+        if (it != frozen.end()) {
+            printf("%s: frozen-mtime %llu\n", rel.c_str(),
+                   (unsigned long long)it->second);
+        }
+        std::string full = join_path(workdir, rel);
+        struct stat stt;
+        if (lstat(full.c_str(), &stt) == 0 && S_ISREG(stt.st_mode) &&
+            (stt.st_mode & 0111)) {
+            printf("%s: mode 100755\n", rel.c_str());
+        }
+    }
+    return 0;
+}
+
 int cmd_help(const std::string& arg0)
 {
     printf("usage: %s <command> [args]\n", arg0.c_str());
@@ -3433,6 +3916,14 @@ int cmd_help(const std::string& arg0)
            "  patch <dir> <patch-file>         apply a patch file to a tree\n"
            "  package <f.projeny|dir> <out>    setup, then tar the tracked files\n"
            "  extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir\n"
+           "  freeze-mtime <f.projeny|dir> <file>...\n"
+           "                                   pin a file's mtime to the tarball's\n"
+           "  unfreeze-mtime <f.projeny|dir> <file>...\n"
+           "                                   drop the frozen mtime of a file\n"
+           "  list-frozen-mtimes <f.projeny|dir>\n"
+           "                                   list files with a frozen mtime\n"
+           "  get-attributes <f.projeny|dir> [<paths>]\n"
+           "                                   show special attributes of files\n"
            "  help [command]                   show this message or command help\n"
            "\n"
            "Project arguments (<f.projeny|dir>) may be the .projeny file, the\n"
@@ -3808,13 +4299,112 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                t);
         return 0;
     }
+    if (topic == "freeze-mtime") {
+        printf("%s freeze-mtime <f.projeny|dir> <filenames...>\n"
+               "\n"
+               "Pin the mtime of tracked regular files to what the tarball\n"
+               "wants them to be. At the time the command runs, the checked\n"
+               "out file's mtime is set to the archive member's mtime, and\n"
+               "the attribute is recorded in the .projeny patch (and the\n"
+               "status copy) as an extended header `frozen-mtime <ts>`\n"
+               "(unix-epoch seconds) inside the file's `diff --git` block,\n"
+               "right where the old/new mode lines live — so it survives\n"
+               "every patch regeneration and merges like any other patch\n"
+               "metadata.\n"
+               "\n"
+               "Every `setup` (and every `rebase`, and the setup that\n"
+               "`package`/`extract` run) re-stamps frozen files afterwards:\n"
+               "a file the patch rewrote gets a fresh timestamp from the\n"
+               "applier, and the stamp pass puts the archive's mtime back.\n"
+               "This keeps timestamp-driven build machinery (autoconf\n"
+               "comparing configure.ac against a generated local.mk, make\n"
+               "comparing sources against generated files) from seeing a\n"
+               "patched file as newer than its inputs. `commit` and\n"
+               "`rebase` refresh the stored values from the archive (after\n"
+               "a rebase: the NEW archive's members), so the invariant\n"
+               "holds that a frozen value is always the archive's member\n"
+               "mtime for that file.\n"
+               "\n"
+               "A file may be frozen without any content or mode change:\n"
+               "that stores an attribute-only block (`diff --git a/X b/X`\n"
+               "plus the `frozen-mtime` line, no hunks — the analogue of a\n"
+               "mode-only block). Re-freezing a file updates its value.\n"
+               "\n"
+               "The file arguments use the same forms as `add`/`rm`/`mv`:\n"
+               "CWD-relative, absolute, or workdir-relative (<Name>/...).\n"
+               "Each must name a tracked regular file: directories,\n"
+               "symlinks, untracked files, and pending (uncommitted) adds\n"
+               "are refused; a file the committed patch adds (no archive\n"
+               "member) freezes at its current workdir mtime. The command\n"
+               "requires the .projeny file to match the status copy (else\n"
+               "hard error: run `setup` to merge first) and refuses while\n"
+               "conflicts are pending.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists — including `.` from inside the workdir and `..` from\n"
+               "a workdir subdirectory.\n",
+               t);
+        return 0;
+    }
+    if (topic == "unfreeze-mtime") {
+        printf("%s unfreeze-mtime <f.projeny|dir> <filenames...>\n"
+               "\n"
+               "Drop the frozen-mtime attribute of each named file: future\n"
+               "setups stop re-stamping it (patch-rewritten files then keep\n"
+               "the fresh timestamp the applier gives them). The workdir\n"
+               "file's current mtime is left as it is — unfreezing changes\n"
+               "future setups only. When the attribute was the only content\n"
+               "of a block (an attribute-only block), the block is dropped\n"
+               "entirely rather than left as a bare `diff --git` husk.\n"
+               "Refuses a file whose mtime is not frozen. The .projeny file\n"
+               "and the status copy are updated together (the .projeny file\n"
+               "must match the status copy first: run `setup` to merge).\n",
+               t);
+        return 0;
+    }
+    if (topic == "list-frozen-mtimes") {
+        printf("%s list-frozen-mtimes <f.projeny|dir>\n"
+               "\n"
+               "List every file with a frozen mtime, one per line, as\n"
+               "`<workdir-relative path> <unix-epoch timestamp>` — the\n"
+               "mtime the archive has for that file and that every setup\n"
+               "restores. Hard-errors when nothing is frozen. Reads the\n"
+               "current .projeny patch, so it works without a setup too.\n",
+               t);
+        return 0;
+    }
+    if (topic == "get-attributes") {
+        printf("%s get-attributes <f.projeny|dir> [<path or paths or directories>]\n"
+               "\n"
+               "Print the special attributes of tracked files, one line per\n"
+               "attribute, sorted by path:\n"
+               "\n"
+               "  <path>: frozen-mtime <ts>   the file's mtime is frozen\n"
+               "  <path>: mode 100755         a regular file with any exec bit\n"
+               "\n"
+               "Files with no special attribute are left out entirely\n"
+               "(100644 regular files and symlinks are standard and never\n"
+               "reported). With no paths, all tracked files of the project\n"
+               "are considered; a path that names a directory considers\n"
+               "everything tracked under it, recursively; a path that names\n"
+               "a file considers just that file. Path forms are the same as\n"
+               "for `add` (CWD-relative, absolute, or workdir-relative), and\n"
+               "a path naming the workdir itself means the whole tree. A\n"
+               "requested file that does not exist in the workdir, or is not\n"
+               "tracked in the project, is a hard error naming it.\n",
+               t);
+        return 0;
+    }
     if (topic == "help") {
         printf("%s help [command]\n"
                "\n"
                "With no arguments, list all commands. With a command name\n"
                "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
-               "patch, package, extract, help), print a detailed explanation\n"
-               "of that command.\n",
+               "patch, package, extract, freeze-mtime, unfreeze-mtime,\n"
+               "list-frozen-mtimes, get-attributes, help), print a detailed\n"
+               "explanation of that command.\n",
                t);
         return 0;
     }

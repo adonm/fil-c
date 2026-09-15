@@ -35,7 +35,8 @@ int usage(const char* arg0, bool err)
     FILE* f = err ? stderr : stdout;
     fprintf(f,
             "usage: %s "
-            "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|package|extract|help> "
+            "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|package|extract|"
+            "freeze-mtime|unfreeze-mtime|list-frozen-mtimes|get-attributes|help> "
             "[args]\n"
             "  setup <f.projeny|dir>\n"
             "  commit <f.projeny|dir>\n"
@@ -50,6 +51,10 @@ int usage(const char* arg0, bool err)
             "  patch <dir> <patch-file>\n"
             "  package <f.projeny|dir> <output-tarball>\n"
             "  extract <f.projeny|dir> <dest-dir>\n"
+            "  freeze-mtime <f.projeny|dir> <filenames...>\n"
+            "  unfreeze-mtime <f.projeny|dir> <filenames...>\n"
+            "  list-frozen-mtimes <f.projeny|dir>\n"
+            "  get-attributes <f.projeny|dir> [<path or paths or directories>]\n"
             "  help [command]\n",
             arg0);
     return err ? 1 : 0;
@@ -134,6 +139,32 @@ int main(int argc, char** argv)
         if (args.size() != 3)
             return usage(arg0.c_str(), true);
         return cmd_extract(args[1], args[2]);
+    }
+    if (cmd == "freeze-mtime") {
+        if (args.size() < 3)
+            return usage(arg0.c_str(), true);
+        return cmd_freeze_mtime(args[1],
+                                std::vector<std::string>(args.begin() + 2,
+                                                         args.end()));
+    }
+    if (cmd == "unfreeze-mtime") {
+        if (args.size() < 3)
+            return usage(arg0.c_str(), true);
+        return cmd_unfreeze_mtime(args[1],
+                                  std::vector<std::string>(args.begin() + 2,
+                                                           args.end()));
+    }
+    if (cmd == "list-frozen-mtimes") {
+        if (args.size() != 2)
+            return usage(arg0.c_str(), true);
+        return cmd_list_frozen_mtimes(args[1]);
+    }
+    if (cmd == "get-attributes") {
+        if (args.size() < 2)
+            return usage(arg0.c_str(), true);
+        return cmd_get_attributes(args[1],
+                                  std::vector<std::string>(args.begin() + 2,
+                                                           args.end()));
     }
     fprintf(stderr, "projeny: error: unknown command '%s'\n", cmd.c_str());
     return usage(arg0.c_str(), true);

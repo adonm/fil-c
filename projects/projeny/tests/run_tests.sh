@@ -8645,6 +8645,310 @@ else
          "$(cat "$T182D/fake.projeny")"
 fi
 
+# ------------------------------- 183. freeze-mtime basics
+# A frozen file's mtime is pinned to what the tarball wants: freeze stamps
+# the checkout file with the archive member's mtime and records a
+# `frozen-mtime <ts>` extended header in the .projeny patch (and the status
+# copy, which stays byte-identical to it), immediately after the `diff --git`
+# line; every setup re-stamps the file; unfreeze drops the header (dropping a
+# block that held nothing else).
+T183="$ROOT/t183"
+mkdir -p "$T183/w-1.0/src"
+printf 'int alpha = 1;\n' > "$T183/w-1.0/src/a.c"
+printf 'hello v1\n' > "$T183/w-1.0/README"
+printf 'plain\n' > "$T183/w-1.0/src/b.c"
+ln -s a.c "$T183/w-1.0/src/link"
+chmod 755 "$T183/w-1.0/src/b.c"
+touch -d @1700000100 "$T183/w-1.0/src/a.c"
+touch -d @1700000200 "$T183/w-1.0/README"
+touch -d @1700000300 "$T183/w-1.0/src/b.c"
+touch -h -d @1700000300 "$T183/w-1.0/src/link"
+(cd "$T183" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Frozen mtimes.\n' > "$T183/w.projeny"
+run_in "$T183" expect_ok "freeze fixture setup" "$PROJENY" setup w.projeny
+if [ "$(stat -c %Y "$T183/w/README")" = "1700000200" ]; then
+    ok "setup preserves the tarball mtimes to freeze"
+else
+    fail "setup preserves the tarball mtimes to freeze" "$(stat -c %Y "$T183/w/README")"
+fi
+# Freeze two files (from inside the workdir, with a '.'-family project arg).
+run_in "$T183/w" expect_ok "freeze two files" "$PROJENY" freeze-mtime .. README src/a.c
+if grep -q '^diff --git a/w/README b/w/README$' "$T183/w.projeny" && \
+   [ "$(grep -A1 '^diff --git a/w/README b/w/README$' "$T183/w.projeny" | sed -n 2p)" = \
+     "frozen-mtime 1700000200" ]; then
+    ok "frozen header sits right after the diff --git line"
+else
+    fail "frozen header sits right after the diff --git line" \
+         "$(grep -A1 '^diff --git a/w/README' "$T183/w.projeny")"
+fi
+expect_file_contains "frozen value is the tarball member mtime" \
+    "$T183/w.projeny" "frozen-mtime 1700000200"
+expect_file_contains "second frozen file carries its own value" \
+    "$T183/w.projeny" "frozen-mtime 1700000100"
+if [ "$(grep -c '^frozen-mtime ' "$T183/w.projeny")" = "2" ]; then
+    ok "exactly two frozen headers recorded"
+else
+    fail "exactly two frozen headers recorded" "$(grep -c '^frozen-mtime ' "$T183/w.projeny")"
+fi
+if [ "$(stat -c %Y "$T183/w/README")" = "1700000200" ] && \
+   [ "$(stat -c %Y "$T183/w/src/a.c")" = "1700000100" ]; then
+    ok "freeze stamps the workdir files with the tarball mtimes"
+else
+    fail "freeze stamps the workdir files with the tarball mtimes" \
+         "$(stat -c '%Y %n' "$T183/w/README" "$T183/w/src/a.c")"
+fi
+expect_file_contains "status copy carries the frozen header too" \
+    "$T183/.w.projeny.status" "frozen-mtime 1700000200"
+# list-frozen-mtimes output: "<path> <ts>" per frozen file (sorted by path).
+out="$($PROJENY list-frozen-mtimes "$T183/w.projeny")"
+case "$out" in
+*"README 1700000200"*)
+    ok "list-frozen-mtimes prints path then timestamp"
+    ;;
+*)
+    fail "list-frozen-mtimes prints path then timestamp" "out: $out"
+    ;;
+esac
+case "$out" in
+*"src/a.c 1700000100"*)
+    ok "list-frozen-mtimes covers every frozen file"
+    ;;
+*)
+    fail "list-frozen-mtimes covers every frozen file" "out: $out"
+    ;;
+esac
+# Touching frozen files is undone by the next setup.
+touch "$T183/w/README" "$T183/w/src/a.c"
+if [ "$(stat -c %Y "$T183/w/README")" != "1700000200" ]; then
+    ok "touch actually moved the mtime"
+else
+    fail "touch actually moved the mtime" "touch did not change the mtime"
+fi
+run_in "$T183" expect_ok "setup after touching frozen files" "$PROJENY" setup w.projeny
+if [ "$(stat -c %Y "$T183/w/README")" = "1700000200" ] && \
+   [ "$(stat -c %Y "$T183/w/src/a.c")" = "1700000100" ]; then
+    ok "setup restores frozen mtimes"
+else
+    fail "setup restores frozen mtimes" \
+         "$(stat -c '%Y %n' "$T183/w/README" "$T183/w/src/a.c")"
+fi
+# Unfreeze drops the header; an attribute-only block disappears whole.
+run_in "$T183/w" expect_ok "unfreeze one file" "$PROJENY" unfreeze-mtime .. src/a.c
+if [ "$(grep -c '^frozen-mtime ' "$T183/w.projeny")" = "1" ]; then
+    ok "unfreeze removed the header"
+else
+    fail "unfreeze removed the header" "$(grep -c '^frozen-mtime ' "$T183/w.projeny")"
+fi
+if grep -q '^diff --git a/w/src/a.c ' "$T183/w.projeny"; then
+    fail "unfreeze drops the block when nothing is left" "$(cat "$T183/w.projeny")"
+else
+    ok "unfreeze drops the block when nothing is left"
+fi
+run_in "$T183" expect_ok "list still finds the remaining freeze" \
+    "$PROJENY" list-frozen-mtimes w.projeny
+run_in "$T183" expect_fail "unfreezing a non-frozen file fails" \
+    "$PROJENY" unfreeze-mtime w.projeny w/src/a.c
+# Re-freezing is idempotent (same value) and works from the pdir too.
+run_in "$T183" expect_ok "refreeze updates in place" \
+    "$PROJENY" freeze-mtime w.projeny w/src/a.c
+expect_file_contains "refreeze restored the header" "$T183/w.projeny" "frozen-mtime 1700000100"
+# Error shapes: a directory, a symlink, an untracked file, a missing file.
+run_in "$T183/w" expect_fail "freeze refuses a directory" "$PROJENY" freeze-mtime .. src
+run_in "$T183/w" expect_fail "freeze refuses a symlink" "$PROJENY" freeze-mtime .. src/link
+printf 'untracked\n' > "$T183/w/junk.c"
+run_in "$T183/w" expect_fail "freeze refuses an untracked file" "$PROJENY" freeze-mtime .. junk.c
+run_in "$T183/w" expect_fail "freeze refuses a missing file" "$PROJENY" freeze-mtime .. nope.c
+
+# --------------- 184. frozen mtimes survive commit, rebase, and package
+# commit and rebase regenerate the patch from scratch, so the frozen set has
+# to be threaded through the diff (attribute-only blocks for unchanged
+# files, the header on modified ones) and refreshed from the archive — after
+# a rebase, from the NEW archive's members. package/extract then carry the
+# frozen mtimes into their outputs.
+T184="$ROOT/t184"
+for v in 1.0 2.0; do
+    mkdir -p "$T184/w-$v/src"
+    printf "int alpha = $v;\n" > "$T184/w-$v/src/a.c"
+    printf "line one v$v\n" > "$T184/w-$v/src/b.c"
+    printf "hello v$v\n" > "$T184/w-$v/README"
+    case $v in
+    1.0)
+        touch -d @1700000100 "$T184/w-$v/src/a.c"
+        touch -d @1700000200 "$T184/w-$v/README"
+        ;;
+    2.0)
+        touch -d @1700009900 "$T184/w-$v/src/a.c"
+        touch -d @1700009800 "$T184/w-$v/README"
+        ;;
+    esac
+    (cd "$T184" && tar -czf "w-$v.tar.gz" "w-$v")
+    rm -rf "$T184/w-$v"
+done
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Frozen roundtrip.\n' > "$T184/w.projeny"
+run_in "$T184" expect_ok "roundtrip fixture setup" "$PROJENY" setup w.projeny
+run_in "$T184" expect_ok "roundtrip freeze" "$PROJENY" freeze-mtime w.projeny w/src/a.c w/README
+# A no-op commit keeps both headers (unchanged files get attribute-only
+# blocks) and leaves the values at the tarball's mtimes.
+run_in "$T184" expect_ok "no-op commit with frozen files" "$PROJENY" commit w.projeny
+expect_file_contains "commit keeps the frozen header (modified never)" \
+    "$T184/w.projeny" "frozen-mtime 1700000100"
+expect_file_contains "commit keeps the frozen header (README)" \
+    "$T184/w.projeny" "frozen-mtime 1700000200"
+if [ "$(stat -c %Y "$T184/w/src/a.c")" = "1700000100" ]; then
+    ok "commit does not disturb the frozen mtime"
+else
+    fail "commit does not disturb the frozen mtime" "$(stat -c %Y "$T184/w/src/a.c")"
+fi
+# An edit to a frozen file commits with the header on its modify block; the
+# next setup keeps both the content and the pinned mtime.
+printf 'frozen edit\n' >> "$T184/w/src/a.c"
+run_in "$T184" expect_ok "commit a frozen file's edit" "$PROJENY" commit w.projeny
+if grep -A1 '^diff --git a/w/src/a.c b/w/src/a.c$' "$T184/w.projeny" | \
+   grep -q '^frozen-mtime 1700000100$'; then
+    ok "the modify block of a frozen file carries the header"
+else
+    fail "the modify block of a frozen file carries the header" "$(cat "$T184/w.projeny")"
+fi
+run_in "$T184" expect_ok "setup after committing the frozen edit" "$PROJENY" setup w.projeny
+if grep -q 'frozen edit' "$T184/w/src/a.c" && \
+   [ "$(stat -c %Y "$T184/w/src/a.c")" = "1700000100" ]; then
+    ok "setup keeps the committed edit and the frozen mtime"
+else
+    fail "setup keeps the committed edit and the frozen mtime" \
+         "$(cat "$T184/w/src/a.c"; stat -c %Y "$T184/w/src/a.c")"
+fi
+# Freeze a file the patch never touched: its attribute-only block survives
+# the next commit and setup.
+printf 'never patched\n' > "$T184/w/extra.c"
+run_in "$T184" expect_ok "add a fresh file" "$PROJENY" add w.projeny w/extra.c
+touch -d @1700000500 "$T184/w/extra.c"
+run_in "$T184" expect_ok "commit the fresh file" "$PROJENY" commit w.projeny
+run_in "$T184" expect_ok "freeze the committed add" "$PROJENY" freeze-mtime w.projeny w/extra.c
+expect_file_contains "the committed add is frozen at its own mtime" \
+    "$T184/w.projeny" "frozen-mtime 1700000500"
+run_in "$T184" expect_ok "setup keeps the frozen committed add" "$PROJENY" setup w.projeny
+if [ -f "$T184/w/extra.c" ] && [ "$(stat -c %Y "$T184/w/extra.c")" = "1700000500" ]; then
+    ok "committed add survives setup with its frozen mtime"
+else
+    fail "committed add survives setup with its frozen mtime" \
+         "$(ls "$T184/w"; stat -c %Y "$T184/w/extra.c" 2>&1)"
+fi
+# Rebase to v2: the frozen values refresh to the NEW archive's mtimes and
+# the workdir is re-stamped.
+run_in "$T184" expect_ok "rebase the frozen checkout" "$PROJENY" rebase w.projeny w-2.0.tar.gz
+expect_file_contains "rebase keeps the frozen set" "$T184/w.projeny" "frozen-mtime 1700009900"
+expect_file_contains "rebase refreshes the value from the new archive" \
+    "$T184/w.projeny" "frozen-mtime 1700009900"
+if [ "$(stat -c %Y "$T184/w/src/a.c")" = "1700009900" ]; then
+    ok "rebase re-stamps the workdir to the new archive's mtime"
+else
+    fail "rebase re-stamps the workdir to the new archive's mtime" \
+         "$(stat -c %Y "$T184/w/src/a.c")"
+fi
+if grep -q 'frozen edit' "$T184/w/src/a.c" && [ "$(cat "$T184/w/README")" = "hello v2.0" ]; then
+    ok "rebase kept the committed edits too"
+else
+    fail "rebase kept the committed edits too" "$(cat "$T184/w/src/a.c" "$T184/w/README")"
+fi
+# package carries the frozen mtime into the output tarball.
+run_in "$T184" expect_ok "package a frozen checkout" "$PROJENY" package w.projeny pkg.tar.gz
+rm -rf "$T184/pk"
+mkdir -p "$T184/pk"
+(cd "$T184" && tar -xzf pkg.tar.gz -C pk)
+if [ "$(stat -c %Y "$T184/pk/pkg/src/a.c")" = "1700009900" ]; then
+    ok "package output preserves the frozen mtime"
+else
+    fail "package output preserves the frozen mtime" "$(stat -c %Y "$T184/pk/pkg/src/a.c")"
+fi
+run_in "$T184" expect_ok "extract a frozen checkout" "$PROJENY" extract w.projeny ext
+if [ "$(stat -c %Y "$T184/ext/src/a.c")" = "1700009900" ]; then
+    ok "extract output preserves the frozen mtime"
+else
+    fail "extract output preserves the fixed mtime" "$(stat -c %Y "$T184/ext/src/a.c")"
+fi
+
+# ------------------------------- 185. get-attributes
+# Special attributes are frozen mtimes and nonstandard modes (any exec bit on
+# a regular file). Files without special attributes are not printed; with no
+# paths, every tracked file is considered; a directory arg recurses.
+T185="$ROOT/t185"
+mkdir -p "$T185/w-1.0/src/deep"
+printf 'frozen content\n' > "$T185/w-1.0/src/a.c"
+printf '#!/bin/sh\necho hi\n' > "$T185/w-1.0/src/tool.sh"
+printf 'plain\n' > "$T185/w-1.0/src/b.c"
+printf 'nested\n' > "$T185/w-1.0/src/deep/n.c"
+printf 'hello v1\n' > "$T185/w-1.0/README"
+ln -s tool.sh "$T185/w-1.0/src/link"
+chmod 755 "$T185/w-1.0/src/tool.sh"
+touch -d @1700000200 "$T185/w-1.0/src/a.c"
+touch -d @1700000300 "$T185/w-1.0/README"
+touch -h -d @1700000300 "$T185/w-1.0/src/link"
+(cd "$T185" && tar -czf w-1.0.tar.gz w-1.0 && rm -rf w-1.0)
+printf 'Archive: w-1.0.tar.gz\nOrigname: w-1.0\nName: w\n\n    Attributes.\n' > "$T185/w.projeny"
+run_in "$T185" expect_ok "attributes fixture setup" "$PROJENY" setup w.projeny
+run_in "$T185" expect_ok "freeze for attributes" "$PROJENY" freeze-mtime w.projeny w/src/a.c w/README
+$PROJENY get-attributes "$T185/w.projeny" > "$ROOT/t185-all.out"
+expect_file_contains "get-attributes reports the frozen file" \
+    "$ROOT/t185-all.out" "src/a.c: frozen-mtime 1700000200"
+expect_file_contains "get-attributes reports the frozen README" \
+    "$ROOT/t185-all.out" "README: frozen-mtime 1700000300"
+expect_file_contains "get-attributes reports the exec bit" \
+    "$ROOT/t185-all.out" "src/tool.sh: mode 100755"
+if grep -q "^src/b.c:" "$ROOT/t185-all.out"; then
+    fail "get-attributes skips plain files" "$(cat "$ROOT/t185-all.out")"
+else
+    ok "get-attributes skips plain files"
+fi
+if grep -q "^src/link:" "$ROOT/t185-all.out"; then
+    fail "get-attributes skips symlinks" "$(cat "$ROOT/t185-all.out")"
+else
+    ok "get-attributes skips symlinks"
+fi
+# A directory argument recurses; a single file prints only that file.
+$PROJENY get-attributes "$T185/w.projeny" "$T185/w/src" > "$ROOT/t185-dir.out"
+expect_file_contains "directory arg recurses" "$ROOT/t185-dir.out" "src/tool.sh: mode 100755"
+if grep -q "^README:" "$ROOT/t185-dir.out"; then
+    fail "directory arg stays inside the directory" "$(cat "$ROOT/t185-dir.out")"
+else
+    ok "directory arg stays inside the directory"
+fi
+$PROJENY get-attributes "$T185/w.projeny" "$T185/w/src/deep" > "$ROOT/t185-deep.out"
+if [ -s "$ROOT/t185-deep.out" ]; then
+    fail "an attribute-less subtree prints nothing" "$(cat "$ROOT/t185-deep.out")"
+else
+    ok "an attribute-less subtree prints nothing"
+fi
+$PROJENY get-attributes "$T185/w.projeny" "$T185/w/README" > "$ROOT/t185-one.out"
+expect_file_contains "a single file arg prints just that file" \
+    "$ROOT/t185-one.out" "README: frozen-mtime 1700000300"
+if grep -q "src/a.c" "$ROOT/t185-one.out"; then
+    fail "a single file arg does not list others" "$(cat "$ROOT/t185-one.out")"
+else
+    ok "a single file arg does not list others"
+fi
+out="$($PROJENY get-attributes "$T185/w.projeny" "$T185/w/nope" 2>&1 || true)"
+case "$out" in
+*"nope"*)
+    ok "a missing path is an error naming it"
+    ;;
+*)
+    fail "a missing path is an error naming it" "out: $out"
+    ;;
+esac
+printf 'untracked\n' > "$T185/w/junk.c"
+out="$($PROJENY get-attributes "$T185/w.projeny" "$T185/w/junk.c" 2>&1 || true)"
+case "$out" in
+*"not a tracked file"*)
+    ok "an untracked path is an error naming it"
+    ;;
+*)
+    fail "an untracked path is an error naming it" "out: $out"
+    ;;
+esac
+# The whole-tree form via `.` from inside the workdir (feature A interplay).
+run_in "$T185/w" expect_ok "get-attributes with the whole-tree dot form" \
+    "$PROJENY" get-attributes . README
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

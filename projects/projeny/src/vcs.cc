@@ -446,10 +446,15 @@ std::string diff_label(const std::string& side, const std::string& wid,
 // Emit one file block. `old_rel`/`new_rel` are workdir-relative paths (one
 // may be empty for add/delete but not both). `old_c`/`new_c` are null when
 // the side is absent. `rename` marks a rename pair (old_rel != new_rel with
-// shared content lineage). Returns block text ending with '\n'.
+// shared content lineage). `frozen` (usually the diff options'
+// frozen_mtimes map) adds the `frozen-mtime <ts>` extended header for a
+// frozen path, immediately after the `diff --git` line and before any
+// old/new mode lines — the same header region the parser scans for modes.
+// Returns block text ending with '\n'.
 std::string emit_block(const std::string& wid, const std::string& old_rel,
                        const std::string& new_rel, const Collected* old_c,
-                       const Collected* new_c, bool rename, int similarity)
+                       const Collected* new_c, bool rename, int similarity,
+                       const std::map<std::string, uint64_t>* frozen = nullptr)
 {
     std::string out;
     // For deletes the b-side label is /dev/null; for adds the a-side is.
@@ -465,6 +470,16 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
     if (!new_c)
         db = diff_label("b", wid, old_rel);
     out += "diff --git " + da + " " + db + "\n";
+    // Frozen-mtime attribute header for the block's live path (the rename
+    // destination when both sides exist, since that is the path the checkout
+    // uses). Deleted blocks carry no attribute: the file is gone, and a
+    // frozen entry for it dies with the block. Symlinks are skipped too —
+    // freezing is a regular-file attribute.
+    if (frozen && new_c && !new_c->is_symlink) {
+        auto it = frozen->find(new_rel.empty() ? old_rel : new_rel);
+        if (it != frozen->end())
+            out += "frozen-mtime " + std::to_string(it->second) + "\n";
+    }
     std::string om = old_c ? mode_of(*old_c) : "";
     std::string nm = new_c ? mode_of(*new_c) : "";
     if (!old_c && new_c) {
@@ -774,20 +789,37 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
         const Collected& ob = kv.second;
         const Collected& nw = common_work[rel];
         if (ob.is_symlink == nw.is_symlink && ob.content == nw.content &&
-            mode_of(ob) == mode_of(nw))
+            mode_of(ob) == mode_of(nw)) {
+            // Unchanged — except that a frozen path must still emit its
+            // attribute: an attribute-only block (diff --git + frozen-mtime,
+            // no ---/+++/hunks) keeps the header alive in a patch that commit
+            // or rebase regenerates from scratch. Only the regenerate path
+            // asks for this (frozen_attribute_blocks), so a clean checkout of
+            // a frozen project still diffs empty.
+            if (opts.frozen_attribute_blocks && opts.frozen_mtimes &&
+                !nw.is_symlink && opts.frozen_mtimes->count(rel)) {
+                BlockJob j;
+                j.sort_key = rel;
+                j.text = emit_block(wid, rel, rel, &ob, &nw, false, 0,
+                                    opts.frozen_mtimes);
+                jobs.push_back(std::move(j));
+            }
             continue; // unchanged
+        }
         if (ob.is_symlink != nw.is_symlink) {
             // Typechange: emit as delete+add hunks in one block (mode lines
             // record the transition; hunks carry old->new content).
             BlockJob j;
             j.sort_key = rel;
-            j.text = emit_block(wid, rel, rel, &ob, &nw, false, 0);
+            j.text = emit_block(wid, rel, rel, &ob, &nw, false, 0,
+                                opts.frozen_mtimes);
             jobs.push_back(std::move(j));
             continue;
         }
         BlockJob j;
         j.sort_key = rel;
-        j.text = emit_block(wid, rel, rel, &ob, &nw, false, 0);
+        j.text = emit_block(wid, rel, rel, &ob, &nw, false, 0,
+                            opts.frozen_mtimes);
         jobs.push_back(std::move(j));
     }
     // Rename detection: forced (pending-op) pairs first, then exact
@@ -955,7 +987,8 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
         j.new_rel = nrel;
         j.old_c = &ob;
         j.new_c = &nw;
-        j.text = emit_block(wid, orel, nrel, &ob, &nw, true, r.sim);
+        j.text = emit_block(wid, orel, nrel, &ob, &nw, true, r.sim,
+                            opts.frozen_mtimes);
         jobs.push_back(std::move(j));
     }
     for (size_t i = 0; i < deleted.size(); ++i) {
@@ -967,7 +1000,7 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
         j.old_rel = deleted[i].rel;
         j.old_c = &deleted[i].c;
         j.text = emit_block(wid, deleted[i].rel, "", &deleted[i].c, nullptr,
-                            false, 0);
+                            false, 0, opts.frozen_mtimes);
         jobs.push_back(std::move(j));
     }
     for (size_t j = 0; j < added.size(); ++j) {
@@ -979,7 +1012,7 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
         b.new_rel = added[j].rel;
         b.new_c = &added[j].c;
         b.text = emit_block(wid, "", added[j].rel, nullptr, &added[j].c,
-                            false, 0);
+                            false, 0, opts.frozen_mtimes);
         jobs.push_back(std::move(b));
     }
     // Keep-list filtering (pending-aware callers only: both pointers null
@@ -1009,13 +1042,13 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
                 if (!n_ok) {
                     // Only the old side is tracked: render as a delete.
                     j.text = emit_block(wid, j.old_rel, "", j.old_c, nullptr,
-                                        false, 0);
+                                        false, 0, opts.frozen_mtimes);
                     j.sort_key = j.old_rel;
                     j.kind = 'd';
                 } else if (!o_ok) {
                     // Only the new side is tracked: render as an add.
                     j.text = emit_block(wid, "", j.new_rel, nullptr, j.new_c,
-                                        false, 0);
+                                        false, 0, opts.frozen_mtimes);
                     j.kind = 'a';
                 }
             }
@@ -1088,6 +1121,9 @@ struct PBlock {
     bool is_rename = false;
     std::string rename_from, rename_to;
     std::string old_mode, new_mode; // "" if absent
+    // Frozen-mtime attribute (unix-epoch seconds) from the `frozen-mtime`
+    // extended header; 0 when the block carries none.
+    uint64_t frozen_mtime = 0;
     bool is_new = false, is_deleted = false;
     bool is_binary = false;
     // Binary payload (projeny base64 `GIT binary patch` literals): the first
@@ -1349,6 +1385,8 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 blk.old_mode = t.substr(9);
             else if (t.compare(0, 9, "new mode ") == 0)
                 blk.new_mode = t.substr(9);
+            else if (t.compare(0, 13, "frozen-mtime ") == 0)
+                blk.frozen_mtime = strtoull(t.substr(13).c_str(), nullptr, 10);
             else if (t.compare(0, 17, "deleted file mode") == 0) {
                 blk.is_deleted = true;
                 std::string v = t.size() > 18 ? ltrim(t.substr(17)) : "";
@@ -1605,6 +1643,119 @@ std::vector<std::pair<std::string, std::string>> committed_rename_pairs(
     }
     return out;
 }
+
+// ---- frozen-mtime attribute editing ----
+//
+// The `frozen-mtime <ts>` extended header lives in the same region of a
+// block as the old/new mode lines: immediately after the `diff --git` line,
+// before any mode lines. Blocks are edited byte-exactly (hunk bodies and
+// binary payloads are never re-encoded), so set/unfreeze only ever touch
+// the header line itself.
+
+// Rebuild one raw block with its frozen-mtime header set (set=true, value
+// `ts`) or removed (set=false). The header is placed right after the block's
+// first line (the `diff --git` line) and replaces any existing one.
+std::string block_set_frozen(const std::string& raw, bool set, uint64_t ts)
+{
+    std::vector<std::string> lines = split_raw(raw);
+    std::string out;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i == 0) {
+            out += lines[0];
+            out += "\n";
+            if (set)
+                out += "frozen-mtime " + std::to_string(ts) + "\n";
+            continue;
+        }
+        if (no_cr(lines[i]).compare(0, 13, "frozen-mtime ") == 0)
+            continue; // an existing header: replaced (or dropped) above
+        out += lines[i];
+        out += "\n";
+    }
+    return out;
+}
+
+// True when `raw` is a bare `diff --git` header line with nothing else: the
+// husk an attribute-only block leaves behind once its frozen-mtime header is
+// removed. Such a block describes no change at all, so it is dropped rather
+// than kept.
+bool block_is_husk(const std::string& raw)
+{
+    std::vector<std::string> lines = split_raw(raw);
+    if (lines.size() != 1)
+        return false;
+    std::string t = no_cr(lines[0]);
+    return starts_with(t, "diff --git ") || starts_with(t, "diff --cc ") ||
+           starts_with(t, "diff --combined ");
+}
+
+// The text of an attribute-only block: `diff --git a/X b/X` plus the
+// frozen-mtime header, with no ---/+++/hunks (the analogue of a mode-only
+// block, which carries no hunks either).
+std::string frozen_attribute_block(const std::string& wid, const std::string& rel,
+                                   uint64_t ts)
+{
+    std::string a = quote_git_path("a/" + wid + "/" + rel);
+    std::string b = quote_git_path("b/" + wid + "/" + rel);
+    return "diff --git " + a + " " + b + "\n" + "frozen-mtime " +
+           std::to_string(ts) + "\n";
+}
+
+} // namespace
+
+std::map<std::string, uint64_t> vcs_frozen_mtimes(const std::string& patch,
+                                                  const std::string& wid)
+{
+    std::map<std::string, uint64_t> out;
+    if (patch.empty())
+        return out;
+    for (const PBlock& b : parse_patch(patch, wid)) {
+        if (b.frozen_mtime == 0)
+            continue;
+        // A frozen attribute belongs to the block's live path: the rename
+        // destination when both sides exist, else whichever side is named.
+        std::string key = !b.new_rel.empty() ? b.new_rel : b.old_rel;
+        if (key.empty())
+            continue;
+        out[key] = b.frozen_mtime;
+    }
+    return out;
+}
+
+std::string vcs_set_frozen_mtimes(const std::string& patch, const std::string& wid,
+                                  const std::map<std::string, uint64_t>& frozen)
+{
+    if (patch.empty() && frozen.empty())
+        return patch;
+    std::vector<PBlock> blocks = parse_patch(patch, wid);
+    std::string out;
+    std::map<std::string, bool> covered;
+    for (const PBlock& b : blocks) {
+        std::string key = !b.new_rel.empty() ? b.new_rel : b.old_rel;
+        auto it = key.empty() ? frozen.end() : frozen.find(key);
+        // A deletion never carries the header: a frozen mtime needs a live
+        // file, and the attribute dies with the file (matching emit_block,
+        // which skips frozen paths on delete blocks).
+        bool keep_header = it != frozen.end() && !b.is_deleted;
+        std::string raw = keep_header ? block_set_frozen(b.raw, true, it->second)
+                                      : block_set_frozen(b.raw, false, 0);
+        if (keep_header)
+            covered[key] = true;
+        if (block_is_husk(raw))
+            continue; // attribute-only block whose freeze was removed
+        out += raw;
+    }
+    // Frozen paths the patch does not mention yet (unchanged tarball files):
+    // new attribute-only blocks so the attribute has a home in the patch.
+    for (const auto& kv : frozen) {
+        if (covered.count(kv.first))
+            continue;
+        out += frozen_attribute_block(wid, kv.first, kv.second);
+    }
+    return out;
+}
+
+namespace {
 
 // ---- Hunk matching/application with fuzz ----
 

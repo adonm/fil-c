@@ -54,5 +54,12 @@ int cmd_diff(const std::string& dir, const std::string& other_dir);
 int cmd_patch(const std::string& dir, const std::string& patch_file);
 int cmd_package(const std::string& projeny_arg, const std::string& output);
 int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir);
+int cmd_freeze_mtime(const std::string& projeny_arg,
+                     const std::vector<std::string>& files);
+int cmd_unfreeze_mtime(const std::string& projeny_arg,
+                       const std::vector<std::string>& files);
+int cmd_list_frozen_mtimes(const std::string& projeny_arg);
+int cmd_get_attributes(const std::string& projeny_arg,
+                       const std::vector<std::string>& paths);
 int cmd_help(const std::string& arg0);
 int cmd_help_topic(const std::string& arg0, const std::string& topic);

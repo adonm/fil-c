@@ -38,6 +38,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -89,6 +91,25 @@ struct VcsDiffOpts {
     // locally without `projeny rm`. Computed from the trees themselves, so
     // rename pairing can never hide one. Null: not collected.
     std::vector<std::string>* disappeared = nullptr;
+    // Frozen-mtime attributes (workdir-relative path -> unix-epoch seconds).
+    // When non-null, every emitted block for a path in the set carries the
+    // extended header line `frozen-mtime <ts>` immediately after its
+    // `diff --git` line (the same region as the old/new mode lines), so the
+    // attribute survives a patch regenerated from scratch. Blocks for paths
+    // absent from the set never carry the header, so a frozen entry whose
+    // file was deleted (or renamed away) dies naturally. Header emission is
+    // skipped for a path whose new side does not exist (a delete) and for
+    // symlinks (freezing is a regular-file attribute).
+    const std::map<std::string, uint64_t>* frozen_mtimes = nullptr;
+    // When true, a path in `frozen_mtimes` whose content and mode are
+    // UNCHANGED between the two trees still gets a block: a bare
+    // `diff --git a/X b/X` + `frozen-mtime <ts>` attribute-only block (no
+    // ---/+++/hunks — the analogue of a mode-only block). Commit and rebase
+    // set this so the frozen set survives a patch regenerated from scratch;
+    // the uncommitted-diff command leaves it false, so a clean checkout of a
+    // frozen project still diffs empty (a frozen mtime is not a local
+    // change) and only modified frozen files carry the header there.
+    bool frozen_attribute_blocks = false;
 };
 
 // vcs_diff_trees with pending-op awareness (see VcsDiffOpts): forced
@@ -225,3 +246,22 @@ std::vector<std::string> vcs_touched_paths(const std::string& patch,
 bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_file,
                         const std::string& theirs_file, const std::string& dst_path,
                         const std::string& dst_root);
+
+// The frozen-mtime attributes recorded in `patch` (wid-label form):
+// workdir-relative path -> unix-epoch seconds. Only blocks carrying a
+// `frozen-mtime <ts>` extended header appear. Keys prefer the block's new
+// path (a rename's destination over its source).
+std::map<std::string, uint64_t> vcs_frozen_mtimes(const std::string& patch,
+                                                  const std::string& wid);
+
+// Rewrite `patch` (wid-label form) so its frozen-mtime headers exactly match
+// `frozen`: each existing block for a frozen path gains (or has updated) its
+// `frozen-mtime <ts>` header right after the `diff --git` line, blocks for
+// paths absent from `frozen` lose the header (dropping the whole block when
+// that leaves a bare `diff --git` husk), and frozen paths the patch does not
+// mention yet gain a new attribute-only block. Frozen entries whose block is
+// a deletion are left headerless (a frozen mtime needs a live file), and a
+// rename records the header on its destination only. Returns the rewritten
+// patch text (callers normalize it like any other generated patch).
+std::string vcs_set_frozen_mtimes(const std::string& patch, const std::string& wid,
+                                  const std::map<std::string, uint64_t>& frozen);

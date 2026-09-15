@@ -253,6 +253,15 @@ tabs, quotes, backslashes, `->`, or other special bytes are stored git
 C-quoted (`"a/<Name>/my file.c"`); plain paths stay unquoted. Either form is
 accepted on input, so hand-written patches need no special handling.
 
+A `.projeny` file may end without a trailing newline (common in
+hand-written files); the prose is preserved byte-for-byte on round-trip,
+and a commit or rebase that stores no patch (a no-op) keeps the file
+byte-identical. When a patch is (re)written, it always starts on its own
+line: projeny adds exactly one newline after prose that lacks it, so the
+first `diff --git` line can never glue onto the last prose line (gluing
+would make the next parse treat the whole patch as prose and silently
+drop it).
+
 ## `.status` format
 
 Text file `.<f>.projeny.status` (untracked by git; older projenies wrote

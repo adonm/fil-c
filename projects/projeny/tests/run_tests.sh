@@ -548,7 +548,10 @@ fi
 
 # ----------------------------------------- 17. no-trailing-newline projeny
 # A .projeny file without a final newline must set up AND commit cleanly
-# (bytes preserved exactly; commit compares raw bytes).
+# (bytes preserved exactly; commit compares raw bytes). The committed patch
+# must start on its own line: the prose keeps its missing trailing newline
+# and the patch never glues onto the last prose line (that glue made the
+# next parse treat the whole patch as prose and silently lose it).
 T17="$ROOT/t17"
 make_tarballs "$T17" fake
 printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    No trailing newline.' > "$T17/fake.projeny"
@@ -562,6 +565,13 @@ open(p, "w").write(s)
 EOF
 run_in "$T17" expect_ok "no-newline projeny commit exits 0" "$PROJENY" commit fake.projeny
 expect_file_contains "no-newline commit stores diff" "$T17/fake.projeny" "alpha = 11"
+expect_file_not_contains "no-newline commit never glues the patch onto the prose" \
+    "$T17/fake.projeny" "No trailing newline.diff --git "
+if grep -q '^diff --git ' "$T17/fake.projeny"; then
+    ok "no-newline commit starts the patch at column 0"
+else
+    fail "no-newline commit starts the patch at column 0" "$(cat "$T17/fake.projeny")"
+fi
 run_in "$T17" expect_ok "setup-again after no-newline commit" "$PROJENY" setup fake.projeny
 expect_file_contains "no-newline roundtrip keeps edit" "$T17/fake/src/a.c" "alpha = 11"
 
@@ -8505,6 +8515,135 @@ case "$out" in
          "out: $out"
     ;;
 esac
+
+# ------- 182. no-trailing-newline .projeny: the patch must not glue (mg bug)
+# mg.projeny ends mid-line ("    mg 4.1 unmodified", no newline). Committing
+# used to concatenate the patch right after that last prose line, so the
+# next parse found no "diff --git " line and silently reduced the committed
+# patch to prose — which made setup "merge" an edit that a .projeny-only
+# revert should have wiped. These flows pin the fixed behavior.
+#
+# Flow 1: the committed patch starts at column 0.
+T182="$ROOT/t182"
+make_tarballs "$T182" fake
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    mg 4.1 unmodified.' > "$T182/fake.projeny"
+cp "$T182/fake.projeny" "$ROOT/t182-pre-commit.projeny"
+run_in "$T182" expect_ok "no-newline mg-style setup" "$PROJENY" setup fake.projeny
+printf 'COMMITTED-MARKER\n' >> "$T182/fake/README"
+run_in "$T182" expect_ok "no-newline mg-style commit" "$PROJENY" commit fake.projeny
+cp "$T182/fake.projeny" "$ROOT/t182-committed.projeny"
+expect_file_contains "mg-style commit stores the edit" "$T182/fake.projeny" "COMMITTED-MARKER"
+expect_file_not_contains "mg-style commit never glues the patch onto the prose" \
+    "$T182/fake.projeny" "mg 4.1 unmodified.diff --git "
+if grep -q '^diff --git ' "$T182/fake.projeny"; then
+    ok "mg-style commit starts the patch at column 0"
+else
+    fail "mg-style commit starts the patch at column 0" "$(cat "$T182/fake.projeny")"
+fi
+expect_file_contains "mg-style commit refreshes the status copy" \
+    "$T182/.fake.projeny.status" "COMMITTED-MARKER"
+#
+# Flow 2 (the bug): revert the .projeny FILE ONLY to its pre-commit bytes;
+# the status file and the workdir keep the committed state. setup must
+# report "no local changes" and REVERT the edit (the workdir returns to the
+# fresh tarball+patch content), not "merge" it.
+cp "$ROOT/t182-pre-commit.projeny" "$T182/fake.projeny"
+out="$(cd "$T182" && "$PROJENY" setup fake.projeny 2>&1)"; rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup after .projeny-only revert exits 0"
+else
+    fail "setup after .projeny-only revert exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"no local changes"*)
+    ok "setup after .projeny-only revert reports no local changes"
+    ;;
+*)
+    fail "setup after .projeny-only revert reports no local changes" "out: $out"
+    ;;
+esac
+case "$out" in
+*"merged local changes"*)
+    fail "setup after .projeny-only revert never claims a merge" "out: $out"
+    ;;
+*)
+    ok "setup after .projeny-only revert never claims a merge"
+    ;;
+esac
+expect_file_not_contains "setup after .projeny-only revert wipes the edit" \
+    "$T182/fake/README" "COMMITTED-MARKER"
+if cmp -s "$T182/fake.projeny" "$ROOT/t182-pre-commit.projeny"; then
+    ok "setup after .projeny-only revert keeps the reverted file bytes"
+else
+    fail "setup after .projeny-only revert keeps the reverted file bytes" \
+         "$(cat "$T182/fake.projeny")"
+fi
+#
+# Flow 3: setup -> edit -> setup again (NO commit) -> the edit is preserved
+# and reported as a merge.
+printf 'UNCOMMITTED-MARKER\n' >> "$T182/fake/README"
+out="$(cd "$T182" && "$PROJENY" setup fake.projeny 2>&1)"; rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup-again with an uncommitted edit exits 0"
+else
+    fail "setup-again with an uncommitted edit exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"merged local changes"*)
+    ok "setup-again with an uncommitted edit reports a merge"
+    ;;
+*)
+    fail "setup-again with an uncommitted edit reports a merge" "out: $out"
+    ;;
+esac
+expect_file_contains "setup-again keeps the uncommitted edit" \
+    "$T182/fake/README" "UNCOMMITTED-MARKER"
+#
+# Flow 4: setup -> edit -> commit -> revert BOTH the .projeny file AND the
+# status file to their pre-commit bytes -> setup keeps the edit ("merged"):
+# with the shared base gone from both bookkeeping files, the workdir edit is
+# genuinely uncommitted again.
+T182C="$ROOT/t182c"
+make_tarballs "$T182C" fake
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    mg 4.1 unmodified.' > "$T182C/fake.projeny"
+run_in "$T182C" expect_ok "flow-4 fixture setup" "$PROJENY" setup fake.projeny
+cp "$T182C/fake.projeny" "$ROOT/t182c-pre.projeny"
+cp "$T182C/.fake.projeny.status" "$ROOT/t182c-pre.status"
+printf 'BOTH-REVERT-MARKER\n' >> "$T182C/fake/README"
+run_in "$T182C" expect_ok "flow-4 commit" "$PROJENY" commit fake.projeny
+cp "$ROOT/t182c-pre.projeny" "$T182C/fake.projeny"
+cp "$ROOT/t182c-pre.status" "$T182C/.fake.projeny.status"
+out="$(cd "$T182C" && "$PROJENY" setup fake.projeny 2>&1)"; rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup after reverting both files exits 0"
+else
+    fail "setup after reverting both files exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"merged local changes"*)
+    ok "setup after reverting both files reports a merge"
+    ;;
+*)
+    fail "setup after reverting both files reports a merge" "out: $out"
+    ;;
+esac
+expect_file_contains "setup after reverting both files keeps the edit" \
+    "$T182C/fake/README" "BOTH-REVERT-MARKER"
+#
+# Flow 5: a no-op commit on a no-trailing-newline .projeny (empty patch)
+# must leave the file byte-identical — the no-op may not gain a newline.
+T182D="$ROOT/t182d"
+make_tarballs "$T182D" fake
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fake\n\n    mg 4.1 unmodified.' > "$T182D/fake.projeny"
+cp "$T182D/fake.projeny" "$ROOT/t182d-pre.projeny"
+run_in "$T182D" expect_ok "no-op commit fixture setup" "$PROJENY" setup fake.projeny
+run_in "$T182D" expect_ok "no-op commit with no workdir changes" "$PROJENY" commit fake.projeny
+if cmp -s "$T182D/fake.projeny" "$ROOT/t182d-pre.projeny"; then
+    ok "no-op commit leaves the newline-less .projeny byte-identical"
+else
+    fail "no-op commit leaves the newline-less .projeny byte-identical" \
+         "$(cat "$T182D/fake.projeny")"
+fi
 
 # ------------------------------------------------------------- summary
 echo "---"

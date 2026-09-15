@@ -470,19 +470,31 @@ void ProjenyFile::rebuild(const std::string& new_patch)
                 "column-0 marker line ('" + l + "'); indent the prose line "
                 "with a leading space");
     }
-    // raw = head + "\n" + middle + patch, where middle already ends in '\n'
-    // when non-empty (join_lines). The patch body is replaced verbatim, so
-    // trailing whitespace inside the new patch is preserved byte-for-byte.
-    // NOTE: binary-safety here only concerns the trailing-newline guarantee:
-    // commit/rebase always pass normalized text patches; raw .projeny files
-    // with or without a trailing newline parse identically, but rebuilt files
-    // end with exactly one '\n'.
+    // raw = head + "\n" + middle + patch. `middle` is a verbatim byte slice
+    // of the file (see parse_bytes), so it ends in '\n' only when the file's
+    // prose did — and a .projeny file without a trailing newline is legal.
+    // That makes the concatenation a trap: appending a patch to prose that
+    // lacks its final newline GLUES the first "diff --git" line onto the
+    // last prose line ("    mg 4.1 unmodifieddiff --git a/..."), and the
+    // next parse then finds no "diff --git " line at all — silently turning
+    // the committed patch into prose. So: a non-empty new_patch always
+    // starts on its own line (exactly one '\n' is added when the middle
+    // lacks one), while an empty new_patch preserves the middle
+    // byte-exactly (a patch-less .projeny file must round-trip without
+    // gaining a newline, so commit/rebase no-ops stay byte-identical).
+    // The patch body itself is replaced verbatim, so trailing whitespace
+    // inside the new patch is preserved byte-for-byte. Rebuilt files end
+    // with exactly one '\n' when a patch is present.
     std::string out = head;
     out += "\n";
     out += middle;
     std::string np = new_patch;
-    if (!np.empty() && np.back() != '\n')
-        np += "\n";
+    if (!np.empty()) {
+        if (!middle.empty() && middle.back() != '\n')
+            out += "\n";
+        if (np.back() != '\n')
+            np += "\n";
+    }
     out += np;
     raw = out;
     patch = np;

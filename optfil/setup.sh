@@ -153,6 +153,7 @@ if [ "$ARCH" != "$(uname -m)" ]; then
     echo "ERROR: This installer is intended for $ARCH, but you're on $(uname -m)."
     echo "Visit https://fil-c.org/install_optfil to find the right package for your"
     echo "system."
+    exit 1
 fi
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -201,6 +202,19 @@ else
         if [ "$response" != "YES" ]; then
             echo "Installation aborted."
             exit 1
+        fi
+
+        if [ "$ARCH" != x86_64 ]; then
+            echo
+            echo "The $ARCH version of the /opt/fil distribution is still experimental!"
+            echo "Are you really sure? Type YES (in all caps) to proceed:"
+
+            read -r response
+            
+            if [ "$response" != "YES" ]; then
+                echo "Installation aborted."
+                exit 1
+            fi
         fi
     fi
 

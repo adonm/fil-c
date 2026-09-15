@@ -39,13 +39,9 @@ cd ../pizfix
 
 case $ARCH in
     x86_64)
-        OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
         OUTPUT_FORMAT=elf64-x86-64
         ;;
     aarch64)
-        # On aarch64, glibc's dynamic loader is ld-linux-aarch64.so.1 (the
-        # .so.1 suffix is correct for aarch64; x86_64 uses .so.2).
-        OLDLDNAME=ld-linux-aarch64.so.1
         OUTPUT_FORMAT=elf64-littleaarch64
         ;;
     *)
@@ -71,17 +67,14 @@ STATICLIBCNAME=${LIBCNAMEBASE}.a
 STATICLIBMNAME=${LIBNAMEBASE}m.a
 
 mkdir -p lib
-cp yolo/lib/$OLDLDNAME lib/$LDNAME
+cp yolo/lib/$LDNAME lib/$LDNAME
 cp yolo/lib/$OLDLIBCIMPLNAME lib/$LIBCIMPLNAME
 cp yolo/lib/$OLDLIBCNONSHAREDNAME lib/$LIBCNONSHAREDNAME
 cp yolo/lib/$OLDLIBMIMPLNAME lib/$LIBMIMPLNAME
 cp yolo/lib/*.o lib/
 cp yolo/lib/$OLDSTATICLIBCNAME lib/$STATICLIBCNAME
 cp yolo/lib/$OLDSTATICLIBMNAME lib/$STATICLIBMNAME
-patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBCIMPLNAME
 patchelf --set-soname $LIBCIMPLNAME lib/$LIBCIMPLNAME
-patchelf --set-soname $LDNAME lib/$LDNAME
-patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBMIMPLNAME
 patchelf --replace-needed $OLDLIBCIMPLNAME $LIBCIMPLNAME lib/$LIBMIMPLNAME
 patchelf --set-soname $LIBMIMPLNAME lib/$LIBMIMPLNAME
 echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBCNAME

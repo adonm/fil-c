@@ -92,16 +92,12 @@ mkdir -v lib
 ARCH=`uname -m`
 case $ARCH in
     x86_64)
-        OLDLDNAME=ld-linux-${ARCH//_/-}.so.2
         OUTPUT_FORMAT=elf64-x86-64
         # BLAKE3's cmake accepts amd64-asm, x86-intrinsics, neon-intrinsics,
         # or none.  On x86_64 we use the intrinsics path.
         BLAKE3_SIMD=x86-intrinsics
         ;;
     aarch64)
-        # On aarch64, glibc's dynamic loader is ld-linux-aarch64.so.1 (the
-        # .so.1 suffix is correct for aarch64; x86_64 uses .so.2).
-        OLDLDNAME=ld-linux-aarch64.so.1
         OUTPUT_FORMAT=elf64-littleaarch64
         # On aarch64 we use the NEON intrinsics path.
         BLAKE3_SIMD=neon-intrinsics
@@ -122,22 +118,18 @@ LIBCIMPLNAME=${LIBCNAMEBASE}impl.so
 LIBCNONSHAREDNAME=${LIBCNAMEBASE}_nonshared.a
 LIBMIMPLNAME=${LIBNAMEBASE}mimpl.so
 LIBMNAME=${LIBNAMEBASE}m.so
-cp -v yolo/lib/$OLDLDNAME lib/$LDNAME
+cp -v yolo/lib/$LDNAME lib/$LDNAME
 cp -v yolo/lib/$OLDLIBCIMPLNAME lib/$LIBCIMPLNAME
 cp -v yolo/lib/$OLDLIBCNONSHAREDNAME lib/$LIBCNONSHAREDNAME
 cp -v yolo/lib/$OLDLIBMIMPLNAME lib/$LIBMIMPLNAME
 cp -v yolo/lib/*.o lib/
-patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBCIMPLNAME
 patchelf --set-soname $LIBCIMPLNAME lib/$LIBCIMPLNAME
-patchelf --set-soname $LDNAME lib/$LDNAME
-patchelf --replace-needed $OLDLDNAME $LDNAME lib/$LIBMIMPLNAME
 patchelf --replace-needed $OLDLIBCIMPLNAME $LIBCIMPLNAME lib/$LIBMIMPLNAME
 patchelf --set-soname $LIBMIMPLNAME lib/$LIBMIMPLNAME
 echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBCNAME
 echo "GROUP ( /opt/fil/lib/$LIBCIMPLNAME /opt/fil/lib/$LIBCNONSHAREDNAME  AS_NEEDED ( /opt/fil/lib/$LDNAME ) )" >> lib/$LIBCNAME
 echo "OUTPUT_FORMAT($OUTPUT_FORMAT)" > lib/$LIBMNAME
 echo "GROUP ( /opt/fil/lib/$LIBMIMPLNAME )" >> lib/$LIBMNAME
-unset OLDLDNAME
 unset OLDLIBCIMPLNAME
 unset OLDLIBCNONSHAREDNAME
 unset OLDLIBMIMPLNAME

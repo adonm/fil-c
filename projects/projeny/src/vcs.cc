@@ -45,6 +45,12 @@
 #include <unordered_set>
 #include <vector>
 
+// The frozen-mtime extended header prefix (`frozen-mtime <ts>`, emitted
+// right after the `diff --git` line) and its length. File-scope static: the
+// parse, emit, and edit paths all share it (a magic 13 invites typos).
+static const char kFrozenMtimeHeader[] = "frozen-mtime ";
+static const size_t kFrozenMtimeHeaderLen = sizeof(kFrozenMtimeHeader) - 1;
+
 namespace {
 
 // Split on '\n' without touching '\r'. A trailing '\n' does not produce a
@@ -96,18 +102,6 @@ std::string join_content(const std::vector<std::string>& lines, bool ends_nl)
     return out;
 }
 
-// True for legacy scratch entries that must never be diffed (left behind
-// inside workdirs by older crashed runs; scratch now lives outside).
-bool is_scratch_rel(const std::string& rel)
-{
-    // The prefix compare covers ".projeny-tmp" itself and every suffix.
-    if (rel.compare(0, 13, ".projeny-tmp") == 0)
-        return true;
-    if (rel.find("/.projeny-tmp") != std::string::npos)
-        return true;
-    return false;
-}
-
 struct Collected {
     bool is_symlink = false;
     bool is_exec = false; // regular files only
@@ -130,19 +124,9 @@ void collect_into(const std::string& root, const std::string& rel,
         return;
     }
     if (S_ISLNK(st.st_mode)) {
-        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
-        ssize_t r = readlink(full.c_str(), buf.data(), buf.size());
-        if (r < 0)
-            die("cannot read link '" + full + "': " + strerror(errno));
-        if ((size_t)r >= buf.size()) {
-            buf.resize((size_t)r + 1);
-            r = readlink(full.c_str(), buf.data(), buf.size());
-            if (r < 0)
-                die("cannot read link '" + full + "': " + strerror(errno));
-        }
         Collected c;
         c.is_symlink = true;
-        c.content.assign(buf.data(), (size_t)r);
+        c.content = read_link_target(full);
         if (c.content.find('\0') != std::string::npos)
             die(what + ": '" + rel + "' is a binary file; binary files are not supported");
         // Fail fast on targets that do not stay inside the tree (absolute,
@@ -454,7 +438,7 @@ std::string diff_label(const std::string& side, const std::string& wid,
 std::string emit_block(const std::string& wid, const std::string& old_rel,
                        const std::string& new_rel, const Collected* old_c,
                        const Collected* new_c, bool rename, int similarity,
-                       const std::map<std::string, uint64_t>* frozen = nullptr)
+                       const std::map<std::string, uint64_t>* frozen)
 {
     std::string out;
     // For adds and deletes the `diff --git` line repeats the live path on
@@ -474,7 +458,7 @@ std::string emit_block(const std::string& wid, const std::string& old_rel,
     if (frozen && new_c && !new_c->is_symlink) {
         auto it = frozen->find(new_rel.empty() ? old_rel : new_rel);
         if (it != frozen->end())
-            out += "frozen-mtime " + std::to_string(it->second) + "\n";
+            out += kFrozenMtimeHeader + std::to_string(it->second) + "\n";
     }
     std::string om = old_c ? mode_of(*old_c) : "";
     std::string nm = new_c ? mode_of(*new_c) : "";
@@ -694,6 +678,55 @@ bool vcs_covers_keep_path(const std::vector<std::string>& keep,
     return false;
 }
 
+bool vcs_delete_covered(
+    const std::vector<std::string>& keep,
+    const std::vector<std::pair<std::string, std::string>>* renames,
+    const std::string& rel,
+    const std::function<bool(const std::string&)>& counterpart_exists)
+{
+    for (const auto& k : keep) {
+        if (k.empty())
+            continue;
+        if (rel == k)
+            return true; // exact: a removal (or file rename source)
+        if (!(rel.size() > k.size() &&
+              rel.compare(0, k.size(), k) == 0 && rel[k.size()] == '/'))
+            continue;
+        // rel lives under k. Authoritative unless k is exactly a
+        // pending rename source (a directory move).
+        bool is_dir_move = false;
+        if (renames) {
+            for (const auto& rn : *renames) {
+                if (rn.first != k)
+                    continue;
+                is_dir_move = true;
+                std::string counterpart =
+                    rn.second + rel.substr(k.size());
+                if (counterpart_exists(counterpart))
+                    return true; // moved with the directory
+            }
+        }
+        if (!is_dir_move)
+            return true;
+    }
+    // Only directory-move sources covered rel and none of them moved
+    // this file: unregistered.
+    return false;
+}
+
+// True for legacy scratch entries that must never be diffed or reported
+// (left behind inside workdirs by older crashed runs; scratch now lives
+// outside): ".projeny-tmp*" at the workdir root or under any directory.
+bool vcs_is_scratch_rel(const std::string& rel)
+{
+    // The prefix compare covers ".projeny-tmp" itself and every suffix.
+    if (rel.compare(0, 13, ".projeny-tmp") == 0)
+        return true;
+    if (rel.find("/.projeny-tmp") != std::string::npos)
+        return true;
+    return false;
+}
+
 std::string vcs_diff_trees_ex(const std::string& base_tree,
                               const std::string& workdir, const std::string& wid,
                               const VcsDiffOpts& opts)
@@ -703,7 +736,7 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
     collect_into(workdir, "", work, "workdir");
     bool warned_scratch = false;
     auto skip_scratch = [&](const std::string& rel) -> bool {
-        if (is_scratch_rel(rel)) {
+        if (vcs_is_scratch_rel(rel)) {
             if (!warned_scratch) {
                 warn("ignoring stale '.projeny-tmp*' scratch entries inside the workdir");
                 warned_scratch = true;
@@ -715,50 +748,19 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
     // Refined delete-side keep coverage. Callers pass a non-null
     // delete_keep (the null handling lives at the call sites: delete
     // blocks are kept, rename old sides are ok, and every missing base
-    // file counts as disappeared). A keep entry k covering rel — rel ==
-    // k, or rel under k/ — registers the deletion, except when rel merely
-    // lives under an entry that is exactly the source of a pending rename
-    // (a directory move): there the entry covers rel only when the file
-    // moved with the directory, i.e. its counterpart under the rename
-    // destination exists in the workdir (the rename pairing handles
-    // content changes) or is itself registered (e.g. `projeny rm` after
-    // the move, which records the moved-to path). Otherwise the deletion
-    // is unregistered: the block stays out of the diff and the path is
-    // reported as disappeared, exactly like a plain rm anywhere else.
-    // Without this, a plain `rm` of one file inside a moved directory
-    // would be silently folded into the pending move. File rename sources
-    // cover exactly (rel == k, handled above), and their destinations are
-    // validated to exist before the differ runs.
+    // file counts as disappeared). The rule lives in vcs_delete_covered;
+    // this probe counts a moved file's counterpart as present when it
+    // exists in the workdir OR is itself registered by the full keep list
+    // (e.g. `projeny rm` after the move, or a further pending rename of
+    // the moved-to path).
     auto delete_covered = [&](const std::string& rel) -> bool {
-        for (const auto& k : *opts.delete_keep) {
-            if (k.empty())
-                continue;
-            if (rel == k)
-                return true; // exact: a removal (or file rename source)
-            if (!(rel.size() > k.size() &&
-                  rel.compare(0, k.size(), k) == 0 && rel[k.size()] == '/'))
-                continue;
-            // rel lives under k. Authoritative unless k is exactly a
-            // pending rename source (a directory move).
-            bool is_dir_move = false;
-            if (opts.forced_renames) {
-                for (const auto& rn : *opts.forced_renames) {
-                    if (rn.first != k)
-                        continue;
-                    is_dir_move = true;
-                    std::string counterpart =
-                        rn.second + rel.substr(k.size());
-                    if (work.count(counterpart) ||
-                        vcs_covers_keep_path(*opts.delete_keep, counterpart))
-                        return true; // moved with the directory
-                }
-            }
-            if (!is_dir_move)
-                return true;
-        }
-        // Only directory-move sources covered rel and none of them moved
-        // this file: unregistered.
-        return false;
+        return vcs_delete_covered(*opts.delete_keep, opts.forced_renames, rel,
+                                  [&](const std::string& counterpart) {
+                                      return work.count(counterpart) > 0 ||
+                                             vcs_covers_keep_path(
+                                                 *opts.delete_keep,
+                                                 counterpart);
+                                  });
     };
     // Partition.
     std::map<std::string, Collected> common_base, common_work;
@@ -1394,8 +1396,10 @@ std::vector<PBlock> parse_patch(const std::string& patch, const std::string& wid
                 blk.old_mode = t.substr(9);
             else if (t.compare(0, 9, "new mode ") == 0)
                 blk.new_mode = t.substr(9);
-            else if (t.compare(0, 13, "frozen-mtime ") == 0)
-                blk.frozen_mtime = parse_frozen_mtime_value(t.substr(13));
+            else if (t.compare(0, kFrozenMtimeHeaderLen,
+                               kFrozenMtimeHeader) == 0)
+                blk.frozen_mtime = parse_frozen_mtime_value(
+                    t.substr(kFrozenMtimeHeaderLen));
             else if (t.compare(0, 17, "deleted file mode") == 0) {
                 blk.is_deleted = true;
                 std::string v = t.size() > 18 ? ltrim(t.substr(17)) : "";
@@ -1673,10 +1677,11 @@ std::string block_set_frozen(const std::string& raw, bool set, uint64_t ts)
             out += lines[0];
             out += "\n";
             if (set)
-                out += "frozen-mtime " + std::to_string(ts) + "\n";
+                out += kFrozenMtimeHeader + std::to_string(ts) + "\n";
             continue;
         }
-        if (no_cr(lines[i]).compare(0, 13, "frozen-mtime ") == 0)
+        if (no_cr(lines[i]).compare(0, kFrozenMtimeHeaderLen,
+                                    kFrozenMtimeHeader) == 0)
             continue; // an existing header: replaced (or dropped) above
         out += lines[i];
         out += "\n";
@@ -1706,7 +1711,7 @@ std::string frozen_attribute_block(const std::string& wid, const std::string& re
 {
     std::string a = quote_git_path("a/" + wid + "/" + rel);
     std::string b = quote_git_path("b/" + wid + "/" + rel);
-    return "diff --git " + a + " " + b + "\n" + "frozen-mtime " +
+    return "diff --git " + a + " " + b + "\n" + kFrozenMtimeHeader +
            std::to_string(ts) + "\n";
 }
 
@@ -2024,12 +2029,8 @@ RawContent read_raw_content(const std::string& full)
     if (lstat(full.c_str(), &st) != 0)
         return rc;
     if (S_ISLNK(st.st_mode)) {
-        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
-        ssize_t r = readlink(full.c_str(), buf.data(), buf.size());
-        if (r < 0)
-            die("cannot read link '" + full + "': " + strerror(errno));
         rc.kind = RawKind::Link;
-        rc.bytes.assign(buf.data(), (size_t)r);
+        rc.bytes = read_link_target(full);
         return rc;
     }
     if (S_ISREG(st.st_mode)) {
@@ -2133,14 +2134,11 @@ FileLines read_target_lines(const std::string& full, bool* is_link,
     }
     if (S_ISLNK(st.st_mode)) {
         *is_link = true;
-        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
-        ssize_t r = readlink(full.c_str(), buf.data(), buf.size());
-        if (r < 0)
-            die("cannot read link '" + full + "': " + strerror(errno));
+        std::string target = read_link_target(full);
         if (link_target)
-            link_target->assign(buf.data(), (size_t)r);
+            *link_target = target;
         FileLines fl;
-        fl.lines.push_back(std::string(buf.data(), (size_t)r));
+        fl.lines.push_back(target);
         fl.ends_nl = false;
         return fl;
     }
@@ -2749,31 +2747,17 @@ BlkStatus apply_block(const std::string& treedir, const PBlock& blk,
         // enforcing mode/newline even on the Already path.
         if (path_kind(dst_full) == PathKind::Other)
             return BlkStatus::Failed;
-        if (blk.is_rename && path_exists(dst_full)) {
+        // Reverse-match hunks against the destination (whether the block
+        // renames or not — both shapes read the same way). A pure rename
+        // (empty hunks) whose destination exists is already applied too.
+        if (path_exists(dst_full)) {
             if (!blk.is_binary && path_is_binary_file(dst_full))
                 return BlkStatus::Failed; // text block vs binary file
             bool is_link = false;
             FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
-            if (!blk.hunks.empty() &&
-                hunks_match_all(cur.lines, blk.hunks, true)) {
-                if (!confined_for_write(treedir, dst_full))
-                    return BlkStatus::Failed;
-                ensure_already_state(dst_full, cur, blk, is_link);
-                return BlkStatus::Already;
-            }
-            if (blk.hunks.empty()) {
-                if (!confined_for_write(treedir, dst_full))
-                    return BlkStatus::Failed;
-                ensure_already_state(dst_full, cur, blk, is_link);
-                return BlkStatus::Already;
-            }
-        } else if (!blk.is_rename && path_exists(dst_full)) {
-            if (!blk.is_binary && path_is_binary_file(dst_full))
-                return BlkStatus::Failed; // text block vs binary file
-            bool is_link = false;
-            FileLines cur = read_target_lines(dst_full, &is_link, nullptr);
-            if (!blk.hunks.empty() &&
-                hunks_match_all(cur.lines, blk.hunks, true)) {
+            if ((!blk.hunks.empty() &&
+                 hunks_match_all(cur.lines, blk.hunks, true)) ||
+                (blk.is_rename && blk.hunks.empty())) {
                 if (!confined_for_write(treedir, dst_full))
                     return BlkStatus::Failed;
                 ensure_already_state(dst_full, cur, blk, is_link);
@@ -3391,24 +3375,36 @@ std::vector<std::string> vcs_binary_add_paths(const std::string& patch,
     return out;
 }
 
-std::vector<std::string> vcs_add_paths(const std::string& patch,
-                                       const std::string& wid)
+// Shared implementation of vcs_add_paths / vcs_deleted_paths: collect the
+// workdir-relative paths of the patch's pure adds (plus rename
+// destinations, whose commit-derived diff needs them) or pure deletes
+// respectively — deduplicated, in patch order.
+static std::vector<std::string> patch_side_paths(const std::string& patch,
+                                                 const std::string& wid,
+                                                 bool adds)
 {
     std::vector<std::string> out;
     if (patch.empty())
         return out;
     for (auto& b : parse_patch(patch, wid)) {
-        bool pure_add = b.is_new && !b.is_rename && !b.is_deleted &&
-                        !b.is_combined;
-        // Rename destinations are tracked too (see the header comment): a
-        // committed rename's content can diverge beyond rename detection, in
-        // which case commit's re-derived diff (against the raw archive, which
-        // predates the rename) is a delete of the old path plus an add of the
-        // new one — dropping that add loses the committed file.
-        bool rename_new = b.is_rename && !b.is_combined;
-        if (!pure_add && !rename_new)
+        bool hit;
+        if (adds) {
+            bool pure_add = b.is_new && !b.is_rename && !b.is_deleted &&
+                            !b.is_combined;
+            // Rename destinations are tracked too (see the header comment):
+            // a committed rename's content can diverge beyond rename
+            // detection, in which case commit's re-derived diff (against the
+            // raw archive, which predates the rename) is a delete of the old
+            // path plus an add of the new one — dropping that add loses the
+            // committed file.
+            bool rename_new = b.is_rename && !b.is_combined;
+            hit = pure_add || rename_new;
+        } else {
+            hit = b.is_deleted && !b.is_rename && !b.is_new && !b.is_combined;
+        }
+        if (!hit)
             continue;
-        std::string rel = b.new_rel;
+        std::string rel = adds ? b.new_rel : b.old_rel;
         if (rel.empty())
             rel = failure_for_block(b, wid).display;
         if (rel.empty() || rel == "<unknown file>" || rel == "<combined diff>" ||
@@ -3420,27 +3416,16 @@ std::vector<std::string> vcs_add_paths(const std::string& patch,
     return out;
 }
 
+std::vector<std::string> vcs_add_paths(const std::string& patch,
+                                       const std::string& wid)
+{
+    return patch_side_paths(patch, wid, true);
+}
+
 std::vector<std::string> vcs_deleted_paths(const std::string& patch,
                                            const std::string& wid)
 {
-    std::vector<std::string> out;
-    if (patch.empty())
-        return out;
-    for (auto& b : parse_patch(patch, wid)) {
-        bool pure_delete = b.is_deleted && !b.is_rename && !b.is_new &&
-                           !b.is_combined;
-        if (!pure_delete)
-            continue;
-        std::string rel = b.old_rel;
-        if (rel.empty())
-            rel = failure_for_block(b, wid).display;
-        if (rel.empty() || rel == "<unknown file>" || rel == "<combined diff>" ||
-            rel == "<rename>")
-            continue;
-        if (std::find(out.begin(), out.end(), rel) == out.end())
-            out.push_back(rel);
-    }
-    return out;
+    return patch_side_paths(patch, wid, false);
 }
 
 namespace {
@@ -3607,15 +3592,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
             make_dirs(dirname_of(dst_path));
             remove_recursive(dst_path);
             if (k == 1) {
-                struct stat st;
-                if (lstat(src.c_str(), &st) != 0)
-                    die("cannot stat '" + src + "': " + strerror(errno));
-                std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1
-                                                     : 4096);
-                ssize_t r = readlink(src.c_str(), buf.data(), buf.size());
-                if (r < 0)
-                    die("cannot read link '" + src + "': " + strerror(errno));
-                std::string target(buf.data(), (size_t)r);
+                std::string target = read_link_target(src);
                 check_patch_link_target(dst_root, dst_path, target);
                 if (symlink(target.c_str(), dst_path.c_str()) != 0)
                     die("cannot create symlink '" + dst_path +
@@ -3659,20 +3636,7 @@ bool vcs_merge_one_file(const std::string& base_file, const std::string& ours_fi
         return S_ISLNK(st.st_mode);
     };
     auto read_target = [](const std::string& f) -> std::string {
-        struct stat st;
-        if (lstat(f.c_str(), &st) != 0)
-            die("cannot stat '" + f + "': " + strerror(errno));
-        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
-        ssize_t r = readlink(f.c_str(), buf.data(), buf.size());
-        if (r < 0)
-            die("cannot read link '" + f + "': " + strerror(errno));
-        if ((size_t)r >= buf.size()) {
-            buf.resize((size_t)r + 1);
-            r = readlink(f.c_str(), buf.data(), buf.size());
-            if (r < 0)
-                die("cannot read link '" + f + "': " + strerror(errno));
-        }
-        return std::string(buf.data(), (size_t)r);
+        return read_link_target(f);
     };
     // Copy src to dst preserving symlink-ness and permission bits, so a
     // clean merge never introduces spurious mode changes (which the next

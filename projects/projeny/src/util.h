@@ -92,6 +92,18 @@ std::string absolutize(const std::string& p); // lexical, based on get_cwd()
 // Lexically normalize: collapse ".", duplicate slashes; ".." pops textually.
 std::string normalize_lexical(const std::string& p);
 
+// Split a path into its components, dropping empty and "." components;
+// ".." components are kept verbatim when keep_dots is true. Used by the
+// lexical path algebra (normalize_lexical, rel_to_cwd).
+std::vector<std::string> split_path_components(const std::string& p,
+                                               bool keep_dots);
+
+// Read a symlink's target, retrying when the link grows between the lstat
+// size hint and readlink (a single read would silently truncate). Dies on
+// failure; callers invoke it for a path they just saw as a symlink, so an
+// error here is a race.
+std::string read_link_target(const std::string& path);
+
 // Outcome of lexically resolving a symlink/hardlink target against a tree
 // root.
 enum class LinkResolve {

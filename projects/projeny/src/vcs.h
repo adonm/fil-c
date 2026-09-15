@@ -38,6 +38,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -125,6 +126,31 @@ std::string vcs_diff_trees_ex(const std::string& base_tree,
 // their exact/under-a-directory coverage decisions.
 bool vcs_covers_keep_path(const std::vector<std::string>& keep,
                           const std::string& rel);
+
+// True for legacy scratch entries that must never be diffed or reported
+// (left behind inside workdirs by older crashed runs; scratch now lives
+// outside): ".projeny-tmp*" at the workdir root or under any directory.
+// Exported so status/get-attributes/commit share the diff's filtering.
+bool vcs_is_scratch_rel(const std::string& rel);
+
+// Shared "delete-keep coverage with directory-move exception" rule, used by
+// the pending-aware diff (vcs_diff_trees_ex) and commit's disappeared check:
+// a deletion of `rel` is registered (covered) when `keep` names it exactly,
+// or when it lives under a kept entry (add/rm take directories) — EXCEPT
+// when that entry is exactly a pending rename source in `renames` (a
+// directory move): there the file counts as covered only when it moved with
+// the directory, i.e. `counterpart_exists` holds for the file's counterpart
+// under the rename destination (the rename pairing handles content changes;
+// the caller decides what "exists" means — see the two call sites, whose
+// probes intentionally differ). Otherwise the deletion is unregistered: the
+// diff drops the block / commit reports the path as disappeared. File
+// rename sources cover exactly (rel == k), and their destinations are
+// validated to exist before the caller runs.
+bool vcs_delete_covered(
+    const std::vector<std::string>& keep,
+    const std::vector<std::pair<std::string, std::string>>* renames,
+    const std::string& rel,
+    const std::function<bool(const std::string&)>& counterpart_exists);
 
 // Drop pure-deletion blocks whose deleted path is not in `keep` (workdir-
 // relative). Used by setup to restore files that vanished without an

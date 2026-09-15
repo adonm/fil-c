@@ -72,6 +72,52 @@ Ctx resolve_ctx(const std::string& projeny_arg)
 
 namespace {
 
+// Render a bullet list for die() detail blocks: two spaces per line.
+std::string bullet_list(const std::vector<std::string>& items)
+{
+    std::string out;
+    for (const auto& item : items)
+        out += "  " + item + "\n";
+    return out;
+}
+
+// Same, over patch-failure display blocks (the "does not apply" details).
+std::string bullet_list(const std::vector<VcsFailure>& bad)
+{
+    std::string out;
+    for (const auto& f : bad)
+        out += "  " + f.display + "\n";
+    return out;
+}
+
+// Require the "already set up, and the .projeny file matches the status
+// copy" precondition shared by commit/rebase/diff and the frozen-mtime
+// commands: the status file must exist, and its embedded .projeny copy must
+// be byte-identical to the live file (a git merge that touched either needs
+// `setup` to reconcile first). Returns the parsed status.
+StatusData require_status_matches(const Ctx& ctx)
+{
+    if (!path_exists(ctx.statusfile))
+        die("status file '" + ctx.statusfile + "' is missing; run setup first");
+    StatusData st = StatusData::parse(ctx.statusfile);
+    std::string cur_raw = read_file_bytes(ctx.projeny_arg);
+    if (cur_raw != st.embedded)
+        die("'" + ctx.projeny_arg +
+            "' differs from the copy in '" + ctx.statusfile +
+            "'; run setup to merge first");
+    return st;
+}
+
+// Require a conflict-free status; `what` is the full die headline (each
+// command words its refusal differently). The bullet list names every
+// unresolved file.
+void require_no_conflicts(const StatusData& st, const std::string& what)
+{
+    if (st.conflicts.empty())
+        return;
+    die(what, bullet_list(st.conflicts));
+}
+
 // Normalize a user-supplied path (CWD-relative or absolute, or already
 // workdir-relative like "lua/src/f.c", or prefixed like "lua/src/f.c" where
 // the first component equals the workdir name) to workdir-relative form.
@@ -433,11 +479,8 @@ std::string build_tree_from_patch(TempDir& tmp, const std::string& archive,
         // workdir-relative paths from the single patch parser (no second
         // parser, so block counts cannot diverge into OOB/wrong names).
         std::vector<VcsFailure> bad = apply_patch_per_file(tree, patch_wid, wid);
-        std::string detail;
-        for (const auto& f : bad) {
-            detail += "  " + f.display + "\n";
-        }
-        die("cannot apply " + what + ": patch does not apply cleanly", detail);
+        die("cannot apply " + what + ": patch does not apply cleanly",
+            bullet_list(bad));
     }
     return tree;
 }
@@ -449,6 +492,34 @@ std::string build_tree_from_patch(TempDir& tmp, const std::string& archive,
 // Records conflicts into `conflicts` (workdir-relative paths). Applies
 // file-by-file; files that apply cleanly via the internal applier are
 // applied directly, the rest go through merge_one_file.
+// Derive the workdir-relative paths a failed patch block touches: the
+// parser's paths when present, else the display string when it looks like a
+// plain path (opaque blocks). Dies naming the block when neither yields a
+// path; `verb` spells the command for the message.
+std::vector<std::string> failure_paths_or_die(const VcsFailure& f,
+                                              const char* verb)
+{
+    std::vector<std::string> touched = f.paths;
+    // Opaque blocks (e.g. combined diffs) carry no parseable path but
+    // still name the file in display; fall back to deriving rels from
+    // display when it looks like a plain path.
+    if (touched.empty() && !f.display.empty() &&
+        f.display.find('\n') == std::string::npos &&
+        f.display.find(" -> ") == std::string::npos &&
+        f.display.compare(0, 5, "diff ") != 0 &&
+        f.display != "<unknown file>" && f.display != "<combined diff>" &&
+        f.display != "<rename>") {
+        touched.push_back(f.display);
+    }
+    if (touched.empty()) {
+        std::string d = f.display.empty() ? "<unknown file>" : f.display;
+        die(std::string("cannot ") + verb + ": unsupported patch block '" + d +
+                "' cannot be merged; resolve manually",
+            "  " + d + "\n");
+    }
+    return touched;
+}
+
 void merge_user_diff_onto(const std::string& base_tree, const std::string& fresh_tree,
                           const std::string& user_tree, const std::string& workdir,
                           const std::string& wid, const std::string& uwid,
@@ -465,24 +536,8 @@ void merge_user_diff_onto(const std::string& base_tree, const std::string& fresh
     // For each failed block, do a 3-way merge of base/ours(=fresh)/theirs.
     std::string scratch = scratch_parent_for(workdir);
     for (const auto& f : bad) {
-        std::vector<std::string> touched = f.paths;
-        // Opaque blocks (e.g. combined diffs) carry no parseable path but
-        // still name the file in display; fall back to deriving rels from
-        // display when it looks like a plain path.
-        if (touched.empty() && !f.display.empty() &&
-            f.display.find('\n') == std::string::npos &&
-            f.display.find(" -> ") == std::string::npos &&
-            f.display.compare(0, 5, "diff ") != 0 &&
-            f.display != "<unknown file>" && f.display != "<combined diff>" &&
-            f.display != "<rename>") {
-            touched.push_back(f.display);
-        }
-        if (touched.empty()) {
-            std::string d = f.display.empty() ? "<unknown file>" : f.display;
-            die("cannot merge local changes: unsupported patch block '" + d +
-                    "' cannot be merged; resolve manually",
-                "  " + d + "\n");
-        }
+        std::vector<std::string> touched =
+            failure_paths_or_die(f, "merge local changes");
         for (const std::string& rel : touched) {
             if (rel.empty())
                 continue;
@@ -611,21 +666,10 @@ void write_status(const Ctx& ctx, const StatusData& sd)
 std::string build_fresh_tree(const Ctx& ctx, const ProjenyFile& cur,
                              TempDir& tmp)
 {
-    unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
-    std::string fresh = join_path(tmp.path, cur.origname);
-    if (!apply_patch_whole(fresh, cur.patch, cur.name,
-                           scratch_parent_for(ctx.pdir))) {
-        std::vector<VcsFailure> bad =
-            apply_patch_per_file(fresh, cur.patch, cur.name);
-        std::string detail;
-        for (const auto& f : bad) {
-            detail += "  " + f.display + "\n";
-        }
-        die("patch in '" + ctx.projeny_arg + "' does not apply to archive '" +
-                cur.archive + "'",
-            detail);
-    }
-    return fresh;
+    return build_tree_from_patch(tmp, join_path(ctx.pdir, cur.archive),
+                                 cur.origname, cur.name, cur.patch,
+                                 "patch in '" + ctx.projeny_arg +
+                                     "' (archive '" + cur.archive + "')");
 }
 
 // Fresh setup: unpack the current archive, apply the current patch, and move
@@ -720,10 +764,11 @@ void do_fresh_setup_into_existing(const Ctx& ctx, const ProjenyFile& cur)
     }
     if (!conflicts.empty()) {
         const size_t kMaxListed = 10;
-        std::string detail = "setup would overwrite these existing paths:\n";
         size_t shown = std::min(conflicts.size(), kMaxListed);
-        for (size_t i = 0; i < shown; ++i)
-            detail += "  " + conflicts[i] + "\n";
+        std::string detail = "setup would overwrite these existing paths:\n" +
+                             bullet_list(std::vector<std::string>(
+                                 conflicts.begin(),
+                                 conflicts.begin() + (long)shown));
         if (conflicts.size() > shown)
             detail += "  ... and " +
                       std::to_string(conflicts.size() - shown) + " more\n";
@@ -1415,11 +1460,12 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         }
     }
     if (found > 1) {
-        std::string detail;
+        std::vector<std::string> dirs;
         for (auto& c : candidates) {
             if (is_dir(c))
-                detail += "  " + c + "\n";
+                dirs.push_back(c);
         }
+        std::string detail = bullet_list(dirs);
         die("multiple workdirs exist next to conflicted '" + ctx.projeny_arg +
                 "'; remove or rename all but one and run 'projeny setup' again",
             detail);
@@ -1658,26 +1704,13 @@ std::string rel_to_cwd(const std::string& abs)
         return normalize_lexical(abs);
     std::string cwd = normalize_lexical(buf);
     std::string a = normalize_lexical(abs);
+    // Defensive: with both sides normalized, equal component lists mean the
+    // equal strings caught above, so the walk below always climbs or
+    // descends; keep the "." case explicit anyway.
     if (a == cwd)
         return ".";
-    auto comps = [](const std::string& p) {
-        std::vector<std::string> out;
-        size_t i = 0;
-        while (i <= p.size()) {
-            size_t j = p.find('/', i);
-            std::string c = (j == std::string::npos) ? p.substr(i)
-                                                     : p.substr(i, j - i);
-            if (j == std::string::npos)
-                i = p.size() + 1;
-            else
-                i = j + 1;
-            if (c.empty() || c == ".")
-                continue;
-            out.push_back(c);
-        }
-        return out;
-    };
-    std::vector<std::string> cv = comps(cwd), av = comps(a);
+    std::vector<std::string> cv = split_path_components(cwd, true),
+                             av = split_path_components(a, true);
     size_t common = 0;
     while (common < cv.size() && common < av.size() && cv[common] == av[common])
         ++common;
@@ -1692,8 +1725,6 @@ std::string rel_to_cwd(const std::string& abs)
             out += "/";
         out += av[i];
     }
-    if (out.empty())
-        return a; // nothing shared and no climb: keep the absolute form
     return out;
 }
 
@@ -1757,13 +1788,10 @@ std::string resolve_projeny_path(const std::string& arg, const char* cmd)
                     spell(sib_abs) + "' sibling); name the .projeny file "
                     "explicitly");
             }
-            std::string detail;
-            for (auto& c : cands)
-                detail += "  " + c + "\n";
             die(std::string("cannot ") + cmd + " '" + arg +
                 "': directory holds multiple .projeny files; name one "
                 "explicitly",
-                detail);
+                bullet_list(cands));
         }
     }
     if (ends_with(a, ".projeny"))
@@ -1840,20 +1868,41 @@ std::map<std::string, uint64_t> refresh_frozen_from_tree(
 // pending-removed or a rename source. This is package's tracking rule; the
 // frozen-mtime and get-attributes commands use it so a path that projeny
 // does not manage dies with a clear name instead of being frozen/listed.
+// True when `rel` is `base` itself or lives under it (keep entries may name
+// directories, which then cover everything under them).
+bool under_path(const std::string& rel, const std::string& base)
+{
+    return rel == base || starts_with(rel, base + "/");
+}
+
+// True when workdir-relative `rel` is tracked. One predicate for every
+// family (freeze-mtime, get-attributes, package/extract staging); the
+// precedence is fixed and documented:
+//   1. removed, or under a removed entry -> false;
+//   2. a pending rename source, or under one -> false (the path moved away);
+//   3. a pending rename destination, or under one -> true;
+//   4. pending-added, or under one -> true;
+//   5. otherwise: whether the fresh base+patch tree holds it.
+// The rename rules matter for the fresh-tree walk (a pending rename source
+// still exists THERE until commit folds the op) and for files re-created at
+// a pending rename source path (untracked: the lineage lives at the
+// destination now). Untracked files (in neither tree nor any pending op)
+// are left out of packages and attribute reports, like `git archive` leaves
+// them out.
 bool is_tracked_rel(const std::string& rel, const std::string& fresh_root,
                     const StatusData& st)
 {
     for (auto& r : st.removed)
-        if (rel == r || starts_with(rel, r + "/"))
+        if (under_path(rel, r))
             return false;
-    for (auto& rn : st.renamed) {
-        if (rel == rn.first || starts_with(rel, rn.first + "/"))
+    for (auto& rn : st.renamed)
+        if (under_path(rel, rn.first))
             return false;
-        if (rel == rn.second || starts_with(rel, rn.second + "/"))
+    for (auto& rn : st.renamed)
+        if (under_path(rel, rn.second))
             return true;
-    }
     for (auto& a : st.added)
-        if (rel == a || starts_with(rel, a + "/"))
+        if (under_path(rel, a))
             return true;
     return path_exists(join_path(fresh_root, rel));
 }
@@ -2180,21 +2229,10 @@ int cmd_commit(const std::string& projeny_arg)
 {
     std::string pj = resolve_projeny_path(projeny_arg, "commit");
     Ctx ctx = resolve_ctx(pj);
-    if (!path_exists(ctx.statusfile))
-        die("status file '" + ctx.statusfile + "' is missing; run setup first");
-    StatusData st = StatusData::parse(ctx.statusfile);
-    std::string cur_raw = read_file_bytes(ctx.projeny_arg);
-    if (cur_raw != st.embedded)
-        die("'" + ctx.projeny_arg +
-            "' differs from the copy in '" + ctx.statusfile +
-            "'; run setup to merge first");
-    if (!st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : st.conflicts)
-            detail += "  " + c + "\n";
-        die("cannot commit with unresolved conflicts", detail);
-    }
-    ProjenyFile cur = ProjenyFile::parse_bytes(cur_raw, "'" + ctx.projeny_arg + "'");
+    StatusData st = require_status_matches(ctx);
+    require_no_conflicts(st, "cannot commit with unresolved conflicts");
+    ProjenyFile cur =
+        ProjenyFile::parse_bytes(st.embedded, "'" + ctx.projeny_arg + "'");
     std::string workdir = join_path(ctx.pdir, cur.name);
     if (!is_dir(workdir)) {
         // The checkout directory is gone: the status and snapshot files are
@@ -2254,43 +2292,23 @@ int cmd_commit(const std::string& projeny_arg)
             if (std::find(del_keep.begin(), del_keep.end(), p) == del_keep.end())
                 del_keep.push_back(p);
         }
-        // Coverage for the disappeared check below. An exact keep hit is
-        // authoritative (a removed entry, a pending rename source, or the
-        // patch's own deleted path), and so is living under a keep entry
-        // (add/rm take directories) — except when that entry is exactly
-        // the source of a pending rename (a directory move): there the
-        // file counts as registered only when it moved with the directory,
-        // i.e. its counterpart under the rename destination exists in the
-        // workdir or is itself covered by the removed list (`projeny rm`
-        // after the move records the moved-to path). Otherwise a plain
-        // `rm` of one file inside a moved directory would be silently
-        // folded into the pending move and committed as a deletion — the
-        // next setup would then restore a file the user removed.
+        // Coverage for the disappeared check below (the shared rule lives
+        // in vcs_delete_covered). Commit's counterpart probe is narrower
+        // than the diff's: a moved file counts as covered only when its
+        // counterpart exists in the workdir or was itself registered as
+        // removed (`projeny rm` after the move records the moved-to path).
+        // It deliberately does not consult the full keep list — a further
+        // pending rename of the moved-to path leaves the moved-away file
+        // unregistered, so the disappeared check still refuses instead of
+        // folding the deletion into the move.
         auto covered = [&](const std::string& rel) -> bool {
-            for (const auto& k : del_keep) {
-                if (k.empty())
-                    continue;
-                if (rel == k)
-                    return true;
-                if (!(rel.size() > k.size() &&
-                      rel.compare(0, k.size(), k) == 0 &&
-                      rel[k.size()] == '/'))
-                    continue;
-                bool is_dir_move = false;
-                for (const auto& rn : st.renamed) {
-                    if (rn.first != k)
-                        continue;
-                    is_dir_move = true;
-                    std::string counterpart =
-                        rn.second + rel.substr(k.size());
-                    if (path_exists(join_path(workdir, counterpart)) ||
-                        vcs_covers_keep_path(st.removed, counterpart))
-                        return true; // moved with the directory
-                }
-                if (!is_dir_move)
-                    return true;
-            }
-            return false;
+            return vcs_delete_covered(del_keep, &st.renamed, rel,
+                                      [&](const std::string& counterpart) {
+                                          return path_exists(join_path(
+                                                     workdir, counterpart)) ||
+                                                 vcs_covers_keep_path(
+                                                     st.removed, counterpart);
+                                      });
         };
         // Authoritative disappeared check: walk the expected tree E (base
         // archive plus the current patch) and require every file missing
@@ -2311,9 +2329,7 @@ int cmd_commit(const std::string& projeny_arg)
             std::string abs = d.empty() ? Etree : join_path(Etree, d);
             for (const std::string& name : list_dir_names(abs)) {
                 std::string rel = d.empty() ? name : d + "/" + name;
-                if (rel == ".projeny-tmp" ||
-                    rel.compare(0, 13, ".projeny-tmp") == 0 ||
-                    rel.find("/.projeny-tmp") != std::string::npos)
+                if (vcs_is_scratch_rel(rel))
                     continue;
                 std::string efull = join_path(Etree, rel);
                 struct stat lst;
@@ -2329,13 +2345,10 @@ int cmd_commit(const std::string& projeny_arg)
         }
         sort_unique(&disappeared);
         if (!disappeared.empty()) {
-            std::string detail;
-            for (auto& dd : disappeared)
-                detail += "  " + dd + "\n";
             die("cannot commit with disappeared files (deleted on disk but not "
                 "marked with 'projeny rm'; restore them or run 'projeny rm' "
                 "first)",
-                detail);
+                bullet_list(disappeared));
         }
     }
     std::vector<std::string> keep;
@@ -2618,6 +2631,36 @@ int cmd_resolve(const std::string& projeny_arg, const std::string& path)
     return 0;
 }
 
+// Replay recorded pending ops (adds, renames, removals) onto `root` so it
+// carries the workdir's pending intent: the replayed result is what the
+// workdir should hold given base+patch+pending, so a diff against it
+// exposes exactly the uncommitted residue. Dies when a pending add/rename's
+// workdir file has vanished mid-flight (`why` names what the command was
+// about to do). The workdir itself is never mutated.
+void replay_pending_ops(const StatusData& st, const std::string& workdir,
+                        const std::string& root, const char* why)
+{
+    for (const auto& a : st.added) {
+        std::string wf = join_path(workdir, a);
+        if (!path_exists(wf))
+            die(std::string("pending add '") + a + "' vanished from '" +
+                workdir + "'; cannot " + why);
+        make_dirs(dirname_of(join_path(root, a)));
+        copy_path_preserving(wf, join_path(root, a));
+    }
+    for (const auto& rn : st.renamed) {
+        std::string wf = join_path(workdir, rn.second);
+        if (!path_exists(wf))
+            die("pending rename '" + rn.first + " -> " + rn.second +
+                "' vanished from '" + workdir + "'; cannot " + why);
+        remove_recursive(join_path(root, rn.first));
+        make_dirs(dirname_of(join_path(root, rn.second)));
+        copy_path_preserving(wf, join_path(root, rn.second));
+    }
+    for (const auto& r : st.removed)
+        remove_recursive(join_path(root, r));
+}
+
 int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
 {
     // Absolutize up front: this command replaces the workdir, which can
@@ -2635,13 +2678,9 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
         cmd_setup(pj);
     }
 
-    StatusData st = StatusData::parse(ctx.statusfile);
-    std::string cur_raw = read_file_bytes(ctx.projeny_arg);
-    if (cur_raw != st.embedded)
-        die("'" + ctx.projeny_arg +
-            "' differs from the copy in '" + ctx.statusfile +
-            "'; run setup to merge first");
-    ProjenyFile cur = ProjenyFile::parse_bytes(cur_raw, "'" + ctx.projeny_arg + "'");
+    StatusData st = require_status_matches(ctx);
+    ProjenyFile cur =
+        ProjenyFile::parse_bytes(st.embedded, "'" + ctx.projeny_arg + "'");
     std::string workdir = join_path(ctx.pdir, cur.name);
     if (!is_dir(workdir))
         die("workdir '" + workdir + "' is missing; run setup first");
@@ -2653,14 +2692,9 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     // Pending add/rm/mv ops are honored: the tree is "clean" when it matches
     // base+patch modulo exactly the recorded pending ops (verified below by
     // replaying the ops onto a fresh base+patch tree and diffing).
-    if (!st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : st.conflicts)
-            detail += "  " + c + "\n";
-        die("workdir '" + workdir +
-            "' has unresolved conflicts; resolve them before rebasing",
-            detail);
-    }
+    require_no_conflicts(
+        st, "workdir '" + workdir +
+                "' has unresolved conflicts; resolve them before rebasing");
     {
         TempDir tC(scratch_parent_for(ctx.pdir), "projeny-rebase-clean-");
         unpack_single_top(join_path(ctx.pdir, cur.archive), tC.path,
@@ -2674,25 +2708,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                 "'; run setup to repair first");
         // Replay recorded pending ops onto the expected tree, then require
         // the workdir to match exactly: any other delta is uncommitted work.
-        for (const auto& a : st.added) {
-            std::string wf = join_path(workdir, a);
-            if (!path_exists(wf))
-                die("pending add '" + a + "' does not exist in '" + workdir +
-                    "'; resolve pending ops before rebasing");
-            make_dirs(dirname_of(join_path(expect, a)));
-            copy_path_preserving(wf, join_path(expect, a));
-        }
-        for (const auto& rn : st.renamed) {
-            if (!path_exists(join_path(workdir, rn.second)))
-                die("pending rename '" + rn.first + " -> " + rn.second +
-                    "': destination missing in '" + workdir + "'");
-            remove_recursive(join_path(expect, rn.first));
-            make_dirs(dirname_of(join_path(expect, rn.second)));
-            copy_path_preserving(join_path(workdir, rn.second),
-                                 join_path(expect, rn.second));
-        }
-        for (const auto& r : st.removed)
-            remove_recursive(join_path(expect, r));
+        replay_pending_ops(st, workdir, expect, "check for uncommitted work");
         std::string U = diff_trees(expect, workdir, cur.name);
         if (!normalize_patch_text(U).empty())
             die("workdir '" + workdir +
@@ -2753,21 +2769,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
         // The old tree unpacked is the base; workdir == base+patch (clean
         // check above), so theirs-file == workdir file.
         for (const auto& f : bad) {
-            std::vector<std::string> touched = f.paths;
-            if (touched.empty() && !f.display.empty() &&
-                f.display.find('\n') == std::string::npos &&
-                f.display.find(" -> ") == std::string::npos &&
-                f.display.compare(0, 5, "diff ") != 0 &&
-                f.display != "<unknown file>" && f.display != "<combined diff>" &&
-                f.display != "<rename>") {
-                touched.push_back(f.display);
-            }
-            if (touched.empty()) {
-                std::string d = f.display.empty() ? "<unknown file>" : f.display;
-                die("cannot rebase: unsupported patch block '" + d +
-                        "' cannot be merged; resolve manually",
-                    "  " + d + "\n");
-            }
+            std::vector<std::string> touched = failure_paths_or_die(f, "rebase");
             sort_unique(&touched);
             for (const std::string& rel : touched) {
                 if (rel.empty())
@@ -2788,24 +2790,7 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     // patch below is diffed against this final tree, so pending intent is
     // folded into the stored patch while the ops ALSO stay listed as pending
     // (commit validates and formally folds them).
-    for (const auto& a : st.added) {
-        std::string wf = join_path(workdir, a);
-        if (!path_exists(wf))
-            die("pending add '" + a + "' vanished from '" + workdir + "'");
-        make_dirs(dirname_of(join_path(tree, a)));
-        copy_path_preserving(wf, join_path(tree, a));
-    }
-    for (const auto& rn : st.renamed) {
-        std::string wf = join_path(workdir, rn.second);
-        if (!path_exists(wf))
-            die("pending rename '" + rn.first + " -> " + rn.second +
-                "' vanished from '" + workdir + "'");
-        remove_recursive(join_path(tree, rn.first));
-        make_dirs(dirname_of(join_path(tree, rn.second)));
-        copy_path_preserving(wf, join_path(tree, rn.second));
-    }
-    for (const auto& r : st.removed)
-        remove_recursive(join_path(tree, r));
+    replay_pending_ops(st, workdir, tree, "rebase");
 
     // Same rename-forwarding as commit: a frozen pin follows the file it
     // was frozen under, so a pending mv re-keys the entry to the
@@ -2976,12 +2961,6 @@ int cmd_status(const std::string& projeny_arg)
             std::string content; // regular: bytes; symlink: target
             bool exec = false;
         };
-        auto is_scratch = [](const std::string& rel) -> bool {
-            if (rel == ".projeny-tmp" ||
-                rel.compare(0, 13, ".projeny-tmp") == 0)
-                return true;
-            return rel.find("/.projeny-tmp") != std::string::npos;
-        };
         std::function<void(const std::string&, const std::string&,
                            std::map<std::string, Entry>&)>
             collect = [&](const std::string& root, const std::string& rel,
@@ -2994,24 +2973,18 @@ int cmd_status(const std::string& projeny_arg)
                     for (const std::string& name : list_dir_names(full)) {
                         std::string child =
                             rel.empty() ? name : rel + "/" + name;
-                        if (is_scratch(child))
+                        if (vcs_is_scratch_rel(child))
                             continue;
                         collect(root, child, out);
                     }
                     return;
                 }
-                if (is_scratch(rel))
+                if (vcs_is_scratch_rel(rel))
                     return;
                 Entry e;
                 if (S_ISLNK(lst.st_mode)) {
                     e.kind = 1;
-                    std::vector<char> buf(lst.st_size > 0
-                                              ? (size_t)lst.st_size + 1
-                                              : 4096);
-                    ssize_t r =
-                        readlink(full.c_str(), buf.data(), buf.size());
-                    if (r >= 0)
-                        e.content.assign(buf.data(), (size_t)r);
+                    e.content = read_link_target(full);
                 } else if (S_ISREG(lst.st_mode)) {
                     e.kind = 0;
                     e.exec = (lst.st_mode & 0111) != 0;
@@ -3083,21 +3056,9 @@ int cmd_diff_projeny(const std::string& projeny_arg)
 {
     std::string pj = resolve_projeny_path(projeny_arg, "diff");
     Ctx ctx = resolve_ctx(pj);
-    if (!path_exists(ctx.statusfile))
-        die("status file '" + ctx.statusfile + "' is missing; run setup first");
-    StatusData st = StatusData::parse(ctx.statusfile);
-    std::string cur_raw = read_file_bytes(ctx.projeny_arg);
-    if (cur_raw != st.embedded)
-        die("'" + ctx.projeny_arg +
-            "' differs from the copy in '" + ctx.statusfile +
-            "'; run setup to merge first");
-    if (!st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : st.conflicts)
-            detail += "  " + c + "\n";
-        die("cannot diff with unresolved conflicts", detail);
-    }
-    ProjenyFile cur = ProjenyFile::parse_bytes(cur_raw,
+    StatusData st = require_status_matches(ctx);
+    require_no_conflicts(st, "cannot diff with unresolved conflicts");
+    ProjenyFile cur = ProjenyFile::parse_bytes(st.embedded,
                                                "'" + ctx.projeny_arg + "'");
     std::string workdir = join_path(ctx.pdir, cur.name);
     if (!is_dir(workdir)) {
@@ -3413,32 +3374,6 @@ ArchiveKind classify_package_output(const std::string& output)
     return ArchiveKind{};
 }
 
-bool under_path(const std::string& rel, const std::string& base)
-{
-    return rel == base || starts_with(rel, base + "/");
-}
-
-// True when workdir-relative `rel` is tracked: present in the fresh
-// base+patch tree, pending-added (or under a pending-added dir), or a pending
-// rename destination — and not pending-removed. Untracked files (in neither)
-// are left out of packages, like `git archive` leaves them out.
-bool is_tracked_path(const std::string& rel, const std::string& fresh_root,
-                     const StatusData& st)
-{
-    for (auto& r : st.removed) {
-        if (under_path(rel, r))
-            return false;
-    }
-    for (auto& rn : st.renamed) {
-        if (under_path(rel, rn.second))
-            return true;
-    }
-    for (auto& a : st.added) {
-        if (under_path(rel, a))
-            return true;
-    }
-    return path_exists(join_path(fresh_root, rel));
-}
 
 // Copy every tracked file/symlink under `workdir` into `dest` (which must
 // already exist), recreating parent dirs on demand. Untracked files are
@@ -3469,13 +3404,13 @@ void stage_tracked(const std::string& workdir, const std::string& fresh_root,
             if (is_dir)
                 continue; // dirs are created on demand as parents
             if (!is_link && !is_reg) {
-                if (is_tracked_path(rel, fresh_root, st))
+                if (is_tracked_rel(rel, fresh_root, st))
                     die("cannot package '" + rel +
                         "': unsupported file type; only regular files, "
                         "symlinks and directories are supported");
                 continue; // untracked special file: leave it out
             }
-            if (!is_tracked_path(rel, fresh_root, st))
+            if (!is_tracked_rel(rel, fresh_root, st))
                 continue;
             if (!skip_abs.empty() && absolutize(full) == skip_abs)
                 continue;
@@ -3489,6 +3424,42 @@ void stage_tracked(const std::string& workdir, const std::string& fresh_root,
 
 } // namespace
 
+// Shared package/extract preamble: refuse upfront when a previous setup
+// left unresolved conflicts (re-running setup here would otherwise re-merge
+// the marker lines as ordinary content and silently clear the conflict
+// list), run setup, refuse again when the setup itself ended conflicted,
+// and require the .projeny/status match in between. `verb`/`verb_ing` spell
+// the command for the messages ("package"/"packaging"). Returns 0 and fills
+// *st_out with the post-setup status when the command may proceed; otherwise
+// returns the rc the caller should propagate.
+int package_extract_preamble(const std::string& pj, const char* verb,
+                             const char* verb_ing, StatusData* st_out)
+{
+    std::string display = rel_to_cwd(pj);
+    {
+        Ctx pre_ctx = resolve_ctx(pj);
+        if (path_exists(pre_ctx.statusfile)) {
+            StatusData pre = StatusData::parse(pre_ctx.statusfile);
+            require_no_conflicts(
+                pre, std::string("cannot ") + verb + " '" + display +
+                         "' with unresolved conflicts from a previous setup; "
+                         "fix them and `projeny resolve` each file first");
+        }
+    }
+    int rc = cmd_setup(pj);
+    if (rc != 0) {
+        warn(std::string("not ") + verb_ing + " '" + display +
+             "': setup reported conflicts");
+        return rc;
+    }
+    Ctx ctx = resolve_ctx(pj);
+    *st_out = StatusData::parse(ctx.statusfile);
+    require_no_conflicts(*st_out, std::string("cannot ") + verb + " '" +
+                                      display +
+                                      "' with unresolved conflicts");
+    return 0;
+}
+
 int cmd_package(const std::string& projeny_arg, const std::string& output)
 {
     // Absolutize up front: this command replaces the workdir, which can
@@ -3497,38 +3468,11 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
     // CWD again.
     std::string pj = absolutize(resolve_projeny_path(projeny_arg, "package"));
     ArchiveKind kind = classify_package_output(output); // fail fast on bad names
-    // Like `commit`, refuse upfront when a previous setup left unresolved
-    // conflicts: re-running setup here would otherwise re-merge the marker
-    // lines as ordinary content and silently clear the conflict list.
-    {
-        Ctx pre_ctx = resolve_ctx(pj);
-        if (path_exists(pre_ctx.statusfile)) {
-            StatusData pre = StatusData::parse(pre_ctx.statusfile);
-            if (!pre.conflicts.empty()) {
-                std::string detail;
-                for (auto& c : pre.conflicts)
-                    detail += "  " + c + "\n";
-                die("cannot package '" + rel_to_cwd(pj) +
-                    "' with unresolved conflicts from a previous setup; fix "
-                    "them and `projeny resolve` each file first",
-                    detail);
-            }
-        }
-    }
-    int rc = cmd_setup(pj);
-    if (rc != 0) {
-        warn("not packaging '" + rel_to_cwd(pj) + "': setup reported conflicts");
+    StatusData st;
+    int rc = package_extract_preamble(pj, "package", "packaging", &st);
+    if (rc != 0)
         return rc;
-    }
     Ctx ctx = resolve_ctx(pj);
-    StatusData st = StatusData::parse(ctx.statusfile);
-    if (!st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : st.conflicts)
-            detail += "  " + c + "\n";
-        die("cannot package '" + rel_to_cwd(pj) + "' with unresolved conflicts",
-            detail);
-    }
     ProjenyFile cur = ProjenyFile::parse(pj);
     std::string workdir = join_path(ctx.pdir, cur.name);
 
@@ -3574,37 +3518,11 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
     // from a workdir subdirectory); every later path must not need the
     // CWD again.
     std::string pj = absolutize(resolve_projeny_path(projeny_arg, "extract"));
-    // Like `commit`, refuse upfront on conflicts left by a previous setup
-    // (see cmd_package: re-running setup would absorb the markers silently).
-    {
-        Ctx pre_ctx = resolve_ctx(pj);
-        if (path_exists(pre_ctx.statusfile)) {
-            StatusData pre = StatusData::parse(pre_ctx.statusfile);
-            if (!pre.conflicts.empty()) {
-                std::string detail;
-                for (auto& c : pre.conflicts)
-                    detail += "  " + c + "\n";
-                die("cannot extract '" + rel_to_cwd(pj) +
-                    "' with unresolved conflicts from a previous setup; fix "
-                    "them and `projeny resolve` each file first",
-                    detail);
-            }
-        }
-    }
-    int rc = cmd_setup(pj);
-    if (rc != 0) {
-        warn("not extracting '" + rel_to_cwd(pj) + "': setup reported conflicts");
+    StatusData st;
+    int rc = package_extract_preamble(pj, "extract", "extracting", &st);
+    if (rc != 0)
         return rc;
-    }
     Ctx ctx = resolve_ctx(pj);
-    StatusData st = StatusData::parse(ctx.statusfile);
-    if (!st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : st.conflicts)
-            detail += "  " + c + "\n";
-        die("cannot extract '" + rel_to_cwd(pj) + "' with unresolved conflicts",
-            detail);
-    }
     ProjenyFile cur = ProjenyFile::parse(pj);
     std::string workdir = join_path(ctx.pdir, cur.name);
 
@@ -3664,22 +3582,12 @@ FreezeTarget resolve_frozen_target(const std::string& projeny_arg,
     std::string pj = resolve_projeny_path(projeny_arg, cmd);
     FreezeTarget t;
     t.ctx = resolve_ctx(pj);
-    if (!path_exists(t.ctx.statusfile))
-        die("status file '" + t.ctx.statusfile + "' is missing; run setup first");
-    t.st = StatusData::parse(t.ctx.statusfile);
-    std::string cur_raw = read_file_bytes(t.ctx.projeny_arg);
-    if (cur_raw != t.st.embedded)
-        die("'" + t.ctx.projeny_arg +
-            "' differs from the copy in '" + t.ctx.statusfile +
-            "'; run setup to merge first");
-    if (!t.st.conflicts.empty()) {
-        std::string detail;
-        for (auto& c : t.st.conflicts)
-            detail += "  " + c + "\n";
-        die(std::string("cannot ") + cmd + " with unresolved conflicts",
-            detail);
-    }
-    t.cur = ProjenyFile::parse_bytes(cur_raw, "'" + t.ctx.projeny_arg + "'");
+    t.st = require_status_matches(t.ctx);
+    require_no_conflicts(t.st,
+                         std::string("cannot ") + cmd +
+                             " with unresolved conflicts");
+    t.cur = ProjenyFile::parse_bytes(t.st.embedded,
+                                     "'" + t.ctx.projeny_arg + "'");
     t.workdir = join_path(t.ctx.pdir, t.cur.name);
     if (!is_dir(t.workdir))
         die("workdir '" + t.workdir + "' is missing; run setup first");
@@ -3705,15 +3613,6 @@ bool in_scope(const std::string& rel, const std::string& scope)
     return scope.empty() || rel == scope || starts_with(rel, scope + "/");
 }
 
-// True when a workdir-relative path is one of the applier's scratch
-// entries (a crashed run's leftovers), which no diff ever describes.
-bool attr_is_scratch(const std::string& rel)
-{
-    if (rel == ".projeny-tmp" || rel.compare(0, 13, ".projeny-tmp") == 0)
-        return true;
-    return rel.find("/.projeny-tmp") != std::string::npos;
-}
-
 // Collect the regular/symlink files under `prefix` in `root` (recursive),
 // keeping those inside every scope, into `out`.
 void attr_walk(const std::string& root, const std::string& prefix,
@@ -3723,7 +3622,7 @@ void attr_walk(const std::string& root, const std::string& prefix,
     std::string dir = prefix.empty() ? root : join_path(root, prefix);
     for (const std::string& name : list_dir_names(dir)) {
         std::string rel = prefix.empty() ? name : prefix + "/" + name;
-        if (attr_is_scratch(rel))
+        if (vcs_is_scratch_rel(rel))
             continue;
         std::string full = join_path(root, rel);
         struct stat st;
@@ -3747,8 +3646,14 @@ void attr_walk(const std::string& root, const std::string& prefix,
 int cmd_freeze_mtime(const std::string& projeny_arg,
                      const std::vector<std::string>& files)
 {
-    if (files.empty())
-        die("freeze-mtime needs at least one file to freeze");
+    // main.cc's arity guard already rejects an empty list; dedupe repeated
+    // arguments (stable) so the count it reports is accurate with duplicate
+    // args (and so re-freezing the same file twice stays idempotent).
+    std::vector<std::string> args;
+    for (const std::string& f : files) {
+        if (std::find(args.begin(), args.end(), f) == args.end())
+            args.push_back(f);
+    }
     FreezeTarget t = resolve_frozen_target(projeny_arg, "freeze-mtime");
 
     // Every requested path must name a tracked regular file of the workdir.
@@ -3779,7 +3684,7 @@ int cmd_freeze_mtime(const std::string& projeny_arg,
 
     std::map<std::string, uint64_t> frozen =
         vcs_frozen_mtimes(t.cur.patch, t.cur.name);
-    for (const std::string& f : files) {
+    for (const std::string& f : args) {
         std::string rel = normalize_workdir_rel(t.workdir, t.cur.name, f);
         std::string full = join_path(t.workdir, rel);
         struct stat st;
@@ -3829,7 +3734,7 @@ int cmd_freeze_mtime(const std::string& projeny_arg,
     // of the checked out file to be whatever the tarball wanted for that
     // file": stamp now (a no-op for files the archive already timestamps).
     stamp_frozen_mtimes(t.workdir, t.cur.patch, t.cur.name);
-    printf("projeny: froze the mtime of %zu file(s) in '%s'\n", files.size(),
+    printf("projeny: froze the mtime of %zu file(s) in '%s'\n", args.size(),
            t.ctx.projeny_arg.c_str());
     return 0;
 }
@@ -3837,12 +3742,18 @@ int cmd_freeze_mtime(const std::string& projeny_arg,
 int cmd_unfreeze_mtime(const std::string& projeny_arg,
                        const std::vector<std::string>& files)
 {
-    if (files.empty())
-        die("unfreeze-mtime needs at least one file to unfreeze");
+    // main.cc's arity guard already rejects an empty list; dedupe repeated
+    // arguments (stable) so the count is accurate with duplicate args (and
+    // so unfreezing the same file twice does not die on the second one).
+    std::vector<std::string> args;
+    for (const std::string& f : files) {
+        if (std::find(args.begin(), args.end(), f) == args.end())
+            args.push_back(f);
+    }
     FreezeTarget t = resolve_frozen_target(projeny_arg, "unfreeze-mtime");
     std::map<std::string, uint64_t> frozen =
         vcs_frozen_mtimes(t.cur.patch, t.cur.name);
-    for (const std::string& f : files) {
+    for (const std::string& f : args) {
         std::string rel = normalize_workdir_rel(t.workdir, t.cur.name, f);
         if (!frozen.count(rel))
             die("cannot unfreeze '" + f + "': its mtime is not frozen (see "
@@ -3860,7 +3771,7 @@ int cmd_unfreeze_mtime(const std::string& projeny_arg,
     write_status(t.ctx, sd);
     // The workdir file's mtime is deliberately left as it is: unfreezing
     // changes future setups only.
-    printf("projeny: unfroze the mtime of %zu file(s) in '%s'\n", files.size(),
+    printf("projeny: unfroze the mtime of %zu file(s) in '%s'\n", args.size(),
            t.ctx.projeny_arg.c_str());
     return 0;
 }

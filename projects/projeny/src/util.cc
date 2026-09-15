@@ -557,6 +557,28 @@ std::string physical_path(const std::string& path)
     return buf;
 }
 
+std::string read_link_target(const std::string& path)
+{
+    // A link target that grows between the lstat size hint and readlink
+    // would be silently truncated; retry from a fresh lstat until the
+    // target fits (bounded, so a pathological swap loop dies instead of
+    // spinning).
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        struct stat st;
+        if (lstat(path.c_str(), &st) != 0)
+            die("cannot stat '" + path + "': " + strerror(errno));
+        if (!S_ISLNK(st.st_mode))
+            die("'" + path + "' is not a symlink");
+        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
+        ssize_t r = readlink(path.c_str(), buf.data(), buf.size());
+        if (r < 0)
+            die("cannot read link '" + path + "': " + strerror(errno));
+        if ((size_t)r < buf.size())
+            return std::string(buf.data(), (size_t)r);
+    }
+    die("cannot read link '" + path + "': target keeps growing");
+}
+
 std::string absolutize(const std::string& p)
 {
     if (!p.empty() && p[0] == '/')
@@ -564,12 +586,15 @@ std::string absolutize(const std::string& p)
     return normalize_lexical(join_path(get_cwd(), p));
 }
 
-std::string normalize_lexical(const std::string& p)
+// Split a path into its components: empty and "." components are dropped
+// (so duplicate slashes vanish); ".." components are kept verbatim when
+// keep_dots is true. Used by the lexical path algebra (normalize_lexical,
+// rel_to_cwd); make_dirs and resolve_link_target keep their own
+// special-purpose walkers.
+std::vector<std::string> split_path_components(const std::string& p,
+                                               bool keep_dots)
 {
-    if (p.empty())
-        return ".";
-    bool absolute = p[0] == '/';
-    std::vector<std::string> parts;
+    std::vector<std::string> out;
     size_t i = 0;
     while (i <= p.size()) {
         size_t j = p.find('/', i);
@@ -581,6 +606,20 @@ std::string normalize_lexical(const std::string& p)
             i = j + 1;
         if (comp.empty() || comp == ".")
             continue;
+        if (comp == ".." && !keep_dots)
+            continue;
+        out.push_back(comp);
+    }
+    return out;
+}
+
+std::string normalize_lexical(const std::string& p)
+{
+    if (p.empty())
+        return ".";
+    bool absolute = p[0] == '/';
+    std::vector<std::string> parts;
+    for (const std::string& comp : split_path_components(p, true)) {
         if (comp == "..") {
             if (!parts.empty() && parts.back() != "..") {
                 // For absolute paths, ".." at root is a no-op (stays at /).
@@ -830,11 +869,7 @@ void copy_path_preserving(const std::string& src, const std::string& dst)
     if (lstat(src.c_str(), &st) != 0)
         die("cannot stat '" + src + "': " + strerror(errno));
     if (S_ISLNK(st.st_mode)) {
-        std::vector<char> buf(st.st_size > 0 ? (size_t)st.st_size + 1 : 4096);
-        ssize_t r = readlink(src.c_str(), buf.data(), buf.size());
-        if (r < 0)
-            die("cannot read link '" + src + "': " + strerror(errno));
-        std::string target(buf.data(), (size_t)r);
+        std::string target = read_link_target(src);
         make_dirs(dirname_of(dst));
         // Never follow: replace whatever sits at dst (file or link).
         if (path_exists(dst) && !remove_recursive(dst))

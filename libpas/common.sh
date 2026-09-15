@@ -36,11 +36,11 @@ esac
 case `uname -m` in
     amd64|x86_64)
         ARCH=x86_64
-        CROSSARCH=aarch64
+        LLVMARCH=X86
         ;;
     arm64|aarch64)
         ARCH=aarch64
-        CROSSARCH=x86_64
+        LLVMARCH=AArch64
         ;;
     *)
         echo "Unsupported arch"

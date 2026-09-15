@@ -3517,11 +3517,7 @@ Generic_GCC::addLibCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
     {
       llvm::SmallString<128> P =
         llvm::StringRef(getDriver().Dir); // <install>/bin
-      llvm::Triple IncludeTriple = getTriple();
-      if (IncludeTriple.getArch() == llvm::Triple::aarch64 ||
-          IncludeTriple.getArch() == llvm::Triple::x86_64)
-        IncludeTriple.setArch(IncludeTriple.getArch());
-      llvm::sys::path::append(P, "..", "include", IncludeTriple.str());
+      llvm::sys::path::append(P, "..", "include", getTripleString());
       llvm::sys::path::append(P, "c++", "v1");
       addSystemInclude(DriverArgs, CC1Args, P);
     }

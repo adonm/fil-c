@@ -668,6 +668,10 @@ int main(int argc, char** argv)
     ZASSERT(errno == ENOSYS);
     ZASSERT(signal(SIGSYS, sighandler) == SIG_IGN);
 
+#ifndef __USE_GNU
+    tcsetwinsize(-1, NULL); /* Just testing this doesn't panic */
+#endif
+
     zprintf("No worries.\n");
     return 0;
 }

@@ -1,23 +1,24 @@
 The Fil-C repository includes projects that required Fil-C changes as well as projects that didn't. The ones that required changes are in projects/, while the ones that didn't are in pizlix/ as tarballs. Note that in *some* cases we have projects in projects/ that didn't require changes, but that's an exception.
 
-Your job: find a project in projects/ or pizlix/ that has a newer version that includes interesting security fixes, and rebase it according to the documentation laid out in this doc. Your task is considered successful if you rebase exactly one project. Prioritize projects that are used by optfil; only choose a different project if all of the optfil ones are up-to-date. There are three cases you'll encounter:
+Your job: find a project in projects/ or pizlix/ that has a newer version that includes interesting security fixes, and rebase it according to the documentation laid out in this doc. Prioritize projects that are used by optfil; only choose a different project if all of the optfil ones are up-to-date. NEVER rebase to a beta version or git snapshot. There are three cases you'll encounter:
 
 A. A project in projects/ that needs rebasing.
-B. A project in pizlix/ that just needs to be updated to a new version, and the new version also requires zero Fil-C changes.
-C. A project in pizlix/ that needs to be updated to a new version, and that version does need Fil-C changes.
+B. A project in pizlix/ that just needs to be updated to a new version.
 
-In cases A and C, you'll need to put the new version of the project in projects/. In version B, you'll need to just simply download the new tarball and commit it in pizlix/. In both cases, you'll need to update some build scripts to point at the new version.
+In both cases, you'll put the new version of the project in projects/ since we're deprecating putting tarballs in pizlix/.
 
 The way that Fil-C's projects/ directory works is as follows:
 
 - This directory and its subdirectories is part of the monolithic Fil-C git repo. There aren't multiple git repos. It's just one repo.
 
-*** There's a deprecated mode based on checking in the full source of the project, and a new mode based on projeny (binary is built by build_base.sh and always available at filc/projeny, source code is at projects/projeny) ***
+*** There's a deprecated mode based on checking in the full source of the project, and a new mode based on projeny (binary is built by build_base.sh and always available at filc/projeny, source code is at projects/projeny). And, there are TWO WAYS to use projeny - the old way, with archives in git, and the new way, with a URL. ***
 
 The new mode (projeny):
 
-- There's a projects/foo-1.2.3.tar.gz archive.
-- There's a projects/foo.projeny file, which contains our patch to foo-1.2.3.
+- There's a projects/foo.projeny file, which contains our patch to foo-1.2.3, and a URL from which to load the archive along with the archive's hash (see projects/projeny/README.md for more info).
+    -> The old projeny style would have an Archive line instead of a URL line, and we'd check the archive into git as projects/foo-1.2.3.tar.gz, for example.
+    -> DO NOT use the Archive style for new projeny files. CONVERT TO USING the the URL style whenever rebasing. I.e. never check in a new tarball to git. Always point projeny at the archive's URL.
+    -> Projeny supports having multiple URL lines. Try to see if there are multiple URLs where the same package (same version, same software) can be downloaded from. If so, add multiple URL lines to the projeny file for redundancy.
 - Building the project involves doing a `projeny setup projects/foo.projeny`, which creates a directory called projects/foo, which contains the contents of the tarball plus the changes from the patch.
 
 The deprecated mode:
@@ -33,7 +34,7 @@ The deprecated mode:
     -> This means that you can work out what is the Fil-C patch to a project by first using `git log .` in the project's directory to find the initial commit and then using `git diff <initial commit hash> .` to find the total Fil-C patch.
     -> For example, `cd projects/libuv-1.51.0` and then `git diff bbf031ac2f756bbaf8e8bcf881cb9b6fb9c67724 .` gives the full patch to libuv. Note that bbf031ac2f756bbaf8e8bcf881cb9b6fb9c67724 is the hash of "Initial commit libuv 1.51.0".
 
-**We want to move all projects to the projeny mode - so if rebasing a project that's in the deprecated mode, first convert the old version to use projeny.**
+**We want to move all projects to the projeny mode - so if rebasing a project that's in the deprecated mode, first convert the old version to use projeny. Additionally, we want all projeny projects to use the URL form where the tarball is not checked into git. **
 
 Converting a legacy project to a projeny project means:
 - Getting the patch of that project from its initial commit.
@@ -86,16 +87,16 @@ Note that OpenSSL is especially special: there are two versions:
 IF you decide to rebase OpenSSL, then it's only meaningful to rebase the zunsafe version (projects/openssl aka projects/openssl.projeny).
 
 What success looks like:
-- Depending on whether you're in case: A, B, or C
-    -> For cases A and C:
-        - There's a commit of the projects/projectname-version.tar.gz (or tar.bz2 or tar.xz or whatever) file and the projects/projectname.projeny file
-        - The projeny file contains the full patch needed by Fil-C, rebased to that version.
-        - The projeny file points at the new version archive.
-    -> For case B:
-        - There's a commit of the new tarball in pizlix/
+    - There's a commit of the projects/projectname.projeny file. There is not commit of any tarball, because the projeny file points at a URL where the tarball can be fetched.
+    - The projeny file contains the full patch needed by Fil-C, rebased to that version.
+    - The projeny file points at the new version URL.
 - You've tested build_all.sh, build_all_glibc.sh, and the optfil build. In case B, that might mean commits that repoint the build scripts at the new versions.
 
+Another somewhat special project is mg. We're using a normally-versioned mg (like mg 4.1) but there are also date-versioned mg releases (like 20260719). DO NOT switch to the date-versioned ones.
+
 Remember that you have the agent_browser tool. You can use that to research what new versions of the projects there are. Then, you can use curl to download the new tarball from within your container. Note that agent_browser does *not* work in your container, but outside of it, so at some point you'll use the output of agent_browser to work out what URL to pass to curl within the container. Agent_browser is better for reading web pages; curl is better for downloads.
+
+Remember that if you're rebasing packages used by optfil, you have to consider BOTH packages pulled in from projects/ AND packages pulled in from pizlix/. There are lots of packages used by optfil that do not require any changes, so we just use a tarball in pizlix/. Those need rebasing too! And, some of those rebases are the easiest - just pull a new tarball, commit it, repoint the scripts, and confirm that they build. Easy!
 
 FINAL CHECKLIST: YOU ARE *NOT DONE* UNTIL YOU HAVE DONE THIS:
 - Does ./build_all.sh pass? This takes 1-2 hours. Run it anyway, wait until it's done.

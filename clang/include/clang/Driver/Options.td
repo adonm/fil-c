@@ -852,6 +852,9 @@ def filc_os_include : Joined<["--"], "filc-os-include=">, Flags<[NoXarchOption]>
 def filc_include : Joined<["--"], "filc-include=">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Override Fil-C libc include directory (default: pizfix/include)">;
+def filc_cosmo : Flag<["--"], "filc-cosmo">, Flags<[NoXarchOption]>,
+  Visibility<[ClangOption]>,
+  HelpText<"Force Fil-C cosmopolitan libc mode (static, non-PIE executables linked with cosmo CRT, ape.lds, and libyolocosmo.a)">;
 def yolo_assembler : Flag<["-"], "yolo-assembler">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Use the built-in YOLO assembler for .s inputs instead of sarcasm">;

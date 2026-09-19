@@ -456,6 +456,13 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   const llvm::Triple::ArchType Arch = getArch();
   const llvm::Triple &Triple = getTriple();
 
+  if (getDriver().HasCosmo) {
+    // Cosmo programs are static; there is no dynamic linker.  (The Gnu.cpp
+    // link job also never emits -dynamic-linker in cosmo mode; this is just
+    // belt and braces so that no caller can leak one into a cosmo link.)
+    return "";
+  }
+
   if ((true)) {
     // Check for explicit override flag
     if (Arg *A = Args.getLastArg(options::OPT_filc_dynamic_linker)) {

@@ -195,6 +195,10 @@ def err_drv_sarcasm_missing : Error<
   "sarcasm assembler not found at %0 (install it with build_sarcasm.sh or pass -yolo-assembler)">;
 def err_drv_sarcasm_unsupported_option : Error<
   "'%0' is not supported by the sarcasm assembler (pass -yolo-assembler to use the built-in YOLO assembler)">;
+def err_drv_filc_cosmo_requires_pizfix : Error<
+  "'--filc-cosmo' requires a Fil-C pizfix directory (point at one with '--filc-resource-dir=')">;
+def err_drv_filc_cosmo_not_linkable : Error<
+  "'%0' is not supported in Fil-C cosmopolitan libc mode (cosmo programs are static, non-PIE executables with no dynamic linker)">;
 def err_drv_invalid_Xarch_argument_with_args : Error<
   "invalid Xarch argument: '%0', options requiring arguments are unsupported">;
 def err_drv_Xopenmp_target_missing_triple : Error<

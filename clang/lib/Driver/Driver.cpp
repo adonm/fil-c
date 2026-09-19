@@ -241,6 +241,15 @@ std::string CUIDOptions::getCUID(StringRef InputFile,
   }
   return CUID;
 }
+
+// A pizfix tree is a "cosmo" pizfix (cosmopolitan libc flavored Fil-C) if its
+// lib directory contains libyolocosmo.a, which is the cosmo libc archive.
+static bool hasCosmoMarker(StringRef PizfixRoot) {
+  SmallString<128> P(PizfixRoot);
+  llvm::sys::path::append(P, "lib", "libyolocosmo.a");
+  return llvm::sys::fs::is_regular_file(P);
+}
+
 Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
                DiagnosticsEngine &Diags, std::string Title,
                IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS)
@@ -269,6 +278,8 @@ Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,
     if (HasPizfix)
       PizfixRoot = std::string(P);
   }
+  if (HasPizfix)
+    HasCosmo = hasCosmoMarker(PizfixRoot);
   if (!HasPizfix) {
     SmallString<128> RealPath;
     if (!llvm::sys::fs::real_path(Dir, RealPath)
@@ -1502,6 +1513,23 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     // If any filc flag is set, we're in filc mode
     A->claim();
     HasPizfix = true;
+  }
+
+  // Re-probe for the cosmo marker in case the pizfix root came from
+  // --filc-resource-dir (this makes it possible to test a cosmo pizfix tree
+  // without replacing the real one).
+  if (HasPizfix)
+    HasCosmo = hasCosmoMarker(PizfixRoot);
+
+  // --filc-cosmo forces cosmopolitan libc mode.  It still requires a pizfix
+  // tree, since the cosmo CRT objects, linker script, and libraries all live
+  // there.
+  if (Arg *A = Args.getLastArg(options::OPT_filc_cosmo)) {
+    A->claim();
+    if (!HasPizfix)
+      Diag(diag::err_drv_filc_cosmo_requires_pizfix);
+    else
+      HasCosmo = true;
   }
 
   // Check for missing include directories.

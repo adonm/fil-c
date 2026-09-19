@@ -507,8 +507,33 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   const bool isAndroid = ToolChain.getTriple().isAndroid();
   const bool IsIAMCU = ToolChain.getTriple().isOSIAMCU();
   const bool IsVE = ToolChain.getTriple().isVE();
-  const bool IsStaticPIE = getStaticPIE(Args, ToolChain);
-  const bool IsStatic = getStatic(Args);
+  const bool IsCosmo = D.HasCosmo;
+  bool IsStaticPIE;
+  bool IsStatic;
+  if (IsCosmo) {
+    // Cosmopolitan libc (cosmo) mode links static, non-PIE executables with
+    // no dynamic linker and no shared libraries, so refuse options that
+    // contradict that.
+    const llvm::opt::OptTable &Opts = D.getOpts();
+    if (Args.hasArg(options::OPT_shared))
+      D.Diag(diag::err_drv_filc_cosmo_not_linkable)
+          << Opts.getOptionName(options::OPT_shared);
+    if (Args.hasArg(options::OPT_pie))
+      D.Diag(diag::err_drv_filc_cosmo_not_linkable)
+          << Opts.getOptionName(options::OPT_pie);
+    if (Args.hasArg(options::OPT_static_pie))
+      D.Diag(diag::err_drv_filc_cosmo_not_linkable)
+          << Opts.getOptionName(options::OPT_static_pie);
+    // Note that we deliberately do not turn -static into -static-pie in cosmo
+    // mode (see getStaticPIE above): cosmo programs are plain static
+    // executables laid out by the cosmo ape.lds linker script, which places
+    // global variables above the low 4GB for us.
+    IsStaticPIE = false;
+    IsStatic = true;
+  } else {
+    IsStaticPIE = getStaticPIE(Args, ToolChain);
+    IsStatic = getStatic(Args);
+  }
   const bool HasCRTBeginEndFiles =
       ToolChain.getTriple().hasEnvironment() ||
       (ToolChain.getTriple().getVendor() != llvm::Triple::MipsTechnologies);
@@ -547,6 +572,15 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   ToolChain.addExtraOpts(CmdArgs);
+
+  if (IsCosmo) {
+    // The cosmo ape.lds linker script doesn't like relro (cosmo's own build
+    // recipe uses -z norelro), so swap out the relro that the Linux toolchain
+    // puts in its extra options.
+    for (unsigned I = 0, E = CmdArgs.size(); I != E; ++I)
+      if (CmdArgs[I] == StringRef("relro"))
+        CmdArgs[I] = "norelro";
+  }
 
   CmdArgs.push_back("--eh-frame-hdr");
 
@@ -646,7 +680,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (crt1)
         CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath(crt1)));
 
-      CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crti.o")));
+      if (IsCosmo) {
+        // Cosmo mode has no crti.o; instead the APE header object goes right
+        // after the CRT.  Cosmo runs constructors straight out of
+        // __init_array, so it has no use for the .init/.fini prologue objects.
+        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("ape.o")));
+      } else
+        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crti.o")));
     }
 
     if (IsVE) {
@@ -680,6 +720,14 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         P = GetGCCLibPath(crtbegin);
       }
       CmdArgs.push_back(Args.MakeArgString(P));
+      if (IsCosmo) {
+        // The cosmo linker script has to be seen before any archive (-l or
+        // .a) is scanned: the symbol expressions in ape.lds must be in the
+        // undefined set at that point or ld fails with undefined
+        // WinMain/_tss_end errors.  Plain objects before it are fine.
+        CmdArgs.push_back("-T");
+        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("ape.lds")));
+      }
     }
 
     // Add crtfastmath.o if available and fast math is enabled.
@@ -705,7 +753,9 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
 
     const char* DashRPath;
-    if (IsStaticPIE)
+    if (IsCosmo || IsStaticPIE)
+      // Cosmo mode has no shared libraries at all, so there is nothing to
+      // rpath; -rpath-link is harmless (same choice as for static-PIE).
       DashRPath = "-rpath-link";
     else
       DashRPath = "-rpath";
@@ -857,8 +907,14 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (IsStatic || IsStaticPIE)
         CmdArgs.push_back("--start-group");
       CmdArgs.push_back("-lyolort");
-      CmdArgs.push_back("-lyoloc");
-      CmdArgs.push_back("-lyolom");
+      if (IsCosmo) {
+        // Cosmo mode links against the cosmo libc archive instead of the
+        // musl-flavored ones.
+        CmdArgs.push_back("-lyolocosmo");
+      } else {
+        CmdArgs.push_back("-lyoloc");
+        CmdArgs.push_back("-lyolom");
+      }
       CmdArgs.push_back("-lyolort");
       CmdArgs.push_back("-lyolounwind");
       if (IsStatic || IsStaticPIE)
@@ -953,7 +1009,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         }
         CmdArgs.push_back(Args.MakeArgString(P));
       }
-      if (!isAndroid)
+      if (!isAndroid && !IsCosmo)
         CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crtn.o")));
     }
   }

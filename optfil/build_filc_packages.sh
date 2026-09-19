@@ -99,7 +99,7 @@ filc/projeny package projects/libidn2.projeny projects/libidn2/pizlonated-libidn
 ./package-source.sh projects/libevent-2.1.13 pizlonated-libevent
 filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
-./package-source.sh projects/xxHash-0.8.3 pizlonated-xxHash
+filc/projeny package projects/xxHash.projeny projects/xxHash/pizlonated-xxHash.tar.gz
 ./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
 filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
 filc/projeny package projects/libedit.projeny projects/libedit/pizlonated-libedit.tar.gz

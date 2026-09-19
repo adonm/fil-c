@@ -3,5 +3,5 @@ return:
 slow:
   true
 
-# COSMO: fork() while other runtime threads hold nsync mutexes leaves the child with inherited-but-unheld lock state (nsync panics on unlock); needs deeper fork/nsync work in the cosmo flavor.
+# COSMO: the nsync fork panic this mark used to describe is fixed (the fork child's filc runtime now tolerates nsync_waiter_wipe_ having zeroed thread locks), and the test now runs many fork levels deep with live threads - but it still hangs intermittently in a futex wait inside the fd-table lock (filc/src/runtime.c lock_lock) under heavy thread+fork stress; also very slow in this flavor.
 unsupportedOnCOSMO: true

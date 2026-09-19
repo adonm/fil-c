@@ -44,17 +44,14 @@ long long llrintl(long double x) {
   return lrintl(x);
 }
 
-/**
- * Creates a child process.
- *
- * cosmo's fork() runs the pthread atfork handlers and reinitializes the
- * __maps machinery; under Fil-C the runtime's own fork handling
- * (filc_thread.forked) makes a plain fork work for simple children.
- * Threads are not inherited across fork (per POSIX).
- */
-int fork(void) {
-  return zsys_fork();
-}
+/* fork() is provided by cosmo's libc/proc/fork.c, which is now compiled into
+   this libc: it runs the pthread_atfork prepare/parent/child handlers, locks
+   down all of the libc-internal locks (stdio, maps, fds, pthreads, cxa, ...)
+   while forking, and fixes up the child's TIB/thread-list state.  Its actual
+   process duplication goes through sys_fork() -> __sys_fork() ->
+   zsys_fork_impl(), i.e. libpizlo's GC-suspending fork.  (This file used to
+   provide a bare `return zsys_fork()` fork(), which silently skipped every
+   atfork handler and all of cosmo's fork-time lock quiescing.) */
 
 /**
  * posix_fallocate(): cosmo has no fallocate wrapper, but libpizlo has
@@ -184,7 +181,9 @@ void qsort_r(void *base, size_t nmemb, size_t width,
  * sys_fork() path, which is fine under Fil-C.)
  */
 int vfork(void) {
-  zerrorf("usercosmo: vfork() is not supported under Fil-C");
+  zerrorf("vfork is not supported in Fil-C (the child cannot share the "
+          "parent's address space, thread state, and capabilities); "
+          "use fork() or posix_spawn() instead");
   return -1;
 }
 

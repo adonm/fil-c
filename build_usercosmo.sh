@@ -84,7 +84,7 @@ python3 "$COSMO/filc/gen_shims.py" "$BUILD/shims.c" "$BUILD/consts.c"
 #                         (ABA()), a capability no-no.  filc_mmap.c provides
 #                         thin zsys_*-based replacements instead.
 #      libc/intrin/maps.c the __maps machinery itself (ABA pointer tagging)
-#      libc/intrin/stack.c, permalloc.c, describefds.c, fork.c
+#      libc/intrin/stack.c, permalloc.c, describefds.c
 #                         more __maps-machinery users (cosmo_stack and
 #                         permalloc have Fil-C replacements/stubs)
 #      libc/intrin/brain16.c float16.c   bf16/f16 compiler runtime; clang
@@ -116,6 +116,11 @@ python3 "$COSMO/filc/gen_shims.py" "$BUILD/shims.c" "$BUILD/consts.c"
 #                         reaches the runtime; filc_mmap.c's madvise() forwards
 #                         everything to zsys_madvise(), whose per-advice
 #                         checking is what the test suite expects
+#      libc/nexgen32e/envp.c duplicates the pizlonated __envp that
+#                         filc_libc_start_main.c defines and fills; if both
+#                         land in the link (assert() pulls envp.c.o via the
+#                         crash-report helpers) every such program dies with
+#                         a multiple-definition error
 #      kprintf.greg.c, clone.c, seccomp.c, pledge-linux.c, islinux.c
 #                         raw `syscall` inline asm without shims
 #                         (islinux.c: __is_linux_2_6_23 has a C replacement in
@@ -260,9 +265,9 @@ libc/thread/makecontext.c
 libc/thread/pthread_getaffinity_np.c
 libc/thread/pthread_setaffinity_np.c
 libc/proc/getpriority.c
-libc/proc/fork.c
 libc/proc/fork-nt.c
 libc/proc/vfork-nt.c
+libc/nexgen32e/envp.c
 libc/log/printwindowsmemory.c
 libc/intrin/posix_madvise-nt.c
 libc/intrin/msync-nt.c

@@ -9150,7 +9150,28 @@ int filc_native_zsys_fork_impl(filc_thread* my_thread)
                 thread->has_initialized = true;
                 thread->thread = PAS_NULL_SYSTEM_THREAD_ID;
             }
+#if PAS_COSMO
+            /* NOTE (cosmo flavor): the yolo fork child runs
+               nsync_waiter_wipe_(), which zeroes the nsync word of every
+               mutex that had a pending waiter at fork() time.  A stopped
+               thread that was reacquiring its own thread lock after a
+               condition wait registers exactly such a waiter, so from the
+               child's perspective this mutex may or may not still appear to
+               be held by us, and cosmo's nsync mutexes panic if we unlock a
+               mutex that does not appear held.  trylock + unlock is balanced
+               in both cases: if the trylock succeeds, the mutex had been
+               wiped underneath us, and the pair leaves it unlocked again; if
+               it fails with EBUSY, we still hold the mutex from the loop
+               above, and the unlock releases that hold.  Either way the
+               mutex ends up unlocked, which is what the child wants, since
+               the dead thread will never contend it again.  In the musl
+               flavor the mutex is always still held here, so we simply
+               unlock it as before. */
+            (void)pas_system_mutex_try_lock(&thread->lock);
             pas_system_mutex_unlock(&thread->lock);
+#else
+            pas_system_mutex_unlock(&thread->lock);
+#endif
             thread = next_thread;
         }
         PAS_ASSERT(my_thread->has_initialized);
@@ -13902,7 +13923,46 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
     /* We get away with this because we're always either dynamically linked or we use -static-pie.
        Gnu.cpp in the clang driver turns -static into -static-pie for us to support this
        assumption. */
+#if PAS_COSMO
+    /* NOTE (cosmo flavor): cosmo programs are statically linked non-PIE, and
+       cosmo's ape.lds does not move the image above 4GB, so pizlonated globals
+       legally live just above 0x400000 - well below the musl flavor's
+       min_address.  Fil-C heap objects still land at high addresses (the kernel
+       maps anonymous memory high for non-PIE static binaries), but we cannot
+       use a 4GB address threshold to tell objects and integers apart.  So:
+
+       - min_address is 64K under cosmo, since nothing valid lives below the
+         first 64K of the address space (the musl flavor needs 4GB here because
+         -static-pie puts globals above 4GB; cosmo cannot say that, but it can
+         say that no object is below 64K).
+
+       - an argument that has an object behind it is real memory and takes the
+         guarded-copy path below, no matter where it lives.  This is what makes
+         cosmo globals work (git history: this used to assert, since the musl
+         flavor assumes no object lives below 4GB).
+
+       - an argument with no object behind it (a null capability - this is what
+         the pizlonator hands us when an int is passed where the kernel expects
+         a pointer, e.g. CDSL_CURRENT == INT_MAX) is a raw integer.  Just like
+         in the musl flavor, raw integers below the 4GB line are passed through
+         verbatim: the kernel either understands the integer or it EFAULTs.
+         Raw integers at or above 4GB still take the guarded path, both because
+         4GB and up is where Fil-C heap objects live in every flavor (so we
+         cannot assume they are integers) and because that's what the musl
+         flavor does (ioctlfail2 tests exactly this).
+
+       The assertion below ensures that we only pass a value through verbatim
+       if it cannot be an in-bounds pointer: either there is no object, or the
+       pointer is below its own object's lower bound.  The 64K floor makes this
+       work for cosmo: a pointer below 64K is always either a raw integer or an
+       out-of-bounds pointer from an object that lives above 0x400000. */
+    static const uintptr_t min_address = 0x10000;
+    /* Raw integers below this address are passed through verbatim, just like
+       in the musl flavor.  See above. */
+    static const uintptr_t max_raw_int_address = 0x100000000;
+#else
     static const uintptr_t min_address = 0x100000000;
+#endif
 
     /* It's possible that someone is calling an ioctl that takes an int or long argument. But, we
        don't know if the ioctl will actually interpret the argument as an int or long - it might
@@ -13913,14 +13973,16 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
        
        If we ever find ioctls that require integers bigger than min_address, then they'd have to be
        special case by our wrapping. */
-    /* NOTE (cosmo flavor): unlike -static-pie (musl flavor) or dynamic links,
-       cosmo programs can legitimately have pizlonated globals below 4GB (the
-       rodata is not moved above min_address by ape.lds), so a pointer that
-       looks "small" may still be a real object pointer.  Only pass the
-       integer through when there is no object behind it; otherwise the
-       guarded-copy path below does the right thing (including raising the
-       usual safety errors for read-only or out-of-bounds arguments). */
-    if (filc_ptr_ptr(arg_ptr) < (void*)min_address && !filc_ptr_object(arg_ptr)) {
+#if PAS_COSMO
+    if (filc_ptr_ptr(arg_ptr) < (void*)min_address
+        || (filc_ptr_ptr(arg_ptr) < (void*)max_raw_int_address
+            && !filc_ptr_object(arg_ptr))) {
+#else
+    if (filc_ptr_ptr(arg_ptr) < (void*)min_address) {
+#endif
+        if (filc_ptr_object(arg_ptr) && filc_ptr_ptr(arg_ptr) >= filc_ptr_lower(arg_ptr))
+            pas_log("Unexpected arg_ptr = %s\n", filc_ptr_to_new_string(arg_ptr));
+        PAS_ASSERT(!filc_ptr_object(arg_ptr) || filc_ptr_ptr(arg_ptr) < filc_ptr_lower(arg_ptr));
         filc_exit(my_thread);
         errno = 0;
         syscall_callback(filc_ptr_ptr(arg_ptr), user_arg);

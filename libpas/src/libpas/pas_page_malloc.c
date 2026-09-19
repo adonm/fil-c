@@ -138,84 +138,14 @@ static void deallocate_impl(void* ptr, size_t size)
 #endif
 }
 
-#if PAS_COSMO
-/* Fil-C objects must live at addresses >= 0x100000000 (4GB): the runtime's
-   syscall-with-guarded-pointer machinery (filc_call_syscall_with_guarded_ptr
-   in filc_runtime.c) assumes that integer arguments below 4GB can never be
-   Fil-C heap pointers. That assumption holds automatically when programs are
-   dynamically linked or static-PIE, but in cosmo mode programs are statically
-   linked non-PIE, so the kernel would happily give us low addresses if we
-   just passed NULL to mmap. So, in cosmo mode we allocate pages using a
-   bump hint that starts at 4GB. */
-static uintptr_t pas_page_malloc_high_address_cursor;
-
-static void* allocate_at_high_address(size_t mapped_size)
-{
-    static const bool verbose = false;
-
-    /* Matches min_address in filc_call_syscall_with_guarded_ptr. */
-    static const uintptr_t min_address = 0x100000000;
-    /* Once the cursor gets this high we have allocated more than 64TB of
-       virtual address space in total, so it's safe to wrap it back around;
-       the kernel resolves hint collisions with live mappings by scanning
-       upwards. */
-    static const uintptr_t max_cursor = 0x400000000000;
-    static const size_t max_retries = 64;
-
-    size_t aligned_mapped_size =
-        pas_round_up_to_power_of_2(mapped_size, pas_real_page_size());
-    uintptr_t hint_base;
-    void* mmap_result;
-
-    for (size_t index = max_retries; index--;) {
-        hint_base = pas_atomic_exchange_add_uintptr(
-            &pas_page_malloc_high_address_cursor, aligned_mapped_size);
-        if (hint_base >= min_address && hint_base <= max_cursor) {
-            mmap_result = mmap((void*)hint_base, mapped_size, PROT_READ | PROT_WRITE,
-                               MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
-            if (mmap_result == MAP_FAILED) {
-                errno = 0; /* Clear the error so that we don't leak errno in those
-                              cases where we handle the allocation failure
-                              internally. If we want to set errno for clients then we
-                              do that explicitly. */
-                return NULL;
-            }
-            if ((uintptr_t)mmap_result >= min_address) {
-                if (verbose)
-                    pas_log("pas_page_malloc got high address %p...\n", mmap_result);
-                return mmap_result;
-            }
-            /* The kernel ignored our hint. Give the memory back and try with a
-               fresh hint. */
-            PAS_SYSCALL(munmap(mmap_result, mapped_size));
-            continue;
-        }
-        if (hint_base < min_address) {
-            /* The cursor has not been initialized yet (or got wrapped while it was
-               still below the minimum). Initialize it; a racing thread may win the
-               CAS, which is fine, since it will have set the cursor to a good value
-               all the same. */
-            pas_compare_and_swap_uintptr_weak(&pas_page_malloc_high_address_cursor,
-                                              hint_base, min_address);
-            continue;
-        }
-        /* The cursor wrapped past the maximum. Put it back at the minimum. */
-        pas_compare_and_swap_uintptr_weak(&pas_page_malloc_high_address_cursor,
-                                          hint_base, min_address);
-    }
-
-    /* Fall back to whatever the kernel picks (this should not happen, but if it
-       does, we'd rather be incorrect about guarded pointers than fail to
-       allocate). */
-    mmap_result = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
-                       MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
-    if (mmap_result == MAP_FAILED) {
-        errno = 0;
-        return NULL;
-    }
-    return mmap_result;
-}
-#endif /* PAS_COSMO */
+/* NOTE (cosmo flavor): we deliberately do NOT force page allocations above 4GB
+   here.  The kernel picks high addresses for anonymous mmaps in statically
+   linked non-PIE binaries anyway, and the syscall-with-guarded-pointer
+   machinery (filc_call_syscall_with_guarded_ptr in filc_runtime.c) no longer
+   relies on a 4GB address threshold to tell objects and integers apart: under
+   cosmo it discriminates using the capability (object) instead, and pizlonated
+   globals legally live below the 4GB line (ape.lds loads the image at
+   0x400000). */
 
 static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_mode commit_mode)
 {
@@ -245,12 +175,8 @@ static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_
         return NULL;
     }
 #else /* _WIN32 -> so !_WIN32 */
-#if PAS_COSMO
-    mmap_result = allocate_at_high_address(mapped_size);
-#else
     mmap_result = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANON | PAS_NORESERVE, -1, 0);
-#endif
     if (mmap_result == MAP_FAILED) {
         errno = 0; /* Clear the error so that we don't leak errno in those
                       cases where we handle the allocation failure

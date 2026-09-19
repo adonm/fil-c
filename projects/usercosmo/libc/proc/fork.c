@@ -152,7 +152,7 @@ static void fork_prepare(void) {
   LOCKTRACE("READY TO LOCK AND ROLL");
 }
 
-static void fork_parent(void) {
+static void fork_parent(bool run_handlers) {
   __maps_unlock();
   if (_weaken(__rand64_unlock))
     _weaken(__rand64_unlock)();
@@ -185,7 +185,12 @@ static void fork_parent(void) {
   if (_weaken(__localtime_unlock))
     _weaken(__localtime_unlock)();
   fork_parent_stdio();
-  if (_weaken(_pthread_onfork_parent))
+  /* Only run the user parent handlers if the fork actually happened.  On
+     failure we still need to unwind every lock fork_prepare() acquired, but
+     the program must not observe parent/child handlers for a fork that never
+     took place (this mirrors how the musl flavor of Fil-C behaves, where
+     fork() only runs __fork_handler(0) after a successful clone). */
+  if (run_handlers && _weaken(_pthread_onfork_parent))
     _weaken(_pthread_onfork_parent)();
   pthread_mutex_unlock(&supreme_lock);
 }
@@ -197,7 +202,8 @@ static void fork_child(int ppid_win32, int ppid_cosmo) {
   if (_weaken(__arc4random_fork_child))
     _weaken(__arc4random_fork_child)();
   pthread_mutex_wipe_np(&__fds_lock_obj);
-  dlmalloc_post_fork_child();
+  if (_weaken(dlmalloc_post_fork_child))
+    _weaken(dlmalloc_post_fork_child)();
   fork_child_stdio();
   pthread_mutex_wipe_np(&__pthread_lock_obj);
   pthread_mutex_wipe_np(&__cxa_lock_obj);
@@ -335,10 +341,14 @@ int fork(void) {
     /*     _weaken(ftrace_install)(); */
 
     STRACE("fork() → 0 (child of %d)", ppid_cosmo);
-  } else {
+  } else if (ax > 0) {
     // this is the parent process
-    fork_parent();
+    fork_parent(true);
     STRACE("fork() → %d% m", ax);
+  } else {
+    // the fork failed: unwind the locks fork_prepare() took without running
+    // any pthread_atfork parent handlers, then hand the error to the caller
+    fork_parent(false);
   }
   ALLOW_SIGNALS;
   return ax;

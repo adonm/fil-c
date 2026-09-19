@@ -33,6 +33,7 @@
 #include <curl/curl.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstring>
 
 #include <fcntl.h>
@@ -61,6 +62,68 @@ size_t append_to_string(char* ptr, size_t size, size_t nmemb, void* userdata)
     std::string* out = static_cast<std::string*>(userdata);
     out->append(ptr, size * nmemb);
     return size * nmemb;
+}
+
+// Progress state for one download: what was already printed, so the
+// callback can decide when the next line is due.
+struct DownloadProgress {
+    std::string url;
+    curl_off_t printed_bytes = 0;  // received count at the last printed line
+    int printed_pct = -1;          // whole-percent at the last printed line
+    curl_off_t last_total = 0;     // the current transfer's dltotal (0 = unknown)
+    bool printed_any = false;      // whether any progress line printed at all
+};
+
+// One progress line: bare '\r'-terminated (no ANSI escapes, no padding,
+// no isatty tricks), so a terminal redraws the line in place while a log
+// file keeps every line.
+void print_progress_line(const DownloadProgress& st, curl_off_t now,
+                         curl_off_t total)
+{
+    if (total > 0)
+        fprintf(stderr, "projeny: downloading '%s': %lld/%lld bytes (%d%%)\r",
+                st.url.c_str(), (long long)now, (long long)total,
+                (int)((100 * now) / total));
+    else
+        fprintf(stderr, "projeny: downloading '%s': %lld bytes\r",
+                st.url.c_str(), (long long)now);
+}
+
+// curl xferinfo callback (CURLOPT_XFERINFOFUNCTION; needs
+// CURLOPT_NOPROGRESS set to 0 to fire at all). Throttled by two gates that
+// BOTH must pass before a line prints (see download.h for the rationale):
+// at least 64 KiB since the last line, and — only when the total is known —
+// a whole-percent boundary crossed since the last line.
+int download_progress_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                         curl_off_t ultotal, curl_off_t ulnow)
+{
+    (void)ultotal; (void)ulnow;
+    DownloadProgress* st = static_cast<DownloadProgress*>(clientp);
+    if (dlnow < 0)
+        return 0;
+    if (dlnow < st->printed_bytes) {
+        // The body restarted (curl retried or rewound): reset the throttle
+        // so the new run's progress is reported from scratch.
+        st->printed_bytes = 0;
+        st->printed_pct = -1;
+    }
+    // Mirror, never latch: one progress struct spans the whole redirect
+    // chain (CURLOPT_FOLLOWLOCATION), so a redirect hop's Content-Length
+    // must not survive into the closing line of a target that sends none —
+    // a latched total printed bogus "N/M bytes (P%)" closers (P far past
+    // 100) for unknown-length final bodies.
+    st->last_total = dltotal;
+    bool have_total = dltotal > 0;
+    bool bytes_step = dlnow - st->printed_bytes >= 65536;
+    int pct = have_total ? (int)((100 * dlnow) / dltotal) : -1;
+    bool pct_step = !have_total || pct > st->printed_pct;
+    if (!bytes_step || !pct_step)
+        return 0;
+    print_progress_line(*st, dlnow, dltotal);
+    st->printed_bytes = dlnow;
+    st->printed_pct = pct;
+    st->printed_any = true;
+    return 0;
 }
 
 } // namespace
@@ -138,7 +201,26 @@ bool try_download(const std::string& url, std::string* data, std::string* err)
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 60L);
+    // Announce the attempt before it starts, then wire up the progress
+    // callback. libcurl suppresses progress callbacks by default
+    // (CURLOPT_NOPROGRESS defaults to 1), so lifting that is required for
+    // download_progress_cb to fire at all.
+    note("downloading '" + url + "'");
+    DownloadProgress progress;
+    progress.url = url;
+    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, download_progress_cb);
+    curl_easy_setopt(c, CURLOPT_XFERINFODATA, &progress);
     CURLcode rc = curl_easy_perform(c);
+    if (rc == CURLE_OK) {
+        // curl does not promise a progress tick landing exactly on the
+        // received count, so close the report explicitly — unless the
+        // callback already printed exactly that state.
+        if (!progress.printed_any ||
+            progress.printed_bytes != (curl_off_t)body.size())
+            print_progress_line(progress, (curl_off_t)body.size(),
+                                progress.last_total);
+    }
     curl_easy_cleanup(c);
     if (rc != CURLE_OK) {
         // curl_easy_strerror names the failure class; the error buffer (set

@@ -303,18 +303,41 @@ std::string url_snapshot_path(const std::string& pdir, const ProjenyFile& pf)
     return snapshot_path_for(join_path(pdir, pf.archive));
 }
 
+// Last snapshot path whose "skipping the download" note has been printed by
+// try_ensure_url_snapshot. Setup (through write_status) re-ensures the URL
+// snapshot it just materialized, and commit materializes the same archive
+// twice (the unpack and the expected-tree build), so without this a healthy
+// run would print the identical skip line two or three times. Tracking one
+// snapshot path keeps the message to once per snapshot per process, while a
+// genuinely different snapshot — the two sides of a conflicted merge, say —
+// still gets its own line.
+std::string g_skip_announced_for;
+
 // Make sure the URL archive's snapshot exists and matches at least one URL:
 // hash. No-op (no network!) when the snapshot already matches. Otherwise
 // download+verify each URL: line in order (warn + next on failure/mismatch,
 // per the spec) and atomically write the first good download to the snapshot
 // via write_file_bytes. Dies (mentioning `what`) only when every URL failed.
+//
+// Feedback, all on stderr: try_download announces each attempt and reports
+// '\r'-terminated progress itself; here a verified download reports the
+// snapshot it wrote, and — only when `announce_skip` is true — an already-
+// matching snapshot reports that the download is skipped (deduplicated once
+// per snapshot per process by g_skip_announced_for). announce_skip is false
+// on the read-only reconstruction paths (resolve_status_archive, the
+// write_status bookkeeping re-assertion, status's live-diff section): those
+// must stay completely silent on a healthy checkout — `projeny diff` and
+// `projeny get-attributes` print nothing when the snapshot matches — while
+// materialize_archive (setup/commit) passes true. The download-side messages
+// are never gated: they only exist when a real download happens.
 std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
-                                const std::string& what);
+                                const std::string& what, bool announce_skip);
 
 // Non-dying variant for informational commands: returns true + *out = snapshot
 // path, or false + *err.
 bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
-                             std::string* out, std::string* err)
+                             std::string* out, std::string* err,
+                             bool announce_skip)
 {
     std::string snap = url_snapshot_path(pdir, pf);
     // The snapshot is the local cache of the downloaded archive: when it
@@ -325,6 +348,11 @@ bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
         std::string have = blake3_file_hash_hex(snap);
         for (const ProjenyUrl& u : pf.urls) {
             if (have == u.hash) {
+                if (announce_skip && g_skip_announced_for != snap) {
+                    note("using existing snapshot '" + snap +
+                         "' (blake3 hash matches); skipping the download");
+                    g_skip_announced_for = snap;
+                }
                 *out = snap;
                 return true;
             }
@@ -355,6 +383,8 @@ bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
         // switches atomically and a crash never leaves a half-written copy
         // (the next run simply re-downloads).
         write_file_bytes(snap, data);
+        note("downloaded '" + u.url +
+             "'; blake3 hash verified; wrote snapshot '" + snap + "'");
         *out = snap;
         return true;
     }
@@ -369,11 +399,11 @@ bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
 // The dying wrapper: same behavior, but dies naming `what` when every URL
 // failed.
 std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
-                                const std::string& what)
+                                const std::string& what, bool announce_skip)
 {
     std::string out;
     std::string err;
-    if (!try_ensure_url_snapshot(pdir, pf, &out, &err))
+    if (!try_ensure_url_snapshot(pdir, pf, &out, &err, announce_skip))
         die(err + "; it is needed to " + what);
     return out;
 }
@@ -384,7 +414,10 @@ std::string materialize_archive(const std::string& pdir, const ProjenyFile& pf,
                                 const std::string& what)
 {
     if (pf.is_url_based())
-        return ensure_url_snapshot(pdir, pf, what);
+        // announce_skip = true: setup/commit output is allowed to talk, and
+        // the g_skip_announced_for dedup keeps the repeat materializations
+        // (commit unpacks the archive twice) from repeating the line.
+        return ensure_url_snapshot(pdir, pf, what, true);
     return join_path(pdir, pf.archive);
 }
 
@@ -414,7 +447,11 @@ std::string resolve_status_archive(const std::string& pdir,
                                    const std::string& what)
 {
     if (pf.is_url_based())
-        return ensure_url_snapshot(pdir, pf, what);
+        // announce_skip = false: read-only reconstruction (diff against the
+        // recorded state, conflicted-merge side reads) must stay silent on
+        // a snapshot that already matches — the user asked to inspect, not
+        // to set up, and whatever announced this snapshot already ran.
+        return ensure_url_snapshot(pdir, pf, what, false);
     std::string archive = join_path(pdir, pf.archive);
     migrate_snapshot(archive);
     std::string snap = snapshot_path_for(archive);
@@ -782,9 +819,13 @@ void write_status(const Ctx& ctx, const StatusData& sd)
         ProjenyFile pf = ProjenyFile::parse_bytes(
             sd.embedded, "embedded copy for '" + ctx.statusfile + "'");
         if (pf.is_url_based())
+            // announce_skip = false: bookkeeping re-assertion of a snapshot
+            // this same setup run just materialized and already reported
+            // (see g_skip_announced_for in try_ensure_url_snapshot).
             ensure_url_snapshot(
                 ctx.pdir, pf,
-                "record which archive this setup used in the status file");
+                "record which archive this setup used in the status file",
+                false);
         else
             ensure_snapshot(join_path(ctx.pdir, pf.archive));
     }
@@ -3125,7 +3166,9 @@ int cmd_status(const std::string& projeny_arg)
         std::string archive_path = join_path(ctx.pdir, emb.archive);
         if (emb.is_url_based()) {
             std::string got, err;
-            if (try_ensure_url_snapshot(ctx.pdir, emb, &got, &err))
+            // announce_skip = false: status is informational and must print
+            // nothing extra on a healthy (snapshot-matching) checkout.
+            if (try_ensure_url_snapshot(ctx.pdir, emb, &got, &err, false))
                 archive_path = got;
             else {
                 warn(err + " (continuing without the live diff)");

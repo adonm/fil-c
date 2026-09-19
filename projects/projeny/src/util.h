@@ -51,6 +51,10 @@ CmdResult run_cmd(const std::vector<std::string>& argv, const std::string& cwd =
 // Also removes any registered temp dirs first.
 [[noreturn]] void die(const std::string& msg, const std::string& detail = "");
 void warn(const std::string& msg);
+// Print "projeny: <msg>" to stderr: informational output that is neither an
+// error nor a warning (download announcements, verification notes), so the
+// "projeny:" prefix stays uniform across every message we print.
+void note(const std::string& msg);
 
 // Whole-file binary-safe IO. Reading a missing file dies.
 std::string read_file_bytes(const std::string& path);

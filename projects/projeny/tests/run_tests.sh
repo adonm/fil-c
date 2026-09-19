@@ -10497,6 +10497,456 @@ else
          "cmp: snapshot vs v2 tarball"
 fi
 
+# --------- 220. download feedback: announce, 64 KiB progress, hash-verified, skip
+# A fresh URL setup must SAY what it is doing, on stderr, in a form that
+# survives being captured into a log:
+#   - the attempt is announced: "downloading '<url>'";
+#   - progress arrives as '\r'-terminated lines naming byte counts and a
+#     whole percent, printed only when >= 64 KiB arrived since the last
+#     line (plus the closing line after perform) — with no ANSI escapes
+#     and no backspaces, so a terminal redraws in place while a log keeps
+#     every line;
+#   - a verified download reports "blake3 hash verified" and the snapshot
+#     it wrote.
+# file:// ticks arrive quantized in 64 KiB read chunks, which makes the
+# 64 KiB gate observable: 2 MiB = 32 ticks of exactly 65536 bytes plus the
+# closing line, so ~33 '\r' lines. A regression to printing every tick or
+# to printing nothing both move that count out of range.
+# A re-setup over the matching snapshot then must NOT download (no
+# announcement, no progress lines) and must report the skip; and the skip
+# note must print once per run even though commit materializes the same
+# archive twice (the unpack and the expected-tree build).
+T220="$ROOT/t220"
+mkdir -p "$T220/big-1.0"
+printf 'hello v1\n' > "$T220/big-1.0/README"
+# 32 * 65536 = 2 MiB of incompressible payload: many progress lines, but
+# the fixture (and its gzip) still builds in well under a second.
+dd if=/dev/urandom of="$T220/big-1.0/blob" bs=65536 count=32 2>/dev/null
+(cd "$T220" && tar -czf big-1.0.tar.gz big-1.0)
+h220="$("$PROJENY" hash "$T220/big-1.0.tar.gz")"
+printf 'URL: file://%s/big-1.0.tar.gz %s\nOrigname: big-1.0\nName: big\n\n    Big enough to need progress lines.\n\n' \
+    "$T220" "$h220" > "$T220/big.projeny"
+out="$(cd "$T220" && "$PROJENY" setup big.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the 2 MiB URL setup exits 0"
+else
+    fail "the 2 MiB URL setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"projeny: downloading 'file://$T220/big-1.0.tar.gz'"*)
+    ok "the download is announced with its URL"
+    ;;
+*)
+    fail "the download is announced with its URL" "out: $out"
+    ;;
+esac
+case "$out" in
+*"blake3 hash verified"*)
+    ok "the verified download reports the hash check"
+    ;;
+*)
+    fail "the verified download reports the hash check" "out: $out"
+    ;;
+esac
+case "$out" in
+*"wrote snapshot '$T220/.big-1.0.tar.gz.snapshot'"*)
+    ok "the verified download names the snapshot it wrote"
+    ;;
+*)
+    fail "the verified download names the snapshot it wrote" "out: $out"
+    ;;
+esac
+# Every '\r' in the captured output is one progress line: 32 throttled
+# ticks plus the closing line, so 2..40 (0 would mean progress went
+# silent, >40 that the 64 KiB gate stopped gating).
+ncr="$(printf '%s' "$out" | tr -dc '\r' | wc -c)"
+if [ "$ncr" -ge 2 ] && [ "$ncr" -le 40 ]; then
+    ok "progress lines arrive in 64 KiB steps ($ncr lines)"
+else
+    fail "progress lines arrive in 64 KiB steps" \
+         "got $ncr carriage-return-terminated lines, want 2..40"
+fi
+# Each of those lines must be a complete report row: byte counts and a
+# whole percent (after swapping \r for \n, every \r line must match).
+np="$(printf '%s' "$out" | tr '\r' '\n' | grep -c 'bytes ([0-9]*%)')"
+if [ "$np" -eq "$ncr" ]; then
+    ok "every progress line names byte counts and a whole percent"
+else
+    fail "every progress line names byte counts and a whole percent" \
+         "$np of $ncr lines matched 'bytes (N%)'"
+fi
+case "$out" in
+*$'\033'*|*$'\b'*)
+    fail "no ANSI escapes or backspaces in the progress report" "out: $out"
+    ;;
+*)
+    ok "no ANSI escapes or backspaces in the progress report"
+    ;;
+esac
+# The report closes at the received count: a fully received transfer ends
+# at 100% (curl does not promise a tick landing exactly there, so the
+# closer is printed explicitly).
+lastp="$(printf '%s' "$out" | tr '\r' '\n' | grep ' bytes (' | tail -1)"
+case "$lastp" in
+*"(100%)"*)
+    ok "the progress report closes at 100%"
+    ;;
+*)
+    fail "the progress report closes at 100%" "last line: $lastp"
+    ;;
+esac
+# Re-setup over the matching snapshot: no download at all, and the skip is
+# announced instead.
+out2="$(cd "$T220" && "$PROJENY" setup big.projeny 2>&1)"
+rc2=$?
+if [ $rc2 -eq 0 ]; then
+    ok "the re-setup over the matching snapshot exits 0"
+else
+    fail "the re-setup over the matching snapshot exits 0" \
+         "exit=$rc2 out: $out2"
+fi
+case "$out2" in
+*"using existing snapshot '$T220/.big-1.0.tar.gz.snapshot' (blake3 hash matches); skipping the download"*)
+    ok "the snapshot hit is announced as a skipped download"
+    ;;
+*)
+    fail "the snapshot hit is announced as a skipped download" "out: $out2"
+    ;;
+esac
+case "$out2" in
+*"projeny: downloading '"*)
+    fail "the snapshot-hit setup never downloads" "out: $out2"
+    ;;
+*)
+    ok "the snapshot-hit setup never downloads"
+    ;;
+esac
+ncr2="$(printf '%s' "$out2" | tr -dc '\r' | wc -c)"
+if [ "$ncr2" -eq 0 ]; then
+    ok "the snapshot-hit setup prints no progress lines"
+else
+    fail "the snapshot-hit setup prints no progress lines" \
+         "got $ncr2 carriage returns, want 0"
+fi
+# commit materializes the same archive twice (the unpack and the
+# expected-tree build); the skip note must still print once per run, not
+# once per materialization.
+commitout="$(cd "$T220" && "$PROJENY" commit big.projeny 2>&1)"
+rcc=$?
+if [ $rcc -eq 0 ]; then
+    ok "commit over the matching snapshot exits 0"
+else
+    fail "commit over the matching snapshot exits 0" \
+         "exit=$rcc out: $commitout"
+fi
+count="$(printf '%s' "$commitout" | grep -c 'skipping the download')"
+if [ "$count" -eq 1 ]; then
+    ok "the skip note prints once per run, not once per materialization"
+else
+    fail "the skip note prints once per run, not once per materialization" \
+         "count=$count out: $commitout"
+fi
+
+# --------- 221. a large download reports whole-percent progress, not 64 KiB spam
+# Both progress gates must pass before a line prints: >= 64 KiB since the
+# last line AND — when the total size is known — a whole-percent boundary
+# crossed. 16 MiB / 64 KiB = 256 raw file:// ticks, but 1% of 16 MiB
+# (167,800 B) is larger than 64 KiB, so the whole-percent gate caps the
+# report at one line per percent plus the closing line (~101). That is the
+# user-visible contract: a 70 MB tarball reports ~100 updates, not ~1100.
+T221="$ROOT/t221"
+mkdir -p "$T221/huge-1.0"
+printf 'hello v1\n' > "$T221/huge-1.0/README"
+dd if=/dev/urandom of="$T221/huge-1.0/blob" bs=1048576 count=16 2>/dev/null
+(cd "$T221" && tar -czf huge-1.0.tar.gz huge-1.0)
+h221="$("$PROJENY" hash "$T221/huge-1.0.tar.gz")"
+printf 'URL: file://%s/huge-1.0.tar.gz %s\nOrigname: huge-1.0\nName: huge\n\n    Huge enough to need a throttled report.\n\n' \
+    "$T221" "$h221" > "$T221/huge.projeny"
+out="$(cd "$T221" && "$PROJENY" setup huge.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the 16 MiB URL setup exits 0"
+else
+    fail "the 16 MiB URL setup exits 0" "exit=$rc out: $out"
+fi
+ncr="$(printf '%s' "$out" | tr -dc '\r' | wc -c)"
+if [ "$ncr" -ge 30 ] && [ "$ncr" -le 101 ]; then
+    ok "the 16 MiB download is throttled to whole-percent steps ($ncr lines)"
+else
+    fail "the 16 MiB download is throttled to whole-percent steps" \
+         "got $ncr carriage-return-terminated lines, want 30..101 (256 raw ticks capped at ~101)"
+fi
+lastp="$(printf '%s' "$out" | tr '\r' '\n' | grep ' bytes (' | tail -1)"
+case "$lastp" in
+*"(100%)"*)
+    ok "the huge download's report still closes at 100%"
+    ;;
+*)
+    fail "the huge download's report still closes at 100%" "last line: $lastp"
+    ;;
+esac
+
+# --------- 220b. unknown Content-Length: progress without a percent
+# Every URL exercised above is a file:// one, and file:// URLs always expose
+# their size, so until now every progress line had the
+# '<now>/<total> bytes (<pct>%)' form. The branch that prints bare
+# '<now> bytes' lines (no percent) — used when the total is unknown — was
+# therefore the one untested path. A tiny localhost HTTP server that sends
+# NO Content-Length (HTTP/1.0, the body simply ends at close) exercises it
+# hermetically: curl then reports dltotal 0, the whole-percent gate
+# vanishes, and the 64 KiB step is the only throttle. The suite already
+# requires python3, so the fixture adds no dependency.
+T220B="$ROOT/t220b"
+mkdir -p "$T220B"
+cp "$T220/big-1.0.tar.gz" "$T220B/big-1.0.tar.gz"
+h220b="$("$PROJENY" hash "$T220B/big-1.0.tar.gz")"
+cat > "$T220B/serv.py" <<'PYEOF'
+import socket, sys
+# One-file HTTP/1.0 server with NO Content-Length: after the request it
+# streams the bytes and closes, so the transfer total stays unknown and
+# curl reports dltotal 0 — exactly the branch this test exists for.
+path, portfile = sys.argv[1], sys.argv[2]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+# The port file is written only after listen(), so a client that reads
+# it can always connect.
+open(portfile, "w").write(str(s.getsockname()[1]))
+while True:
+    c, _ = s.accept()
+    try:
+        c.recv(65536)  # the GET; one connection per transfer
+        c.sendall(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")
+        with open(path, "rb") as f:
+            while True:
+                b = f.read(65536)
+                if not b:
+                    break
+                c.sendall(b)
+    except OSError:
+        pass
+    finally:
+        c.close()
+PYEOF
+python3 "$T220B/serv.py" "$T220B/big-1.0.tar.gz" "$T220B/port" &
+srvpid=$!
+port220b=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [ -s "$T220B/port" ]; then port220b="$(cat "$T220B/port")"; break; fi
+    sleep 0.05
+done
+if [ -z "$port220b" ]; then
+    kill "$srvpid" 2>/dev/null
+    fail "the no-Content-Length fixture server starts" "port file never appeared"
+else
+    printf 'URL: http://127.0.0.1:%s/big-1.0.tar.gz %s\nOrigname: big-1.0\nName: big\n\n    Unknown total.\n\n' \
+        "$port220b" "$h220b" > "$T220B/big.projeny"
+    out="$(cd "$T220B" && "$PROJENY" setup big.projeny 2>&1)"
+    rc=$?
+    kill "$srvpid" 2>/dev/null
+    wait "$srvpid" 2>/dev/null
+
+    if [ $rc -eq 0 ]; then
+        ok "the unknown-total URL setup exits 0"
+    else
+        fail "the unknown-total URL setup exits 0" "exit=$rc out: $out"
+    fi
+    case "$out" in
+    *"projeny: downloading 'http://127.0.0.1:$port220b/big-1.0.tar.gz'"*)
+        ok "the unknown-total download is announced"
+        ;;
+    *)
+        fail "the unknown-total download is announced" "out: $out"
+        ;;
+    esac
+    ncr="$(printf '%s' "$out" | tr -dc '\r' | wc -c)"
+    if [ "$ncr" -ge 2 ] && [ "$ncr" -le 40 ]; then
+        ok "progress still arrives without a known total ($ncr lines)"
+    else
+        fail "progress still arrives without a known total" \
+             "got $ncr carriage-return-terminated lines, want 2..40"
+    fi
+    npct="$(printf '%s' "$out" | tr '\r' '\n' | grep -c 'bytes ([0-9]*%)')"
+    if [ "$npct" -eq 0 ]; then
+        ok "no percent is printed without a known total"
+    else
+        fail "no percent is printed without a known total" \
+             "$npct percent-form lines"
+    fi
+    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "downloading 'http://[^']*': [0-9]+ bytes$")"
+    if [ "$nn" -eq "$ncr" ]; then
+        ok "every progress line reports bare received bytes"
+    else
+        fail "every progress line reports bare received bytes" \
+             "$nn of $ncr lines matched 'downloading <url>: N bytes'"
+    fi
+    case "$out" in
+    *"blake3 hash verified"*)
+        ok "the unknown-length body still verifies"
+        ;;
+    *)
+        fail "the unknown-length body still verifies" "out: $out"
+        ;;
+    esac
+    if cmp -s "$T220B/.big-1.0.tar.gz.snapshot" "$T220B/big-1.0.tar.gz"; then
+        ok "the unknown-length download is byte-exact"
+    else
+        fail "the unknown-length download is byte-exact" \
+             "the snapshot differs from the served file"
+    fi
+fi
+
+# --------- 220c. a redirect must not leak its Content-Length into the report
+# One DownloadProgress spans the whole redirect chain (FOLLOWLOCATION).
+# The hop below carries "Content-Length: 70000"; the transfer that
+# actually fills the snapshot sends no total at all, and its final
+# sub-64 KiB tail is stalled so the closing line always fires. When the
+# closing line latched the hop's total, it printed e.g.
+# "2097809/70000 bytes (2996%)" — a >100% line contradicting the bare
+# in-flight lines of the same transfer. last_total must instead mirror
+# the most recent callback, so the closer inherits the final transfer's
+# view: bare bytes when that transfer had no Content-Length.
+T220C="$ROOT/t220c"
+mkdir -p "$T220C"
+cp "$T220/big-1.0.tar.gz" "$T220C/big-1.0.tar.gz"
+h220c="$("$PROJENY" hash "$T220C/big-1.0.tar.gz")"
+cat > "$T220C/serv.py" <<'PYEOF'
+import os, socket, sys, time
+# Two-path HTTP/1.0 server for the redirect test: /hop.tar.gz answers
+# 302 with a bogus Content-Length (curl follows the Location without
+# draining that body, but its progress callback still sees the hop's
+# total), and /final.tar.gz streams the file with NO Content-Length so
+# the transfer total stays unknown.
+path, portfile = sys.argv[1], sys.argv[2]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+# The port file is written only after listen(), so a client that reads
+# it can always connect.
+port = s.getsockname()[1]
+open(portfile, "w").write(str(port))
+while True:
+    c, _ = s.accept()
+    try:
+        req = c.recv(65536).decode("latin1")
+        if " /hop.tar.gz " in req:
+            c.sendall(b"HTTP/1.0 302 Found\r\n"
+                      b"Location: http://127.0.0.1:" + str(port).encode() +
+                      b"/final.tar.gz\r\n"
+                      b"Content-Length: 70000\r\n\r\n")
+        else:
+            c.sendall(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")
+            # Withhold a sub-64 KiB tail behind a short stall: the last
+            # in-flight progress print then lands short of the received
+            # count, so the closing progress line deterministically
+            # fires — which is exactly where the latch bug showed up.
+            with open(path, "rb") as f:
+                head = os.path.getsize(path) - 40000
+                sent = 0
+                while sent < head:
+                    b = f.read(65536)
+                    if not b:
+                        break
+                    c.sendall(b)
+                    sent += len(b)
+                time.sleep(0.5)
+                c.sendall(f.read())
+    except OSError:
+        pass
+    finally:
+        c.close()
+PYEOF
+python3 "$T220C/serv.py" "$T220C/big-1.0.tar.gz" "$T220C/port" &
+srvpid=$!
+port220c=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [ -s "$T220C/port" ]; then port220c="$(cat "$T220C/port")"; break; fi
+    sleep 0.05
+done
+if [ -z "$port220c" ]; then
+    kill "$srvpid" 2>/dev/null
+    fail "the redirect fixture server starts" "port file never appeared"
+else
+    printf 'URL: http://127.0.0.1:%s/hop.tar.gz %s\nOrigname: big-1.0\nName: big\n\n    Redirected.\n\n' \
+        "$port220c" "$h220c" > "$T220C/big.projeny"
+    out="$(cd "$T220C" && "$PROJENY" setup big.projeny 2>&1)"
+    rc=$?
+    kill "$srvpid" 2>/dev/null
+    wait "$srvpid" 2>/dev/null
+
+    if [ $rc -eq 0 ]; then
+        ok "the redirected URL setup exits 0"
+    else
+        fail "the redirected URL setup exits 0" "exit=$rc out: $out"
+    fi
+    case "$out" in
+    *"projeny: downloading 'http://127.0.0.1:$port220c/hop.tar.gz'"*)
+        ok "the redirect chain is announced with the requested URL"
+        ;;
+    *)
+        fail "the redirect chain is announced with the requested URL" "out: $out"
+        ;;
+    esac
+    ncr="$(printf '%s' "$out" | tr -dc '\r' | wc -c)"
+    if [ "$ncr" -ge 2 ] && [ "$ncr" -le 40 ]; then
+        ok "the redirected transfer reports progress ($ncr lines)"
+    else
+        fail "the redirected transfer reports progress" \
+             "got $ncr carriage-return-terminated lines, want 2..40"
+    fi
+    # The stalled sub-64 KiB tail guarantees the closing line fires
+    # here; with the latch bug that line was the >100% one, and every
+    # guard below must stay at zero.
+    nbig="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec 'bytes \([0-9]{3,}%\)')"
+    if [ "$nbig" -eq 0 ]; then
+        ok "no progress line ever exceeds 100%"
+    else
+        fail "no progress line ever exceeds 100%" "$nbig over-100% lines"
+    fi
+    npct="$(printf '%s' "$out" | tr '\r' '\n' | grep -c 'bytes ([0-9]*%)')"
+    if [ "$npct" -eq 0 ]; then
+        ok "the unknown-length final body never reports a percent"
+    else
+        fail "the unknown-length final body never reports a percent" \
+             "$npct percent-form lines"
+    fi
+    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "downloading 'http://[^']*': [0-9]+ bytes$")"
+    if [ "$nn" -eq "$ncr" ]; then
+        ok "every progress line reports bare received bytes"
+    else
+        fail "every progress line reports bare received bytes" \
+             "$nn of $ncr lines matched 'downloading <url>: N bytes'"
+    fi
+    size220c="$(stat -c %s "$T220C/big-1.0.tar.gz")"
+    lastp="$(printf '%s' "$out" | tr '\r' '\n' | grep ' bytes' | tail -1)"
+    case "$lastp" in
+    *"downloading 'http://127.0.0.1:$port220c/hop.tar.gz': $size220c bytes")
+        ok "the closing line is the bare form at the received count"
+        ;;
+    *)
+        fail "the closing line is the bare form at the received count" \
+             "last line: $lastp"
+        ;;
+    esac
+    case "$out" in
+    *"blake3 hash verified"*)
+        ok "the redirected body still verifies"
+        ;;
+    *)
+        fail "the redirected body still verifies" "out: $out"
+        ;;
+    esac
+    if cmp -s "$T220C/.hop.tar.gz.snapshot" "$T220C/big-1.0.tar.gz"; then
+        ok "the redirected download is byte-exact"
+    else
+        fail "the redirected download is byte-exact" \
+             "the snapshot differs from the served file"
+    fi
+fi
+
 # ------------------------------------------------------------- summary
 echo "---"
 echo "passed: $PASS, failed: $FAIL"

@@ -354,11 +354,19 @@ and the blake3 hash of its bytes (compute the hash with
 `projeny hash <file>`). The URL lines are mirrors and are tried in the
 order listed: a download that fails or does not match its hash prints a
 warning and the next line is tried, and it is a hard error only when no
-URL yields a download matching its recorded hash. The archive name (and
-the snapshot's name) is derived from the URL's basename (after stripping
-any scheme, `?query`, and `#fragment`), so the URL must name the tarball
-file itself. `Archive:` and `URL:` headers are mutually exclusive; see
-"Archive snapshots" below for how the download is cached and verified.
+URL yields a download matching its recorded hash. Every download is
+announced on stderr (`projeny: downloading '<url>'`), with progress
+printed every 64 KiB received — capped at whole-percent steps when the
+total size is known, so a 70 MB tarball reports ~100 updates, not ~1100.
+Progress lines end with a bare carriage return and use no other terminal
+tricks, so a terminal redraws the line in place while a run captured to a
+log retains every one. A verified download reports `blake3 hash verified`
+and the snapshot it wrote; a mismatched one warns and falls through to the
+next URL. The archive name (and the snapshot's name) is derived from the
+URL's basename (after stripping any scheme, `?query`, and `#fragment`), so
+the URL must name the tarball file itself. `Archive:` and `URL:` headers
+are mutually exclusive; see "Archive snapshots" below for how the download
+is cached and verified.
 
 Headers (`Origname:`, `Name:` — required, plus exactly one of `Archive:`
 or at least one `URL:` line; extra headers are
@@ -440,11 +448,17 @@ longer matches any hash (a tampered or truncated file) — triggers a
 re-download, and a mismatching snapshot is warned about and replaced. Each
 `URL:` line is tried in order (a download that fails or does not match its
 hash warns and falls through to the next mirror), and the first verified
-download replaces the snapshot atomically. Moving the project to a new
-tarball is done by editing the URL: header(s) to the new URL and hash
-(compute it with `projeny hash <file>`) and running `setup`, which
-re-downloads and merges local changes onto the new base; `rebase` refuses
-URL:-based projects.
+download replaces the snapshot atomically. When the snapshot already
+matches, the commands that materialize the archive (`setup`, `commit`,
+`package`, `extract`) say so — `using existing snapshot '<path>' (blake3
+hash matches); skipping the download` — once per run, no matter how many
+times the same archive is materialized, while the read-only reconstruction
+paths (`status`, `diff`, `get-attributes`, `freeze-mtime`) stay silent
+about a matching snapshot unless they actually have to download. Moving the
+project to a new tarball is done by editing the URL: header(s) to the new
+URL and hash (compute it with `projeny hash <file>`) and running `setup`,
+which re-downloads and merges local changes onto the new base; `rebase`
+refuses URL:-based projects.
 
 ## File naming and migration
 

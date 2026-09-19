@@ -70,6 +70,11 @@ void warn(const std::string& msg)
     fprintf(stderr, "projeny: warning: %s\n", msg.c_str());
 }
 
+void note(const std::string& msg)
+{
+    fprintf(stderr, "projeny: %s\n", msg.c_str());
+}
+
 namespace {
 // (child-side errors are reported via the CmdResult output string.)
 }

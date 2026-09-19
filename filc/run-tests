@@ -199,6 +199,10 @@ $hasFRINTTS = $?.exitstatus == 0
 # Check if we're using glibc
 $hasGLIBC = (Pathname.new($pizfix) + "lib" + "libc.so.6666").exist?
 
+# Check if we're using cosmopolitan libc (cosmo).  The cosmo build leaves a
+# marker artifact in pizfix/lib.
+$hasCOSMO = (Pathname.new($pizfix) + "lib" + "libyolocosmo.a").exist?
+
 raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
@@ -222,6 +226,20 @@ def handleArray(thing)
     return [] unless thing
     return thing if thing.is_a? Array
     [thing]
+end
+
+# Returns true if the given directory entry (a Pathname) is a source file that
+# the test runner knows how to compile.  This is the single source of truth for
+# what counts as a source file; both the compiler invocations and the cosmo
+# skips below use it so that they cannot diverge.
+def isSourceEntry(entry)
+    return (entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp" or entry.extname == ".s")
+end
+
+# Returns true if the given source entry (a Pathname or a String) is a C++
+# source file, i.e. the thing that decides clang++ versus clang.
+def isCppEntry(entry)
+    return Pathname.new(entry).extname == ".cpp"
 end
 
 $testDirectory.each_entry {
@@ -362,6 +380,48 @@ $testDirectory.each_entry {
         end
         next
     end
+    # needsCOSMO is symmetric with needsGLIBC: the test simply cannot run without
+    # cosmo, so --test NAME does not override this skip.
+    if manifest["needsCOSMO"] and not $hasCOSMO
+        if $verbose
+            puts "Skipping #{testName}, requires COSMO"
+        end
+        next
+    end
+    # unsupportedOnCOSMO is symmetric with skip: an explicit --test NAME overrides
+    # it, so that a developer can force-run a test to see how it fails.
+    if manifest["unsupportedOnCOSMO"] and $hasCOSMO and not $specificTest
+        puts "Skipping #{testName}, unsupported on COSMO"
+        next
+    end
+    # Structural cosmo limitations: cosmo builds are static-only and there is no
+    # libc++ port for cosmo yet.  Unlike unsupportedOnCOSMO, --test NAME does not
+    # override these skips, because such tests cannot even compile or link, rather
+    # than merely failing at run time.
+    if $hasCOSMO
+        hasCppSource = false
+        fullPath.each_entry {
+            | entry |
+            next unless isSourceEntry(entry)
+            hasCppSource = true if isCppEntry(entry)
+        }
+        if hasCppSource
+            puts "Skipping #{testName}, C++ not yet supported on COSMO"
+            next
+        end
+        hasSharedLibrary = false
+        cosmoLibraries = manifest["libraries"]
+        if cosmoLibraries
+            cosmoLibraries.each_pair {
+                | libname, data |
+                hasSharedLibrary = true unless data["isStatic"]
+            }
+        end
+        if hasSharedLibrary
+            puts "Skipping #{testName}, shared libraries not supported on COSMO"
+            next
+        end
+    end
     if manifest["skip"] and not $specificTest
         puts "Skipping #{testName}"
         next
@@ -408,8 +468,8 @@ $testDirectory.each_entry {
         outp.puts "touch #{Shellwords.shellescape(compilerOutput)}"
         fullPath.each_entry {
             | entry |
-            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp" or entry.extname == ".s"
-            isCpp = entry.extname == ".cpp"
+            next unless isSourceEntry(entry)
+            isCpp = isCppEntry(entry)
             if isCpp
                 clang = "clang++"
                 extraOpts = "-std=c++20"
@@ -452,7 +512,7 @@ $testDirectory.each_entry {
                     linkerIsCpp = false
                     data["files"].each {
                         | entry |
-                        linkerIsCpp = true if Pathname.new(entry).extname == ".cpp"
+                        linkerIsCpp = true if isCppEntry(entry)
                     }
                     if linkerIsCpp
                         clangLinker = "clang++"
@@ -482,9 +542,9 @@ $testDirectory.each_entry {
         linkerIsCpp = false
         fullPath.each_entry {
             | entry |
-            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp" or entry.extname == ".s"
+            next unless isSourceEntry(entry)
             next if libraryFiles[entry.to_s]
-            linkerIsCpp = true if entry.extname == ".cpp"
+            linkerIsCpp = true if isCppEntry(entry)
         }
         if linkerIsCpp
             clangLinker = "clang++"
@@ -494,7 +554,7 @@ $testDirectory.each_entry {
         outp.print "#{$compilerPrefix}#{$pizfix}/../build/bin/#{clangLinker} -o #{Shellwords.shellescape(binary)}"
         fullPath.each_entry {
             | entry |
-            next unless entry.extname == ".c" or entry.extname == ".ll" or entry.extname == ".cpp" or entry.extname == ".s"
+            next unless isSourceEntry(entry)
             next if libraryFiles[entry.to_s]
             outp.print " #{Shellwords.shellescape(outputPath + entry)}.o"
         }

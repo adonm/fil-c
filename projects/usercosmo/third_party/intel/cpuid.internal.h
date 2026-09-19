@@ -2,10 +2,72 @@
 #ifndef _CPUID_H_INCLUDED
 #define _CPUID_H_INCLUDED
 #ifdef __FILC__
-/* Fil-C port: this is a copy of GCC's intrin header, and its inline
-   helpers use GCC-only builtins that clang does not implement.  Under
-   Fil-C use clang's own intrinsic headers instead. */
-#include <cpuid.h>
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline helpers
+   use GCC-only asm constraints that clang rejects.  clang's own <cpuid.h>
+   can not be reached from here (#include_next resolves back to this same
+   header in the installed layout), so provide the entry points directly.
+   `cpuid` is a read-only probe instruction and is accepted by Fil-C's safe
+   inline-asm whitelist. */
+#define bit_SSE3 (1 << 0)
+#define bit_PCLMUL (1 << 1)
+#define bit_LZCNT (1 << 5)
+#define bit_SSSE3 (1 << 9)
+#define bit_FMA (1 << 12)
+#define bit_CMPXCHG16B (1 << 13)
+#define bit_SSE4_1 (1 << 19)
+#define bit_SSE4_2 (1 << 20)
+#define bit_MOVBE (1 << 22)
+#define bit_POPCNT (1 << 23)
+#define bit_AES (1 << 25)
+#define bit_XSAVE (1 << 26)
+#define bit_OSXSAVE (1 << 27)
+#define bit_AVX (1 << 28)
+#define bit_F16C (1 << 29)
+#define bit_RDRND (1 << 30)
+
+static __inline unsigned int
+__get_cpuid_max (unsigned int __ext, unsigned int *__sig)
+{
+  unsigned int __eax, __ebx, __ecx, __edx;
+  __asm__ __volatile__ ("cpuid\n\t"
+			: "=a" (__eax), "=b" (__ebx), "=c" (__ecx), "=d" (__edx)
+			: "0" (__ext), "c" (0));
+  if (__sig)
+    *__sig = __ebx;
+  return __eax;
+}
+
+static __inline int
+__get_cpuid (unsigned int __leaf,
+	     unsigned int *__eax, unsigned int *__ebx,
+	     unsigned int *__ecx, unsigned int *__edx)
+{
+  unsigned int __ext = __leaf & 0x80000000u;
+  unsigned int __maxlevel = __get_cpuid_max (__ext, 0);
+  if (__maxlevel == 0 || __maxlevel < __leaf)
+    return 0;
+  __asm__ __volatile__ ("cpuid\n\t"
+			: "=a" (*__eax), "=b" (*__ebx), "=c" (*__ecx),
+			  "=d" (*__edx)
+			: "0" (__leaf), "c" (0));
+  return 1;
+}
+
+static __inline int
+__get_cpuid_count (unsigned int __leaf, unsigned int __subleaf,
+		   unsigned int *__eax, unsigned int *__ebx,
+		   unsigned int *__ecx, unsigned int *__edx)
+{
+  unsigned int __ext = __leaf & 0x80000000u;
+  unsigned int __maxlevel = __get_cpuid_max (__ext, 0);
+  if (__maxlevel == 0 || __maxlevel < __leaf)
+    return 0;
+  __asm__ __volatile__ ("cpuid\n\t"
+			: "=a" (*__eax), "=b" (*__ebx), "=c" (*__ecx),
+			  "=d" (*__edx)
+			: "0" (__leaf), "c" (__subleaf));
+  return 1;
+}
 #else /* !__FILC__ */
 #define bit_SSE3 (1 << 0)
 #define bit_PCLMUL (1 << 1)

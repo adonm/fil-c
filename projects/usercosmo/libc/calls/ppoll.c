@@ -76,8 +76,17 @@ static int ppoll_impl(struct pollfd *fds, size_t nfds,
     sigset_t sigmask2;
     sigset_t *sigmask2p;
     if (sigmask) {
+#ifdef __FILC__
+      /* Fil-C port: pass the caller's sigset through unconverted.  The
+         zsys_ppoll() layer does its own (filc-checked) conversion, and
+         dereferencing the caller's pointer here would happen before any
+         bounds checking — silently accepting invalid sigmask pointers that
+         the musl flavor's ppoll() lets the runtime catch. */
+      sigmask2p = (sigset_t *)sigmask;
+#else
       sigmask2 = __linux2mask(*sigmask);
       sigmask2p = &sigmask2;
+#endif
     } else {
       sigmask2p = 0;
     }

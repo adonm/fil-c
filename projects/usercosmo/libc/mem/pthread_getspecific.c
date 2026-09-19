@@ -31,6 +31,15 @@
  * then the behavior is undefined.
  */
 void *pthread_getspecific(pthread_key_t k) {
+#ifdef __FILC__
+  /* Fil-C port: the test suite reads the value after pthread_key_delete()
+     and expects 0 (the musl flavor behaves that way); cosmo would return
+     the stale per-thread value since pthread_key_delete() only clears the
+     destructor slot. */
+  if (!(0 <= k && k < PTHREAD_KEYS_MAX) ||
+      !atomic_load_explicit(&_pthread_key_dtor[k], memory_order_acquire))
+    return 0;
+#endif
 #ifdef MODE_DBG
   // "The effect of calling pthread_getspecific() or
   //  pthread_setspecific() with a key value not obtained from

@@ -13,4 +13,10 @@
 #include "libc/sysv/consts/mfd.h"
 #include "libc/sysv/consts/mremap.h"
 #endif
+#ifdef __FILC__
+/* Fil-C port: the Linux mremap(2) shape; implemented in
+   libc/intrin/filc_mmap.c (cosmo only has the cosmo_mremap() shape, which
+   requires the new_address argument unconditionally). */
+void *mremap(void *, size_t, size_t, int, ...);
+#endif
 #endif

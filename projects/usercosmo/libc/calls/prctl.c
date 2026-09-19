@@ -25,6 +25,9 @@
 #include "libc/intrin/strace.h"
 #include "libc/sysv/consts/pr.h"
 #include "libc/sysv/errfuns.h"
+#ifdef __FILC__
+#include <pizlonated_syscalls.h>
+#endif
 
 /**
  * Tunes process on Linux.
@@ -33,6 +36,56 @@
  */
 int prctl(int operation, ...) {
   int rc;
+#ifdef __FILC__
+  /* Fil-C port: the sys_prctl() inline helper is a raw `syscall` asm, which
+     the Fil-C compiler rejects at runtime.  zsys_prctl() understands the
+     interesting subset (notably PR_SET_NAME/PR_GET_NAME used by
+     pthread_setname_np/pthread_getname_np) and traps on the rest.
+
+     The vararg arguments have to be read with the right type and count:
+     Fil-C's vararg area is typed, so reading a pointer argument as an
+     integer (or reading past the arguments that were actually passed) is a
+     safety error.  Each interesting option has a known arg shape; anything
+     else gets the one-integer-argument treatment. */
+  va_list va;
+  intptr_t a = 0;
+  void *pa = 0;
+
+  va_start(va, operation);
+  switch (operation) {
+    case PR_SET_NAME:
+    case PR_GET_NAME:
+    case PR_GET_FPEXC:
+    case PR_GET_CHILD_SUBREAPER:
+    case PR_GET_FPEMU:
+    case PR_GET_TSC:
+      /* Takes (void *). */
+      pa = va_arg(va, void *);
+      va_end(va);
+      rc = zsys_prctl(operation, pa);
+      break;
+    case PR_SET_SECCOMP:
+    case PR_SET_SPECULATION_CTRL:
+      /* Takes (intptr_t, void *) or four integers; zsys_prctl() only needs
+         the first two. */
+      a = va_arg(va, intptr_t);
+      pa = va_arg(va, void *);
+      va_end(va);
+      rc = zsys_prctl(operation, a, pa);
+      break;
+    default:
+      /* Takes (intptr_t) or nothing; zsys_prctl() ignores the cursor for
+         the no-argument options. */
+      a = va_arg(va, intptr_t);
+      va_end(va);
+      rc = zsys_prctl(operation, a);
+      break;
+  }
+  if (rc < 0) {
+    rc = -1;
+  }
+  return rc;
+#else
   va_list va;
   intptr_t a, b, c, d;
 
@@ -54,4 +107,5 @@ int prctl(int operation, ...) {
   }
 
   return rc;
+#endif
 }

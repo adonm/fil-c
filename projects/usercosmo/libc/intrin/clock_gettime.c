@@ -71,11 +71,17 @@ static int __clock_gettime_init(int clockid, struct timespec *ts) {
 }
 
 static int clock_gettime_impl(int clock, struct timespec *ts) {
+  struct timespec memory;
+#ifndef __FILC__
   // BSDs and sometimes Linux too will crash when `ts` is NULL
   // it's also nice to not have to check for null in polyfills
-  struct timespec memory;
   if (!ts)
     ts = &memory;
+#endif
+  /* Fil-C port: a NULL ts has to reach zsys_clock_gettime() so that the
+     runtime raises the usual filc safety error for it; the local-buffer
+     substitution would silently accept invalid pointers, which the musl
+     flavor's clock_gettime() does not do. */
   return __clock_gettime(clock, ts);
 }
 

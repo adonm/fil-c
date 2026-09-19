@@ -17,6 +17,10 @@
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/sysv/consts/f.h"
+#ifdef __FILC__
+#include <stdfil.h>
+#include <pizlonated_syscalls.h>
+#endif
 
 #undef fcntl
 
@@ -72,6 +76,16 @@
  * @restartable
  */
 int fcntl(int fd, int cmd, ...) {
+#ifdef __FILC__
+  /* Fil-C port: forward the whole argument area straight to zsys_fcntl(),
+     exactly like the musl flavor's fcntl().  cosmo's per-command plumbing
+     reads the optional argument as uintptr_t, which destroys the capability
+     of pointer arguments (struct flock for F_GETLK/F_SETLK), and its
+     flag/struct translations are identity functions on Linux anyway.  The
+     fd-table side effects (dup bookkeeping) live in the zsys_fcntl()
+     wrapper. */
+  return *(int *)zcall(zsys_fcntl, zargs());
+#else
   va_list va;
   uintptr_t arg;
   va_start(va, cmd);
@@ -94,4 +108,5 @@ int fcntl(int fd, int cmd, ...) {
   } else {
     return __fcntl_misc(fd, cmd, arg);
   }
+#endif
 }

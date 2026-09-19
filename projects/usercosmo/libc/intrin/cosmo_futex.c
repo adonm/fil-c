@@ -54,7 +54,15 @@
 #define FUTEX_WAIT_BITS_ FUTEX_BITSET_MATCH_ANY
 
 long cosmo_futex_thunk (atomic_int *, int, int, const struct timespec *, int *, int);
+#ifdef __FILC__
+/* Fil-C port: no asm alias here.  _futex_wake() is a real 3-argument
+   function (libc/sysv/filc_futex.c); binding it to the 6-argument
+   cosmo_futex_thunk via an asm label makes the Fil-C runtime report an
+   argument size mismatch on every call. */
+long _futex_wake (atomic_int *, int, int);
+#else
 long _futex_wake (atomic_int *, int, int) asm ("cosmo_futex_thunk");
+#endif
 int sys_futex_cp (atomic_int *, int, int, const struct timespec *, int *, int);
 
 __rarechange static struct CosmoFutex {

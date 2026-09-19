@@ -2,3 +2,6 @@ return:
   success
 slow:
   true
+
+# COSMO: fork() while other runtime threads hold nsync mutexes leaves the child with inherited-but-unheld lock state (nsync panics on unlock); needs deeper fork/nsync work in the cosmo flavor.
+unsupportedOnCOSMO: true

@@ -96,7 +96,10 @@ ssize_t recvfrom(int fd, void *buf, size_t size, int flags,
         __convert_bsd_to_sockaddr(&addr);
       }
       __write_sockaddr(&addr, opt_out_srcaddr, opt_inout_srcaddrsize);
-    } else {
+    } else if (opt_inout_srcaddrsize) {
+      /* Fil-C port: cosmo wrote through the NULL pointer unconditionally
+         here; recvfrom(fd, buf, size, flags, NULL, NULL) is legitimate and
+         must not trap. */
       *opt_inout_srcaddrsize = 0;
     }
   }

@@ -175,14 +175,15 @@ int getnameinfo(const struct sockaddr *restrict sa, socklen_t sl,
 	unsigned char *a;
 	unsigned scopeid;
 
-	switch (af) {
-	case AF_INET:
+	/* Fil-C port: AF_INET/AF_INET6 are .syscon objects (extern const),
+	   i.e. not integer constant expressions, so a switch() over them
+	   does not compile under Fil-C; use a plain if/else chain. */
+	if (af == AF_INET) {
 		a = (void *)&((struct sockaddr_in *)sa)->sin_addr;
 		if (sl < sizeof(struct sockaddr_in)) return EAI_FAMILY;
 		mkptr4(ptr, a);
 		scopeid = 0;
-		break;
-	case AF_INET6:
+	} else if (af == AF_INET6) {
 		a = (void *)&((struct sockaddr_in6 *)sa)->sin6_addr;
 		if (sl < sizeof(struct sockaddr_in6)) return EAI_FAMILY;
 		if (memcmp(a, "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12))
@@ -190,8 +191,7 @@ int getnameinfo(const struct sockaddr *restrict sa, socklen_t sl,
 		else
 			mkptr4(ptr, a+12);
 		scopeid = ((struct sockaddr_in6 *)sa)->sin6_scope_id;
-		break;
-	default:
+	} else {
 		return EAI_FAMILY;
 	}
 

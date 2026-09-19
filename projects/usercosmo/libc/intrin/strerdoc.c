@@ -32,7 +32,10 @@ const char* _strerdoc(int e) {
     case ESRCH:
       return "No such process";
     case EINTR:
-      return "Interrupted";
+      /* Fil-C port: use the POSIX wording (musl/glibc say "Interrupted
+         system call"); cosmo's terse "Interrupted" breaks programs that
+         print strerror(EINTR). */
+      return "Interrupted system call";
     case EIO:
       return "I/O error";
     case ENXIO:

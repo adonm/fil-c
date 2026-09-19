@@ -166,11 +166,16 @@ static void *PosixThread(void *arg) {
 
   // wire up the pizlonated TIB of this thread
   __filc_init_tib(pt);
-  pt->tib = __get_tls();
-  atomic_init(&pt->tib->tib_ptid, zthread_self_id());
-  atomic_store_explicit(&pt->tib->tib_ctid, zthread_self_id(),
+  struct CosmoTib *tib = __get_tls();
+  atomic_init(&tib->tib_ptid, zthread_self_id());
+  atomic_store_explicit(&tib->tib_ctid, zthread_self_id(),
                         memory_order_release);
-  atomic_init(&pt->tib->tib_sigmask, -1);
+  atomic_init(&tib->tib_sigmask, -1);
+  /* Fil-C port: publish the TIB with a release store; pthread_create()
+     waits for exactly this before returning, so that callers may
+     immediately pthread_detach()/pthread_kill() the new thread (those
+     dereference pt->tib through _pthread_tid()). */
+  __atomic_store_n(&pt->tib, tib, __ATOMIC_RELEASE);
 
   // setup signals for new thread
   pt->pt_attr.__sigmask &= ~(1ull << (SIGTHR - 1));
@@ -258,6 +263,16 @@ static errno_t pthread_create_impl(pthread_t *thread,
       err = EAGAIN;
     return err;
   }
+
+#ifdef __FILC__
+  /* Fil-C port: wait until the trampoline has published the new thread's
+     TIB.  cosmo's clone() child had its kernel TIB installed before the
+     parent returned, so cosmo code (and the test suite) assumes
+     pthread_create() returning means the TIB is live;
+     pthread_detach()/pthread_kill() dereference pt->tib right away. */
+  while (!__atomic_load_n(&pt->tib, __ATOMIC_ACQUIRE))
+    pthread_yield_np();
+#endif
 
   return 0;
 }

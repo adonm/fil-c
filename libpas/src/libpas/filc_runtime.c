@@ -10132,15 +10132,30 @@ ssize_t filc_native_zsys_recvfrom(filc_thread* my_thread, int sockfd, filc_ptr b
     if (!handle_returned_addr(my_thread, addr_ptr, addrlen_ptr, &addrlen))
         return -1;
     PAS_ASSERT(!!addrlen == !!filc_ptr_ptr(addr_ptr));
+    /* cosmo's recvfrom() wrapper writes through the address-size pointer
+       unconditionally when the kernel reports a zero-length address (which
+       happens for TCP), so it cannot be handed a NULL even when the caller
+       did not ask for the address.  Pass scratch storage in that case; the
+       musl flavor's recvfrom() does not need this, but does not mind it. */
+    struct sockaddr_storage scratch_addr;
+    socklen_t scratch_len = 0;
+    struct sockaddr* out_addr;
+    socklen_t* out_len;
+    if (addrlen) {
+        out_addr = (struct sockaddr*)filc_ptr_ptr(addr_ptr);
+        out_len = (socklen_t*)addrlen;
+    } else {
+        out_addr = (struct sockaddr*)&scratch_addr;
+        out_len = &scratch_len;
+    }
     filc_exit(my_thread);
-    int result = recvfrom(sockfd, filc_ptr_ptr(buf_ptr), len, flags,
-                          (struct sockaddr*)filc_ptr_ptr(addr_ptr), addrlen);
+    int result = recvfrom(sockfd, filc_ptr_ptr(buf_ptr), len, flags, out_addr, out_len);
     int my_errno = errno;
     filc_enter(my_thread);
     if (result < 0)
         filc_set_errno(my_errno);
     else if (addrlen)
-        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = *addrlen;
+        *(unsigned*)filc_ptr_ptr(addrlen_ptr) = *out_len;
     return result;
 }
 
@@ -10658,7 +10673,17 @@ int filc_native_zsys_madvise(filc_thread* my_thread, filc_ptr ptr, size_t length
         check_mmap(ptr);
         check_madvise_advice(advice);
     }
-    return FILC_SYSCALL(my_thread, madvise(filc_ptr_ptr(ptr), length, advice));
+#ifndef SYS_madvise
+/* cosmo's headers do not have the full Linux syscall table; x86_64
+   madvise is 28. */
+#define SYS_madvise 28
+#endif
+    /* NOTE: use the raw syscall rather than madvise(3): cosmopolitan's
+       madvise() wrapper only understands the five original MADV_* advices
+       and returns EINVAL for anything newer (MADV_FREE, MADV_DONTDUMP,
+       ...), while musl's and glibc's wrappers just pass the request
+       through. */
+    return FILC_SYSCALL(my_thread, syscall(SYS_madvise, filc_ptr_ptr(ptr), length, advice));
 }
 
 int filc_native_zsys_mincore(filc_thread* my_thread, filc_ptr addr, size_t len, filc_ptr vec_ptr)
@@ -12000,12 +12025,11 @@ int filc_native_zsys_close_range_impl(filc_thread* my_thread, unsigned first, un
        decision that might get revisited. */
     return FILC_SYSCALL(my_thread, close_range(first, last, flags));
 #else
-    PAS_UNUSED_PARAM(my_thread);
-    PAS_UNUSED_PARAM(first);
-    PAS_UNUSED_PARAM(last);
-    PAS_UNUSED_PARAM(flags);
-    filc_internal_panic(NULL, "close_range not supported.");
-    return -1;
+    /* musl and cosmo do not expose close_range(2) as a C function, so use
+       the raw syscall (Linux 5.9+, x86_64 number 436).  cosmo's libc uses
+       this call for feature detection (e.g. copy_file_range()), so an
+       internal panic here breaks perfectly reasonable programs. */
+    return FILC_SYSCALL(my_thread, syscall(436 /*SYS_close_range*/, first, last, flags));
 #endif
 }
 
@@ -12820,7 +12844,26 @@ int filc_native_zsys_sigqueue(filc_thread* my_thread, int pid, int sig, filc_ptr
     }
     union sigval sigval;
     sigval.sival_ptr = filc_ptr_ptr(value_ptr);
-    return FILC_SYSCALL(my_thread, sigqueue(pid, sig, sigval));
+#ifndef SYS_rt_sigqueueinfo
+/* cosmo's headers do not have the full Linux syscall table; x86_64
+   rt_sigqueueinfo is 129. */
+#define SYS_rt_sigqueueinfo 129
+#endif
+    /* NOTE: we deliberately do not call sigqueue(3) here.  Cosmopolitan's
+       sigqueue() mis-maps the Linux rt_sigqueueinfo(2) ABI: it only passes
+       (pid, &info) even though the syscall takes (pid, sig, &info), so the
+       signal number is dropped and the kernel reads the siginfo pointer from
+       an uninitialized register (EFAULT).  Issuing the raw syscall is
+       equivalent to what sigqueue(3) does on every other libc (musl's
+       sigqueue() does exactly this), so this is flavor-independent. */
+    siginfo_t info;
+    memset(&info, 0, sizeof(info));
+    info.si_signo = sig;
+    info.si_code = SI_QUEUE;
+    info.si_pid = getpid();
+    info.si_uid = geteuid();
+    info.si_value = sigval;
+    return FILC_SYSCALL(my_thread, syscall(SYS_rt_sigqueueinfo, pid, sig, &info));
 }
 
 int filc_native_zsys_openat(filc_thread* my_thread, int dirfd, filc_ptr path_ptr, int flags,
@@ -13870,10 +13913,14 @@ void filc_call_syscall_with_guarded_ptr(filc_thread* my_thread,
        
        If we ever find ioctls that require integers bigger than min_address, then they'd have to be
        special case by our wrapping. */
-    if (filc_ptr_ptr(arg_ptr) < (void*)min_address) {
-        if (filc_ptr_object(arg_ptr) && filc_ptr_ptr(arg_ptr) >= filc_ptr_lower(arg_ptr))
-            pas_log("Unexpected arg_ptr = %s\n", filc_ptr_to_new_string(arg_ptr));
-        PAS_ASSERT(!filc_ptr_object(arg_ptr) || filc_ptr_ptr(arg_ptr) < filc_ptr_lower(arg_ptr));
+    /* NOTE (cosmo flavor): unlike -static-pie (musl flavor) or dynamic links,
+       cosmo programs can legitimately have pizlonated globals below 4GB (the
+       rodata is not moved above min_address by ape.lds), so a pointer that
+       looks "small" may still be a real object pointer.  Only pass the
+       integer through when there is no object behind it; otherwise the
+       guarded-copy path below does the right thing (including raising the
+       usual safety errors for read-only or out-of-bounds arguments). */
+    if (filc_ptr_ptr(arg_ptr) < (void*)min_address && !filc_ptr_object(arg_ptr)) {
         filc_exit(my_thread);
         errno = 0;
         syscall_callback(filc_ptr_ptr(arg_ptr), user_arg);

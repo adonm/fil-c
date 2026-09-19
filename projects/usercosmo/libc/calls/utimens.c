@@ -29,10 +29,21 @@
 #include "libc/runtime/zipos.internal.h"
 #include "libc/sysv/consts/at.h"
 #include "libc/sysv/errfuns.h"
+#ifdef __FILC__
+#include <pizlonated_syscalls.h>
+#endif
 
 int __utimens(int fd, const char *path, const struct timespec ts[2],
               int flags) {
   int rc;
+#ifdef __FILC__
+  /* Fil-C port: the fd-based variants (futimens/futimes) arrive here with a
+     NULL path; that has to go to zsys_futimens(), since zsys_utimensat()
+     would raise a filc safety error on the NULL path pointer (the musl
+     flavor routes futimens() to zsys_futimens() the same way). */
+  if (!path)
+    return zsys_futimens(fd, ts);
+#endif
   struct ZiposUri zipname;
   if (IsMetal()) {
     rc = enosys();

@@ -9,4 +9,10 @@
 #include "libc/sysv/consts/posix.h"
 #include "libc/sysv/consts/s.h"
 #include "libc/sysv/consts/splice.h"
+#ifdef __FILC__
+/* Fil-C port: musl exposes these; cosmo's fcntl surface doesn't.  The
+   implementation lives in libc/mem/filc_extra.c (zsys_fallocate). */
+#define AT_EMPTY_PATH 0x1000
+int posix_fallocate(int, long, long) libcesque;
+#endif
 #endif /* _FCNTL_H */

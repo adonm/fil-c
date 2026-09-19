@@ -101,14 +101,33 @@ python3 "$COSMO/filc/gen_shims.py" "$BUILD/shims.c" "$BUILD/consts.c"
 #                         pull the vendored aarch64 NEON headers
 #      libc/proc/fork-nt.c vfork-nt.c msync-nt.c posix_madvise-nt.c
 #                         Windows-only wrappers
-#      pthread_cancel.c   raw asm + SIGTHR machinery; stub in filc_stub.c
+#      libc/thread/pthread_cancel.c   raw asm + SIGTHR machinery; stub in filc_stub.c
+#      libc/intrin/x86.c   defines __cpu_model/__cpu_indicator_init/__cpu_features2,
+#                         which libpizlo.a already provides for pizlonated code
+#                         (filc_native___cpu_indicator_init); including both
+#                         makes every __builtin_cpu_supports() user hit a
+#                         multiple-definition link error
+#      libc/str/qsort.c    cosmo's introsort does unchecked pointer arithmetic
+#                         on the array bounds that the filc runtime rejects on
+#                         ordinary inputs; filc_extra.c provides a plain
+#                         (correct, if unglamorous) qsort/qsort_r instead
+#      libc/calls/madvise.c only knows the five original MADV_* advices and
+#                         rejects (EINVAL) everything else before the call
+#                         reaches the runtime; filc_mmap.c's madvise() forwards
+#                         everything to zsys_madvise(), whose per-advice
+#                         checking is what the test suite expects
 #      kprintf.greg.c, clone.c, seccomp.c, pledge-linux.c, islinux.c
 #                         raw `syscall` inline asm without shims
+#                         (islinux.c: __is_linux_2_6_23 has a C replacement in
+#                         libc/calls/filc_islinux.c)
 #      mman.greg.c        bare-metal page-table code with module asm
 # ─────────────────────────────────────────────────────────────────────────────
 EXCLUDE_DIRS="libc/testbed libc/irq libc/dsp libc/vga libc/x8664"
 EXCLUDE_FILES="
 libc/intrin/mman.greg.c
+libc/intrin/x86.c
+libc/str/qsort.c
+libc/calls/madvise.c
 libc/mem/aligned_alloc.c
 libc/mem/posix_memalign.c
 libc/mem/malloc_usable_size.c
@@ -240,8 +259,6 @@ libc/thread/pthread_cancel.c
 libc/thread/makecontext.c
 libc/thread/pthread_getaffinity_np.c
 libc/thread/pthread_setaffinity_np.c
-libc/thread/pthread_getname_np.c
-libc/thread/pthread_setname_np.c
 libc/proc/getpriority.c
 libc/proc/fork.c
 libc/proc/fork-nt.c
@@ -278,8 +295,45 @@ grep -v "^libc/crt/" "$SRCS" > "$SRCS.tmp" && mv "$SRCS.tmp" "$SRCS"         # c
 for dir in $THIRD_PARTY_DIRS; do
     find "$dir" -name '*.c' | LC_ALL=C sort >> "$SRCS"
 done
-# selected musl bits (strftime); the whole musl dir pulls in the net stack
-find third_party/musl -name 'strftime*.c' -o -name 'wcsftime*.c' -o -name 'timelocal*.c' -o -name 'langinfo.c' -o -name 'asctime*.c' -o -name '__tm_to_secs.c' -o -name 'lctrans.c' -o -name '__mo_lookup.c' -o -name 'locinfo.c' -o -name '__month_to_secs.c' -o -name '__year_to_secs.c' -o -name '__secs_to_tm.c' -o -name '__days_from_civil.c' | LC_ALL=C sort >> "$SRCS" 2>/dev/null || true
+# third_party/getopt: the __optarg/__optind/__getopt implementation that the
+# sed/tr applets use; third_party/regex: POSIX regcomp/regexec used by sed
+# (and by glob-style tools); musl's pwd.c backs getpwnam_r/getpwuid_r which
+# glob.c calls.
+find third_party/getopt third_party/regex -name '*.c' | LC_ALL=C sort >> "$SRCS"
+for m in pwd.c fgetspent.c getspnam_r.c putspent.c; do
+    find third_party/musl -name "$m" >> "$SRCS" 2>/dev/null || true
+done
+# selected musl bits.  cosmo vendors chunks of musl in third_party/musl/ and
+# uses them as the canonical implementations of the corresponding APIs; the
+# files below are the pieces the test suite needs (search tree, netdb/
+# resolver, locale, wctype, glob), plus the previously present strftime/
+# langinfo group.  Everything here is plain C that compiles under Fil-C.
+MUSL_FILES="strftime*.c wcsftime*.c timelocal*.c langinfo.c asctime*.c \
+__tm_to_secs.c lctrans.c __mo_lookup.c locinfo.c __month_to_secs.c \
+__year_to_secs.c __secs_to_tm.c __days_from_civil.c \
+tsearch.c tfind.c tdelete.c tdestroy.c twalk.c \
+getaddrinfo.c freeaddrinfo.c gai_strerror.c getnameinfo.c \
+getservbyname.c getservbyname_r.c getservbyport.c getservbyport_r.c \
+gethostbyname.c gethostbyname_r.c gethostbyname2.c gethostbyname2_r.c \
+gethostbyaddr.c gethostbyaddr_r.c h_errno.c herror.c hstrerror.c \
+lookup_name.c lookup_ipliteral.c lookup_serv.c \
+res_mkquery.c res_msend.c res_send.c res_query.c res_querydomain.c \
+res_state.c res_init.c resolvconf.c dns_parse.c dn_comp.c dn_expand.c \
+dn_skipname.c proto.c serv.c \
+setlocale.c locale_map.c newlocale.c duplocale.c freelocale.c uselocale.c \
+iswctype.c iswalnum.c iswalpha.c iswpunct.c wctrans.c towctrans.c \
+btowc.c wctob.c \
+mbrtowc.c wcrtomb.c mbsinit.c mbstowcs.c wcstombs.c mbsrtowcs.c \
+mbsnrtowcs.c wcsnrtombs.c wcsrtombs.c mbrlen.c mblen.c mbtowc.c \
+wctomb.c mbrtoc16.c mbrtoc32.c c16rtomb.c c32rtomb.c multibyte.c \
+mapfile.c \
+glob.c fnmatch.c"
+for m in $MUSL_FILES; do
+    find third_party/musl -name "$m" >> "$SRCS" 2>/dev/null || true
+done
+# The embedded sed/tr applets that cosmo's system()/popen() shell (cocmd)
+# dispatches to; without them every system() user has undefined symbols.
+find third_party/sed third_party/tr -name '*.c' | LC_ALL=C sort >> "$SRCS"
 
 cd "$ROOT"
 
@@ -301,7 +355,7 @@ compile_one() {
     fi
     return 0
 }
-export FILC_CLANG CFLAGS BUILD COSMO
+export FILC_CLANG CFLAGS BUILD COSMO FORCE
 
 rm -f "$BUILD/compile-failures.txt" "$BUILD/compile-errors.log"
 
@@ -314,6 +368,12 @@ case "$src" in
     *)  out="o-filc/$src.o" ;;
 esac
 mkdir -p "$(dirname "$out")"
+# Incremental: skip the compile when the object is newer than the source.
+# Force a full rebuild with FORCE=1 (e.g. after editing a widely-included
+# header); headers alone are not tracked.
+if [ -z "$FORCE" ] && [ "$out" -nt "$src" ]; then
+    exit 0
+fi
 if ! "$FILC_CLANG" $CFLAGS -c -o "$out" "$src" 2>> "$BUILD/compile-errors.log"; then
     echo "FAILED: $src" >> "$BUILD/compile-failures.txt"
     rm -f "$out"
@@ -323,7 +383,46 @@ EOF
 chmod +x "$BUILD/compile.sh"
 
 # xargs -P does the parallelism; -P $NCPU
-xargs -P "$NCPU" -n 1 -I {} "$BUILD/compile.sh" {} < "$SRCS" || true
+FORCE="$FORCE" xargs -P "$NCPU" -n 1 -I {} "$BUILD/compile.sh" {} < "$SRCS" || true
+
+# Remove stale objects: files that used to be compiled but are now excluded
+# would otherwise keep landing in libc.a.
+cd "$COSMO"
+for obj in $(cd "$BUILD" && find . -name '*.c.o' ); do
+    src="${obj#./}"
+    src="${src%.o}"
+    case "$src" in
+        generated/*) continue ;;
+    esac
+    if ! grep -qxF "$src" "$SRCS"; then
+        rm -f "$BUILD/$obj"
+    fi
+done
+cd "$ROOT"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4b. A few cosmo sources are C++ (.cc): libc/str/isw{lower,upper,separator}.cc
+#     implement the wide-char classification tables with a C++ template
+#     (libc/str/has_char.h).  They compile fine with the Fil-C C++ front end;
+#     the public declarations are extern "C" via COSMOPOLITAN_C_START_, so the
+#     symbols land unmangled as pizlonated_<name>.
+# ─────────────────────────────────────────────────────────────────────────────
+CCXX="libc/str/iswlower.cc libc/str/iswupper.cc libc/str/iswseparator.cc"
+for cc in $CCXX; do
+    out="$BUILD/$cc.o"
+    if [ "$FORCE" ] || [ ! -f "$out" ] || [ "$COSMO/$cc" -nt "$out" ]; then
+        mkdir -p "$(dirname "$out")"
+        (cd "$COSMO" && "$FILC_CLANG++" -O2 -g -std=gnu++20 \
+            -DSUPPORT_VECTOR=1 -D_COSMO_SOURCE -DNDEBUG -DMODE=\"filc\" \
+            -march=x86-64 -mavx \
+            -fno-omit-frame-pointer -fno-stack-protector -fwrapv \
+            -fno-common -w -fno-exceptions -fno-rtti -nostdinc++ \
+            $COSMO_INC -c -o "$out" "$cc" 2>> "$BUILD/compile-errors.log") || {
+            echo "FAILED: $cc" >> "$BUILD/compile-failures.txt"
+            rm -f "$out"
+        }
+    fi
+done
 
 if [ -s "$BUILD/compile-failures.txt" ]; then
     echo ""
@@ -343,6 +442,16 @@ ar crs "$PFX/lib/libc.a" $(cat "$BUILD/objects.txt" | sed "s|^$BUILD/||") || {
     # ar wants to run in the build dir so member names are relative
     (cd "$BUILD" && ar crs "$PFX/lib/libc.a" $(cat objects.txt | sed "s|^$BUILD/||"))
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5b. libm.a: cosmo folds all of libm into libc.a, but portable programs (and
+#     the test suite) link with -lm.  musl's flavor ships a real libm.a; give
+#     the cosmo flavor an empty one so that -lm resolves.
+# ─────────────────────────────────────────────────────────────────────────────
+if [ ! -e "$PFX/lib/libm.a" ] || [ "$PFX/lib/libc.a" -nt "$PFX/lib/libm.a" ]; then
+    rm -f "$PFX/lib/libm.a"
+    ar crs "$PFX/lib/libm.a"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 6. crt1.o: the cosmo yolo crt (raw _start → cosmo() boot, installed by
@@ -388,7 +497,7 @@ while read -r h; do
     target="$PFX/include/$h"
     [ -f "$target" ] || continue
     if ! grep -q "libc/integral/normalize.inc" "$target"; then
-        printf '#ifdef __FILC__\n/* Fil-C port: force-include normalize.inc (see build_usercosmo.sh). */\n#include "libc/integral/normalize.inc"\n#endif\n' > "$target.new"
+        printf '#ifdef __FILC__\n/* Fil-C port: force-include normalize.inc (see build_usercosmo.sh). */\n/* Also default to _GNU_SOURCE: the test suite and portable Linux code\n * expect the POSIX+BSD+GNU declaration surface that musl (whose headers\n * are the musl flavor'"'"'s default) exposes without explicit feature-test\n * macros.  cosmo hides those declarations unless a feature macro is set,\n * which would turn a large class of otherwise-fine programs into compile\n * errors for no good reason. */\n#ifndef _GNU_SOURCE\n#define _GNU_SOURCE 1\n#endif\n#include "libc/integral/normalize.inc"\n#endif\n' > "$target.new"
         cat "$target" >> "$target.new"
         mv "$target.new" "$target"
     fi

@@ -63,7 +63,17 @@ int setsockopt(int fd, int level, int optname, const void *optval,
 
   if (level == -1 || !optname) {
     rc = enoprotoopt();  // see libc/sysv/consts.sh
-  } else if ((!optval && optlen)) {
+  } else if (
+#ifdef __FILC__
+      /* Fil-C port: don't pre-guard the NULL optval with an efault(); the
+         zsys_setsockopt() layer is supposed to observe the (invalid) pointer
+         and raise the usual filc safety error, which is what the musl flavor
+         does.  The guard would otherwise hide unsafe pointer usage. */
+      0
+#else
+      (!optval && optlen)
+#endif
+  ) {
     rc = efault();
   } else if (__isfdkind(fd, kFdZip)) {
     rc = enotsock();

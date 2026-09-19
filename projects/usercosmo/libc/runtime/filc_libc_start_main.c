@@ -64,6 +64,11 @@ static void filc_dlerror_handler(const char *str) {
   (void)str;
 }
 
+/* The pizlonated copies of cosmo's boot globals (the yolo boot only fills the
+   plain-symbol copies; libc code compiled by Fil-C sees these). */
+int __argc;
+char **__argv;
+
 static void filc_setup_main_thread(void) {
   /* The main thread's PosixThread object: a static PT_STATIC instance, set up
      the same way __enable_tls() does it for the kernel TIB in the yolo world. */
@@ -89,6 +94,13 @@ static void filc_init_globals(char **argv, char **envp, size_t *auxv) {
   if (argv && argv[0]) {
     __program_executable_name = argv[0];
     program_invocation_name = argv[0];
+    /* The pizlonated copies of __argc/__argv are referenced by e.g.
+       program_invocation_short_name.c; the yolo boot only fills the yolo
+       copies. */
+    __argc = 0;
+    while (argv[__argc])
+      __argc++;
+    __argv = argv;
   }
 }
 

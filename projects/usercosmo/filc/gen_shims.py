@@ -127,11 +127,27 @@ HAND_MAP = {
     # rt_sigtimedwait(set, info, timeout, sigsetsize): drop the size.
     "sys_sigtimedwait": ("return zsys_sigtimedwait({a0}, {a1}, {a2});", False),
     # sigqueue solaris-style; Linux uses rt_sigqueueinfo which has no zsys.
-    "sys_sigqueue": ('zerrorf("usercosmo: sys_sigqueue is not supported under Fil-C");\n  return -1;', False),
+    # libpizlo does have zsys_sigqueue(pid, sig, void *value) (it funnels into
+    # the host's sigqueue(3) with the sigval pointer value), so route both
+    # thunks through it.  sigval is a union: the int/pointer variants share
+    # storage, so carrying the value through sival_ptr preserves sival_int.
+    "sys_sigqueue": ("return zsys_sigqueue({a0}, {a1}, {a2}.sival_ptr);", False),
+    # rt_sigqueueinfo: cosmo's sigqueue(3) fills a siginfo_t with SI_QUEUE and
+    # calls this.  The kernel rejects si_code >= 0, so we can not simply hand
+    # the struct over; deconstruct it into the zsys_sigqueue(pid, sig, value)
+    # shape instead.  The kernel fills in si_pid/si_uid/si_code itself for
+    # queued signals, so the only fields that matter are the signal number and
+    # the payload.
+    "sys_sigqueueinfo": (
+        "return zsys_sigqueue({a0}, ((const siginfo_t *){a1})->si_signo,\n"
+        "                  ((const siginfo_t *){a1})->si_value.sival_ptr);", False),
     # closefrom(from) == close_range(from, ~0, 0)
     "sys_closefrom": ("return zsys_close_range({a0}, -1u, 0);", False),
     # faccessat2 is faccessat with a flags argument.
     "sys_faccessat2": ("return zsys_faccessat({a0}, {a1}, {a2}, {a3});", False),
+    # fchmodat2 (chmodxat2) is fchmodat with a flags argument; libpizlo's
+    # zsys_fchmodat() takes the flag directly.
+    "sys_fchmodat2": ("return zsys_fchmodat({a0}, {a1}, {a2}, {a3});", False),
     # fadvise(fd, off_lo, off_hi, advice) -> posix_fadvise(fd, off, len, advice)
     # cosmo passes the offset in two slots on BSD; on Linux off_hi is 0.
     # (See libc/calls/posix_fadvise.c: it calls sys_fadvise(fd, off, len, adv)?? no:
@@ -147,17 +163,19 @@ HAND_MAP = {
     "sys_sched_yield": ("zsys_sched_yield();\n  return 0;", False),
 }
 
-# Variadic thunks: forward only the fixed arguments to the variadic zsys_*
-# function.  Callers that did pass the extra argument have it flow through
-# the pizlonated variadic machinery (zargs()/zcall()); callers that passed
-# none are also handled correctly.  (va_arg() can NOT be used here: it would
-# read past the end of the caller's vararg area when no argument was passed,
-# which traps under Fil-C's exact bounds.)
+# Variadic thunks.  These must forward the WHOLE argument area (named args +
+# varargs) to the zsys_* function: the zsys_* side inspects the argument
+# cursor on its own (zsys_fcntl reads the extra argument only for the cmds
+# that have one, zsys_ioctl likewise for the ioctls that take an argument).
+# Forwarding only the named parameters silently drops F_SETFL's flags /
+# ioctl's argument, which breaks every caller that passes one.  zargs()
+# snapshots the incoming arguments of the shim and zcall() re-calls the
+# zsys_* function with that exact snapshot.
 VARIADIC_MAP = {
-    "sys_ioctl": "return zsys_ioctl({a0}, {a1});",
-    "sys_ioctl_cp": "return zsys_ioctl({a0}, {a1});",
-    "__sys_fcntl": "return zsys_fcntl({a0}, {a1});",
-    "__sys_fcntl_cp": "return zsys_fcntl({a0}, {a1});",
+    "sys_ioctl": "return *(int *)zcall(zsys_ioctl, zargs());",
+    "sys_ioctl_cp": "return *(int *)zcall(zsys_ioctl, zargs());",
+    "__sys_fcntl": "return *(int *)zcall(zsys_fcntl, zargs());",
+    "__sys_fcntl_cp": "return *(int *)zcall(zsys_fcntl, zargs());",
     "sys_openat": "return zsys_openat({a0}, {a1}, {a2}, {a3});",
     "sys_openat_nc": "return zsys_openat({a0}, {a1}, {a2}, {a3});",
     "sys_semctl": "return zsys_semctl({a0}, {a1}, {a2});",
@@ -183,6 +201,15 @@ ZSYS_SYSCALL_SUPPORTED = {
     437,  # openat2
     203,  # sched_setaffinity
     204,  # sched_getaffinity
+}
+
+
+# Declarations that cosmo puts inside a .c file instead of a header, so the
+# ast-dump scan misses them.  Each entry: thunk name -> qualType string.
+SYNTHETIC_DECLS = {
+    # libc/calls/fchmodat.c declares sys_fchmodat2() itself (the chmodxat2
+    # syscall, used whenever fchmodat() gets a flags argument).
+    "sys_fchmodat2": "int32_t (int32_t, const char *, uint32_t, int32_t)",
 }
 
 
@@ -477,6 +504,8 @@ def main():
     stats = {"direct": 0, "hand": 0, "variadic": 0, "trap": 0, "skipped": 0}
     chunks = []
     for name, nr in thunks:
+        if name not in decls and name in SYNTHETIC_DECLS:
+            decls[name] = SYNTHETIC_DECLS[name]
         if name not in decls:
             # No declaration anywhere in cosmo's headers: cosmo builds with
             # -Wall -Werror so nothing can be calling this thunk implicitly.

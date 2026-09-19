@@ -40,7 +40,7 @@ int __fcntl_dupfd_cloexec(int, ...) libcesque;
 int __fcntl_lock(int, int, ...) libcesque;
 int __fcntl_misc(int, int, ...) libcesque;
 
-#if defined(__OPTIMIZE__) && !defined(__cplusplus) && \
+#if defined(__OPTIMIZE__) && !defined(__cplusplus) && !defined(__FILC__) && \
     (defined(__GNUC__) || defined(__llvm__))
 /* Undiamond fcntl() to avoid linking POSIX advisory locks */
 #define fcntl(fd, cmd, ...)                                \

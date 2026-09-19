@@ -23,7 +23,10 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 // projeny - project tarball+patch manager.
-// Uses only the C++ standard library and POSIX. No third-party dependencies.
+// Uses only the C++ standard library and POSIX for the utilities here.
+// (The projeny binary as a whole links libcurl and libblake3 for URL:
+// archive downloads — see download.h/download.cc; this header's helpers
+// remain third-party-free.)
 #pragma once
 
 #include <string>

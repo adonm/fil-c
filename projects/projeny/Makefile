@@ -25,11 +25,15 @@
 # Runtime helpers shelled out to (direct posix_spawnp, no shell): tar, cp.
 # Diff, patch application, and three-way merge are implemented internally
 # (git-compatible unified diffs); projeny never invokes git.
+# URL:-based .projeny files download their tarball with libcurl (linked in,
+# curl_easy API) and verify it with blake3 (linked in, blake3_hasher API);
+# the dev packages for both are hard build requirements.
 # Build requires only a C++17 compiler.
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra
 CPPFLAGS ?=
 LDFLAGS ?=
+LDLIBS ?= -lcurl -lblake3
 
 # Abort a target the moment one of its recipe commands fails, so a failing
 # compile never leaves a truncated .o (or binary) behind to be linked later.
@@ -42,7 +46,7 @@ LDFLAGS ?=
 # each other's build products. The default builds in-tree, as before.
 BUILD_DIR ?= .
 
-SRC := src/main.cc src/util.cc src/projeny_file.cc src/tree.cc src/ops.cc src/vcs.cc
+SRC := src/main.cc src/util.cc src/projeny_file.cc src/tree.cc src/ops.cc src/vcs.cc src/download.cc
 OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cc=.o))
 DEP := $(OBJ:.o=.d)
 BIN := $(BUILD_DIR)/projeny
@@ -51,7 +55,7 @@ all: $(BIN)
 
 $(BIN): $(OBJ)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
 
 # Automatic header dependencies; parallel-safe (-j).
 $(BUILD_DIR)/%.o: %.cc

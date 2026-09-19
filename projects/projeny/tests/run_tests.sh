@@ -20,6 +20,15 @@
 # rejection; the path-resolution sections cover the
 # physical (symlink-aware) resolver and '.'/'..' arguments on every
 # workdir-mutating command.
+# The URL sections cover URL:-based .projeny headers (the checked-in-tarball
+# alternative): `projeny hash`, fresh setup from file:// URLs (fully
+# hermetic — no network, no server), the no-network re-setup while the
+# snapshot matches a URL hash, corrupted-snapshot self-healing, multi-URL
+# fallback (unreachable and hash-mismatched first URLs) and the
+# all-URLs-fail hard errors, malformed-header rejection, uppercase hashes,
+# query-string basename derivation, and the rest of the command surface on
+# URL projects (commit, URL-edit merge, rebase refusal, tolerant status,
+# package/extract/get-attributes, freeze-mtime).
 #
 # Bash is required (process substitution in the status-copy comparisons
 # below); /bin/sh (dash) cannot run this suite.
@@ -9580,6 +9589,913 @@ run_in "$T200B" expect_out "commit warns about the re-keyed pin on the symlink" 
     "dropping the frozen mtime for 'RENAMED'" "$PROJENY" commit tiny.projeny
 run_in "$T200B" expect_fail "no pins left after the rename-to-symlink commit" \
     "$PROJENY" list-frozen-mtimes tiny.projeny
+
+# --------------------------- 201. the hash command (blake3)
+# `projeny hash <file>` prints the digest a URL: header wants: exactly 64
+# lowercase hex chars and nothing else, so the output pastes verbatim into
+# the header. Pinned to two hardcoded digests (the empty string and a fixed
+# two-line payload, both verified against the checked-in b3sum and an
+# independent libblake3 build) so the suite is not fully self-referential.
+T201="$ROOT/t201"
+mkdir -p "$T201"
+: > "$T201/empty"
+out="$("$PROJENY" hash "$T201/empty")"
+if [ "$out" = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262" ]; then
+    ok "hash of the empty file is the known blake3 digest"
+else
+    fail "hash of the empty file is the known blake3 digest" "out: $out"
+fi
+printf 'The quick brown fox jumps over the lazy dog\nfil-c projeny link test payload\n' \
+    > "$T201/payload"
+out="$("$PROJENY" hash "$T201/payload")"
+if [ "$out" = "e539b337a62dc7631c09a87fe35954fef4489097b161c620e1f9fe8e16b5d044" ]; then
+    ok "hash of a fixed payload is the known blake3 digest"
+else
+    fail "hash of a fixed payload is the known blake3 digest" "out: $out"
+fi
+if [ "${#out}" -eq 64 ]; then
+    ok "the digest is exactly 64 chars"
+else
+    fail "the digest is exactly 64 chars" "len=${#out} out: $out"
+fi
+if [ -z "$(printf '%s' "$out" | tr -d '0-9a-f')" ]; then
+    ok "the digest is lowercase hex and nothing else"
+else
+    fail "the digest is lowercase hex and nothing else" "out: $out"
+fi
+expect_fail "hash refuses a directory" "$PROJENY" hash "$T201"
+expect_fail "hash refuses a missing file" "$PROJENY" hash "$T201/no-such-file-XYZ"
+
+# ---------------------- 202. fresh setup from a file:// URL
+# A URL:-based .projeny replaces Archive: with "URL: <url> <blake3-hash>"
+# lines. The archive name is derived from the FIRST URL's basename and the
+# download is cached byte-exact as the dotted .snapshot next to the .projeny
+# file. file:// + an absolute path gives the correct triple slash, which
+# keeps this suite hermetic (curl reads it straight off the filesystem).
+T202="$ROOT/t202"
+make_tarballs "$T202" fake
+h202="$("$PROJENY" hash "$T202/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    URL-based project.\n\n' \
+    "$T202" "$h202" > "$T202/fake.projeny"
+out="$(cd "$T202" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "fresh setup from a file:// URL exits 0"
+else
+    fail "fresh setup from a file:// URL exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"set up 'fake' from 'fake-1.0.tar.gz'"*)
+    ok "setup names the URL-derived archive"
+    ;;
+*)
+    fail "setup names the URL-derived archive" "out: $out"
+    ;;
+esac
+case "$out" in
+*warning*)
+    fail "a good first download prints no warning" "out: $out"
+    ;;
+*)
+    ok "a good first download prints no warning"
+    ;;
+esac
+if [ -f "$T202/fake/src/a.c" ] && [ -f "$T202/fake/README" ]; then
+    ok "URL setup creates the workdir"
+else
+    fail "URL setup creates the workdir" "ls: $(ls -R "$T202" 2>&1)"
+fi
+expect_file_contains "URL setup workdir has v1 content" "$T202/fake/README" "hello v1"
+if [ -f "$T202/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the snapshot is named after the URL basename"
+else
+    fail "the snapshot is named after the URL basename" "ls: $(ls -A "$T202" 2>&1)"
+fi
+if cmp -s "$T202/.fake-1.0.tar.gz.snapshot" "$T202/fake-1.0.tar.gz"; then
+    ok "the snapshot is a byte-exact copy of the download"
+else
+    fail "the snapshot is a byte-exact copy of the download" "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the status embeds the URL line" \
+    "$T202/.fake.projeny.status" "URL: file://$T202/fake-1.0.tar.gz"
+
+# ------------- 203. re-setup hits no network while the snapshot matches
+# When the .snapshot exists and its blake3 matches ANY URL: hash, it IS the
+# archive: setup must not download at all. Move the tarball (and every other
+# copy) out of the way and re-setup — success with no warning proves the
+# snapshot alone satisfied the URL: headers.
+T203="$ROOT/t203"
+make_tarballs "$T203" fake
+h203="$("$PROJENY" hash "$T203/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    No network wanted.\n\n' \
+    "$T203" "$h203" > "$T203/fake.projeny"
+run_in "$T203" expect_ok "no-network fixture setup" "$PROJENY" setup fake.projeny
+mv "$T203/fake-1.0.tar.gz" "$ROOT/t203-kept-fake-1.0.tar.gz"
+out="$(cd "$T203" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "re-setup without the tarball exits 0"
+else
+    fail "re-setup without the tarball exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    fail "re-setup without the tarball downloads nothing" "out: $out"
+    ;;
+*)
+    ok "re-setup without the tarball downloads nothing"
+    ;;
+esac
+if cmp -s "$T203/.fake-1.0.tar.gz.snapshot" "$ROOT/t203-kept-fake-1.0.tar.gz"; then
+    ok "the snapshot is untouched by the no-network re-setup"
+else
+    fail "the snapshot is untouched by the no-network re-setup" "cmp: snapshot vs kept tarball"
+fi
+expect_file_contains "the no-network re-setup keeps v1 content" \
+    "$T203/fake/README" "hello v1"
+
+# ------------------------- 204. corrupted snapshot self-heals
+# A snapshot that matches no URL: hash (truncated, clobbered, stale) is not
+# trusted: setup warns with the hash guidance and re-downloads, restoring the
+# snapshot byte-exact.
+T204="$ROOT/t204"
+make_tarballs "$T204" fake
+h204="$("$PROJENY" hash "$T204/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Self healing.\n\n' \
+    "$T204" "$h204" > "$T204/fake.projeny"
+run_in "$T204" expect_ok "self-heal fixture setup" "$PROJENY" setup fake.projeny
+printf 'garbage that is no tarball\n' > "$T204/.fake-1.0.tar.gz.snapshot"
+out="$(cd "$T204" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup re-downloads over a corrupted snapshot"
+else
+    fail "setup re-downloads over a corrupted snapshot" "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    ok "the corrupted snapshot setup warns"
+    ;;
+*)
+    fail "the corrupted snapshot setup warns" "out: $out"
+    ;;
+esac
+case "$out" in
+*"does not match any URL: hash"*)
+    ok "the warning names the hash mismatch"
+    ;;
+*)
+    fail "the warning names the hash mismatch" "out: $out"
+    ;;
+esac
+if cmp -s "$T204/.fake-1.0.tar.gz.snapshot" "$T204/fake-1.0.tar.gz"; then
+    ok "the snapshot is restored byte-exact"
+else
+    fail "the snapshot is restored byte-exact" "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the self-healed checkout has v1 content" \
+    "$T204/fake/README" "hello v1"
+
+# ------------- 205. multiple URLs: the first unreachable, the second good
+# URL: lines are tried in listed order; a download failure warns and falls
+# through to the next. The snapshot is named after the FIRST URL's basename
+# even when a later URL supplied the bytes.
+T205="$ROOT/t205"
+make_tarballs "$T205" fake
+h205="$("$PROJENY" hash "$T205/fake-1.0.tar.gz")"
+printf 'URL: file://%s/nonexistent-XYZ.tar.gz %s\nURL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Two places.\n\n' \
+    "$T205" "$h205" "$T205" "$h205" > "$T205/fake.projeny"
+out="$(cd "$T205" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "fallback over an unreachable first URL exits 0"
+else
+    fail "fallback over an unreachable first URL exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"could not download 'file://$T205/nonexistent-XYZ.tar.gz'"*)
+    ok "the failed URL warns with its reason"
+    ;;
+*)
+    fail "the failed URL warns with its reason" "out: $out"
+    ;;
+esac
+case "$out" in
+*"set up 'fake' from 'nonexistent-XYZ.tar.gz'"*)
+    ok "the archive name still derives from the first URL"
+    ;;
+*)
+    fail "the archive name still derives from the first URL" "out: $out"
+    ;;
+esac
+if cmp -s "$T205/.nonexistent-XYZ.tar.gz.snapshot" "$T205/fake-1.0.tar.gz"; then
+    ok "the second URL's bytes land in the snapshot byte-exact"
+else
+    fail "the second URL's bytes land in the snapshot byte-exact" \
+         "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the fallback checkout has v1 content" \
+    "$T205/fake/README" "hello v1"
+
+# ------------------- 206. multiple URLs: every URL unreachable
+# Only when EVERY URL: line fails does setup hard-error; the error reports
+# how many lines were tried, and no snapshot is left behind.
+T206="$ROOT/t206"
+make_tarballs "$T206" fake
+h206="$("$PROJENY" hash "$T206/fake-1.0.tar.gz")"
+printf 'URL: file://%s/nope-1.tar.gz %s\nURL: file://%s/nope-2.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    All gone.\n\n' \
+    "$T206" "$h206" "$T206" "$h206" > "$T206/fake.projeny"
+out="$(cd "$T206" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "all-URLs-unreachable setup exits nonzero"
+else
+    fail "all-URLs-unreachable setup exits nonzero" "out: $out"
+fi
+n206="$(printf '%s\n' "$out" | grep -c "could not download")"
+if [ "$n206" -eq 2 ]; then
+    ok "each unreachable URL warns once"
+else
+    fail "each unreachable URL warns once" "count=$n206 out: $out"
+fi
+case "$out" in
+*"tried 2 URL line(s)"*)
+    ok "the error reports how many URLs were tried"
+    ;;
+*)
+    fail "the error reports how many URLs were tried" "out: $out"
+    ;;
+esac
+if [ -e "$T206/.nope-1.tar.gz.snapshot" ]; then
+    fail "a failed setup writes no snapshot" "$(ls -A "$T206")"
+else
+    ok "a failed setup writes no snapshot"
+fi
+
+# ------------- 207. multiple URLs: the first hash mismatch, the second good
+# A URL that downloads but hashes wrong warns and falls through: the first
+# line here points at the REAL 2.0 tarball but records the 1.0 hash, and the
+# second line is the valid 1.0 pair. The checkout must end up v1 (the
+# mismatched 2.0 bytes never win) and the snapshot — named after the first
+# URL — must hold the verified 1.0 bytes.
+T207="$ROOT/t207"
+make_tarballs "$T207" fake
+h207="$("$PROJENY" hash "$T207/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-2.0.tar.gz %s\nURL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Wrong hash first.\n\n' \
+    "$T207" "$h207" "$T207" "$h207" > "$T207/fake.projeny"
+out="$(cd "$T207" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "fallback over a hash-mismatched first URL exits 0"
+else
+    fail "fallback over a hash-mismatched first URL exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"but its blake3 hash is"*)
+    ok "the mismatched download warns with the blake3 hash"
+    ;;
+*)
+    fail "the mismatched download warns with the blake3 hash" "out: $out"
+    ;;
+esac
+case "$out" in
+*", expected $h207; trying the next URL"*)
+    ok "the mismatch warning names the expected hash"
+    ;;
+*)
+    fail "the mismatch warning names the expected hash" "out: $out"
+    ;;
+esac
+if cmp -s "$T207/.fake-2.0.tar.gz.snapshot" "$T207/fake-1.0.tar.gz"; then
+    ok "the verified 1.0 bytes land in the snapshot byte-exact"
+else
+    fail "the verified 1.0 bytes land in the snapshot byte-exact" \
+         "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the fallback checkout has v1 content, not the mismatched v2" \
+    "$T207/fake/README" "hello v1"
+
+# ---------------- 208. multiple URLs: every hash mismatching
+# Downloads that arrive but verify wrong are just as dead as unreachable
+# ones: every line warns, setup hard-errors, and nothing is cached.
+T208="$ROOT/t208"
+make_tarballs "$T208" fake
+bad208="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+printf 'URL: file://%s/fake-2.0.tar.gz %s\nURL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    All wrong.\n\n' \
+    "$T208" "$bad208" "$T208" "$bad208" > "$T208/fake.projeny"
+out="$(cd "$T208" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "all-URLs-mismatch setup exits nonzero"
+else
+    fail "all-URLs-mismatch setup exits nonzero" "out: $out"
+fi
+n208="$(printf '%s\n' "$out" | grep -c "but its blake3 hash is")"
+if [ "$n208" -eq 2 ]; then
+    ok "each hash-mismatched download warns once"
+else
+    fail "each hash-mismatched download warns once" "count=$n208 out: $out"
+fi
+case "$out" in
+*"could not obtain archive"*)
+    ok "the hard error summarizes the exhausted URLs"
+    ;;
+*)
+    fail "the hard error summarizes the exhausted URLs" "out: $out"
+    ;;
+esac
+if [ -e "$T208/.fake-2.0.tar.gz.snapshot" ]; then
+    fail "no snapshot is kept from a rejected download" "$(ls -A "$T208")"
+else
+    ok "no snapshot is kept from a rejected download"
+fi
+
+# ------------------- 209. malformed URL: headers are parse errors
+# Each URL: line must be exactly "URL: <url> <64-hex-chars>". These all die
+# at parse time, before any download is attempted (so the URLs need not even
+# resolve). The hash is case-insensitive, which the next section covers.
+T209="$ROOT/t209"
+mkdir -p "$T209"
+printf 'seed\n' > "$T209/seed"
+h209="$("$PROJENY" hash "$T209/seed")"
+nonhex209="zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+printf 'URL: file://%s/only-url.tar.gz\nOrigname: x-1.0\nName: x\n' "$T209" \
+    > "$T209/one-token.projeny"
+printf 'URL: file://%s/short-hash.tar.gz %s\nOrigname: x-1.0\nName: x\n' \
+    "$T209" "${h209%?}" > "$T209/short-hash.projeny"
+printf 'URL: file://%s/long-hash.tar.gz %s\nOrigname: x-1.0\nName: x\n' \
+    "$T209" "${h209}f" > "$T209/long-hash.projeny"
+printf 'URL: file://%s/nonhex-hash.tar.gz %s\nOrigname: x-1.0\nName: x\n' \
+    "$T209" "$nonhex209" > "$T209/nonhex-hash.projeny"
+printf 'URL: file://%s/split-hash.tar.gz %s %s\nOrigname: x-1.0\nName: x\n' \
+    "$T209" "$h209" "$h209" > "$T209/three-token.projeny"
+printf 'URL:\nOrigname: x-1.0\nName: x\n' > "$T209/empty-value.projeny"
+out="$("$PROJENY" setup "$T209/one-token.projeny" 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "a URL header with no hash fails"
+else
+    fail "a URL header with no hash fails" "out: $out"
+fi
+case "$out" in
+*"malformed URL: header"*)
+    ok "the malformed-header error explains the wanted shape"
+    ;;
+*)
+    fail "the malformed-header error explains the wanted shape" "out: $out"
+    ;;
+esac
+expect_fail "a 63-char hash fails" "$PROJENY" setup "$T209/short-hash.projeny"
+expect_fail "a 65-char hash fails" "$PROJENY" setup "$T209/long-hash.projeny"
+expect_fail "a non-hex hash fails" "$PROJENY" setup "$T209/nonhex-hash.projeny"
+expect_fail "a hash with a space in the middle fails" \
+    "$PROJENY" setup "$T209/three-token.projeny"
+expect_fail "an empty URL: value fails" "$PROJENY" setup "$T209/empty-value.projeny"
+
+# --------- 210. Archive: and URL: are mutually exclusive; URL projects
+# still need Origname: and Name:
+T210="$ROOT/t210"
+mkdir -p "$T210"
+printf 'seed\n' > "$T210/seed"
+h210="$("$PROJENY" hash "$T210/seed")"
+printf 'Archive: seed.tar.gz\nURL: file://%s/seed.tar.gz %s\nOrigname: x-1.0\nName: x\n' \
+    "$T210" "$h210" > "$T210/both.projeny"
+out="$("$PROJENY" setup "$T210/both.projeny" 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "Archive: and URL: together fail"
+else
+    fail "Archive: and URL: together fail" "out: $out"
+fi
+case "$out" in
+*"mutually exclusive"*)
+    ok "the mutual-exclusion error says so"
+    ;;
+*)
+    fail "the mutual-exclusion error says so" "out: $out"
+    ;;
+esac
+printf 'URL: file://%s/seed.tar.gz %s\nName: x\n' "$T210" "$h210" \
+    > "$T210/no-origname.projeny"
+expect_fail "a URL project without Origname: fails" \
+    "$PROJENY" setup "$T210/no-origname.projeny"
+printf 'URL: file://%s/seed.tar.gz %s\nOrigname: x-1.0\n' "$T210" "$h210" \
+    > "$T210/no-name.projeny"
+expect_fail "a URL project without Name: fails" \
+    "$PROJENY" setup "$T210/no-name.projeny"
+out="$("$PROJENY" setup "$T210/no-origname.projeny" 2>&1)"
+case "$out" in
+*"missing a required header"*)
+    ok "the missing-header error covers the URL: form"
+    ;;
+*)
+    fail "the missing-header error covers the URL: form" "out: $out"
+    ;;
+esac
+
+# ------------------------------- 211. uppercase hash accepted
+# The 64 hex chars of a URL: header are case-insensitive (normalized to
+# lowercase on parse), so a header pasted from an uppercase digest still
+# verifies the snapshot.
+T211="$ROOT/t211"
+make_tarballs "$T211" fake
+h211="$("$PROJENY" hash "$T211/fake-1.0.tar.gz")"
+up211="$(printf '%s' "$h211" | tr 'a-f' 'A-F')"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Uppercase digest.\n\n' \
+    "$T211" "$up211" > "$T211/fake.projeny"
+run_in "$T211" expect_ok "setup with an uppercase hash exits 0" \
+    "$PROJENY" setup fake.projeny
+if cmp -s "$T211/.fake-1.0.tar.gz.snapshot" "$T211/fake-1.0.tar.gz"; then
+    ok "the uppercase hash verified the download byte-exact"
+else
+    fail "the uppercase hash verified the download byte-exact" "cmp: snapshot vs tarball"
+fi
+mv "$T211/fake-1.0.tar.gz" "$ROOT/t211-kept-fake-1.0.tar.gz"
+out="$(cd "$T211" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the uppercase hash also verifies the cached snapshot"
+else
+    fail "the uppercase hash also verifies the cached snapshot" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    fail "the uppercase-hash snapshot needs no download" "out: $out"
+    ;;
+*)
+    ok "the uppercase-hash snapshot needs no download"
+    ;;
+esac
+
+# ---------------- 212. a query-string URL derives the bare archive name
+# The archive name (and snapshot name) is the URL's basename with any query
+# or fragment stripped: ".../fake-1.0.tar.gz?x=1" caches as
+# .fake-1.0.tar.gz.snapshot, and the status keeps the URL verbatim.
+T212="$ROOT/t212"
+make_tarballs "$T212" fake
+h212="$("$PROJENY" hash "$T212/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz?x=1 %s\nOrigname: fake-1.0\nName: fake\n\n    Query string.\n\n' \
+    "$T212" "$h212" > "$T212/fake.projeny"
+run_in "$T212" expect_ok "query-string URL setup exits 0" \
+    "$PROJENY" setup fake.projeny
+if [ -f "$T212/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the snapshot name drops the query string"
+else
+    fail "the snapshot name drops the query string" "ls: $(ls -A "$T212" 2>&1)"
+fi
+if [ -e "$T212/.fake-1.0.tar.gz?x=1.snapshot" ]; then
+    fail "the query string never reaches the snapshot name" \
+         "$(ls -A "$T212")"
+else
+    ok "the query string never reaches the snapshot name"
+fi
+if cmp -s "$T212/.fake-1.0.tar.gz.snapshot" "$T212/fake-1.0.tar.gz"; then
+    ok "the query-string download is byte-exact"
+else
+    fail "the query-string download is byte-exact" "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the status keeps the URL verbatim" \
+    "$T212/.fake.projeny.status" "URL: file://$T212/fake-1.0.tar.gz?x=1"
+
+# -------------------------- 213. commit on a URL project roundtrips
+# Everything above the download layer is project-flavor-agnostic: an edit,
+# commit, empty diff, clean status, and a patch folded into the .projeny
+# file all work the same, and the following re-setup still needs no network
+# (the snapshot still matches the URL: hash).
+T213="$ROOT/t213"
+make_tarballs "$T213" fake
+h213="$("$PROJENY" hash "$T213/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Committing on a URL.\n\n' \
+    "$T213" "$h213" > "$T213/fake.projeny"
+run_in "$T213" expect_ok "URL commit fixture setup" "$PROJENY" setup fake.projeny
+python3 - "$T213/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 42;")
+open(p, "w").write(s)
+EOF
+run_in "$T213" expect_ok "commit on a URL project exits 0" \
+    "$PROJENY" commit fake.projeny
+expect_file_contains "the commit folds the diff into the URL projeny" \
+    "$T213/fake.projeny" "beta = 42"
+expect_file_contains "the committed diff is a git patch" \
+    "$T213/fake.projeny" "diff --git"
+run_in "$T213" expect_no_out "diff is empty after the URL-project commit" \
+    "$PROJENY" diff fake.projeny
+out="$(cd "$T213" && "$PROJENY" status fake.projeny 2>&1)"
+case "$out" in
+*"Modified:"*)
+    fail "status shows no modification after the commit" "out: $out"
+    ;;
+*)
+    ok "status shows no modification after the commit"
+    ;;
+esac
+mv "$T213/fake-1.0.tar.gz" "$ROOT/t213-kept-fake-1.0.tar.gz"
+out="$(cd "$T213" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "re-setup after the commit exits 0 without the tarball"
+else
+    fail "re-setup after the commit exits 0 without the tarball" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    fail "re-setup after the commit downloads nothing" "out: $out"
+    ;;
+*)
+    ok "re-setup after the commit downloads nothing"
+    ;;
+esac
+expect_file_contains "the re-setup keeps the committed edit" \
+    "$T213/fake/src/a.c" "beta = 42"
+
+# ------------- 214. editing the URL: merges local work onto the new archive
+# The URL-edit rebase flow: point the URL: header at a new tarball (with its
+# hash and the new Origname) and re-run setup. The committed patch — kept to
+# the delta region, which v2 leaves alone — applies to the new base, and the
+# UNCOMMITTED beta edit rides through as a genuine 3-way merge.
+T214="$ROOT/t214"
+make_tarballs "$T214" fake
+h214a="$("$PROJENY" hash "$T214/fake-1.0.tar.gz")"
+h214b="$("$PROJENY" hash "$T214/fake-2.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Editing the URL.\n\n' \
+    "$T214" "$h214a" > "$T214/fake.projeny"
+run_in "$T214" expect_ok "url-edit fixture setup" "$PROJENY" setup fake.projeny
+python3 - "$T214/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+run_in "$T214" expect_ok "commit the delta edit" "$PROJENY" commit fake.projeny
+python3 - "$T214/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int beta = 1;", "int beta = 300;")
+open(p, "w").write(s)
+EOF
+sed -i "s#fake-1.0.tar.gz $h214a#fake-2.0.tar.gz $h214b#; s#Origname: fake-1.0#Origname: fake-2.0#" \
+    "$T214/fake.projeny"
+expect_file_not_contains "the URL edit points the header at the new archive" \
+    "$T214/fake.projeny" "fake-1.0.tar.gz"
+out="$(cd "$T214" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "setup onto the edited URL exits 0"
+else
+    fail "setup onto the edited URL exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"merged local changes onto"*)
+    ok "the URL-edit setup merges the local work"
+    ;;
+*)
+    fail "the URL-edit setup merges the local work" "out: $out"
+    ;;
+esac
+expect_file_contains "the merge took the v2 alpha" "$T214/fake/src/a.c" "alpha = 2"
+expect_file_contains "the merge kept the uncommitted local edit" \
+    "$T214/fake/src/a.c" "beta = 300"
+expect_file_contains "the merge kept the committed edit" \
+    "$T214/fake/src/a.c" "delta = 100"
+expect_file_contains "the workdir moved to the v2 base" "$T214/fake/README" "hello v2"
+if cmp -s "$T214/.fake-2.0.tar.gz.snapshot" "$T214/fake-2.0.tar.gz"; then
+    ok "the snapshot now caches the new archive byte-exact"
+else
+    fail "the snapshot now caches the new archive byte-exact" \
+         "cmp: snapshot vs tarball"
+fi
+expect_file_contains "the status records the new archive" \
+    "$T214/.fake.projeny.status" "fake-2.0.tar.gz"
+
+# ----------------------- 215. rebase refuses on a URL project
+# A URL-based project has no checked-in tarball to rebase onto; the refusal
+# explains the URL-edit flow instead of half-doing something.
+T215="$ROOT/t215"
+make_tarballs "$T215" fake
+h215="$("$PROJENY" hash "$T215/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    No rebasing.\n\n' \
+    "$T215" "$h215" > "$T215/fake.projeny"
+run_in "$T215" expect_ok "rebase-refusal fixture setup" "$PROJENY" setup fake.projeny
+out="$(cd "$T215" && "$PROJENY" rebase fake.projeny fake-2.0.tar.gz 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "rebase refuses on a URL project"
+else
+    fail "rebase refuses on a URL project" "out: $out"
+fi
+case "$out" in
+*"URL-based project"*)
+    ok "the refusal explains that URL projects have no Archive:"
+    ;;
+*)
+    fail "the refusal explains that URL projects have no Archive:" \
+         "out: $out"
+    ;;
+esac
+case "$out" in
+*"projeny hash <file>"*)
+    ok "the refusal points at the URL-edit flow"
+    ;;
+*)
+    fail "the refusal points at the URL-edit flow" "out: $out"
+    ;;
+esac
+expect_file_contains "rebase left the URL: header alone" \
+    "$T215/fake.projeny" "fake-1.0.tar.gz"
+
+# ---------------- 216. status is tolerant when the snapshot is missing
+# status is informational and must never die on missing state: with the
+# snapshot gone and the URL unreachable, it warns about the archive but
+# still exits 0 and reports the recorded state.
+T216="$ROOT/t216"
+make_tarballs "$T216" fake
+h216="$("$PROJENY" hash "$T216/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Tolerant status.\n\n' \
+    "$T216" "$h216" > "$T216/fake.projeny"
+run_in "$T216" expect_ok "tolerant-status fixture setup" "$PROJENY" setup fake.projeny
+rm -f "$T216/.fake-1.0.tar.gz.snapshot" "$T216/fake-1.0.tar.gz"
+run_in "$T216" expect_ok "status exits 0 with the snapshot gone" \
+    "$PROJENY" status fake.projeny
+out="$(cd "$T216" && "$PROJENY" status fake.projeny 2>&1)"
+case "$out" in
+*"could not obtain archive"*)
+    ok "status warns it could not get the archive"
+    ;;
+*)
+    fail "status warns it could not get the archive" "out: $out"
+    ;;
+esac
+case "$out" in
+*"continuing without the live diff"*)
+    ok "the warning says status continued without the live diff"
+    ;;
+*)
+    fail "the warning says status continued without the live diff" \
+         "out: $out"
+    ;;
+esac
+case "$out" in
+*"Status: setup"*)
+    ok "status still reports the recorded state"
+    ;;
+*)
+    fail "status still reports the recorded state" "out: $out"
+    ;;
+esac
+
+# --------------- 216b. status is tolerant when the snapshot is corrupt
+# The spec gives status no exception: an EXISTING .snapshot must be
+# hash-verified against the URL: lines too (no network while it matches any
+# of them). A snapshot that matches none — here, garbage clobbering the
+# cache — is not trusted: status warns with the hash guidance, re-downloads
+# (the source tarball is still there), still exits 0, and leaves the
+# snapshot byte-exact again, so the live diff runs instead of being skipped.
+T216B="$ROOT/t216b"
+make_tarballs "$T216B" fake
+h216b="$("$PROJENY" hash "$T216B/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Corrupt snapshot status.\n\n' \
+    "$T216B" "$h216b" > "$T216B/fake.projeny"
+run_in "$T216B" expect_ok "corrupt-snapshot fixture setup" "$PROJENY" setup fake.projeny
+printf 'garbage that is no tarball\n' > "$T216B/.fake-1.0.tar.gz.snapshot"
+out="$(cd "$T216B" && "$PROJENY" status fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "status exits 0 with a corrupted snapshot"
+else
+    fail "status exits 0 with a corrupted snapshot" "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    ok "the corrupted-snapshot status warns"
+    ;;
+*)
+    fail "the corrupted-snapshot status warns" "out: $out"
+    ;;
+esac
+case "$out" in
+*"does not match any URL: hash"*)
+    ok "the warning names the hash mismatch"
+    ;;
+*)
+    fail "the warning names the hash mismatch" "out: $out"
+    ;;
+esac
+case "$out" in
+*"could not obtain archive"*)
+    fail "status heals the corrupted snapshot instead of skipping the diff" \
+         "out: $out"
+    ;;
+*)
+    ok "status heals the corrupted snapshot instead of skipping the diff"
+    ;;
+esac
+if cmp -s "$T216B/.fake-1.0.tar.gz.snapshot" "$T216B/fake-1.0.tar.gz"; then
+    ok "status re-downloaded and restored the snapshot byte-exact"
+else
+    fail "status re-downloaded and restored the snapshot byte-exact" \
+         "cmp: snapshot vs tarball"
+fi
+out="$(cd "$T216B" && "$PROJENY" status fake.projeny 2>&1)"
+case "$out" in
+*"Modified:"*|*warning*)
+    fail "a follow-up status is clean and needs no re-download" "out: $out"
+    ;;
+*)
+    ok "a follow-up status is clean and needs no re-download"
+    ;;
+esac
+
+# ------------- 217. package/extract/get-attributes on a URL project
+# The payload commands materialize the archive through the same verified
+# snapshot, so they work unchanged on URL-based projects.
+T217="$ROOT/t217"
+make_tarballs "$T217" fake
+h217="$("$PROJENY" hash "$T217/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Packaging a URL.\n\n' \
+    "$T217" "$h217" > "$T217/fake.projeny"
+run_in "$T217" expect_ok "package fixture setup" "$PROJENY" setup fake.projeny
+run_in "$T217" expect_no_out "get-attributes is silent on a plain URL project" \
+    "$PROJENY" get-attributes fake.projeny
+run_in "$T217" expect_ok "package a URL project" \
+    "$PROJENY" package fake.projeny url-out.tar.gz
+(cd "$T217" && tar -tzf url-out.tar.gz | sort > url-members.txt)
+if grep -qx "url-out/README" "$T217/url-members.txt"; then
+    ok "the package payload carries the README"
+else
+    fail "the package payload carries the README" "$(cat "$T217/url-members.txt")"
+fi
+run_in "$T217" expect_ok "extract a URL project" \
+    "$PROJENY" extract fake.projeny extracted
+expect_file_contains "the extracted README is correct" \
+    "$T217/extracted/README" "hello v1"
+
+# -------------------------- 218. freeze-mtime on a URL project
+# Freezing pins the archive member's mtime in the .projeny patch; the pin
+# survives, lists, and re-stamps without any download.
+T218="$ROOT/t218"
+make_tarballs "$T218" fake
+h218="$("$PROJENY" hash "$T218/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Freezing a URL.\n\n' \
+    "$T218" "$h218" > "$T218/fake.projeny"
+run_in "$T218" expect_ok "freeze fixture setup" "$PROJENY" setup fake.projeny
+run_in "$T218" expect_ok "freeze-mtime on a URL project" \
+    "$PROJENY" freeze-mtime fake.projeny fake/README
+ts218="$(stat -c %Y "$T218/fake/README")"
+out="$("$PROJENY" list-frozen-mtimes "$T218/fake.projeny")"
+case "$out" in
+*"README $ts218"*)
+    ok "list-frozen-mtimes shows the URL-project pin"
+    ;;
+*)
+    fail "list-frozen-mtimes shows the URL-project pin" "out: $out"
+    ;;
+esac
+expect_file_contains "the pin is recorded in the URL projeny" \
+    "$T218/fake.projeny" "frozen-mtime $ts218"
+# Drag the file's mtime somewhere wrong, drop the tarball, and re-setup: the
+# stamp pass must restore the frozen mtime with no download.
+touch -d @1700000400 "$T218/fake/README"
+mv "$T218/fake-1.0.tar.gz" "$ROOT/t218-kept-fake-1.0.tar.gz"
+out="$(cd "$T218" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "re-setup with a frozen file and no tarball exits 0"
+else
+    fail "re-setup with a frozen file and no tarball exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*warning*)
+    fail "re-stamping the frozen file downloads nothing" "out: $out"
+    ;;
+*)
+    ok "re-stamping the frozen file downloads nothing"
+    ;;
+esac
+if [ "$(stat -c %Y "$T218/fake/README")" = "$ts218" ]; then
+    ok "the re-setup re-stamped the frozen mtime"
+else
+    fail "the re-setup re-stamped the frozen mtime" \
+         "got $(stat -c %Y "$T218/fake/README"), want $ts218"
+fi
+
+# --------- 219. conflicted URL setup with a shared archive basename
+# A git merge that conflicts on the URL: line leaves both sides pointing at
+# tarballs with the SAME basename (only the URL/hash differ), so both sides
+# share one .snapshot. The local side must be reconstructed from that
+# snapshot BEFORE the upstream materialization re-downloads over it: with
+# the local tarball deleted, the snapshot is the only record of the local
+# side, so a local-last ordering would clobber it and die with "could not
+# obtain archive ... needed to reconstruct the local side".
+T219="$ROOT/t219"
+make_tarballs "$T219" fake
+# theirs tarball: same fake-1.0.tar.gz basename and top dir as ours, but v2
+# bytes, placed in a v2/ subdir so the two files can coexist. Derived from
+# the helper's 1.0 tarball by carrying over exactly the member edits that
+# make_tarballs' 2.0 flavor carries.
+mkdir -p "$T219/v2"
+rm -rf "$T219/v2/fake-1.0"
+tar -xzf "$T219/fake-1.0.tar.gz" -C "$T219/v2"
+python3 - "$T219/v2/fake-1.0/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int alpha = 1;", "int alpha = 2;")
+open(p, "w").write(s)
+EOF
+printf 'line one v2\n' > "$T219/v2/fake-1.0/src/b.c"
+printf 'hello v2\n' > "$T219/v2/fake-1.0/README"
+(cd "$T219/v2" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+h219a="$("$PROJENY" hash "$T219/fake-1.0.tar.gz")"
+h219b="$("$PROJENY" hash "$T219/v2/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Conflicted URL.\n\n' \
+    "$T219" "$h219a" > "$T219/fake.projeny"
+run_in "$T219" expect_ok "conflicted-URL fixture setup" "$PROJENY" setup fake.projeny
+python3 - "$T219/fake/src/a.c" <<'EOF'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace("int delta = 1;", "int delta = 100;")
+open(p, "w").write(s)
+EOF
+run_in "$T219" expect_ok "commit the local edit" "$PROJENY" commit fake.projeny
+# ours side: the status-embedded v1 URL copy (the committed .projeny file);
+# theirs side: the v2 URL line with the same archive basename. Git-style
+# conflict markers, ours (local) first, as a plain git merge would leave.
+cp "$T219/fake.projeny" "$ROOT/t219-ours.projeny"
+printf 'URL: file://%s/v2/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    Conflicted URL upstream.\n\n' \
+    "$T219" "$h219b" > "$ROOT/t219-theirs.projeny"
+make_conflicted "$ROOT/t219-ours.projeny" "$ROOT/t219-theirs.projeny" "$T219/fake.projeny"
+# Delete the local tarball: the shared snapshot is now the only record of
+# the local side.
+rm "$T219/fake-1.0.tar.gz"
+out="$(cd "$T219" && "$PROJENY" setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "conflicted URL setup with a shared snapshot exits 0"
+else
+    fail "conflicted URL setup with a shared snapshot exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"could not obtain archive"*)
+    fail "the local side never needs the deleted tarball" "out: $out"
+    ;;
+*)
+    ok "the local side never needs the deleted tarball"
+    ;;
+esac
+# Exactly one mismatch warning: ours matched the snapshot (no download), and
+# only theirs was re-downloaded into the shared snapshot.
+n219="$(printf '%s\n' "$out" | grep -c "does not match any URL: hash")"
+if [ "$n219" -eq 1 ]; then
+    ok "only the upstream side was re-downloaded"
+else
+    fail "only the upstream side was re-downloaded" \
+         "count=$n219 out: $out"
+fi
+case "$out" in
+*"merged local changes onto"*)
+    ok "the conflicted URL merge prints the merged header"
+    ;;
+*)
+    fail "the conflicted URL merge prints the merged header" "out: $out"
+    ;;
+esac
+if cmp -s "$T219/fake.projeny" "$ROOT/t219-theirs.projeny"; then
+    ok "conflicted URL setup force-takes upstream"
+else
+    fail "conflicted URL setup force-takes upstream" "$(cat "$T219/fake.projeny")"
+fi
+expect_file_contains "the merge took the upstream alpha" \
+    "$T219/fake/src/a.c" "int alpha = 2;"
+expect_file_contains "the merge kept the committed local edit" \
+    "$T219/fake/src/a.c" "int delta = 100;"
+expect_file_contains "the workdir moved to the upstream base" \
+    "$T219/fake/README" "hello v2"
+expect_file_contains "the workdir took the upstream b.c" \
+    "$T219/fake/src/b.c" "line one v2"
+expect_file_not_contains "the URL merge records no conflicts" \
+    "$T219/.fake.projeny.status" "Conflict:"
+expect_file_contains "the status embeds the upstream URL" \
+    "$T219/.fake.projeny.status" "file://$T219/v2/fake-1.0.tar.gz"
+# Documented end state: the shared snapshot holds the upstream bytes, so it
+# must verify against theirs' URL hash.
+out219="$("$PROJENY" hash "$T219/.fake-1.0.tar.gz.snapshot")"
+if [ "$out219" = "$h219b" ]; then
+    ok "the shared snapshot now verifies against the upstream hash"
+else
+    fail "the shared snapshot now verifies against the upstream hash" \
+         "snap=$out219 want=$h219b"
+fi
+if cmp -s "$T219/.fake-1.0.tar.gz.snapshot" "$T219/v2/fake-1.0.tar.gz"; then
+    ok "the shared snapshot holds byte-exact upstream bytes"
+else
+    fail "the shared snapshot holds byte-exact upstream bytes" \
+         "cmp: snapshot vs v2 tarball"
+fi
 
 # ------------------------------------------------------------- summary
 echo "---"

@@ -26,6 +26,7 @@
 
 #include "util.h"
 
+#include <cctype>
 #include <cstring>
 
 const char* kStatusDelim = "--- projeny content ---";
@@ -288,14 +289,65 @@ ProjenyConflictSplit split_projeny_conflicts(const std::string& data,
     return out;
 }
 
+std::string archive_name_from_url(const std::string& url)
+{
+    // Strip the scheme (everything up to and including "://"), if present.
+    std::string rest = url;
+    size_t scheme = rest.find("://");
+    if (scheme != std::string::npos)
+        rest = rest.substr(scheme + 3);
+    // Strip any ?query or #fragment.
+    size_t cut = rest.find_first_of("?#");
+    if (cut != std::string::npos)
+        rest = rest.substr(0, cut);
+    // The archive name is the last path component.
+    size_t slash = rest.find_last_of('/');
+    std::string name =
+        slash == std::string::npos ? rest : rest.substr(slash + 1);
+    // The name becomes a filename (the snapshot's), so it must be usable as
+    // one: never empty, ".", or "..".
+    if (name.empty() || name == "." || name == "..")
+        return "";
+    return name;
+}
+
+namespace {
+
+// A URL: header value must be exactly "<url> <blake3-hash>" (two
+// whitespace-separated tokens; the hash is 64 hex chars, stored lowercase).
+// Returns false when `value` is malformed (the caller words the error).
+bool parse_url_value(const std::string& value, ProjenyUrl* out)
+{
+    std::string v = trim(value);
+    size_t sp = v.find_first_of(" \t");
+    if (sp == std::string::npos)
+        return false;
+    std::string url = v.substr(0, sp);
+    std::string hash = trim(v.substr(sp + 1));
+    if (url.empty() || hash.size() != 64)
+        return false;
+    for (char c : hash) {
+        if (!std::isxdigit(static_cast<unsigned char>(c)))
+            return false;
+    }
+    for (char& c : hash)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    out->url = url;
+    out->hash = hash;
+    return true;
+}
+
+}
+
 std::string validate_projeny_bytes(const std::string& data)
 {
     if (contains_nul(data))
         return "contains NUL bytes (binary merge garbage?)";
     if (projeny_has_conflict_markers(data))
         return "contains git conflict markers";
-    // Header sanity without dying: required Archive:/Origname:/Name:.
-    bool archive = false, origname = false, name = false;
+    // Header sanity without dying: required Origname:/Name: plus exactly one
+    // of Archive: (checked-in tarball) or at least one URL: line (download).
+    bool archive = false, origname = false, name = false, url = false;
     for (const std::string& line : split_lines(data)) {
         if (line.empty())
             break;
@@ -320,9 +372,12 @@ std::string validate_projeny_bytes(const std::string& data)
             origname = true;
         else if (key == "Name")
             name = true;
+        else if (key == "URL")
+            url = true;
     }
-    if (!archive || !origname || !name)
-        return "is missing a required header (need Archive:, Origname:, Name:)";
+    if (!origname || !name || (!archive && !url))
+        return "is missing a required header (need Archive: or at least one "
+               "URL: line, plus Origname: and Name:)";
     return "";
 }
 
@@ -439,9 +494,45 @@ ProjenyFile ProjenyFile::parse_bytes(const std::string& data,
     pf.archive = pf.header_value("Archive");
     pf.origname = pf.header_value("Origname");
     pf.name = pf.header_value("Name");
+
+    // Collect every URL: header from the head (kept verbatim there; the
+    // parsed copies drive URL-based setups). Each must be exactly
+    // "URL: <url> <blake3-hash>".
+    for (const std::string& line : split_lines(pf.head)) {
+        if (line.size() < 4 || line.compare(0, 4, "URL:") != 0)
+            continue; // not a URL: header line
+        ProjenyUrl u;
+        if (!parse_url_value(line.substr(4), &u)) {
+            die("file " + what_for_errors +
+                " has a malformed URL: header (want 'URL: <url> "
+                "<blake3-hash>'): '" + line + "'");
+        }
+        pf.urls.push_back(u);
+    }
+    if (!pf.urls.empty() && !pf.archive.empty()) {
+        die("file " + what_for_errors +
+            " has both Archive: and URL: headers; they are mutually "
+            "exclusive (either check the tarball into git next to the "
+            ".projeny file and name it with Archive:, or fetch it with one "
+            "or more URL: lines)");
+    }
+    if (!pf.urls.empty()) {
+        // URL-based: the archive name comes from the first URL's basename,
+        // and names the snapshot the download is cached as. Keep the
+        // no-'/' invariant the classic Archive: form enforces (a derived
+        // basename can never contain one).
+        pf.archive = archive_name_from_url(pf.urls[0].url);
+        if (pf.archive.empty()) {
+            die("file " + what_for_errors + ": cannot derive the archive "
+                "name from the URL '" + pf.urls[0].url +
+                "' (the URL must name the archive file itself, so the "
+                ".<archive>.snapshot download can be named after it)");
+        }
+    }
     if (pf.archive.empty() || pf.origname.empty() || pf.name.empty()) {
         die("file " + what_for_errors +
-            " is missing a required header (need Archive:, Origname:, Name:)");
+            " is missing a required header (need Archive: or at least one "
+            "URL: line, plus Origname: and Name:)");
     }
     if (pf.archive.find('/') != std::string::npos)
         die("file " + what_for_errors + ": Archive: must be a plain filename");

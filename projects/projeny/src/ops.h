@@ -61,5 +61,8 @@ int cmd_unfreeze_mtime(const std::string& projeny_arg,
 int cmd_list_frozen_mtimes(const std::string& projeny_arg);
 int cmd_get_attributes(const std::string& projeny_arg,
                        const std::vector<std::string>& paths);
+// Print the blake3 hash (64 lowercase hex chars) of a regular file, for
+// pasting into a .projeny file's "URL: <url> <hash>" header.
+int cmd_hash(const std::string& path);
 int cmd_help(const std::string& arg0);
 int cmd_help_topic(const std::string& arg0, const std::string& topic);

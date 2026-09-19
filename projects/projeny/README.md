@@ -33,7 +33,9 @@ argument that exists on disk is resolved physically (symlinks and all),
 so `sym/..` through a symlinked intermediate names the directory the
 symlink really leads to. The
 tarball is
-looked up next to the `.projeny` file, and the work tree is created next
+looked up next to the `.projeny` file — or, for a URL:-based project,
+downloaded and verified (see the `.projeny` format section below) — and
+the work tree is created next
 to it as well (named by the `Name:` header).
 
 ```
@@ -54,6 +56,7 @@ projeny freeze-mtime <f.projeny|dir> <file>...
 projeny unfreeze-mtime <f.projeny|dir> <file>...
 projeny list-frozen-mtimes <f.projeny|dir>
 projeny get-attributes <f.projeny|dir> [<path or paths or directories>]
+projeny hash <file>                         print the blake3 hash of a file
 projeny help [command]                      show help (per-command with a name)
 ```
 
@@ -169,6 +172,10 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   which hard-errors when nothing is frozen). The mode line reports the
   current workdir mode, and a disappeared tracked file only ever reports
   a frozen mtime.
+- `hash <file>`: prints the blake3 hash of a regular file as 64 lowercase
+  hex chars and nothing else — the value to paste into a `URL: <url>
+  <blake3-hash>` header of a [URL:-based](#projeny-format) `.projeny`
+  file. Refuses anything that is not a regular readable file.
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
 
@@ -333,7 +340,28 @@ diff --git a/lua/makefile b/lua/makefile
 ...
 ```
 
-Headers (`Archive:`, `Origname:`, `Name:` — all required; extra headers are
+Instead of an `Archive:` header, the tarball may be fetched from the
+network with one or more `URL:` headers (no tarball checked into git):
+
+```
+URL: http://gondor.apana.org.au/~herbert/dash/files/dash-0.5.13.5.tar.gz 7871678c86c4fda68266f79b4914d38792a8c4604e221cc3fc8d901da21560a1
+Origname: dash-0.5.13.5
+Name: dash
+```
+
+Each `URL:` line is exactly `URL: <url> <blake3-hash>` — the tarball's URL
+and the blake3 hash of its bytes (compute the hash with
+`projeny hash <file>`). The URL lines are mirrors and are tried in the
+order listed: a download that fails or does not match its hash prints a
+warning and the next line is tried, and it is a hard error only when no
+URL yields a download matching its recorded hash. The archive name (and
+the snapshot's name) is derived from the URL's basename (after stripping
+any scheme, `?query`, and `#fragment`), so the URL must name the tarball
+file itself. `Archive:` and `URL:` headers are mutually exclusive; see
+"Archive snapshots" below for how the download is cached and verified.
+
+Headers (`Origname:`, `Name:` — required, plus exactly one of `Archive:`
+or at least one `URL:` line; extra headers are
 preserved verbatim) end at the first blank line. Everything up to the first
 `diff --git` line is free text. Every non-empty free-text line starts with
 a space or tab (projeny prepends a single space on write when one is
@@ -401,6 +429,23 @@ recreates them); when both the archive and its snapshot are missing, setup
 fails with recovery guidance. Snapshots left behind by a tarball that no
 longer exists are not auto-cleaned.
 
+For a URL:-based project the snapshot IS the archive's local copy: the
+tarball is not checked into git anywhere, so `setup` downloads it (linked-in
+libcurl, no `curl` subprocess) and stores it as `.<archive>.snapshot` next
+to the `.projeny` file, where `<archive>` is derived from the URL's
+basename. Before any network access, the existing snapshot is verified
+against the URL: hashes: while it matches at least one of them, it IS the
+archive and nothing is downloaded; only a missing snapshot — or one that no
+longer matches any hash (a tampered or truncated file) — triggers a
+re-download, and a mismatching snapshot is warned about and replaced. Each
+`URL:` line is tried in order (a download that fails or does not match its
+hash warns and falls through to the next mirror), and the first verified
+download replaces the snapshot atomically. Moving the project to a new
+tarball is done by editing the URL: header(s) to the new URL and hash
+(compute it with `projeny hash <file>`) and running `setup`, which
+re-downloads and merges local changes onto the new base; `rebase` refuses
+URL:-based projects.
+
 ## File naming and migration
 
 Two bookkeeping files live next to the tracked files, and both are hidden
@@ -410,7 +455,8 @@ checkins:
 - `.<f>.projeny.status` — the status file for `f.projeny` (e.g.
   `.lua.projeny.status`), and
 - `.<Archive>.snapshot` — the snapshot copy of an archive (e.g.
-  `.lua-5.4.7.tar.bz2.snapshot`).
+  `.lua-5.4.7.tar.bz2.snapshot`). For a URL:-based project the same name
+  (derived from the URL's basename) holds the verified download.
 
 Older projenies wrote the undotted forms (`f.projeny.status` and
 `<Archive>.snapshot`). Both forms keep working: on first use — by any
@@ -500,6 +546,13 @@ and `extract` (so builds like libffi's skip up-to-date steps, e.g. `doc`),
 while files rewritten by patch application get fresh timestamps — except
 files with a [frozen mtime](#frozen-mtimes), which are re-stamped to the
 archive's mtime after every setup.
+
+Two libraries are linked into the binary (never invoked as subprocesses):
+libcurl (the `curl_easy` API) downloads the tarball of a URL:-based
+project, and blake3 (the `blake3_hasher` API) verifies downloads and backs
+`projeny hash`. Both are hard build requirements (`-lcurl -lblake3`); their
+dev packages must be installed (`libcurl4-openssl-dev` and a blake3 build
+on Debian/Ubuntu).
 
 ## Build and test
 

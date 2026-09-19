@@ -24,6 +24,7 @@
  */
 #include "ops.h"
 
+#include "download.h"
 #include "projeny_file.h"
 #include "tree.h"
 #include "util.h"
@@ -285,6 +286,108 @@ void ensure_snapshot(const std::string& archive)
     write_file_bytes(snap, read_file_bytes(archive));
 }
 
+// True when `path` names an existing, readable regular file. Used to guard
+// the die-on-unreadable hash helpers in the non-dying (try_) paths.
+bool is_readable_file(const std::string& path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+        return false;
+    return access(path.c_str(), R_OK) == 0;
+}
+
+// The .snapshot path for a URL-based project (pf.archive is the URL-derived
+// archive name): pdir/.<archive>.snapshot — same naming as classic projects.
+std::string url_snapshot_path(const std::string& pdir, const ProjenyFile& pf)
+{
+    return snapshot_path_for(join_path(pdir, pf.archive));
+}
+
+// Make sure the URL archive's snapshot exists and matches at least one URL:
+// hash. No-op (no network!) when the snapshot already matches. Otherwise
+// download+verify each URL: line in order (warn + next on failure/mismatch,
+// per the spec) and atomically write the first good download to the snapshot
+// via write_file_bytes. Dies (mentioning `what`) only when every URL failed.
+std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
+                                const std::string& what);
+
+// Non-dying variant for informational commands: returns true + *out = snapshot
+// path, or false + *err.
+bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
+                             std::string* out, std::string* err)
+{
+    std::string snap = url_snapshot_path(pdir, pf);
+    // The snapshot is the local cache of the downloaded archive: when it
+    // already matches at least one URL: hash, it IS the archive — verify and
+    // use it without touching the network. Only a missing snapshot (or one
+    // that matches no hash) is (re-)downloaded.
+    if (is_readable_file(snap)) {
+        std::string have = blake3_file_hash_hex(snap);
+        for (const ProjenyUrl& u : pf.urls) {
+            if (have == u.hash) {
+                *out = snap;
+                return true;
+            }
+        }
+        warn("existing snapshot '" + snap +
+             "' does not match any URL: hash; re-downloading");
+    }
+    std::string last_err;
+    size_t tried = 0;
+    for (const ProjenyUrl& u : pf.urls) {
+        ++tried;
+        std::string data;
+        std::string derr;
+        if (!try_download(u.url, &data, &derr)) {
+            warn("could not download '" + u.url + "': " + derr +
+                 "; trying the next URL");
+            last_err = derr;
+            continue;
+        }
+        std::string have = blake3_hash_hex(data);
+        if (have != u.hash) {
+            warn("downloaded '" + u.url + "' but its blake3 hash is " + have +
+                 ", expected " + u.hash + "; trying the next URL");
+            last_err = "its blake3 hash is " + have + ", expected " + u.hash;
+            continue;
+        }
+        // write_file_bytes is temp file + fsync + rename, so the snapshot
+        // switches atomically and a crash never leaves a half-written copy
+        // (the next run simply re-downloads).
+        write_file_bytes(snap, data);
+        *out = snap;
+        return true;
+    }
+    *err = "could not obtain archive '" + pf.archive +
+           "' (tried " + std::to_string(tried) +
+           " URL line(s); every download failed or did not match its "
+           "recorded blake3 hash)" +
+           (last_err.empty() ? "" : "; the last error was: " + last_err);
+    return false;
+}
+
+// The dying wrapper: same behavior, but dies naming `what` when every URL
+// failed.
+std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
+                                const std::string& what)
+{
+    std::string out;
+    std::string err;
+    if (!try_ensure_url_snapshot(pdir, pf, &out, &err))
+        die(err + "; it is needed to " + what);
+    return out;
+}
+
+// Path of the tarball to use for `pf`: materializes URL archives, returns
+// join_path(pdir, pf.archive) for classic ones.
+std::string materialize_archive(const std::string& pdir, const ProjenyFile& pf,
+                                const std::string& what)
+{
+    if (pf.is_url_based())
+        return ensure_url_snapshot(pdir, pf, what);
+    return join_path(pdir, pf.archive);
+}
+
 // Resolve which file to read when reconstructing what the LAST setup used
 // (a tree referred to by the status file or by one side of a git-conflicted
 // .projeny): prefer the snapshot — it is the byte-exact copy of what that
@@ -301,9 +404,18 @@ void ensure_snapshot(const std::string& archive)
 // the pending-aware `projeny diff <f.projeny>` goes through here, because
 // it requires the .projeny file to match the status copy first — so its
 // archive is the status-recorded archive.)
-std::string resolve_status_archive(const std::string& archive,
+//
+// URL-based projects have no checked-in archive at all: their snapshot (the
+// verified download cache) is the only record, so this re-fetches it when it
+// is missing or no longer matches any URL: hash, and uses it as-is when it
+// does match.
+std::string resolve_status_archive(const std::string& pdir,
+                                   const ProjenyFile& pf,
                                    const std::string& what)
 {
+    if (pf.is_url_based())
+        return ensure_url_snapshot(pdir, pf, what);
+    std::string archive = join_path(pdir, pf.archive);
     migrate_snapshot(archive);
     std::string snap = snapshot_path_for(archive);
     if (path_exists(snap))
@@ -326,12 +438,14 @@ std::string resolve_status_archive(const std::string& archive,
         "again");
 }
 
-// Best-effort extraction of the "Archive:" value from a status file's
+// Best-effort extraction of the archive name from a status file's
 // bytes: the embedded .projeny copy (everything after the
 // "--- projeny content ---" delimiter, see kStatusDelim in
 // projeny_file.cc) begins with its header block, one of whose lines is
-// "Archive: <value>". Used only by the stale-state reconciliation to find
-// the archive whose snapshot belongs to the status being discarded.
+// "Archive: <value>" — or, for a URL-based project, one or more
+// "URL: <url> <hash>" lines whose URL's basename names the archive.
+// Used only by the stale-state reconciliation to find the archive whose
+// snapshot belongs to the status being discarded.
 // Returns "" when the file is too garbled to tell — this must never die,
 // because an unparseable status file is renamed out of the way just the
 // same.
@@ -347,7 +461,10 @@ std::string archive_from_status_bytes(const std::string& data)
     // Scan the first lines of the embedded copy for the "Archive:" header.
     // Header lines are unindented "Key: value" lines; prose is indented and
     // blank lines are empty. Keep going through headers and prose, but stop
-    // (returning "") at anything else — patch bodies, garbage.
+    // (returning whatever we have) at anything else — patch bodies, garbage.
+    // A URL-based project has no Archive: line; remember the first URL:
+    // line's derived archive name and return it if no Archive: shows up.
+    std::string from_url;
     for (int scanned = 0; scanned < 16 && pos < data.size(); ++scanned) {
         size_t nl = data.find('\n', pos);
         std::string line =
@@ -355,6 +472,15 @@ std::string archive_from_status_bytes(const std::string& data)
                                                      : nl - pos);
         if (starts_with(line, "Archive: "))
             return trim(line.substr(9));
+        if (starts_with(line, "URL: ") && from_url.empty()) {
+            // "URL: <url> <blake3-hash>": the archive name is the URL's
+            // basename (best effort; a malformed line is simply ignored).
+            std::string value = trim(line.substr(5));
+            size_t sp = value.find_first_of(" \t");
+            std::string url =
+                sp == std::string::npos ? value : value.substr(0, sp);
+            from_url = archive_name_from_url(url);
+        }
         if (line.empty() || line[0] == ' ' || line[0] == '\t') {
             // blank line or prose: keep scanning
         } else {
@@ -365,13 +491,13 @@ std::string archive_from_status_bytes(const std::string& data)
                 colon != std::string::npos && colon > 0 &&
                 line.find_first_of(" \t") > colon;
             if (!header_shaped)
-                return "";
+                return from_url;
         }
         if (nl == std::string::npos)
             break;
         pos = nl + 1;
     }
-    return "";
+    return from_url;
 }
 
 // Path of the crash-recovery setup journal (defined with the conflicted-
@@ -649,10 +775,18 @@ void write_status(const Ctx& ctx, const StatusData& sd)
     // PREVIOUS status recorded — a snapshot for the new .projeny is never
     // written too early. The parse is safe: every caller of write_status
     // just obtained sd.embedded from a .projeny that already parsed.
+    // URL-based projects have no checked-in archive: their snapshot is the
+    // verified download (see ensure_url_snapshot), which is a no-op — no
+    // network — whenever it already matches a URL: hash.
     if (!trim(sd.embedded).empty()) {
         ProjenyFile pf = ProjenyFile::parse_bytes(
             sd.embedded, "embedded copy for '" + ctx.statusfile + "'");
-        ensure_snapshot(join_path(ctx.pdir, pf.archive));
+        if (pf.is_url_based())
+            ensure_url_snapshot(
+                ctx.pdir, pf,
+                "record which archive this setup used in the status file");
+        else
+            ensure_snapshot(join_path(ctx.pdir, pf.archive));
     }
     write_file_bytes(ctx.statusfile, sd.serialize());
 }
@@ -662,14 +796,18 @@ void write_status(const Ctx& ctx, const StatusData& sd)
 // by every fresh-setup flavor so they all see exactly the same set of
 // paths setup would write (tarball files, patch modifications, and
 // patch-added files alike). Unpacks before anything is touched (a bad
-// patch dies leaving the checkout intact).
+// patch dies leaving the checkout intact). For a URL-based project the
+// "current archive" is the verified .snapshot download (materialized on
+// first use).
 std::string build_fresh_tree(const Ctx& ctx, const ProjenyFile& cur,
                              TempDir& tmp)
 {
-    return build_tree_from_patch(tmp, join_path(ctx.pdir, cur.archive),
-                                 cur.origname, cur.name, cur.patch,
-                                 "patch in '" + ctx.projeny_arg +
-                                     "' (archive '" + cur.archive + "')");
+    return build_tree_from_patch(
+        tmp,
+        materialize_archive(ctx.pdir, cur,
+                            "set up '" + ctx.projeny_arg + "'"),
+        cur.origname, cur.name, cur.patch,
+        "patch in '" + ctx.projeny_arg + "' (archive '" + cur.archive + "')");
 }
 
 // Fresh setup: unpack the current archive, apply the current patch, and move
@@ -1491,7 +1629,7 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         // have been deleted from git since the last setup: use the
         // snapshot when it exists.
         Etree = build_tree_from_patch(
-            tE, resolve_status_archive(join_path(ctx.pdir, harder_base->archive),
+            tE, resolve_status_archive(ctx.pdir, *harder_base,
                                        "reconstruct the base tree for '" +
                                            ctx.projeny_arg + "'"),
             harder_base->origname, harder_base->name, harder_base->patch,
@@ -1516,34 +1654,47 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         }
     }
 
-    // Fresh upstream (theirs) and local (ours) trees. The local side comes
-    // from a git-conflicted .projeny (or the setup journal), so git may
-    // have just deleted its archive (upstream rebase to a new tarball):
-    // read the snapshot when it exists.
-    std::string Ntree = build_tree_from_patch(
-        tN, join_path(ctx.pdir, cur.archive), cur.origname, cur.name, cur.patch,
-        "upstream side of '" + ctx.projeny_arg + "'");
+    // Fresh local (ours) tree FIRST. The local side comes from a
+    // git-conflicted .projeny (or the setup journal), so git may have just
+    // deleted its archive (upstream rebase to a new tarball): read the
+    // snapshot when it exists. Resolve it exactly once, and BEFORE the
+    // upstream materialization below: when the two sides share the derived
+    // archive name — the normal case when a git merge conflicts on the
+    // URL: lines and both sides keep the same tarball filename — they also
+    // share one .snapshot, and materializing the upstream side re-downloads
+    // over it, so the local side must be reconstructed from the shared
+    // snapshot before that can happen (mirrors setup_impl's
+    // E-tree-before-N-tree ordering).
+    std::string local_archive = resolve_status_archive(
+        ctx.pdir, local,
+        "reconstruct the local side of '" + ctx.projeny_arg + "'");
     std::string Otree = build_tree_from_patch(
-        tO, resolve_status_archive(join_path(ctx.pdir, local.archive),
-                                   "reconstruct the local side of '" +
-                                       ctx.projeny_arg + "'"),
-        local.origname, local.name, local.patch,
+        tO, local_archive, local.origname, local.name, local.patch,
         "local side of '" + ctx.projeny_arg + "'");
 
     // Merge base: the shared base archive when both sides name the same
     // tarball and top dir (the common git-conflict case). Otherwise there
     // is no common ancestor, so the base stays an empty dir (missing files):
     // anything both sides changed differently then conflicts instead of
-    // silently picking a side. No data loss either way.
+    // silently picking a side. No data loss either way. Built from the same
+    // already-resolved local archive as Otree.
     std::string Btree = tB.path;
     if (local.archive == cur.archive && local.origname == cur.origname) {
-        unpack_single_top(resolve_status_archive(join_path(ctx.pdir, local.archive),
-                                                 "reconstruct the merge base "
-                                                 "for '" + ctx.projeny_arg +
-                                                 "'"),
-                          tB.path, local.origname);
+        unpack_single_top(local_archive, tB.path, local.origname);
         Btree = join_path(tB.path, local.origname);
     }
+
+    // Fresh upstream (theirs) tree, materialized LAST: a URL-based upstream
+    // side re-fetches the shared .snapshot whenever its bytes do not match
+    // the upstream URL: hashes (the local side normally holds them at this
+    // point), overwriting it with the upstream bytes. That is safe only
+    // because both local trees above were already unpacked from it.
+    std::string Ntree = build_tree_from_patch(
+        tN, materialize_archive(ctx.pdir, cur,
+                                "check out the upstream side of '" +
+                                    ctx.projeny_arg + "'"),
+        cur.origname, cur.name, cur.patch,
+        "upstream side of '" + ctx.projeny_arg + "'");
 
     // Stage 1: merge the committed local patch onto the fresh upstream tree.
     std::vector<std::string> conflicts;
@@ -2055,10 +2206,12 @@ int setup_impl(const Ctx& ctx)
     // Reconstruct the expected tree E from the statusfile's copy. The
     // archive comes from the status file, so it may have been deleted from
     // git since (upstream rebase): read the snapshot copy when it exists.
+    // A URL-based status copy verifies/re-fetches its snapshot instead (no
+    // network while the snapshot still matches a URL: hash).
     TempDir tE(scratch_parent_for(ctx.pdir), "projeny-E-");
     TempDir tN(scratch_parent_for(ctx.pdir), "projeny-N-");
     std::string Etree = build_tree_from_patch(
-        tE, resolve_status_archive(join_path(ctx.pdir, oldpf.archive),
+        tE, resolve_status_archive(ctx.pdir, oldpf,
                                    "reconstruct the tree recorded by '" +
                                        ctx.statusfile + "'"),
         oldpf.origname, oldpf.name, oldpf.patch,
@@ -2151,8 +2304,10 @@ int setup_impl(const Ctx& ctx)
     // U onto N file-by-file, then move N into place. U carries the OLD wid
     // (oldpf.name); N carries the CURRENT wid (cur.name).
     std::string Ntree = build_tree_from_patch(
-        tN, join_path(ctx.pdir, cur.archive), cur.origname, cur.name, cur.patch,
-        "patch in '" + ctx.projeny_arg + "'");
+        tN,
+        materialize_archive(ctx.pdir, cur,
+                            "set up '" + ctx.projeny_arg + "'"),
+        cur.origname, cur.name, cur.patch, "patch in '" + ctx.projeny_arg + "'");
     std::vector<std::string> conflicts;
     merge_user_diff_onto(Etree, Ntree, actual_workdir, Ntree, cur.name,
                          oldpf.name, U, &conflicts);
@@ -2264,7 +2419,9 @@ int cmd_commit(const std::string& projeny_arg)
     // Tolerate either state; the diff decides.
 
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-commit-");
-    unpack_single_top(join_path(ctx.pdir, cur.archive), tmp.path, cur.origname);
+    unpack_single_top(
+        materialize_archive(ctx.pdir, cur, "commit '" + ctx.projeny_arg + "'"),
+        tmp.path, cur.origname);
     std::string base = join_path(tmp.path, cur.origname);
     // Binary files travel in the patch as base64 blocks (add/delete/modify),
     // so tracked-binary changes and explicitly added binaries commit like
@@ -2322,8 +2479,11 @@ int cmd_commit(const std::string& projeny_arg)
         // source when several same-content files changed hands at once.
         TempDir tmpE(scratch_parent_for(ctx.pdir), "projeny-commit-exp-");
         std::string Etree = build_tree_from_patch(
-            tmpE, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
-            cur.patch, "patch in '" + ctx.projeny_arg + "'");
+            tmpE,
+            materialize_archive(ctx.pdir, cur,
+                                "commit '" + ctx.projeny_arg + "'"),
+            cur.origname, cur.name, cur.patch,
+            "patch in '" + ctx.projeny_arg + "'");
         std::vector<std::string> disappeared;
         std::vector<std::string> stack;
         stack.push_back("");
@@ -2685,6 +2845,17 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     StatusData st = require_status_matches(ctx);
     ProjenyFile cur =
         ProjenyFile::parse_bytes(st.embedded, "'" + ctx.projeny_arg + "'");
+    if (cur.is_url_based())
+        die("cannot rebase '" + ctx.projeny_arg +
+            "': it is a URL-based project (URL: headers; no Archive: tarball "
+            "is checked into git). To move it to a new archive, edit its "
+            "URL: header(s) to the new archive's URL and blake3 hash "
+            "(compute the hash with 'projeny hash <file>') and run 'projeny "
+            "setup', which merges your local changes onto the new base. To "
+            "convert it to a checked-in tarball first, remove the URL: "
+            "lines by hand and add an 'Archive: <filename>' header naming "
+            "the tarball placed next to the .projeny file (do that BEFORE "
+            "running rebase)");
     std::string workdir = join_path(ctx.pdir, cur.name);
     if (!is_dir(workdir))
         die("workdir '" + workdir + "' is missing; run setup first");
@@ -2701,8 +2872,10 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
                 "' has unresolved conflicts; resolve them before rebasing");
     {
         TempDir tC(scratch_parent_for(ctx.pdir), "projeny-rebase-clean-");
-        unpack_single_top(join_path(ctx.pdir, cur.archive), tC.path,
-                          cur.origname);
+        unpack_single_top(
+            materialize_archive(ctx.pdir, cur,
+                                "rebase '" + ctx.projeny_arg + "'"),
+            tC.path, cur.origname);
         std::string expect = join_path(tC.path, cur.origname);
         if (!normalize_patch_text(cur.patch).empty() &&
             !apply_patch_whole(expect, cur.patch, cur.name,
@@ -2767,7 +2940,10 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
         // 3-way merge each failed file: base = OLD tree file, ours = new
         // tree file (patched except failed parts), theirs = old tree file.
         TempDir tO(scratch_parent_for(ctx.pdir), "projeny-rebase-old-");
-        unpack_single_top(join_path(ctx.pdir, cur.archive), tO.path, cur.origname);
+        unpack_single_top(
+            materialize_archive(ctx.pdir, cur,
+                                "rebase '" + ctx.projeny_arg + "'"),
+            tO.path, cur.origname);
         std::string old_tree = join_path(tO.path, cur.origname);
         // Apply the old patch to the old tree to get the "theirs" content?
         // The old tree unpacked is the base; workdir == base+patch (clean
@@ -2938,22 +3114,41 @@ int cmd_status(const std::string& projeny_arg)
         // itself (checkouts set up before snapshots existed — and copy it
         // into the snapshot, best effort, so the next run finds one), and
         // skip the live-diff section entirely when neither exists.
+        // URL-based projects never have a checked-in archive: their
+        // snapshot is the verified download cache. Always route it through
+        // try_ensure_url_snapshot — the spec gives status no exception, so
+        // an existing snapshot is hash-verified too (no network while it
+        // matches any URL: hash), and a missing one is fetched. Status
+        // stays informational, so a failed download or verification only
+        // warns and skips the live-diff section (exactly like the classic
+        // missing-archive case below).
         std::string archive_path = join_path(ctx.pdir, emb.archive);
-        migrate_snapshot(archive_path);
-        std::string snap = snapshot_path_for(archive_path);
-        if (path_exists(snap)) {
-            archive_path = snap;
-        } else if (path_exists(archive_path)) {
-            // Copy-on-fallback, best effort: status must never hard-fail
-            // just because the snapshot cannot be written.
-            std::string err;
-            if (try_copy_file_bytes(archive_path, snap, &err))
-                archive_path = snap;
-            else
-                warn("could not create snapshot '" + snap + "' from archive '" +
-                     archive_path + "': " + err + " (continuing)");
+        if (emb.is_url_based()) {
+            std::string got, err;
+            if (try_ensure_url_snapshot(ctx.pdir, emb, &got, &err))
+                archive_path = got;
+            else {
+                warn(err + " (continuing without the live diff)");
+                break;
+            }
         } else {
-            break;
+            migrate_snapshot(archive_path);
+            std::string snap = snapshot_path_for(archive_path);
+            if (path_exists(snap)) {
+                archive_path = snap;
+            } else if (path_exists(archive_path)) {
+                // Copy-on-fallback, best effort: status must never hard-fail
+                // just because the snapshot cannot be written.
+                std::string err;
+                if (try_copy_file_bytes(archive_path, snap, &err))
+                    archive_path = snap;
+                else
+                    warn("could not create snapshot '" + snap +
+                         "' from archive '" + archive_path + "': " + err +
+                         " (continuing)");
+            } else {
+                break;
+            }
         }
         TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-status-");
         std::string Etree = build_tree_from_patch(
@@ -3095,8 +3290,7 @@ int cmd_diff_projeny(const std::string& projeny_arg)
     // archive itself, snapshotting it on the way. resolve_status_archive
     // dies with recovery guidance when neither file exists.
     std::string archive_path =
-        resolve_status_archive(join_path(ctx.pdir, cur.archive),
-                               "diff '" + ctx.projeny_arg + "'");
+        resolve_status_archive(ctx.pdir, cur, "diff '" + ctx.projeny_arg + "'");
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-diff-");
     std::string Etree = build_tree_from_patch(
         tmp, archive_path, cur.origname, cur.name, cur.patch,
@@ -3483,8 +3677,8 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
     // Fresh reference tree: what "tracked" means right now.
     TempDir tref(system_scratch_parent(), "projeny-pkg-ref-");
     std::string ref = build_tree_from_patch(
-        tref, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
-        cur.patch, "patch in '" + pj + "'");
+        tref, materialize_archive(ctx.pdir, cur, "package '" + pj + "'"),
+        cur.origname, cur.name, cur.patch, "patch in '" + pj + "'");
 
     TempDir tstage(system_scratch_parent(), "projeny-pkg-");
     std::string payload = join_path(tstage.path, kind.prefix);
@@ -3546,8 +3740,8 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
 
     TempDir tref(system_scratch_parent(), "projeny-ext-ref-");
     std::string ref = build_tree_from_patch(
-        tref, join_path(ctx.pdir, cur.archive), cur.origname, cur.name,
-        cur.patch, "patch in '" + pj + "'");
+        tref, materialize_archive(ctx.pdir, cur, "extract '" + pj + "'"),
+        cur.origname, cur.name, cur.patch, "patch in '" + pj + "'");
 
     size_t count = 0;
     stage_tracked(workdir, ref, st, "", dest, &count);
@@ -3680,9 +3874,10 @@ int cmd_freeze_mtime(const std::string& projeny_arg,
         pending_adds.push_back(rn.second);
 
     TempDir tmp(scratch_parent_for(t.ctx.pdir), "projeny-freeze-");
-    std::string archive_path = resolve_status_archive(
-        join_path(t.ctx.pdir, t.cur.archive),
-        "freeze mtimes from the archive of '" + t.ctx.projeny_arg + "'");
+    std::string archive_path =
+        resolve_status_archive(t.ctx.pdir, t.cur,
+                               "freeze mtimes from the archive of '" +
+                                   t.ctx.projeny_arg + "'");
     unpack_single_top(archive_path, tmp.path, t.cur.origname);
     std::string rawtree = join_path(tmp.path, t.cur.origname);
 
@@ -3815,7 +4010,7 @@ int cmd_get_attributes(const std::string& projeny_arg,
     // takes it away.
     TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-attrs-");
     std::string fresh = build_tree_from_patch(
-        tmp, resolve_status_archive(join_path(ctx.pdir, cur.archive),
+        tmp, resolve_status_archive(ctx.pdir, cur,
                                     "get the attributes of '" + pj + "'"),
         cur.origname, cur.name, cur.patch, "patch in '" + pj + "'");
 
@@ -3872,6 +4067,20 @@ int cmd_get_attributes(const std::string& projeny_arg,
     return 0;
 }
 
+int cmd_hash(const std::string& path)
+{
+    // The blake3 hash that a .projeny file's "URL: <url> <hash>" line wants:
+    // hash the file's bytes and print the 64-char lowercase hex digest, and
+    // nothing else, so the output can be pasted into the header verbatim.
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0)
+        die("cannot hash '" + path + "': " + strerror(errno));
+    if (!S_ISREG(st.st_mode))
+        die("cannot hash '" + path + "': it is not a regular file");
+    printf("%s\n", blake3_file_hash_hex(path).c_str());
+    return 0;
+}
+
 int cmd_help(const std::string& arg0)
 {
     printf("usage: %s <command> [args]\n", arg0.c_str());
@@ -3899,6 +4108,7 @@ int cmd_help(const std::string& arg0)
            "                                   list files with a frozen mtime\n"
            "  get-attributes <f.projeny|dir> [<paths>]\n"
            "                                   show special attributes of files\n"
+           "  hash <file>                      print the blake3 hash of a file\n"
            "  help [command]                   show this message or command help\n"
            "\n"
            "Project arguments (<f.projeny|dir>) may be the .projeny file, the\n"
@@ -3963,6 +4173,29 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "not an error when the tarball still exists: it is recreated\n"
                "from the tarball on first use. Snapshots are plain untracked\n"
                "files, safe to delete.\n"
+               "\n"
+               "Instead of an Archive: header, a .projeny file may use one\n"
+               "or more URL: headers to fetch the tarball from the network\n"
+               "(no tarball is checked into git). Each line has the form\n"
+               "\n"
+               "  URL: <url> <blake3-hash>\n"
+               "\n"
+               "naming the tarball's URL and the blake3 hash of its bytes\n"
+               "(compute the hash with `projeny hash <file>`). Archive: and\n"
+               "URL: headers are mutually exclusive. The URL lines are\n"
+               "mirrors: they are tried in the order listed, and a download\n"
+               "that fails or does not match its hash only prints a warning\n"
+               "before the next one is tried — it is a hard error only when\n"
+               "no URL yields a download matching its recorded hash. The\n"
+               "archive name (and the snapshot's name) is derived from the\n"
+               "URL's basename, so the URL must name the tarball file\n"
+               "itself. The download is cached — and verified against the\n"
+               "URL hashes — as .<archive>.snapshot next to the .projeny\n"
+               "file, exactly where a checked-in tarball's snapshot copy\n"
+               "lives; while that snapshot matches a URL hash, it IS the\n"
+               "archive and no network access happens. Only a missing\n"
+               "snapshot (or one that no longer matches any hash, e.g. a\n"
+               "tampered or truncated file) triggers a re-download.\n"
                "\n"
                "Status and snapshot files keep their older undotted names\n"
                "(<f>.projeny.status, <Archive>.snapshot) working too: on\n"
@@ -4390,14 +4623,27 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                t);
         return 0;
     }
+    if (topic == "hash") {
+        printf("%s hash <file>\n"
+               "\n"
+               "Print the blake3 hash of a file as 64 lowercase hex chars,\n"
+               "followed by a newline, and nothing else — so the output can\n"
+               "be pasted straight into a .projeny file's\n"
+               "`URL: <url> <blake3-hash>` header. The URL:-based form\n"
+               "records the hash of the tarball's bytes so every download\n"
+               "can be verified; `projeny hash <tarball>` is how that hash\n"
+               "is computed. The file must exist and be a regular file.\n",
+               t);
+        return 0;
+    }
     if (topic == "help") {
         printf("%s help [command]\n"
                "\n"
                "With no arguments, list all commands. With a command name\n"
                "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
                "patch, package, extract, freeze-mtime, unfreeze-mtime,\n"
-               "list-frozen-mtimes, get-attributes, help), print a detailed\n"
-               "explanation of that command.\n",
+               "list-frozen-mtimes, get-attributes, hash, help), print a\n"
+               "detailed explanation of that command.\n",
                t);
         return 0;
     }

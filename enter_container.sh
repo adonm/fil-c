@@ -316,21 +316,6 @@ RUN apt-get install -y gcc-12 g++-12
 RUN ln -s /usr/bin/gcc-12 /usr/local/bin/gcc
 RUN ln -s /usr/bin/g++-12 /usr/local/bin/g++
 
-# Build the BLAKE3 C library into /usr/local. Ubuntu ships no libblake3-dev
-# package, but projeny links libblake3 directly (it downloads URL: archives
-# and verifies their blake3 hash in-process), so build the portable C
-# implementation from the pristine upstream tarball checked into the repo.
-# The -DBLAKE3_NO_* macros disable the SIMD code paths, making
-# blake3_dispatch.c fall back to the portable implementation.
-COPY projects/BLAKE3-1.8.7.tar.gz /usr/local/src/
-RUN cd /usr/local/src && \
-    tar -xf BLAKE3-1.8.7.tar.gz && \
-    cd BLAKE3-1.8.7 && \
-    cmake -S c -B c/build -DCMAKE_INSTALL_PREFIX=/usr/local && \
-    cmake --build c/build -j `nproc` --target install && \
-    cd /usr/local/src && \
-    rm -rf BLAKE3-1.8.7 BLAKE3-1.8.7.tar.gz
-
 COPY pizlix/binutils-2.47.tar.xz /usr/local/src/
 RUN cd /usr/local/src && \
     tar -xf binutils-2.47.tar.xz && \

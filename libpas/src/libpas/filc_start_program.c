@@ -26,6 +26,12 @@
 
 #include "pas_config.h"
 
+#if PAS_COSMO
+/* Cosmo's sys/auxv.h doesn't define AT_MAX_KEY; musl's elf.h sets it to 51
+   (AT_RSEQ_ALIGN, the highest known auxv key). */
+#define AT_MAX_KEY 51
+#endif
+
 #if LIBPAS_ENABLED && PAS_ENABLE_FILC
 
 #include "filc_native.h"

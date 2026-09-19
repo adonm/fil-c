@@ -39,6 +39,21 @@ FILC_RUNTIME_LIBS ?= -lyoloc -lyolom
 
 ARCH ?= $(shell uname -m)
 
+# Cosmo mode: when pizfix/lib/libyolocosmo.a exists (installed by
+# build_yolocosmo.sh), libpizlo is built against cosmopolitan libc (the
+# "yolocosmo" flavor) instead of musl. Cosmo is a statically-linked libc, so
+# in cosmo mode we only build the static libpizlo.a plus filc_crt.o and
+# filc_mincrt.o; the libpizlo.so variants are skipped entirely. When COSMO is
+# empty, the musl (or glibc) behavior is unchanged.
+COSMO := $(wildcard $(FILC_LIB_DIR)/libyolocosmo.a)
+
+ifneq ($(COSMO),)
+COSMO_CCFLAGS = \
+	-include $(FILC_YOLO_INCLUDE)/normalize.inc \
+	-D__COSMOPOLITAN__ \
+	-DPAS_COSMO=1
+endif
+
 ifeq ($(ARCH),x86_64)
 ARCH_CFLAGS = -march=x86-64-v2
 else
@@ -57,11 +72,21 @@ HOST_CLANG_EXTRA_FLAGS = -isystem `./find_clang_include_dir.rb`
 FILC_CLANG ?= ../build/bin/clang
 FILC_DRIVER_FLAGS ?=
 
-PASCC = $(HOST_CLANG) $(ARCH_CFLAGS) -fPIC -pthread -nostdinc \
+ifeq ($(COSMO),)
+PICFLAG = -fPIC
+else
+# In cosmo mode the final programs are statically linked non-PIE, and cosmo
+# doesn't provide __tls_get_addr, so build the pas objects without -fPIC;
+# that gives __thread variables the local-exec TLS model (direct %fs:offset
+# addressing), which is exactly what cosmo's TIB supports.
+PICFLAG =
+endif
+
+PASCC = $(HOST_CLANG) $(ARCH_CFLAGS) $(PICFLAG) -pthread -nostdinc \
 	-isystem $(FILC_YOLO_INCLUDE) -isystem $(FILC_OS_INCLUDE) \
 	-isystem $(FILC_STDFIL_INCLUDE) \
-	$(HOST_CLANG_EXTRA_FLAGS)
-PASASM = $(HOST_CLANG) $(ARCH_CFLAGS) -fPIC
+	$(HOST_CLANG_EXTRA_FLAGS) $(COSMO_CCFLAGS)
+PASASM = $(HOST_CLANG) $(ARCH_CFLAGS) $(PICFLAG)
 FILCC = $(FILC_CLANG) $(FILC_DRIVER_FLAGS)
 SHLD = $(HOST_CLANG) -Wl,-dynamic-linker,$(FILC_DYNAMIC_LINKER) \
 	-nostdlib -shared $(FILC_YOLO_LIB_DIR)/crti.o \
@@ -77,11 +102,21 @@ DIRS_TO_CREATE = \
 
 .PHONY: all clean
 
+ifeq ($(COSMO),)
+
 all: \
 	$(FILC_LIB_DIR)/libpizlo.so $(FILC_LIB_TEST_DIR)/libpizlo.so \
 	$(FILC_LIB_GCVERIFY_DIR)/libpizlo.so $(FILC_LIB_TEST_GCVERIFY_DIR)/libpizlo.so \
 	$(FILC_LIB_DIR)/libpizlo.a \
 	$(FILC_LIB_DIR)/filc_crt.o $(FILC_LIB_DIR)/filc_mincrt.o
+
+else
+
+all: \
+	$(FILC_LIB_DIR)/libpizlo.a \
+	$(FILC_LIB_DIR)/filc_crt.o $(FILC_LIB_DIR)/filc_mincrt.o
+
+endif
 
 $(DIRS_TO_CREATE):
 	mkdir -p $@

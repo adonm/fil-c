@@ -1662,7 +1662,7 @@ static inline int pas_getpid(void) { return _getpid(); }
 #else /* _WIN32 -> so !_WIN32 */
 typedef pthread_t pas_system_thread_id;
 static inline pas_system_thread_id pas_get_current_system_thread_id(void) { return pthread_self(); }
-#if PAS_OS(DARWIN) || PAS_OS(FREEBSD) || PAS_OS(OPENBSD) || (PAS_OS(LINUX) && !PAS_GLIBC && PAS_COMPILER(CLANG))
+#if PAS_OS(DARWIN) || PAS_OS(FREEBSD) || PAS_OS(OPENBSD) || (PAS_OS(LINUX) && !PAS_GLIBC && !PAS_COSMO && PAS_COMPILER(CLANG))
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%p"
 #define PAS_NULL_SYSTEM_THREAD_ID NULL
 static inline bool pas_system_thread_id_weak_cas(pas_system_thread_id* ptr,

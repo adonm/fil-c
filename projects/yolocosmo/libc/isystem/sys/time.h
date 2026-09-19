@@ -7,4 +7,8 @@
 #include "libc/sysv/consts/clock.h"
 #include "libc/sysv/consts/itimer.h"
 #include "libc/time.h"
+
+/* Fil-C addition: adjtime(3), which musl and glibc provide. The function is
+   defined by the yolocosmo patch in libc/calls/yolo_syscall_wrappers.c. */
+int adjtime(const struct timeval *, struct timeval *);
 #endif

@@ -8668,13 +8668,23 @@ int filc_native_zsys_fstat(filc_thread* my_thread, int fd, filc_ptr stat_ptr)
     return FILC_SYSCALL(my_thread, fstat(fd, (struct stat*)filc_ptr_ptr(stat_ptr)));
 }
 
+#if PAS_COSMO
+/* Cosmo's struct sigaction has `uint32_t sa_flags` instead of musl's
+   `int sa_flags`. */
+static bool from_user_sa_flags(uint32_t user_flags, uint32_t* flags)
+#else
 static bool from_user_sa_flags(int user_flags, int* flags)
+#endif
 {
     *flags = user_flags;
     return true;
 }
 
+#if PAS_COSMO
+static uint32_t to_user_sa_flags(uint32_t sa_flags)
+#else
 static int to_user_sa_flags(int sa_flags)
+#endif
 {
     return sa_flags;
 }

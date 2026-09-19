@@ -1,6 +1,45 @@
 #ifndef COSMOPOLITAN_LIBC_SYSV_CONSTS_PR_H_
 #define COSMOPOLITAN_LIBC_SYSV_CONSTS_PR_H_
 
+/* Fil-C additions: the prctl() option numbers that cosmo was missing but the
+   Fil-C runtime and musl-style programs use. The values mirror musl's
+   sys/prctl.h. */
+#define PR_GET_UNALIGN              5
+#define PR_SET_UNALIGN              6
+#define PR_UNALIGN_NOPRINT          1
+#define PR_UNALIGN_SIGBUS           2
+#define PR_GET_TIMING               13
+#define PR_SET_TIMING               14
+#define PR_TIMING_STATISTICAL       0
+#define PR_TIMING_TIMESTAMP         1
+#define PR_GET_ENDIAN               19
+#define PR_SET_ENDIAN               20
+#define PR_ENDIAN_BIG               0
+#define PR_ENDIAN_LITTLE            1
+#define PR_ENDIAN_PPC_LITTLE        2
+#define PR_SET_FP_MODE              45
+#define PR_GET_FP_MODE              46
+#define PR_FP_MODE_FR               (1 << 0)
+#define PR_FP_MODE_FRE              (1 << 1)
+#define PR_SVE_SET_VL               50
+#define PR_SVE_SET_VL_ONEXEC        (1 << 18)
+#define PR_SVE_GET_VL               51
+#define PR_SVE_VL_LEN_MASK          0xffff
+#define PR_SVE_VL_INHERIT           (1 << 17)
+#define PR_SPEC_INDIRECT_BRANCH     1
+#define PR_SPEC_DISABLE_NOEXEC      (1UL << 4)
+#define PR_TAGGED_ADDR_ENABLE       (1UL << 0)
+#define PR_SET_SYSCALL_USER_DISPATCH 59
+#define PR_SYS_DISPATCH_OFF         0
+#define PR_SYS_DISPATCH_ON          1
+#define PR_MTE_TCF_SHIFT            1
+#define PR_MTE_TCF_NONE             (0UL << 1)
+#define PR_MTE_TCF_SYNC             (1UL << 1)
+#define PR_MTE_TCF_ASYNC            (2UL << 1)
+#define PR_MTE_TCF_MASK             (3UL << 1)
+#define PR_MTE_TAG_SHIFT            3
+#define PR_MTE_TAG_MASK             (0xffffUL << 3)
+
 #define PR_GET_SECCOMP        21
 #define PR_SET_SECCOMP        22
 #define SECCOMP_MODE_DISABLED 0

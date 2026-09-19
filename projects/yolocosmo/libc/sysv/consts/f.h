@@ -13,9 +13,47 @@
 
 #define F_DUPFD_CLOEXEC 0x0406
 
-#define F_SETLK  F_SETLK
-#define F_SETLKW F_SETLKW
-#define F_GETLK  F_GETLK
+/* Fil-C additions: the Fil-C runtime (libpizlo) switches on fcntl command
+   values, so the Linux command numbers must be compile-time constants. These
+   mirror musl's fcntl.h for Linux. The `extern const int` objects below (and
+   the self-referential macros they used to back) are kept for compatibility,
+   but on Linux their values are exactly these. */
+#define F_SETLK 6
+#define F_SETLKW 7
+#define F_GETLK 5
+
+#define F_SETOWN 8
+#define F_GETOWN 9
+#define F_SETSIG 10
+#define F_GETSIG 11
+
+#define F_SETOWN_EX 15
+#define F_GETOWN_EX 16
+#define F_GETOWNER_UIDS 17
+
+#define F_OFD_GETLK 36
+#define F_OFD_SETLK 37
+#define F_OFD_SETLKW 38
+#define F_CANCELLK 39
+
+#define F_SETLEASE 1024
+#define F_GETLEASE 1025
+#define F_NOTIFY 1026
+#define F_SETPIPE_SZ 1031
+#define F_GETPIPE_SZ 1032
+#define F_ADD_SEALS 1033
+#define F_GET_SEALS 1034
+#define F_GET_RW_HINT 1035
+#define F_SET_RW_HINT 1036
+#define F_GET_FILE_RW_HINT 1037
+#define F_SET_FILE_RW_HINT 1038
+
+#define F_SEAL_SEAL         0x0001
+#define F_SEAL_SHRINK       0x0002
+#define F_SEAL_GROW         0x0004
+#define F_SEAL_WRITE        0x0008
+#define F_SEAL_FUTURE_WRITE 0x0010
+#define F_SEAL_EXEC         0x0020
 
 #define F_RDLCK F_RDLCK
 #define F_WRLCK F_WRLCK
@@ -23,10 +61,9 @@
 
 COSMOPOLITAN_C_START_
 
-extern const int F_GETLK;
+/* F_SETLK, F_SETLKW, and F_GETLK are now compile-time constants (see above),
+   so they no longer have extern const backing objects declared here. */
 extern const int F_RDLCK;
-extern const int F_SETLK;
-extern const int F_SETLKW;
 extern const int F_WRLCK;
 
 int fcntl(int fd, int cmd, ...) libcesque;

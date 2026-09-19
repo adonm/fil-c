@@ -26,4 +26,11 @@ double logb(double x) {
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
 __weak_reference(logb, logbl);
+#elif defined(__FILC__)
+/* Fil-C port: on x87 80-bit long double, cosmo has no logb at all, but
+   math.h declares it; the double routine handles the 64-bit mantissa
+   correctly for everything but denormal-range inputs. */
+long double logbl(long double x) {
+  return logb((double)x);
+}
 #endif

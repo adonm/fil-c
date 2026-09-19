@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVXNECONVERTINTRIN_H_INCLUDED
 #define _AVXNECONVERTINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avxneconvertintrin.h>
+#else /* !__FILC__ */
 #ifndef __AVXNECONVERT__
 #pragma GCC push_options
 #pragma GCC target ("avxneconvert")
@@ -99,3 +105,5 @@ _mm256_cvtneps_avx_pbh (__m256 __A)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

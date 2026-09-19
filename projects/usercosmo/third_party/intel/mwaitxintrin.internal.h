@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _MWAITXINTRIN_H_INCLUDED
 #define _MWAITXINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <mwaitxintrin.h>
+#else /* !__FILC__ */
 #ifndef __MWAITX__
 #pragma GCC push_options
 #pragma GCC target("mwaitx")
@@ -22,3 +28,5 @@ _mm_mwaitx (unsigned int __E, unsigned int __H, unsigned int __C)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

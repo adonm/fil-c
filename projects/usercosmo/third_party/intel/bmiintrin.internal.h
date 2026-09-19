@@ -4,6 +4,12 @@
 #endif
 #ifndef _BMIINTRIN_H_INCLUDED
 #define _BMIINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <bmiintrin.h>
+#else /* !__FILC__ */
 #ifndef __BMI__
 #pragma GCC push_options
 #pragma GCC target("bmi")
@@ -147,3 +153,5 @@ _tzcnt_u64 (unsigned long long __X)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

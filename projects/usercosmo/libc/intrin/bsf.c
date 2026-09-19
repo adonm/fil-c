@@ -69,4 +69,4 @@ int(bsf)(int x) {
   return bsf((unsigned)x);
 }
 
-__weak_reference(bsfl, bsfll);
+__weak_reference_as(bsfll, bsfl);

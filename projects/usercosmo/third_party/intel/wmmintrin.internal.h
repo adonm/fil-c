@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _WMMINTRIN_H_INCLUDED
 #define _WMMINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <wmmintrin.h>
+#else /* !__FILC__ */
 #include "third_party/intel/emmintrin.internal.h"
 #if !defined(__AES__) || !defined(__SSE2__)
 #pragma GCC push_options
@@ -50,3 +56,5 @@ _mm_clmulepi64_si128 (__m128i __X, __m128i __Y, const int __I)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

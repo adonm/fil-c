@@ -57,5 +57,5 @@ __weak_reference(getutxid, getutid);
 __weak_reference(getutxline, getutline);
 __weak_reference(pututxline, pututline);
 __weak_reference(updwtmpx, updwtmp);
-__weak_reference(__utmpxname, utmpname);
+__weak_reference_as(utmpname, __utmpxname);
 __weak_reference(__utmpxname, utmpxname);

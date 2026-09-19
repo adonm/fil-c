@@ -41,5 +41,5 @@ long lrintf(float x) {
 }
 
 #if __SIZEOF_LONG__ == __SIZEOF_LONG_LONG__
-__weak_reference(lrintf, llrintf);
+__weak_reference_as(llrintf, lrintf);
 #endif

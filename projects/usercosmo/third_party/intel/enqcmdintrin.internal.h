@@ -4,6 +4,12 @@
 #endif
 #ifndef _ENQCMDINTRIN_H_INCLUDED
 #define _ENQCMDINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <enqcmdintrin.h>
+#else /* !__FILC__ */
 #ifndef __ENQCMD__
 #pragma GCC push_options
 #pragma GCC target ("enqcmd")
@@ -27,3 +33,5 @@ _enqcmds (void * __P, const void * __Q)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

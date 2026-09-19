@@ -146,7 +146,7 @@ static const long double S[4] = {
  */
 long double log10l(long double x)
 {
-#ifdef __x86__
+#if defined(__x86__) && !defined(__FILC__)
 
 	// asm improves performance 41ns → 21ns
 	// measurement made on an intel core i9

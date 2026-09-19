@@ -18,6 +18,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/sysv/consts/at.h"
+#include "libc/sysv/consts/o.h"
 
 /**
  * Opens file.
@@ -37,11 +38,24 @@
  * @vforksafe
  */
 int open(const char *file, int flags, ...) {
-  va_list va;
   unsigned mode;
+#ifdef __FILC__
+  /* Fil-C port: va_arg() on an empty vararg list traps (exact bounds).  The
+     mode is only meaningful with O_CREAT, and callers without O_CREAT pass
+     no mode argument. */
+  mode = 0;
+  if (flags & O_CREAT) {
+    va_list va;
+    va_start(va, flags);
+    mode = va_arg(va, unsigned);
+    va_end(va);
+  }
+#else
+  va_list va;
   va_start(va, flags);
   mode = va_arg(va, unsigned);
   va_end(va);
+#endif
   return openat(AT_FDCWD, file, flags, mode);
 }
 

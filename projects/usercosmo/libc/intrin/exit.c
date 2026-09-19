@@ -26,6 +26,9 @@
 #include "libc/nt/thunk/msabi.h"
 #include "libc/runtime/internal.h"
 #include "libc/runtime/runtime.h"
+#ifdef __FILC__
+#include "libc/calls/syscall-sysv.internal.h"
+#endif
 #include "libc/sysv/consts/nr.h"
 #include "libc/sysv/consts/sig.h"
 
@@ -45,13 +48,20 @@
  */
 wontreturn void _Exit(int exitcode) {
   STRACE("_Exit(%d)", exitcode);
+#ifdef __FILC__
+  /* Fil-C port: raw `syscall` inline asm is not allowed under Fil-C; route
+     through the sys_exit shim, which forwards to libpizlo's zsys_exit_hard
+     (i.e. exit_group).  Windows/Metal don't exist in a Fil-C cosmo program. */
+  sys_exit(exitcode);
+  __builtin_unreachable();
+#else
   if (!IsWindows() && !IsMetal()) {
     // On Linux _Exit1 (exit) must be called in pledge("") mode. If we
     // call _Exit (exit_group) when we haven't used pledge("stdio") then
     // it'll terminate the process instead. On OpenBSD we must not call
     // _Exit1 (__threxit) because only _Exit (exit) is whitelisted when
     // operating in pledge("") mode.
-    if (!(IsLinux() && !PLEDGED(STDIO))) {
+    if (!(IsLinux() && !PLEDGED(STDIO)) {
 #ifdef __x86_64__
       asm volatile("syscall"
                    : /* no outputs */
@@ -114,6 +124,7 @@ wontreturn void _Exit(int exitcode) {
 #else
   __builtin_unreachable();
 #endif
+#endif /* __FILC__ */
 }
 
 __strong_reference(_Exit, _exit);

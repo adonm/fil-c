@@ -4,6 +4,12 @@
 #endif
 #ifndef _XTESTINTRIN_H_INCLUDED
 #define _XTESTINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <xtestintrin.h>
+#else /* !__FILC__ */
 #ifndef __RTM__
 #pragma GCC push_options
 #pragma GCC target("rtm")
@@ -21,3 +27,5 @@ _xtest (void)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

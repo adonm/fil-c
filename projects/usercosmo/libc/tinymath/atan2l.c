@@ -56,7 +56,7 @@ __static_yoink("fdlibm_notice");
  */
 long double atan2l(long double y, long double x)
 {
-#ifdef __x86__
+#if defined(__x86__) && !defined(__FILC__)
 
 	asm("fpatan"
 	    : "=t"(x)

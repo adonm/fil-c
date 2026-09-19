@@ -216,6 +216,12 @@ __writeeflags (unsigned int __X)
 #define _popcnt32(a) __popcntd(a)
 #ifndef __iamcu__
 #define _rdpmc(a) __rdpmc(a)
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <ia32intrin.h>
+#else /* !__FILC__ */
 #define _rdtscp(a) __rdtscp(a)
 #endif
 #define _rdtsc() __rdtsc()
@@ -224,3 +230,5 @@ __writeeflags (unsigned int __X)
 #define _rotl(a,b) __rold((a), (b))
 #define _rotr(a,b) __rord((a), (b))
 #endif
+
+#endif /* __FILC__ */

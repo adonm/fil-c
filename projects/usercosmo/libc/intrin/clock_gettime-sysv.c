@@ -21,8 +21,19 @@
 #include "libc/dce.h"
 #include "libc/errno.h"
 #include "libc/sysv/consts/nr.h"
+#ifdef __FILC__
+#include <pizlonated_syscalls.h>
+#endif
 
 int sys_clock_gettime(int clock, struct timespec *ts) {
+
+#ifdef __FILC__
+  /* Fil-C port: cosmo's version uses the legacy __syscall2i funnel, which
+     passes the timespec pointer as a raw integer (destroying the Fil-C
+     capability) — and the vDSO isn't callable from pizlonated code either.
+     zsys_clock_gettime() has exactly the same 0 / -1+errno convention. */
+  return zsys_clock_gettime(clock, ts);
+#else
 
   // avoid esrch on netbsd
   if (IsNetbsd()) {
@@ -35,4 +46,5 @@ int sys_clock_gettime(int clock, struct timespec *ts) {
   }
 
   return __syscall2i(clock, (long)ts, __NR_clock_gettime);
+#endif /* __FILC__ */
 }

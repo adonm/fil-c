@@ -43,7 +43,7 @@ static FILE __stdin = {
  */
 FILE *stdin = &__stdin;
 
-__attribute__((__constructor__(60))) static textstartup void stdin_init(void) {
+__attribute__((__constructor__(160))) static textstartup void stdin_init(void) {
   struct stat st;
   if (fstat(STDIN_FILENO, &st) || S_ISCHR(st.st_mode))
     stdin->bufmode = _IONBF;

@@ -23,6 +23,7 @@
 #include "libc/stdckdint.h"
 #include "libc/str/str.h"
 #include "libc/str/tab.h"
+#include "libc/str/locale.h"
 
 /**
  * Decodes signed long integer from wide string.
@@ -61,6 +62,6 @@ long wcstol(const wchar_t *s, wchar_t **endptr, int base) {
   return x;
 }
 
-__weak_reference(wcstol, wcstoimax);
-__weak_reference(wcstol, wcstoll);
-__weak_reference(wcstol, wcstoll_l);
+__weak_reference_as(wcstoimax, wcstol);
+__weak_reference_as(wcstoll, wcstol);
+__weak_reference_as(wcstoll_l, wcstol);

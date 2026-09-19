@@ -33,6 +33,10 @@
 #include "third_party/nsync/atomic.h"
 #include "third_party/nsync/atomic.internal.h"
 #include "third_party/nsync/common.internal.h"
+#ifdef __FILC__
+#include <stdfil.h>
+#include <pizlonated_runtime.h>
+#endif
 #include "third_party/nsync/mu_semaphore.h"
 #include "third_party/nsync/mu_semaphore.internal.h"
 #include "libc/intrin/cxaatexit.h"
@@ -209,6 +213,7 @@ static void all_waiters_push (waiter *w) {
 #endif
 }
 
+#ifndef __FILC__
 static void free_waiters_push (waiter *w) {
 	waiter *tip;
 	unassert (!TAG(w));
@@ -227,6 +232,8 @@ static void free_waiters_push (waiter *w) {
 #endif
 }
 
+#endif /* !__FILC__ */
+#ifndef __FILC__
 static waiter *free_waiters_pop (void) {
 	waiter *w, *tip;
 	tip = atomic_load_explicit (&free_waiters, memory_order_relaxed);
@@ -245,6 +252,8 @@ static waiter *free_waiters_pop (void) {
 	return (w);
 }
 
+#endif /* !__FILC__ */
+#ifndef __FILC__
 static bool free_waiters_populate (void) {
 	waiter *waiters = __maps_balloc (sizeof(waiter));
 	if (!waiters)
@@ -274,6 +283,31 @@ static bool free_waiters_populate (void) {
 
 /* -------------------------------- */
 
+#endif /* !__FILC__ */
+
+#ifdef __FILC__
+/* Fil-C port: the free list below tags ABA counters into the pointer value
+ * (PTR/TAG/ABA macros), which destroys Fil-C capabilities.  Under Fil-C
+ * waiters are allocated from the garbage collector and simply abandoned on
+ * free, which is semantically equivalent (memory is reclaimed by the GC).
+ * nsync's own semaphore init is still run so that the per-waiter semaphore
+ * is usable. */
+static waiter *free_waiters_alloc (void) {
+	waiter *w = zgc_alloc (sizeof (waiter));
+	if (!w)
+		return NULL;
+	if (!nsync_mu_semaphore_init (&w->sem)) {
+		return NULL;
+	}
+	w->nw.sem = &w->sem;
+	dll_init (&w->nw.q);
+	w->nw.flags = NSYNC_WAITER_FLAG_MUCV;
+	dll_init (&w->same_condition);
+	all_waiters_push (w);
+	return w;
+}
+#endif
+
 /* Return a pointer to an unused waiter struct.
    Ensures that the enclosed timer is stopped and its channel drained. */
 waiter *nsync_waiter_new_ (void) {
@@ -282,6 +316,18 @@ waiter *nsync_waiter_new_ (void) {
 	bool out_of_semaphores = false;
 	w = tw = get_waiter_for_thread ();
 	if (w == NULL || (w->flags & (WAITER_RESERVED|WAITER_IN_USE)) != WAITER_RESERVED) {
+#ifdef __FILC__
+		(void)out_of_semaphores;
+		w = free_waiters_alloc ();
+		if (!w) {
+			pthread_yield_np ();
+			w = free_waiters_alloc ();
+		}
+		if (tw == NULL) {
+			if (set_waiter_for_thread (w))
+				w->flags |= WAITER_RESERVED;
+		}
+#else
 		while (!(w = free_waiters_pop ())) {
 			if (!out_of_semaphores)
 				if (!free_waiters_populate ())
@@ -293,6 +339,7 @@ waiter *nsync_waiter_new_ (void) {
 			if (set_waiter_for_thread (w))
 				w->flags |= WAITER_RESERVED;
 		}
+#endif
 	}
 	w->flags |= WAITER_IN_USE;
 	return (w);
@@ -307,7 +354,9 @@ void nsync_waiter_free_ (waiter *w) {
 	if ((w->flags & WAITER_RESERVED) == 0) {
 		if (w == get_waiter_for_thread ())
 			set_waiter_for_thread (0);
+#ifndef __FILC__
 		free_waiters_push (w);
+#endif
 	}
 }
 
@@ -316,7 +365,9 @@ void nsync_waiter_destroy_ (void *v) {
 	waiter *w = (waiter *) v;
 	unassert ((w->flags & (WAITER_RESERVED|WAITER_IN_USE)) == WAITER_RESERVED);
 	w->flags &= ~WAITER_RESERVED;
+#ifndef __FILC__
 	free_waiters_push (w);
+#endif
 }
 
 /* Ravages nsync waiters/locks/conds after fork(). */

@@ -4,6 +4,12 @@
 #endif
 #ifndef _XOPMMINTRIN_H_INCLUDED
 #define _XOPMMINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <xopintrin.h>
+#else /* !__FILC__ */
 #include "third_party/intel/fma4intrin.internal.h"
 #ifndef __XOP__
 #pragma GCC push_options
@@ -646,3 +652,5 @@ _mm256_permute2_ps (__m256 __X, __m256 __Y, __m256i __C, const int __I)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

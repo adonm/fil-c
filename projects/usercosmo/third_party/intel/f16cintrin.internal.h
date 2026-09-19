@@ -4,6 +4,12 @@
 #endif
 #ifndef _F16CINTRIN_H_INCLUDED
 #define _F16CINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <f16cintrin.h>
+#else /* !__FILC__ */
 #ifndef __F16C__
 #pragma GCC push_options
 #pragma GCC target("f16c")
@@ -55,3 +61,5 @@ _mm256_cvtps_ph (__m256 __A, const int __I)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

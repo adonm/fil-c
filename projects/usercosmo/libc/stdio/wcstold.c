@@ -27,4 +27,7 @@ long double wcstold(const wchar_t *nptr, wchar_t **endptr) {
   abort();
 }
 
-__weak_reference(strtold, strtold_l);
+/* Fil-C port: the original made strtold_l a weak alias of strtold, but
+   strtold is defined in another translation unit (gdtoa), and a
+   __attribute__((alias)) declaration must reference a symbol defined in the
+   same TU.  Nothing in this build references strtold_l, so drop it. */

@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVX512BITALGINTRIN_H_INCLUDED
 #define _AVX512BITALGINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512bitalgintrin.h>
+#else /* !__FILC__ */
 #if !defined (__AVX512BITALG__) || !defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512bitalg,evex512")
@@ -77,3 +83,5 @@ _mm512_mask_bitshuffle_epi64_mask (__mmask64 __M, __m512i __A, __m512i __B)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

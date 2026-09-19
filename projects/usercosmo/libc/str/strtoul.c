@@ -23,6 +23,7 @@
 #include "libc/stdckdint.h"
 #include "libc/str/str.h"
 #include "libc/str/tab.h"
+#include "libc/str/locale.h"
 
 /**
  * Decodes unsigned integer from ASCII string.
@@ -63,6 +64,6 @@ unsigned long strtoul(const char *s, char **endptr, int base) {
   return d > 0 ? x : -x;
 }
 
-__weak_reference(strtoul, strtoumax);
-__weak_reference(strtoul, strtoull);
-__weak_reference(strtoul, strtoull_l);
+__weak_reference_as(strtoumax, strtoul);
+__weak_reference_as(strtoull, strtoul);
+__weak_reference_as(strtoull_l, strtoul);

@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _MM_MALLOC_H_INCLUDED
 #define _MM_MALLOC_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <mm_malloc.h>
+#else /* !__FILC__ */
 #include "libc/mem/mem.h"
 #ifndef __cplusplus
 extern int posix_memalign (void **, size_t, size_t);
@@ -27,3 +33,5 @@ _mm_free (void *__ptr)
 }
 #endif
 #endif
+
+#endif /* __FILC__ */

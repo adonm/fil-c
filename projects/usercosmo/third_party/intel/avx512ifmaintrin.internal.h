@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVX512IFMAINTRIN_H_INCLUDED
 #define _AVX512IFMAINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512ifmaintrin.h>
+#else /* !__FILC__ */
 #if !defined (__AVX512IFMA__) || !defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512ifma,evex512")
@@ -71,3 +77,5 @@ _mm512_maskz_madd52hi_epu64 (__mmask8 __M, __m512i __X, __m512i __Y, __m512i __Z
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

@@ -38,7 +38,10 @@ errno_t __errno;
  *
  * This function promises to not clobber argument registers.
  */
-nocallersavedregisters errno_t *__errno_location(void) {
+/* Fil-C port: the nocallersavedregisters attribute is dropped so that the
+   definition matches the plain declaration in libc/errno.h (the macro's
+   __has_attribute probe behaves differently depending on include order). */
+errno_t *__errno_location(void) {
   if (__tls_enabled) {
     return &__get_tls()->tib_errno;
   } else {

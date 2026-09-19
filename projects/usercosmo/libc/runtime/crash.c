@@ -63,7 +63,7 @@ static void kprintf_crash_handle(int sig, siginfo_t *si, void *arg) {
   _Exit(44);
 }
 
-__attribute__((__constructor__(99))) void kprintf_crash_ctor(void) {
+__attribute__((__constructor__(199))) void kprintf_crash_ctor(void) {
   int enable;
   if ((enable = !!getenv("KPRINTF_CRASH"))) {
     struct sigaction sa;

@@ -41,12 +41,12 @@ long lrint(double x) {
 }
 
 #if __SIZEOF_LONG__ == __SIZEOF_LONG_LONG__
-__weak_reference(lrint, llrint);
+__weak_reference_as(llrint, lrint);
 #endif
 
 #if LDBL_MANT_DIG == 53 && LDBL_MAX_EXP == 1024
-__weak_reference(lrint, lrintl);
+__weak_reference_as(lrintl, lrint);
 #if __SIZEOF_LONG__ == __SIZEOF_LONG_LONG__
-__weak_reference(lrint, llrintl);
+__weak_reference_as(llrintl, lrint);
 #endif
 #endif

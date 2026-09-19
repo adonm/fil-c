@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVXIFMAINTRIN_H_INCLUDED
 #define _AVXIFMAINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avxifmaintrin.h>
+#else /* !__FILC__ */
 #ifndef __AVXIFMA__
 #pragma GCC push_options
 #pragma GCC target("avxifma")
@@ -47,3 +53,5 @@ _mm256_madd52hi_avx_epu64 (__m256i __X, __m256i __Y, __m256i __Z)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

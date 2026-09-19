@@ -32,7 +32,15 @@ struct CosmoTib {
   struct CosmoFtrace tib_ftracer; /* 0x08 */
   void *(*tib_malloc)(void);      /* 0x18 */
   _Atomic(int32_t) tib_ptid;      /* 0x20 transitions 0 → tid */
+#ifdef __FILC__
+  /* Fil-C port: this field must hold a real capability (the PosixThread
+     object lives in GC memory); an intptr_t would destroy the pointer and
+     every reader would fault.  void* keeps the capability.  The yolo TIB
+     layout is unchanged: this only affects pizlonated code's own TIB. */
+  void *tib_pthread;              /* 0x28 */
+#else
   intptr_t tib_pthread;           /* 0x28 */
+#endif
   struct CosmoTib *tib_self2;     /* 0x30 */
   _Atomic(int32_t) tib_ctid;      /* 0x38 transitions -1 → tid → 0 */
   int32_t tib_errno;              /* 0x3c */
@@ -72,6 +80,30 @@ extern char __tls_enabled;
 #error "unsupported architecture"
 #endif
 
+#ifdef __FILC__
+
+/* Fil-C port: Fil-C code can not use the kernel-managed TIB (i.e. %fs:0), since
+ * the Fil-Pizlonator rejects inline asm that touches segment registers and any
+ * pointer returned by inline asm.  Instead, in Fil-C land the TIB is an
+ * ordinary __thread variable, which gives every pizlonated thread its own TIB
+ * with zero overhead and no kernel TLS involvement at all.  The definition of
+ * the variable lives in libc/thread/filc_tls.c.  The kernel TIB set up by the
+ * yolo (non-pizlonated) boot layer still exists in parallel; it is used by
+ * libpizlo's yolo side and by libyolocosmo, and the two worlds never mix. */
+extern __thread struct CosmoTib __filc_tib libcesque;
+struct PosixThread;
+void *__filc_init_tib(struct PosixThread *) libcesque;
+
+/* The yolo copy of this variable lives in libc/sysv/hostos.S and is only ever
+ * flipped by the yolo boot (__enable_tls).  Fil-C land never uses the kernel
+ * TIB, so from a pizlonated perspective TLS is always enabled; the definition
+ * in filc_tls.c just satisfies references to the symbol. */
+#undef __tls_enabled
+#define __tls_enabled        1
+#define __tls_enabled_set(x) (void)0
+
+#endif /* __FILC__ */
+
 void __set_tls(struct CosmoTib *) libcesque;
 struct CosmoTib *__get_tls_rax(void) dontthrow pureconst;
 
@@ -87,7 +119,10 @@ struct CosmoTib *__get_tls_rax(void) dontthrow pureconst;
  * This can't be used in privileged functions.
  */
 forceinline pureconst struct CosmoTib *__get_tls(void) {
-#ifdef __chibicc__
+#ifdef __FILC__
+  /* Fil-C port: see the comment near the declaration of __filc_tib above. */
+  return &__filc_tib;
+#elif defined(__chibicc__)
   return __get_tls_rax();
 #elif __x86_64__
   struct CosmoTib *__tib;

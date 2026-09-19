@@ -80,6 +80,8 @@ struct PosixThread {
   void *pt_val;               // start param / return val
   char *pt_tls;               // bottom of tls allocation
   struct CosmoTib *tib;       // middle of tls allocation
+  void *zthread;              // Fil-C port: libpizlo zthread handle for
+                              // zthread_join()/zthread_kill()
   struct Dll list;            // list of threads
   struct _pthread_cleanup_buffer *pt_cleanup;
   uint64_t pt_blkmask;

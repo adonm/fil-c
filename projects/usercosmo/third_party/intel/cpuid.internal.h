@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _CPUID_H_INCLUDED
 #define _CPUID_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <cpuid.h>
+#else /* !__FILC__ */
 #define bit_SSE3 (1 << 0)
 #define bit_PCLMUL (1 << 1)
 #define bit_LZCNT (1 << 5)
@@ -235,3 +241,5 @@ __cpuidex (int __cpuid_info[4], int __leaf, int __subleaf)
 }
 #endif
 #endif
+
+#endif /* __FILC__ */

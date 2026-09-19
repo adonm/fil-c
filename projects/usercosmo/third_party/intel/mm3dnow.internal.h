@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _MM3DNOW_H_INCLUDED
 #define _MM3DNOW_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <mm3dnow.h>
+#else /* !__FILC__ */
 #include "third_party/intel/mmintrin.internal.h"
 #include "third_party/intel/prfchwintrin.internal.h"
 #if defined __x86_64__ && !defined __SSE__ || !defined __3dNOW__
@@ -173,3 +179,5 @@ _m_pswapd (__m64 __A)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _IMMINTRIN_H_INCLUDED
 #define _IMMINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <immintrin.h>
+#else /* !__FILC__ */
 #include "third_party/intel/x86gprintrin.internal.h"
 #include "third_party/intel/mmintrin.internal.h"
 #include "third_party/intel/xmmintrin.internal.h"
@@ -64,3 +70,5 @@
 #include "third_party/intel/amxfp16intrin.internal.h"
 #endif
 #endif
+
+#endif /* __FILC__ */

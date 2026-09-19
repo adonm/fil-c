@@ -4,6 +4,12 @@
 #endif
 #ifndef __AVX512VNNIINTRIN_H_INCLUDED
 #define __AVX512VNNIINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512vnniintrin.h>
+#else /* !__FILC__ */
 #if !defined(__AVX512VNNI__) || !defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512vnni,evex512")
@@ -105,3 +111,5 @@ _mm512_maskz_dpwssds_epi32 (__mmask16 __A, __m512i __B, __m512i __C,
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

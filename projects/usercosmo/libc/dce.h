@@ -115,7 +115,14 @@
 #if !(__ASSEMBLER__ + __LINKER__ + 0)
 COSMOPOLITAN_C_START_
 
+#ifdef __FILC__
+/* Fil-C port: the yolo copy of __hostos (libc/sysv/hostos.S) is RO-mapped
+ * after init, but pizlonated code gets its own copy of this global (see
+ * libc/runtime/filc_libc_start_main.c) which must be writable at startup. */
+extern int __hostos;
+#else
 extern const int __hostos;
+#endif
 
 int IsQemuUser(void);
 

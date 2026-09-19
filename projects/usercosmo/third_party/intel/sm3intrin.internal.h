@@ -4,6 +4,12 @@
 #endif
 #ifndef _SM3INTRIN_H_INCLUDED
 #define _SM3INTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <sm3intrin.h>
+#else /* !__FILC__ */
 #ifndef __SM3__
 #pragma GCC push_options
 #pragma GCC target("sm3")
@@ -40,3 +46,5 @@ _mm_sm3rnds2_epi32 (__m128i __A, __m128i __B, __m128i __C, const int __D)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

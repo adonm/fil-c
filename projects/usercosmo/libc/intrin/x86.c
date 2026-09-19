@@ -84,7 +84,7 @@ static const char *getIntelProcessorTypeAndSubtype(unsigned Family,
                                                    const unsigned *Features,
                                                    unsigned *Type,
                                                    unsigned *Subtype) {
-#define testFeature(F) (Features[F / 32] & (1 << (F % 32))) != 0
+#define testFeature(F) ((Features[F / 32] & (1 << (F % 32))) != 0)
 
   // We select CPU strings to match the code in Host.cpp, but we don't use them
   // in compiler-rt.
@@ -802,7 +802,7 @@ unsigned __cpu_features2[(CPU_FEATURE_MAX - 1) / 32];
 // the priority set.  However, it still runs after ifunc initializers and
 // needs to be called explicitly there.
 
-__attribute__((__constructor__(1))) textstartup int __cpu_indicator_init(void) {
+__attribute__((__constructor__(101))) textstartup int __cpu_indicator_init(void) {
   unsigned EAX, EBX, ECX, EDX;
   unsigned MaxLeaf = 5;
   unsigned Vendor;

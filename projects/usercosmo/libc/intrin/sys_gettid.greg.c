@@ -23,6 +23,9 @@
 #include "libc/nt/thunk/msabi.h"
 #include "libc/runtime/internal.h"
 #include "libc/sysv/pib.h"
+#ifdef __FILC__
+#include <pizlonated_syscalls.h>
+#endif
 
 __msabi extern typeof(GetCurrentThreadId) *const __imp_GetCurrentThreadId;
 
@@ -31,6 +34,12 @@ __msabi extern typeof(GetCurrentThreadId) *const __imp_GetCurrentThreadId;
 // will deadlock __maps_lock() if the wrong tid is accidentally used.
 dontinstrument int sys_gettid(void) {
   int64_t wut;
+#ifdef __FILC__
+  /* Fil-C port: raw `syscall` inline asm is not allowed under Fil-C; the
+     sys_gettid thunk shim forwards to libpizlo's zsys_gettid().  (Note the
+     Linux kernel's gettid always succeeds.) */
+  return zsys_gettid();
+#else
 #ifdef __x86_64__
   int tid;
   if (IsWindows()) {
@@ -67,28 +76,6 @@ dontinstrument int sys_gettid(void) {
     tid = __get_pib()->pid;
   }
   return tid;
-#elif defined(__aarch64__)
-  // this can't be used on xnu
-  register long res asm("x0");
-  if (IsLinux()) {
-    asm volatile("mov\tx8,%1\n\t"
-                 "svc\t0"
-                 : "=r"(res)
-                 : "i"(178)
-                 : "x8", "memory");
-  } else if (IsFreebsd()) {
-    res = (long)&wut;
-    asm volatile("mov\tx8,%2\n\t"
-                 "svc\t0"
-                 : "+r"(res), "=m"(wut)
-                 : "i"(432)  // thr_self()
-                 : "x8", "memory");
-    res = wut;
-  } else {
-    res = __get_pib()->pid;
-  }
-  return res;
-#else
-#error "arch unsupported"
-#endif
+#endif /* __x86_64__ */
+#endif /* __FILC__ */
 }

@@ -47,6 +47,10 @@ static ssize_t writevall(int fd, struct iovec *iov, int iovlen) {
     wrote = rc;
     toto += wrote;
     for (;;) {
+      /* Fil-C port: cosmo reads one iovec past the end of the array here
+         (harmless in real memory, a capability violation here). */
+      if (iovlen <= 0)
+        break;
       if (!iov->iov_len) {
         --iovlen;
         ++iov;

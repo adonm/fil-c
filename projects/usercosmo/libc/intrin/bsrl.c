@@ -52,4 +52,4 @@ int(bsrl)(long x) {
   return kDebruijn[(x * 0x03f79d71b4cb0a89ull) >> 58];
 }
 
-__weak_reference(bsrl, bsrll);
+__weak_reference_as(bsrll, bsrl);

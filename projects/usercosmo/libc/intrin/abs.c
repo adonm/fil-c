@@ -41,5 +41,5 @@ long labs(long x) {
   return x < 0 ? -x : x;
 }
 
-__weak_reference(labs, llabs);
+__weak_reference_as(llabs, labs);
 __weak_reference(labs, imaxabs);

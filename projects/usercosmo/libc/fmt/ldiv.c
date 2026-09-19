@@ -35,5 +35,5 @@ ldiv_t(ldiv)(long num, long den) {
   return retval;
 }
 
-__weak_reference(ldiv, lldiv);
-__weak_reference(ldiv, imaxdiv);
+__weak_reference_as(lldiv, ldiv);
+__weak_reference_as(imaxdiv, ldiv);

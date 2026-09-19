@@ -4,6 +4,12 @@
 #endif
 #ifndef _SM4INTRIN_H_INCLUDED
 #define _SM4INTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <sm4intrin.h>
+#else /* !__FILC__ */
 #ifndef __SM4__
 #pragma GCC push_options
 #pragma GCC target("sm4")
@@ -39,3 +45,5 @@ _mm256_sm4rnds4_epi32 (__m256i __A, __m256i __B)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

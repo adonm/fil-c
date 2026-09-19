@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVX512VP2INTERSECTINTRIN_H_INCLUDED
 #define _AVX512VP2INTERSECTINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512vp2intersectintrin.h>
+#else /* !__FILC__ */
 #if !defined(__AVX512VP2INTERSECT__) || !defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512vp2intersect,evex512")
@@ -29,3 +35,5 @@ _mm512_2intersect_epi64 (__m512i __A, __m512i __B, __mmask8 *__U,
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

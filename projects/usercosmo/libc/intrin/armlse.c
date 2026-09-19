@@ -24,7 +24,7 @@
 
 bool __aarch64_have_lse_atomics;
 
-static __attribute__((__constructor__(1))) void __aarch64_atomics_init(void) {
+static __attribute__((__constructor__(101))) void __aarch64_atomics_init(void) {
   struct AuxiliaryValue x = __getauxval(AT_HWCAP);
   __aarch64_have_lse_atomics = !!(x.value & HWCAP_ATOMICS);
 }

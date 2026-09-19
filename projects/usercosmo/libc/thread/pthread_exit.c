@@ -37,6 +37,7 @@
 #include "libc/thread/thread.h"
 #include "libc/thread/tls.h"
 #include "third_party/nsync/wait_s.internal.h"
+#include <pizlonated_runtime.h>
 
 /**
  * Terminates current POSIX thread.
@@ -143,22 +144,26 @@ wontreturn void pthread_exit(void *rc) {
   //  implementation called exit() with a zero argument at thread
   //  termination time." ──Quoth POSIX.1-2017
   if (!population) {
-    for (int i = __fini_array_end - __fini_array_start; i--;)
-      ((void (*)(void))__fini_array_start[i])();
-    _Exit(0);
+    /* Fil-C port: cosmo walks __fini_array here manually, but pizlonated
+       code can not reach the linker-script __fini_array boundaries (they'd
+       need pizlonated_ symbol aliases).  exit() below still runs atexit(),
+       __cxa_atexit(), and the Fil-C registered global destructors. */
+    exit(0);
   }
 
   // check if the main thread has died whilst children live
   // note that the main thread is joinable by child threads
   if (pt->pt_flags & PT_STATIC) {
-    atomic_store_explicit(&tib->tib_ctid, 0, memory_order_release);
-    cosmo_futex_wake((atomic_int *)&tib->tib_ctid, INT_MAX,
-                     !IsWindows() && !IsXnu());
-    _Exit1(0);
+    /* Fil-C port: cosmo clears tib_ctid, wakes joiners, and issues a raw
+       exit(2).  Under Fil-C the joiners wait on zthread_join() (see
+       pthread_timedjoin_np.c) and the yolo thread of the main thread is the
+       process itself, so just run the exit handlers and exit(0). */
+    exit(0);
   }
 
-  // this is a child thread
-  __builtin_longjmp(pt->pt_exiter, 1);
+  // this is a child thread: hand control (and the result value) back to
+  // libpizlo's thread machinery
+  zthread_exit(rc);
 }
 
 __weak_reference(pthread_exit, thrd_exit);

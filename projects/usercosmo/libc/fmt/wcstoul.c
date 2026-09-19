@@ -23,6 +23,7 @@
 #include "libc/stdckdint.h"
 #include "libc/str/str.h"
 #include "libc/str/tab.h"
+#include "libc/str/locale.h"
 
 /**
  * Decodes unsigned integer from wide string.
@@ -62,6 +63,6 @@ unsigned long wcstoul(const wchar_t *s, wchar_t **endptr, int base) {
   return d > 0 ? x : -x;
 }
 
-__weak_reference(wcstoul, wcstoumax);
-__weak_reference(wcstoul, wcstoull);
-__weak_reference(wcstoul, wcstoull_l);
+__weak_reference_as(wcstoumax, wcstoul);
+__weak_reference_as(wcstoull, wcstoul);
+__weak_reference_as(wcstoull_l, wcstoul);

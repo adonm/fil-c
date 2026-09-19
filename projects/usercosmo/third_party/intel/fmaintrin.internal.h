@@ -4,6 +4,12 @@
 #endif
 #ifndef _FMAINTRIN_H_INCLUDED
 #define _FMAINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <fmaintrin.h>
+#else /* !__FILC__ */
 #ifndef __FMA__
 #pragma GCC push_options
 #pragma GCC target("fma")
@@ -243,3 +249,5 @@ _mm256_fmsubadd_ps (__m256 __A, __m256 __B, __m256 __C)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

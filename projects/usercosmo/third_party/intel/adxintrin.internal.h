@@ -4,6 +4,12 @@
 #endif
 #ifndef _ADXINTRIN_H_INCLUDED
 #define _ADXINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <adxintrin.h>
+#else /* !__FILC__ */
 extern __inline unsigned char
 __attribute__((__gnu_inline__, __always_inline__, __artificial__))
 _subborrow_u32 (unsigned char __CF, unsigned int __X,
@@ -50,3 +56,5 @@ _addcarryx_u64 (unsigned char __CF, unsigned long long __X,
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

@@ -174,13 +174,26 @@
  */
 int openat(int dirfd, const char *path, int flags, ...) {
   int rc;
-  va_list va;
   unsigned mode;
-  struct stat st;
-  struct ZiposUri zipname;
+#ifdef __FILC__
+  /* Fil-C port: va_arg() on an empty vararg list traps (exact bounds).  The
+     mode is only meaningful with O_CREAT; callers without O_CREAT pass no
+     mode argument. */
+  mode = 0;
+  if (flags & O_CREAT) {
+    va_list va;
+    va_start(va, flags);
+    mode = va_arg(va, unsigned);
+    va_end(va);
+  }
+#else
+  va_list va;
   va_start(va, flags);
   mode = va_arg(va, unsigned);
   va_end(va);
+#endif
+  struct stat st;
+  struct ZiposUri zipname;
   BEGIN_CANCELATION_POINT;
 
   if (kisdangerous(path)) {

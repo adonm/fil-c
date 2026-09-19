@@ -63,6 +63,6 @@ int fflush(FILE *f) {
   return rc;
 }
 
-__attribute__((__constructor__(60))) static textstartup void fflush_init(void) {
+__attribute__((__constructor__(160))) static textstartup void fflush_init(void) {
   __cxa_atexit((void *)fflush, 0, 0);
 }

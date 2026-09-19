@@ -130,6 +130,6 @@ const char *FindDebugBinary(void) {
 }
 
 // pay startup cost to make this signal safe from the user's perspective
-__attribute__((__constructor__(10))) static void FindDebugBinaryCtor(void) {
+__attribute__((__constructor__(110))) static void FindDebugBinaryCtor(void) {
   cosmo_once(&g_comdbg.once, FindDebugBinaryInit);
 }

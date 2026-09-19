@@ -27,6 +27,9 @@
 #if defined(__x86_64__) && !defined(__chibicc__)
 #pragma GCC push_options
 #pragma GCC target("avx2")
+/* Fil-C port: clang does not always honor #pragma GCC target for
+   always_inline header intrinsics; use the attribute too. */
+__attribute__((__target__("avx2"))
 static bool strstr_avx2(const unsigned char **h, const unsigned char *n,
                         size_t l, size_t *j) {
   __m256i nv = _mm256_set1_epi8(n[0]);
@@ -38,7 +41,7 @@ static bool strstr_avx2(const unsigned char **h, const unsigned char *n,
         _mm256_min_epu8(
             _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)*h), nv),
             _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)(*h + 1)),
-                              sv))));
+                              sv)));
     if (m) {
       *h += __builtin_ctz(m);
       if (!**h) {
@@ -67,7 +70,7 @@ dontinline relegated static bool strstr_sse2(const unsigned char **h,
         _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)*h), zv),
         _mm_min_epu8(
             _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)*h), nv),
-            _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(*h + 1)), sv))));
+            _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(*h + 1)), sv)));
     if (m) {
       *h += __builtin_ctz(m);
       if (!**h) {
@@ -158,7 +161,7 @@ char *strstr(const char *haystack, const char *needle) {
                               vreinterpretq_u16_u8(vorrq_u8(
                                   vceqq_u8(vld1q_u8(h), zv),
                                   vminq_u8(vceqq_u8(vld1q_u8(h), nv),
-                                           vceqq_u8(vld1q_u8((h + 1)), sv)))),
+                                           vceqq_u8(vld1q_u8((h + 1)), sv))),
                               4)),
                           0);
         if (m) {

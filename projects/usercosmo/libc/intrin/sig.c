@@ -1001,7 +1001,7 @@ static unsigned long ParseUint64(const char *str) {
 }
 
 // fork() calls this too
-__attribute__((__constructor__(10))) textstartup void __sig_init(void) {
+__attribute__((__constructor__(110))) textstartup void __sig_init(void) {
   if (!IsWindows())
     return;
   AddVectoredExceptionHandler(true, (void *)__sig_crash);
@@ -1010,7 +1010,7 @@ __attribute__((__constructor__(10))) textstartup void __sig_init(void) {
 }
 
 // not called by forked child
-__attribute__((__constructor__(10))) textstartup static void __sig_init2(void) {
+__attribute__((__constructor__(110))) textstartup static void __sig_init2(void) {
   if (!IsWindows())
     return;
   if (environ) {

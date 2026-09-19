@@ -30,6 +30,9 @@
 #if defined(__x86_64__) && !defined(__chibicc__)
 #pragma GCC push_options
 #pragma GCC target("avx2")
+/* Fil-C port: clang does not always honor the #pragma GCC target above for
+ * always_inline header intrinsics; put the target attribute on the function. */
+__attribute__((__target__("avx2"))
 static bool memmem_avx2(const unsigned char **h, const unsigned char *e,
                         const unsigned char *n, size_t l, size_t *j) {
   const unsigned char *p = *h;
@@ -38,7 +41,7 @@ static bool memmem_avx2(const unsigned char **h, const unsigned char *e,
   do {
     unsigned m = _mm256_movemask_epi8(_mm256_min_epu8(
         _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)p), nv),
-        _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)(p + 1)), sv)));
+        _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)(p + 1)), sv));
     if (m) {
       p += __builtin_ctz(m);
       if (l == 2) {
@@ -65,7 +68,7 @@ dontinline relegated static bool memmem_sse2(const unsigned char **h,
   do {
     unsigned m = _mm_movemask_epi8(
         _mm_min_epu8(_mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)p), nv),
-                     _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(p + 1)), sv)));
+                     _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(p + 1)), sv));
     if (m) {
       p += __builtin_ctz(m);
       if (l == 2) {
@@ -158,7 +161,7 @@ void *memmem(const void *haystack, size_t haystacklen,  //
         uint64_t m = vget_lane_u64(
             vreinterpret_u64_u8(vshrn_n_u16(
                 vreinterpretq_u16_u8(vminq_u8(vceqq_u8(vld1q_u8(h), nv),
-                                              vceqq_u8(vld1q_u8(h + 1), sv))),
+                                              vceqq_u8(vld1q_u8(h + 1), sv)),
                 4)),
             0);
         if (m) {

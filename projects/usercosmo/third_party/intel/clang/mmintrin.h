@@ -10,6 +10,19 @@
 #ifndef __MMINTRIN_H
 #define __MMINTRIN_H
 
+
+#ifdef __FILC__
+/* Fil-C port: clang 20 removed the raw MMX builtins (__builtin_ia32_paddb &
+ * friends) that this vendored (older-LLVM) copy of mmintrin.h uses, and
+ * cosmo's C sources never use MMX.  Keep only the MMX vector types, which
+ * the SSE headers still reference in a few conversion prototypes, and skip
+ * all the functions. */
+typedef long long __m64 __attribute__((__vector_size__(8), __aligned__(8)));
+typedef int __v2si __attribute__((__vector_size__(8)));
+typedef short __v4hi __attribute__((__vector_size__(8)));
+typedef char __v8qi __attribute__((__vector_size__(8)));
+#else /* !__FILC__ */
+
 #if !defined(__i386__) && !defined(__x86_64__)
 #error "This header is only meant to be used on x86 and x64 architecture"
 #endif
@@ -1551,6 +1564,8 @@ _mm_setr_pi8(char __b0, char __b1, char __b2, char __b3, char __b4, char __b5,
 #define _m_pcmpgtb _mm_cmpgt_pi8
 #define _m_pcmpgtw _mm_cmpgt_pi16
 #define _m_pcmpgtd _mm_cmpgt_pi32
+
+#endif /* __FILC__ */
 
 #endif /* __MMINTRIN_H */
 

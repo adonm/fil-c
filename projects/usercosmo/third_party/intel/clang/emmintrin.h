@@ -1486,9 +1486,15 @@ static __inline__ int __DEFAULT_FN_ATTRS _mm_cvttsd_si32(__m128d __a) {
 /// \param __a
 ///    A 128-bit vector of [2 x double].
 /// \returns A 64-bit vector of [2 x i32] containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_cvtpd_pi32(__m128d __a) {
   return (__m64)__builtin_ia32_cvtpd2pi((__v2df)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the two double-precision floating-point elements of a
 ///    128-bit vector of [2 x double] into two signed truncated (rounded toward
@@ -1505,9 +1511,15 @@ static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_cvtpd_pi32(__m128d __a) {
 /// \param __a
 ///    A 128-bit vector of [2 x double].
 /// \returns A 64-bit vector of [2 x i32] containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_cvttpd_pi32(__m128d __a) {
   return (__m64)__builtin_ia32_cvttpd2pi((__v2df)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the two signed 32-bit integer elements of a 64-bit vector of
 ///    [2 x i32] into two double-precision floating-point values, returned in a
@@ -1520,9 +1532,15 @@ static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_cvttpd_pi32(__m128d __a) {
 /// \param __a
 ///    A 64-bit vector of [2 x i32].
 /// \returns A 128-bit vector of [2 x double] containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128d __DEFAULT_FN_ATTRS_MMX _mm_cvtpi32_pd(__m64 __a) {
   return __builtin_ia32_cvtpi2pd((__v2si)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Returns the low-order element of a 128-bit vector of [2 x double] as
 ///    a double-precision floating-point value.
@@ -2108,10 +2126,16 @@ static __inline__ __m128i __DEFAULT_FN_ATTRS _mm_add_epi32(__m128i __a,
 /// \param __b
 ///    A 64-bit integer.
 /// \returns A 64-bit integer containing the sum of both parameters.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_add_si64(__m64 __a,
                                                             __m64 __b) {
   return (__m64)__builtin_ia32_paddq((__v1di)__a, (__v1di)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Adds the corresponding elements of two 128-bit vectors of [2 x i64],
 ///    saving the lower 64 bits of each sum in the corresponding element of a
@@ -2431,10 +2455,16 @@ static __inline__ __m128i __DEFAULT_FN_ATTRS _mm_mullo_epi16(__m128i __a,
 /// \param __b
 ///    A 64-bit integer containing one of the source operands.
 /// \returns A 64-bit integer vector containing the product of both operands.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_mul_su32(__m64 __a,
                                                             __m64 __b) {
   return __builtin_ia32_pmuludq((__v2si)__a, (__v2si)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Multiplies 32-bit unsigned integer values contained in the lower
 ///    bits of the corresponding elements of two [2 x i64] vectors, and returns
@@ -2539,10 +2569,16 @@ static __inline__ __m128i __DEFAULT_FN_ATTRS _mm_sub_epi32(__m128i __a,
 ///    A 64-bit integer vector containing the subtrahend.
 /// \returns A 64-bit integer vector containing the difference of the values in
 ///    the operands.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX _mm_sub_si64(__m64 __a,
                                                             __m64 __b) {
   return (__m64)__builtin_ia32_psubq((__v1di)__a, (__v1di)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Subtracts the corresponding elements of two [2 x i64] vectors.
 ///

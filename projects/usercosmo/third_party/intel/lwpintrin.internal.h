@@ -4,6 +4,12 @@
 #endif
 #ifndef _LWPINTRIN_H_INCLUDED
 #define _LWPINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <lwpintrin.h>
+#else /* !__FILC__ */
 #ifndef __LWP__
 #pragma GCC push_options
 #pragma GCC target("lwp")
@@ -65,3 +71,5 @@ __lwpins64 (unsigned long long __data2, unsigned int __data1,
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

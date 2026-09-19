@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVX512VLBWINTRIN_H_INCLUDED
 #define _AVX512VLBWINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512vlbwintrin.h>
+#else /* !__FILC__ */
 #if !defined(__AVX512VL__) || !defined(__AVX512BW__) || defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512vl,avx512bw,no-evex512")
@@ -4448,3 +4454,5 @@ _mm256_mask_reduce_min_epu8 (__mmask32 __M, __m256i __V)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

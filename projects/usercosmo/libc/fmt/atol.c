@@ -46,4 +46,4 @@ long atol(const char *nptr) {
   return x;
 }
 
-__weak_reference(atol, atoll);
+__weak_reference_as(atoll, atol);

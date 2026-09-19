@@ -27,6 +27,9 @@
 #if defined(__x86_64__) && !defined(__chibicc__)
 #pragma GCC push_options
 #pragma GCC target("avx2")
+/* Fil-C port: clang does not always honor #pragma GCC target for
+   always_inline header intrinsics; use the attribute too. */
+__attribute__((__target__("avx2"))
 static bool wcsstr_avx2(const wchar_t **h, const wchar_t *n, size_t l,
                         size_t *j) {
   __m256i nv = _mm256_set1_epi32(n[0]);
@@ -38,7 +41,7 @@ static bool wcsstr_avx2(const wchar_t **h, const wchar_t *n, size_t l,
         _mm256_min_epu32(
             _mm256_cmpeq_epi32(_mm256_loadu_si256((const __m256i *)*h), nv),
             _mm256_cmpeq_epi32(_mm256_loadu_si256((const __m256i *)(*h + 1)),
-                               sv))));
+                               sv)));
     if (m) {
       *h += __builtin_ctz(m) >> 2;
       if (!**h) {
@@ -67,7 +70,7 @@ dontinline relegated static bool wcsstr_sse2(const wchar_t **h,
         _mm_cmpeq_epi32(_mm_loadu_si128((__m128i *)*h), zv),
         _mm_and_si128(
             _mm_cmpeq_epi32(_mm_loadu_si128((__m128i *)*h), nv),
-            _mm_cmpeq_epi32(_mm_loadu_si128((__m128i *)(*h + 1)), sv))));
+            _mm_cmpeq_epi32(_mm_loadu_si128((__m128i *)(*h + 1)), sv)));
     if (m) {
       *h += __builtin_ctz(m) >> 2;
       if (!**h) {
@@ -159,7 +162,7 @@ wchar_t *wcsstr(const wchar_t *haystack, const wchar_t *needle) {
                     vceqq_u32(vld1q_u32((const uint32_t *)h), zv),
                     vminq_u32(
                         vceqq_u32(vld1q_u32((const uint32_t *)h), nv),
-                        vceqq_u32(vld1q_u32((const uint32_t *)(h + 1)), sv)))),
+                        vceqq_u32(vld1q_u32((const uint32_t *)(h + 1)), sv))),
                 4)),
             0);
         if (m) {

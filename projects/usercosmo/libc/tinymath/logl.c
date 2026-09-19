@@ -135,7 +135,7 @@ static const long double C2 = 1.4286068203094172321215E-6L;
  */
 long double logl(long double x)
 {
-#ifdef __x86__
+#if defined(__x86__) && !defined(__FILC__)
 
 	long double ln2;
 	asm("fldln2" : "=t"(ln2));

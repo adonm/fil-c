@@ -1,6 +1,12 @@
 #if defined(__x86_64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _POPCNTINTRIN_H_INCLUDED
 #define _POPCNTINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <popcntintrin.h>
+#else /* !__FILC__ */
 #ifndef __POPCNT__
 #pragma GCC push_options
 #pragma GCC target("popcnt")
@@ -24,3 +30,5 @@ _mm_popcnt_u64 (unsigned long long __X)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

@@ -4,6 +4,12 @@
 #endif
 #ifndef _CETINTRIN_H_INCLUDED
 #define _CETINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <cetintrin.h>
+#else /* !__FILC__ */
 #ifndef __SHSTK__
 #pragma GCC push_options
 #pragma GCC target ("shstk")
@@ -92,3 +98,5 @@ _clrssbsy (void *__B)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

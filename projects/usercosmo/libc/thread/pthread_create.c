@@ -59,6 +59,7 @@
 #include "libc/thread/thread.h"
 #include "libc/thread/tls.h"
 #include "third_party/dlmalloc/dlmalloc.h"
+#include <pizlonated_runtime.h>
 #include "third_party/nsync/wait_s.internal.h"
 
 __static_yoink("nsync_mu_lock");
@@ -80,13 +81,17 @@ void _pthread_free(struct PosixThread *pt) {
   if (pt->pt_flags & PT_STATIC)
     return;
 
+#ifndef __FILC__
   // unmap stack if the cosmo runtime was responsible for mapping it
+  // (Fil-C port: zthread_create2() owns the stack; we never set PT_OWNSTACK
+  // and cosmo_stack_free() lives in the excluded stack machinery)
   if (pt->pt_flags & PT_OWNSTACK)
     cosmo_stack_free(pt->pt_attr.__stackaddr, pt->pt_attr.__stacksize,
                      pt->pt_attr.__guardsize);
+#endif
 
   // reclaim thread's cached nsync waiter object
-  if (pt->tib->tib_nsync)
+  if (pt->tib && pt->tib->tib_nsync)
     nsync_waiter_destroy_(pt->tib->tib_nsync);
 
   // free any additional upstream system resources
@@ -101,12 +106,10 @@ void _pthread_free(struct PosixThread *pt) {
   }
 
   // free heap memory associated with thread
-  tmspace_release(pt->tib->tib_malloc);
-  if (pt->pt_flags & PT_OWNSIGALTSTACK)
-    free(pt->pt_attr.__sigaltstackaddr);
-  free(pt->tib->tib_keys_dynamic);
-  free(pt->pt_tls);
-  free(pt);
+  // (Fil-C port: the tmspace heap pinning and the pt_tls allocation don't
+  // exist here; the PosixThread itself is GC memory and needs no free)
+  if (pt->tib)
+    free(pt->tib->tib_keys_dynamic);
 }
 
 void _pthread_decimate(enum PosixThreadStatus threshold) {
@@ -153,81 +156,50 @@ void _pthread_decimate(enum PosixThreadStatus threshold) {
   }
 }
 
-static int PosixThread(void *arg) {
+/* Fil-C port: the thread entry point.  cosmo's original PosixThread() ran on
+ * a clone() child with the kernel TIB installed via CLONE_SETTLS; under Fil-C
+ * zthread_create2() spawns a pizlonated thread whose TIB is the __thread
+ * variable __filc_tib (see libc/thread/filc_tls.c), so this trampoline just
+ * wires the TIB up, sets the signal mask, and runs the callback. */
+static void *PosixThread(void *arg) {
   struct PosixThread *pt = arg;
 
-  // setup sched_getcpu()
-  if (IsLinux())
-    sys_rseq(__get_tls()->tib_rseq, 32, 0, RSEQ_SIG);
+  // wire up the pizlonated TIB of this thread
+  __filc_init_tib(pt);
+  pt->tib = __get_tls();
+  atomic_init(&pt->tib->tib_ptid, zthread_self_id());
+  atomic_store_explicit(&pt->tib->tib_ctid, zthread_self_id(),
+                        memory_order_release);
+  atomic_init(&pt->tib->tib_sigmask, -1);
 
-  // setup scheduling
-  if (pt->pt_attr.__inheritsched == PTHREAD_EXPLICIT_SCHED) {
-    unassert(_weaken(_pthread_reschedule));
-    _weaken(_pthread_reschedule)(pt);  // yoinked by attribute builder
-  }
+  // setup signals for new thread
+  pt->pt_attr.__sigmask &= ~(1ull << (SIGTHR - 1));
+  sys_sigprocmask(SIG_SETMASK, &pt->pt_attr.__sigmask, 0);
 
-  // setup signal stack
-  if (pt->pt_attr.__sigaltstacksize) {
-    struct sigaltstack *ss = alloca(sizeof(struct sigaltstack));
-    ss->ss_sp = pt->pt_attr.__sigaltstackaddr;
-    ss->ss_size = pt->pt_attr.__sigaltstacksize;
-    ss->ss_flags = 0;
-    unassert(!sigaltstack(ss, 0));
-  }
-
-  // set long jump handler so pthread_exit can bring control back here
-  if (!__builtin_setjmp(pt->pt_exiter)) {
-    // setup signals for new thread
-    pt->pt_attr.__sigmask &= ~(1ull << (SIGTHR - 1));
-    if (IsWindows() || IsMetal()) {
-      atomic_store_explicit(&__get_tls()->tib_sigmask, pt->pt_attr.__sigmask,
-                            memory_order_release);
-      if (_weaken(__sig_check))
-        _weaken(__sig_check)();
-    } else {
-      sys_sigprocmask(SIG_SETMASK, &pt->pt_attr.__sigmask, 0);
-    }
-    void *ret = pt->pt_start(pt->pt_val);
-    // ensure pthread_cleanup_pop(), and pthread_exit() popped cleanup
-    unassert(!pt->pt_cleanup);
-    // calling pthread_exit() will either jump back here, or call exit
-    pthread_exit(ret);
-  }
-
-  // avoid signal handler being triggered after we trash our own stack
-  __sig_block();
-
-  // return to clone polyfill which clears tid, wakes futex, and exits
-  return 0;
+  void *ret = pt->pt_start(pt->pt_val);
+  // ensure pthread_cleanup_pop(), and pthread_exit() popped cleanup
+  unassert(!pt->pt_cleanup);
+  // calling pthread_exit() will call zthread_exit() (see pthread_exit.c)
+  pthread_exit(ret);
 }
 
 static errno_t pthread_create_impl(pthread_t *thread,
                                    const pthread_attr_t *attr,
                                    void *(*start_routine)(void *), void *arg,
                                    sigset_t oldsigs) {
-  void *tls;
   errno_t err;
-  struct CosmoTib *tib;
   struct PosixThread *pt;
 
-  // create thread local storage memory
-  if (!(tls = _mktls(&tib)))
+  // create posix thread object; it must live in Fil-C GC memory so that the
+  // pizlonated pointers into it (tib_pthread, zthread handle, pt_start, ...)
+  // stay valid across GC
+  if (!(pt = zgc_alloc(sizeof(struct PosixThread))))
     return EAGAIN;
-
-  // create posix thread object
-  if (!(pt = calloc(1, sizeof(struct PosixThread)))) {
-    free(tls);
-    return EAGAIN;
-  }
   dll_init(&pt->list);
   pt->pt_locale = &__global_locale;
   pt->pt_start = start_routine;
   pt->pt_val = arg;
-  pt->pt_tls = tls;
-  pt->tib = tib;
-
-  // pin a heap if there's a small number of threads
-  tib->tib_malloc = tmspace_acquire();
+  pt->tib = 0;  // the trampoline installs the new thread's TIB
 
   // setup attributes
   if (attr) {
@@ -237,47 +209,7 @@ static errno_t pthread_create_impl(pthread_t *thread,
     pthread_attr_init(&pt->pt_attr);
   }
 
-  // setup stack
-  if (pt->pt_attr.__stackaddr) {
-    // caller supplied their own stack
-    // assume they know what they're doing as much as possible
-    if (IsOpenbsd()) {
-      if (!FixupCustomStackOnOpenbsd(&pt->pt_attr)) {
-        _pthread_free(pt);
-        return EPERM;
-      }
-    }
-  } else {
-    // cosmo is managing the stack
-    pt->pt_flags |= PT_OWNSTACK;
-    errno_t err =
-        cosmo_stack_alloc(&pt->pt_attr.__stacksize, &pt->pt_attr.__guardsize,
-                          &pt->pt_attr.__stackaddr);
-    if (err) {
-      _pthread_free(pt);
-      if (err == EINVAL || err == EOVERFLOW) {
-        return EINVAL;
-      } else {
-        return EAGAIN;
-      }
-    }
-  }
-
-  // setup signal stack
-  if (pt->pt_attr.__sigaltstacksize) {
-    if (!pt->pt_attr.__sigaltstackaddr) {
-      if (!(pt->pt_attr.__sigaltstackaddr =
-                malloc(pt->pt_attr.__sigaltstacksize))) {
-        _pthread_free(pt);
-        return EAGAIN;
-      }
-      pt->pt_flags |= PT_OWNSIGALTSTACK;
-    }
-  }
-
   // set initial status
-  pt->tib->tib_pthread = (pthread_t)pt;
-  atomic_init(&pt->tib->tib_sigmask, -1);
   if (!pt->pt_attr.__havesigmask) {
     pt->pt_attr.__havesigmask = true;
     pt->pt_attr.__sigmask = oldsigs;
@@ -314,19 +246,14 @@ static errno_t pthread_create_impl(pthread_t *thread,
   if (__isthreaded < 2)
     __isthreaded = 2;
 
-  // launch PosixThread(pt) in new thread
-  if ((err = __clone(
-           PosixThread, pt->pt_attr.__stackaddr, pt->pt_attr.__stacksize,
-           CLONE_VM | CLONE_THREAD | CLONE_FS | CLONE_FILES | CLONE_SIGHAND |
-               CLONE_SYSVSEM | CLONE_SETTLS | CLONE_PARENT_SETTID |
-               CLONE_CHILD_SETTID | CLONE_CHILD_CLEARTID,
-           pt, &pt->tib->tib_ptid, __adj_tls(pt->tib), &pt->tib->tib_ctid))) {
+  // launch PosixThread(pt) in a pizlonated thread via libpizlo
+  if (!zthread_create2(PosixThread, pt, &pt->zthread, 0)) {
+    err = errno;
     *thread = 0;  // posix doesn't require we do this
     _pthread_lock();
     dll_remove(&_pthread_list, &pt->list);
     atomic_fetch_sub_explicit(&_pthread_count, 1, memory_order_relaxed);
     _pthread_unlock();
-    _pthread_free(pt);
     if (err == ENOMEM)
       err = EAGAIN;
     return err;

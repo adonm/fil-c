@@ -37,6 +37,13 @@ typedef int clock_gettime_f(int, struct timespec *);
 
 static clock_gettime_f *__clock_gettime_get(void) {
   clock_gettime_f *cgt;
+#ifdef __FILC__
+  /* Fil-C port: the vDSO is raw un-pizlonated machine code living in memory
+     that pizlonated code may not even dereference (__vdsosym parses the vDSO
+     ELF headers!), so never use it.  sys_clock_gettime() is patched to call
+     zsys_clock_gettime() instead, which has the same convention. */
+  return sys_clock_gettime;
+#endif
   if (IsLinux() && (cgt = CGT_VDSO)) {
     return cgt;
   } else if (__syslib) {

@@ -33,6 +33,14 @@ int sys_set_tls(uintptr_t, void *);
 // we can't allow --ftrace here because cosmo_dlopen() calls this
 // function to fix the tls register, and ftrace needs it unbroken
 dontinstrument textstartup void __set_tls(struct CosmoTib *tib) {
+#ifdef __FILC__
+  /* Fil-C port: pizlonated code keeps its TIB in a __thread variable
+     (libc/thread/filc_tls.c) and never touches the kernel's %fs base; the
+     yolo side of the process has its own TIB installed by its own boot.
+     Overwriting %fs here would destroy the yolo TIB, so do nothing. */
+  (void)tib;
+  return;
+#else
   tib = __adj_tls(tib);
 #ifdef __x86_64__
   // ask the operating system to change the x86 segment register
@@ -57,7 +65,7 @@ dontinstrument textstartup void __set_tls(struct CosmoTib *tib) {
     asm volatile("wrmsr"
                  : /* no outputs */
                  : "c"(MSR_IA32_GS_BASE), "a"((uint32_t)val),
-                   "d"((uint32_t)(val >> 32)));
+                   "d"((uint32_t)(val >> 32));
   }
 #elif defined(__aarch64__)
   register long x28 asm("x28") = (long)tib;
@@ -65,4 +73,5 @@ dontinstrument textstartup void __set_tls(struct CosmoTib *tib) {
 #else
 #error "unsupported architecture"
 #endif
+#endif /* __FILC__ */
 }

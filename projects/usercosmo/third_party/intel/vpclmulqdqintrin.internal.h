@@ -4,6 +4,12 @@
 #endif
 #ifndef _VPCLMULQDQINTRIN_H_INCLUDED
 #define _VPCLMULQDQINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <vpclmulqdqintrin.h>
+#else /* !__FILC__ */
 #if !defined(__VPCLMULQDQ__) || !defined(__AVX512F__) || !defined(__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("vpclmulqdq,avx512f,evex512")
@@ -46,3 +52,5 @@ _mm256_clmulepi64_epi128 (__m256i __A, __m256i __B, const int __C)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

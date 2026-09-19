@@ -4,6 +4,12 @@
 #endif
 #ifndef _SHAINTRIN_H_INCLUDED
 #define _SHAINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <shaintrin.h>
+#else /* !__FILC__ */
 #ifndef __SHA__
 #pragma GCC push_options
 #pragma GCC target("sha")
@@ -62,3 +68,5 @@ _mm_sha256rnds2_epu32 (__m128i __A, __m128i __B, __m128i __C)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

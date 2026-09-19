@@ -4,6 +4,12 @@
 #endif
 #ifndef _KEYLOCKERINTRIN_H_INCLUDED
 #define _KEYLOCKERINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <keylockerintrin.h>
+#else /* !__FILC__ */
 #ifndef __KL__
 #pragma GCC push_options
 #pragma GCC target("kl")
@@ -90,3 +96,5 @@ _mm_aesencwide256kl_u8(__m128i __A[8], const __m128i __B[8], const void * __P)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

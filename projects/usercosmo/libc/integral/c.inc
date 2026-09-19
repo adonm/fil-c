@@ -582,6 +582,12 @@ typedef struct {
     0;                                                 \
   })
 
+#ifdef __FILC__
+/* Fil-C port: like __static_yoink below, but for symbol arguments; see the
+ * comment there.  (The operand-bearing form doesn't hit the module-asm
+ * parser, but neutering keeps RII semantics consistent.) */
+#define __yoink(SYMBOL) (void)0
+#else
 #if !defined(__APPLE__) && defined(__x86_64__)
 #define __yoink(SYMBOL) \
   __asm__(".section .yoink\n\tnopl\t%0\n\t.previous" : : "m"(SYMBOL))
@@ -591,7 +597,18 @@ typedef struct {
 #else
 #define __yoink(SYMBOL) (void)0
 #endif
+#endif /* __FILC__ */
 
+#ifdef __FILC__
+/* Fil-C port: this macro emits module-level assembly (".section .yoink /
+ * nopl \"sym\" / .previous"), which the Fil-Pizlonator cannot parse at file
+ * scope (it aborts the compiler with "Invalid directive: .section").  Its
+ * only job is "referencing is initialization" — forcing the linker to pull
+ * archive members — plus legal notice embedding; pizlonated objects don't
+ * need the RII trick (the build script curates what's linked), so make it a
+ * no-op under Fil-C. */
+#define __static_yoink(SYMBOLSTR)
+#else
 #if !defined(__APPLE__) && defined(__x86_64__)
 #define __static_yoink(SYMBOLSTR) \
   __asm__(".section .yoink\n\tnopl\t\"" SYMBOLSTR "\"\n\t.previous")
@@ -601,6 +618,7 @@ typedef struct {
 #else
 #define __static_yoink(SYMBOLSTR)
 #endif
+#endif /* __FILC__ */
 
 #if !defined(IM_FEELING_NAUGHTY)
 #define __static_yoink_source(PATH) __static_yoink(PATH)
@@ -608,11 +626,24 @@ typedef struct {
 #define __static_yoink_source(PATH)
 #endif
 
-#define __weak_reference(sym, alias) __weak_reference_impl(sym, alias)
-#define __weak_reference_impl(sym, alias)  \
-  __asm__(".weak\t" #alias "\n\t"          \
-          ".equ\t" #alias ", " #sym "\n\t" \
-          ".type\t" #alias ",@notype")
+/* Fil-C port: the original definition of this macro emitted module-level
+ * assembly (".weak alias / .equ alias, sym / .type alias,@notype"), which the
+ * Fil-Pizlonator pass cannot handle (it aborts the compiler with "Invalid
+ * directive: .weak").  Instead we use the musl-style declaration-based weak
+ * alias, which Fil-C demonstrably compiles correctly (musl uses this idiom
+ * pervasively and all of usermusl builds with it).  This creates `alias` as a
+ * weak symbol equal to `sym`; the argument order matches the original macro
+ * (first the target symbol, then the alias).  The alias takes the type of the
+ * TARGET; the handful of cosmo sites whose alias has its own different
+ * prototype (e.g. wcstoull_l) are patched with explicit declarations. */
+#define __weak_reference(sym, alias) \
+  extern __typeof(sym) alias __attribute__((__weak__, __alias__(#sym)))
+
+/* Fil-C port: variant for cosmo's aliases that have their own (wider)
+ * prototype, e.g. `__weak_reference(labs, llabs)` where llabs is declared
+ * `long long llabs(long long)`.  The alias must already be declared. */
+#define __weak_reference_as(alias, sym) \
+  extern __typeof(alias) alias __attribute__((__weak__, __alias__(#sym)))
 
 #ifndef __chibicc__
 #define __strong_reference(sym, alias) \

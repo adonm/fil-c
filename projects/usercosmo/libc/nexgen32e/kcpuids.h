@@ -30,7 +30,13 @@
 #if !(__ASSEMBLER__ + __LINKER__ + 0)
 COSMOPOLITAN_C_START_
 
+#ifdef __FILC__
+/* Fil-C port: filc_tables.c fills this at startup with cpuid; const would
+   make the pizlonator's object read-only. */
+extern unsigned kCpuids[KCPUIDS_LEN][4];
+#else
 extern const unsigned kCpuids[KCPUIDS_LEN][4];
+#endif
 
 COSMOPOLITAN_C_END_
 #endif /* !(__ASSEMBLER__ + __LINKER__ + 0) */

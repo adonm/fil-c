@@ -47,6 +47,6 @@ static FILE __stdout = {
  */
 FILE *stdout = &__stdout;
 
-__attribute__((__constructor__(60))) static textstartup void stdout_init(void) {
+__attribute__((__constructor__(160))) static textstartup void stdout_init(void) {
   dll_make_last(&__stdio.files, &__stdout.elem);
 }

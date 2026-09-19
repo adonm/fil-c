@@ -31,6 +31,7 @@
 #include "libc/sysv/pib.h"
 #include "libc/thread/posixthread.internal.h"
 #include "libc/thread/thread.h"
+#include <pizlonated_runtime.h>
 
 /**
  * Sends signal to thread.
@@ -62,8 +63,19 @@ errno_t pthread_kill(pthread_t thread, int sig) {
              kPosixThreadTerminated) {
     err = ESRCH;
   } else if (IsWindows()) {
+#ifdef __FILC__
+    err = ENOSYS;
+#else
     err = __sig_kill(pt, sig, SI_TKILL);
+#endif
   } else {
+#ifdef __FILC__
+    /* Fil-C port: tgkill/tkill need the real kernel tid of the underlying
+       yolo thread, which pizlonated code doesn't know; libpizlo's
+       zthread_kill() does the routing for us. */
+    if (!zthread_kill(pt->zthread, __linux2sig(sig)))
+      err = errno;
+#else
     if (IsXnuSilicon()) {
       err = __syslib->__pthread_kill(_pthread_syshand(pt), __linux2sig(sig));
     } else {
@@ -80,6 +92,7 @@ errno_t pthread_kill(pthread_t thread, int sig) {
         errno = e;
       }
     }
+#endif /* __FILC__ */
     if (err == ESRCH)
       err = 0;  // we already reported this
   }

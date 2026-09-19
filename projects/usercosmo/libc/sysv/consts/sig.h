@@ -6,8 +6,9 @@
  *   ./configure scripts to favor using poll() or select() instead of
  *   interrupt-based i/o.
  *
- * - No macros are defined for SIGRTMIN and SIGRTMAX because the project
- *   hasn't fleshed them out yet.
+ * - SIGRTMIN and SIGRTMAX are defined as plain macros under __FILC__
+ *   (glibc-style static values), because the runtime-variable syscon
+ *   treatment isn't wired up for them yet.
  *
  * - SIGSTKFLT is Linux-only, intended for the x87 coprocessor stack,
  *   and Linux doesn't actually use it for that so no macro is defined.
@@ -58,3 +59,10 @@ extern const int SIG_UNBLOCK;
 COSMOPOLITAN_C_END_
 #endif /* __ASSEMBLER__ */
 #endif /* COSMOPOLITAN_LIBC_SYSV_CONSTS_SIG_H_ */
+
+#ifdef __FILC__
+/* Fil-C port: the realtime signal range on Linux.  glibc reserves
+   SIGRTMIN..SIGRTMIN+ntl for its own use; we keep it simple. */
+#define SIGRTMIN 34
+#define SIGRTMAX 64
+#endif

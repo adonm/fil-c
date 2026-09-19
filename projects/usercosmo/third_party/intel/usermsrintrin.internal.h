@@ -4,6 +4,12 @@
 #endif
 #ifndef _USER_MSRINTRIN_H_INCLUDED
 #define _USER_MSRINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <usermsrintrin.h>
+#else /* !__FILC__ */
 #ifdef __x86_64__
 #ifndef __USER_MSR__
 #pragma GCC push_options
@@ -29,3 +35,5 @@ _uwrmsr (unsigned long long __A, unsigned long long __B)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

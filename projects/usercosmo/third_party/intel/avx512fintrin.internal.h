@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVX512FINTRIN_H_INCLUDED
 #define _AVX512FINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avx512fintrin.h>
+#else /* !__FILC__ */
 #if !defined (__AVX512F__) || defined (__EVEX512__)
 #pragma GCC push_options
 #pragma GCC target("avx512f,no-evex512")
@@ -13336,3 +13342,5 @@ _mm512_mask_reduce_max_pd (__mmask8 __U, __m512d __A)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

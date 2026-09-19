@@ -34,6 +34,6 @@ static FILE __stderr = {
  */
 FILE *stderr = &__stderr;
 
-__attribute__((__constructor__(60))) static textstartup void stderr_init(void) {
+__attribute__((__constructor__(160))) static textstartup void stderr_init(void) {
   dll_make_last(&__stdio.files, &__stderr.elem);
 }

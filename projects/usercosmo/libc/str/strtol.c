@@ -23,6 +23,7 @@
 #include "libc/stdckdint.h"
 #include "libc/str/str.h"
 #include "libc/str/tab.h"
+#include "libc/str/locale.h"
 
 /**
  * Decodes signed integer from ASCII string.
@@ -73,6 +74,6 @@ long strtol(const char *s, char **endptr, int base) {
   return x;
 }
 
-__weak_reference(strtol, strtoimax);
-__weak_reference(strtol, strtoll);
-__weak_reference(strtol, strtoll_l);
+__weak_reference_as(strtoimax, strtol);
+__weak_reference_as(strtoll, strtol);
+__weak_reference_as(strtoll_l, strtol);

@@ -90,7 +90,7 @@ textwindows void sys_getppid_nt_wipe(int win32, int cosmo) {
   __get_pib()->ppid_cosmo = cosmo;
 }
 
-__attribute__((__constructor__(90))) static void sys_getppid_nt_init(void) {
+__attribute__((__constructor__(190))) static void sys_getppid_nt_init(void) {
   if (!IsWindows())
     return;
   sys_getppid_nt_extract(getenv("_COSMO_PPID"));

@@ -32,6 +32,7 @@
 #include "libc/thread/posixthread.internal.h"
 #include "libc/thread/thread2.h"
 #include "libc/thread/tls.h"
+#include <pizlonated_runtime.h>
 
 static const char *DescribeReturnValue(char buf[30], int err, void **value) {
   char *p = buf;
@@ -44,53 +45,6 @@ static const char *DescribeReturnValue(char buf[30], int err, void **value) {
   *p++ = ']';
   *p = 0;
   return buf;
-}
-
-/**
- * Blocks until memory location becomes zero.
- *
- * This is intended to be used on the child thread id, which is updated
- * by the clone() system call when a thread terminates. We need this in
- * order to know when it's safe to free a thread's stack. This function
- * uses futexes on Linux, FreeBSD, OpenBSD, and Windows. On other
- * platforms this uses polling with exponential backoff.
- *
- * @return 0 on success, or errno on error
- * @raise ECANCELED if calling thread was cancelled in masked mode
- * @raise EDEADLK if `ctid` refers calling thread's own ctid futex
- * @raise EBUSY if `abstime` was specified and deadline expired
- * @cancelationpoint
- */
-static errno_t _pthread_wait(atomic_int *ctid, struct timespec *abstime) {
-
-  // "If an implementation detects that the value specified by the
-  //  thread argument to pthread_join() refers to the calling thread,
-  //  it is recommended that the function should fail and report an
-  //  [EDEADLK] error." ──Quoth POSIX.1-2017
-  if (ctid == &__get_tls()->tib_ctid)
-    return EDEADLK;
-
-  // "If the thread calling pthread_join() is canceled, then the target
-  //  thread shall not be detached."  ──Quoth POSIX.1-2017
-  errno_t err;
-  if ((err = pthread_testcancel_np()))
-    return err;
-
-  BEGIN_CANCELATION_POINT;
-  int x;
-  while ((x = atomic_load_explicit(ctid, memory_order_acquire))) {
-    int e = cosmo_futex_wait(ctid, x, !IsWindows() && !IsXnu(), CLOCK_REALTIME,
-                             abstime);
-    if (e == -ECANCELED) {
-      err = ECANCELED;
-      break;
-    } else if (e == -ETIMEDOUT) {
-      err = EBUSY;
-      break;
-    }
-  }
-  END_CANCELATION_POINT;
-  return err;
 }
 
 /**
@@ -121,22 +75,29 @@ errno_t pthread_timedjoin_np(pthread_t thread, void **value_ptr,
   errno_t err;
   struct PosixThread *pt;
   enum PosixThreadStatus status;
+  void *result = 0;
+  (void)abstime;
   pt = (struct PosixThread *)thread;
   unassert(thread);
 
   // "The behavior is undefined if the value specified by the thread
   //  argument to pthread_join() does not refer to a joinable thread."
   //                                  ──Quoth POSIX.1-2017
-  unassert((tid = _pthread_tid(pt)));
+  /* Fil-C port: the target's TIB is installed by its trampoline, which may
+     not have run yet; _pthread_tid() yields a zero tid in that case. */
+  unassert(pt->tib == 0 || (tid = _pthread_tid(pt)));
   status = atomic_load_explicit(&pt->pt_status, memory_order_acquire);
   unassert(status == kPosixThreadJoinable || status == kPosixThreadTerminated);
 
   // "The results of multiple simultaneous calls to pthread_join()
   //  specifying the same target thread are undefined."
   //                                  ──Quoth POSIX.1-2017
-  if (!(err = _pthread_wait(&pt->tib->tib_ctid, abstime))) {
+  if (!zthread_join(pt->zthread, &result)) {
+    err = errno;
+  } else {
+    err = 0;
     if (value_ptr)
-      *value_ptr = pt->pt_val;
+      *value_ptr = result;
     if (atomic_load_explicit(&pt->pt_refs, memory_order_acquire)) {
       _pthread_lock();
       dll_remove(&_pthread_list, &pt->list);

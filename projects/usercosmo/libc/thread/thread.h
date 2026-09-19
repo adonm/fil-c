@@ -58,7 +58,14 @@ COSMOPOLITAN_C_START_
 #define _PTHREAD_ATOMIC(x) x
 #endif
 
+#ifdef __FILC__
+/* Fil-C port: pthread_t must be a real pointer type, or the capability is
+   destroyed every time the value crosses the integer boundary (musl's Fil-C
+   port does the same: `struct pthread *`). */
+typedef void *pthread_t;
+#else
 typedef uintptr_t pthread_t;
+#endif
 typedef int pthread_id_np_t;
 typedef char pthread_rwlockattr_t;
 typedef char pthread_barrierattr_t;

@@ -29,6 +29,9 @@
 #if defined(__x86_64__) && !defined(__chibicc__)
 #pragma GCC push_options
 #pragma GCC target("avx2")
+/* Fil-C port: clang does not always honor #pragma GCC target for
+   always_inline header intrinsics; use the attribute too. */
+__attribute__((__target__("avx2"))
 static bool strcasestr_avx2(const unsigned char **h, const unsigned char *n,
                             size_t l, size_t *j) {
   __m256i zv = _mm256_setzero_si256();
@@ -48,7 +51,7 @@ static bool strcasestr_avx2(const unsigned char **h, const unsigned char *n,
                 _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)(*h + 1)),
                                   svl),
                 _mm256_cmpeq_epi8(_mm256_loadu_si256((const __m256i *)(*h + 1)),
-                                  svu)))));
+                                  svu))));
     if (m) {
       *h += __builtin_ctz(m);
       if (!**h) {
@@ -82,7 +85,7 @@ dontinline relegated static bool strcasestr_sse2(const unsigned char **h,
                          _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)*h), nvu)),
             _mm_or_si128(
                 _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(*h + 1)), svl),
-                _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(*h + 1)), svu)))));
+                _mm_cmpeq_epi8(_mm_loadu_si128((__m128i *)(*h + 1)), svu))));
     if (m) {
       *h += __builtin_ctz(m);
       if (!**h) {
@@ -185,7 +188,7 @@ char *strcasestr(const char *haystack, const char *needle) {
                     vminq_u8(vorrq_u8(vceqq_u8(vld1q_u8(h), nvl),
                                       vceqq_u8(vld1q_u8(h), nvu)),
                              vorrq_u8(vceqq_u8(vld1q_u8(h + 1), svl),
-                                      vceqq_u8(vld1q_u8(h + 1), svu))))),
+                                      vceqq_u8(vld1q_u8(h + 1), svu)))),
                 4)),
             0);
         if (m) {

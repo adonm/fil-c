@@ -43,6 +43,16 @@ __msabi extern typeof(ExitThread) *const __imp_ExitThread;
  * @noreturn
  */
 wontreturn void _Exit1(int rc) {
+#ifdef __FILC__
+  /* Fil-C port: raw `syscall` inline asm is not allowed under Fil-C.  _Exit1
+     is the "terminate the calling thread with a raw syscall" primitive; the
+     closest pizlonated equivalent that keeps the process going when it's
+     expected to is exiting the whole process (cosmo only uses this path when
+     the main thread dies or a clone child unwinds, and our pthread rewrite
+     uses zthread_exit() instead). */
+  sys_exit(rc);
+  __builtin_unreachable();
+#else
 #ifdef __x86_64__
   char cf;
   int ax, dx, di, si;
@@ -57,7 +67,7 @@ wontreturn void _Exit1(int rc) {
                  : CFLAG_CONSTRAINT(cf), "=a"(ax), "=d"(dx), "=D"(di), "=S"(si)
                  : "1"(__NR_exit), "3"(IsLinux() ? rc : 0), "4"(0), "2"(0)
                  : "rcx", "r8", "r9", "r10", "r11", "memory");
-    if ((IsFreebsd() && !cf && !ax) || (SupportsFreebsd() && IsTiny())) {
+    if ((IsFreebsd() && !cf && !ax) || (SupportsFreebsd() && IsTiny()) {
       // FreeBSD checks if this is either the main thread by itself, or
       // the last running child thread in which case thr_exit() returns
       // zero with an error. In that case we'll exit the whole process.
@@ -102,4 +112,5 @@ wontreturn void _Exit1(int rc) {
 #else
 #error "arch unsupported"
 #endif
+#endif /* __FILC__ */
 }

@@ -37,24 +37,36 @@
  * @see https://en.wikipedia.org/wiki/Intel_5-level_paging
  */
 __privileged bool32 kisdangerous(const void *addr) {
+#ifdef __FILC__
+  /* Fil-C port: this walks the yolo cosmo boot's radix trie of kernel
+     mappings (__maps.alive).  Pizlonated code has its own (never-populated)
+     copy of the __maps globals, and populating it would require tracking
+     every zsys_mmap() on this side of the boundary.  The check is a pure
+     optimization (bad pointers just become kernel EFAULTs), so report
+     "everything exists" in Fil-C land and don't even reference the __maps
+     structures.  The yolo side keeps its own working kisdangerous(). */
+  (void)addr;
+  return false;
+#else
   uintptr_t w = (uintptr_t)addr & -__pagesize;
   struct MapPageDirectory *pd;
   struct MapPageTable *pt;
-  if (!(pd = atomic_load_explicit(&__maps.alive, memory_order_relaxed)))
+  if (!(pd = atomic_load_explicit(&__maps.alive, memory_order_relaxed))
     return true;
   size_t i = (w >> 48) & 511;
-  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed)))
+  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed))
     return true;
   i = (w >> 39) & 511;
-  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed)))
+  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed))
     return true;
   i = (w >> 30) & 511;
-  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed)))
+  if (!(pd = atomic_load_explicit(&pd->p[i].pd, memory_order_relaxed))
     return true;
   i = (w >> 21) & 511;
-  if (!(pt = atomic_load_explicit(&pd->p[i].pt, memory_order_relaxed)))
+  if (!(pt = atomic_load_explicit(&pd->p[i].pt, memory_order_relaxed))
     return true;
   i = (w >> 12) & 511;
   return !(atomic_load_explicit(&pt->p[i / 64], memory_order_acquire) &
-           (1ull << (i & 63)));
+           (1ull << (i & 63));
+#endif /* !__FILC__ */
 }

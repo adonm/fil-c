@@ -4,6 +4,12 @@
 #endif
 #ifndef _AVXVNNIINTRIN_H_INCLUDED
 #define _AVXVNNIINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <avxvnniintrin.h>
+#else /* !__FILC__ */
 #if !defined(__AVXVNNI__)
 #pragma GCC push_options
 #pragma GCC target("avxvnni")
@@ -79,3 +85,5 @@ _mm_dpwssds_avx_epi32(__m128i __A,__m128i __B,__m128i __C)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

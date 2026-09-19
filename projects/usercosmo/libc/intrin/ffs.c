@@ -32,4 +32,4 @@ int(ffsl)(long x) {
   return __builtin_ffsl(x);
 }
 
-__weak_reference(ffsl, ffsll);
+__weak_reference_as(ffsll, ffsl);

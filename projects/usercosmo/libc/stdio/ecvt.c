@@ -42,7 +42,7 @@ __cvt_atexit(void)
 	s = 0;
 }
 
-static __attribute__((__constructor__(60))) textstartup void
+static __attribute__((__constructor__(160))) textstartup void
 __cvt_init(void)
 {
 	atexit(__cvt_atexit);

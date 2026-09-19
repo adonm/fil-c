@@ -27,7 +27,7 @@
 #include "libc/nt/accounting.h"
 #include "libc/runtime/runtime.h"
 
-#define CTOR  __attribute__((__constructor__(99)))
+#define CTOR  __attribute__((__constructor__(199)))
 #define FT(x) (x.dwLowDateTime | (uint64_t)x.dwHighDateTime << 32)
 
 static int cpus;

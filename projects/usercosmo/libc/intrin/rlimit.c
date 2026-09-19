@@ -122,7 +122,7 @@ textwindows void __rlimit_launch(void) {
 }
 
 // this is called upon initialization of executed processes
-__attribute__((__constructor__(1))) textwindows void __rlimit_init(void) {
+__attribute__((__constructor__(101))) textwindows void __rlimit_init(void) {
   if (!IsWindows())
     return;
   __rlimit_launch();

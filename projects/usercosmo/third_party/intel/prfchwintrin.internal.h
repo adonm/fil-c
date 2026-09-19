@@ -4,6 +4,12 @@
 #endif
 #ifndef _PRFCHWINTRIN_H_INCLUDED
 #define _PRFCHWINTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <prfchwintrin.h>
+#else /* !__FILC__ */
 extern __inline void __attribute__((__gnu_inline__, __always_inline__, __artificial__))
 _m_prefetchw (void *__P)
 {
@@ -11,3 +17,5 @@ _m_prefetchw (void *__P)
 }
 #endif
 #endif
+
+#endif /* __FILC__ */

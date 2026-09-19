@@ -44,7 +44,12 @@ typedef struct {
   void *_waiters;
 } cnd_t;
 
+#ifdef __FILC__
+/* Fil-C port: see pthread_t. */
+typedef void *thrd_t;
+#else
 typedef uintptr_t thrd_t;
+#endif
 typedef void (*tss_dtor_t)(void *);
 typedef int (*thrd_start_t)(void *);
 typedef unsigned once_flag;

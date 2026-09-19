@@ -638,7 +638,7 @@ void *__ubsan_get_current_report_data(void) {
   return 0;
 }
 
-__attribute__((__constructor__(90))) static textstartup void ubsan_init() {
+__attribute__((__constructor__(190))) static textstartup void ubsan_init() {
   STRACE(" _   _ ____ ____    _    _   _");
   STRACE("| | | | __ ) ___|  / \\  | \\ | |");
   STRACE("| | | |  _ \\___ \\ / _ \\ |  \\| |");

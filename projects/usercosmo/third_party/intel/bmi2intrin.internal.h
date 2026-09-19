@@ -4,6 +4,12 @@
 #endif
 #ifndef _BMI2INTRIN_H_INCLUDED
 #define _BMI2INTRIN_H_INCLUDED
+#ifdef __FILC__
+/* Fil-C port: this is a copy of GCC's intrin header, and its inline
+   helpers use GCC-only builtins that clang does not implement.  Under
+   Fil-C use clang's own intrinsic headers instead. */
+#include <bmi2intrin.h>
+#else /* !__FILC__ */
 #ifndef __BMI2__
 #pragma GCC push_options
 #pragma GCC target("bmi2")
@@ -71,3 +77,5 @@ _mulx_u32 (unsigned int __X, unsigned int __Y, unsigned int *__P)
 #endif
 #endif
 #endif
+
+#endif /* __FILC__ */

@@ -101,7 +101,7 @@ void countbranch_report(void) {
   }
 }
 
-__attribute__((__constructor__(90))) static textstartup void
+__attribute__((__constructor__(190))) static textstartup void
 countbranch_init() {
   atexit(countbranch_report);
 }

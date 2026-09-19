@@ -14,7 +14,15 @@
 #error "This header is only meant to be used on x86 and x64 architecture"
 #endif
 
+#ifdef __FILC__
+/* Fil-C port: clang 20 removed the raw MMX builtins used by the vendored
+   (older-LLVM) mmintrin.h, and cosmo's C sources never use MMX.  Define the
+   __m64 type (some SSE-to-MMX conversion prototypes reference it) and skip
+   the stale MMX function definitions. */
+typedef long long __m64 __attribute__((__vector_size__(8), __aligned__(8)));
+#else
 #include "mmintrin.h"
+#endif /* __FILC__ */
 
 typedef int __v4si __attribute__((__vector_size__(16)));
 typedef float __v4sf __attribute__((__vector_size__(16)));
@@ -1448,11 +1456,17 @@ _mm_cvtss_si64(__m128 __a)
 /// \param __a
 ///    A 128-bit vector of [4 x float].
 /// \returns A 64-bit integer vector containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtps_pi32(__m128 __a)
 {
   return (__m64)__builtin_ia32_cvtps2pi((__v4sf)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts two low-order float values in a 128-bit vector of
 ///    [4 x float] into a 64-bit vector of [2 x i32].
@@ -1468,11 +1482,17 @@ _mm_cvtps_pi32(__m128 __a)
 /// \param __a
 ///    A 128-bit vector of [4 x float].
 /// \returns A 64-bit integer vector containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvt_ps2pi(__m128 __a)
 {
   return _mm_cvtps_pi32(__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the lower (first) element of a vector of [4 x float] into a signed
 ///    truncated (rounded toward zero) 32-bit integer.
@@ -1558,11 +1578,17 @@ _mm_cvttss_si64(__m128 __a)
 /// \param __a
 ///    A 128-bit vector of [4 x float].
 /// \returns A 64-bit integer vector containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvttps_pi32(__m128 __a)
 {
   return (__m64)__builtin_ia32_cvttps2pi((__v4sf)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the lower (first) two elements of a 128-bit vector of [4 x float]
 ///    into two signed truncated (rounded toward zero) 64-bit integers,
@@ -1579,11 +1605,17 @@ _mm_cvttps_pi32(__m128 __a)
 /// \param __a
 ///    A 128-bit vector of [4 x float].
 /// \returns A 64-bit integer vector containing the converted values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtt_ps2pi(__m128 __a)
 {
   return _mm_cvttps_pi32(__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts a 32-bit signed integer value into a floating point value
 ///    and writes it to the lower 32 bits of the destination. The remaining
@@ -1674,11 +1706,17 @@ _mm_cvtsi64_ss(__m128 __a, long long __b)
 /// \returns A 128-bit vector of [4 x float] whose lower 64 bits contain the
 ///    converted value of the second operand. The upper 64 bits are copied from
 ///    the upper 64 bits of the first operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpi32_ps(__m128 __a, __m64 __b)
 {
   return __builtin_ia32_cvtpi2ps((__v4sf)__a, (__v2si)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts two elements of a 64-bit vector of [2 x i32] into two
 ///    floating point values and writes them to the lower 64-bits of the
@@ -1697,11 +1735,17 @@ _mm_cvtpi32_ps(__m128 __a, __m64 __b)
 /// \returns A 128-bit vector of [4 x float] whose lower 64 bits contain the
 ///    converted value from the second operand. The upper 64 bits are copied
 ///    from the upper 64 bits of the first operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvt_pi2ps(__m128 __a, __m64 __b)
 {
   return _mm_cvtpi32_ps(__a, __b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Extracts a float value contained in the lower 32 bits of a vector of
 ///    [4 x float].
@@ -2231,11 +2275,17 @@ _mm_storer_ps(float *__p, __m128 __a)
 ///    A pointer to an aligned memory location used to store the register value.
 /// \param __a
 ///    A 64-bit integer containing the value to be stored.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ void __DEFAULT_FN_ATTRS_MMX
 _mm_stream_pi(void *__p, __m64 __a)
 {
   __builtin_ia32_movntq((__m64 *)__p, __a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Moves packed float values from a 128-bit vector of [4 x float] to a
 ///    128-bit aligned memory location. To minimize caching, the data is flagged
@@ -2342,11 +2392,17 @@ void _mm_sfence(void);
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the comparison results.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_max_pi16(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pmaxsw((__v4hi)__a, (__v4hi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Compares each of the corresponding packed 8-bit unsigned integer
 ///    values of the 64-bit integer vectors, and writes the greater value to the
@@ -2361,11 +2417,17 @@ _mm_max_pi16(__m64 __a, __m64 __b)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the comparison results.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_max_pu8(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pmaxub((__v8qi)__a, (__v8qi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Compares each of the corresponding packed 16-bit integer values of
 ///    the 64-bit integer vectors, and writes the lesser value to the
@@ -2380,11 +2442,17 @@ _mm_max_pu8(__m64 __a, __m64 __b)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the comparison results.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_min_pi16(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pminsw((__v4hi)__a, (__v4hi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Compares each of the corresponding packed 8-bit unsigned integer
 ///    values of the 64-bit integer vectors, and writes the lesser value to the
@@ -2399,11 +2467,17 @@ _mm_min_pi16(__m64 __a, __m64 __b)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the comparison results.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_min_pu8(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pminub((__v8qi)__a, (__v8qi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Takes the most significant bit from each 8-bit element in a 64-bit
 ///    integer vector to create an 8-bit mask value. Zero-extends the value to
@@ -2417,11 +2491,17 @@ _mm_min_pu8(__m64 __a, __m64 __b)
 ///    A 64-bit integer vector containing the values with bits to be extracted.
 /// \returns The most significant bit from each 8-bit element in \a __a,
 ///    written to bits [7:0].
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ int __DEFAULT_FN_ATTRS_MMX
 _mm_movemask_pi8(__m64 __a)
 {
   return __builtin_ia32_pmovmskb((__v8qi)__a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Multiplies packed 16-bit unsigned integer values and writes the
 ///    high-order 16 bits of each 32-bit product to the corresponding bits in
@@ -2436,11 +2516,17 @@ _mm_movemask_pi8(__m64 __a)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the products of both operands.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_mulhi_pu16(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pmulhuw((__v4hi)__a, (__v4hi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Shuffles the 4 16-bit integers from a 64-bit integer vector to the
 ///    destination, as specified by the immediate value operand.
@@ -2502,11 +2588,17 @@ _mm_mulhi_pu16(__m64 __a, __m64 __b)
 ///    A pointer to a 64-bit memory location that will receive the conditionally
 ///    copied integer values. The address of the memory location does not have
 ///    to be aligned.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ void __DEFAULT_FN_ATTRS_MMX
 _mm_maskmove_si64(__m64 __d, __m64 __n, char *__p)
 {
   __builtin_ia32_maskmovq((__v8qi)__d, (__v8qi)__n, __p);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Computes the rounded averages of the packed unsigned 8-bit integer
 ///    values and writes the averages to the corresponding bits in the
@@ -2521,11 +2613,17 @@ _mm_maskmove_si64(__m64 __d, __m64 __n, char *__p)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the averages of both operands.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_avg_pu8(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pavgb((__v8qi)__a, (__v8qi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Computes the rounded averages of the packed unsigned 16-bit integer
 ///    values and writes the averages to the corresponding bits in the
@@ -2540,11 +2638,17 @@ _mm_avg_pu8(__m64 __a, __m64 __b)
 /// \param __b
 ///    A 64-bit integer vector containing one of the source operands.
 /// \returns A 64-bit integer vector containing the averages of both operands.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_avg_pu16(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_pavgw((__v4hi)__a, (__v4hi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Subtracts the corresponding 8-bit unsigned integer values of the two
 ///    64-bit vector operands and computes the absolute value for each of the
@@ -2562,11 +2666,17 @@ _mm_avg_pu16(__m64 __a, __m64 __b)
 /// \returns A 64-bit integer vector whose lower 16 bits contain the sums of the
 ///    sets of absolute differences between both operands. The upper bits are
 ///    cleared.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_sad_pu8(__m64 __a, __m64 __b)
 {
   return (__m64)__builtin_ia32_psadbw((__v8qi)__a, (__v8qi)__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 #if defined(__cplusplus)
 extern "C" {
@@ -2846,6 +2956,8 @@ _mm_movelh_ps(__m128 __a, __m128 __b)
 ///    from the corresponding elements in this operand.
 /// \returns A 128-bit vector of [4 x float] containing the copied and converted
 ///    values from the operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpi16_ps(__m64 __a)
 {
@@ -2863,6 +2975,10 @@ _mm_cvtpi16_ps(__m64 __a)
 
   return __r;
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts a 64-bit vector of 16-bit unsigned integer values into a
 ///    128-bit vector of [4 x float].
@@ -2876,6 +2992,8 @@ _mm_cvtpi16_ps(__m64 __a)
 ///    destination are copied from the corresponding elements in this operand.
 /// \returns A 128-bit vector of [4 x float] containing the copied and converted
 ///    values from the operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpu16_ps(__m64 __a)
 {
@@ -2892,6 +3010,10 @@ _mm_cvtpu16_ps(__m64 __a)
 
   return __r;
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the lower four 8-bit values from a 64-bit vector of [8 x i8]
 ///    into a 128-bit vector of [4 x float].
@@ -2905,6 +3027,8 @@ _mm_cvtpu16_ps(__m64 __a)
 ///    from the corresponding lower 4 elements in this operand.
 /// \returns A 128-bit vector of [4 x float] containing the copied and converted
 ///    values from the operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpi8_ps(__m64 __a)
 {
@@ -2916,6 +3040,10 @@ _mm_cvtpi8_ps(__m64 __a)
 
   return _mm_cvtpi16_ps(__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the lower four unsigned 8-bit integer values from a 64-bit
 ///    vector of [8 x u8] into a 128-bit vector of [4 x float].
@@ -2930,6 +3058,8 @@ _mm_cvtpi8_ps(__m64 __a)
 ///    operand.
 /// \returns A 128-bit vector of [4 x float] containing the copied and converted
 ///    values from the source operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpu8_ps(__m64 __a)
 {
@@ -2940,6 +3070,10 @@ _mm_cvtpu8_ps(__m64 __a)
 
   return _mm_cvtpi16_ps(__b);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts the two 32-bit signed integer values from each 64-bit vector
 ///    operand of [2 x i32] into a 128-bit vector of [4 x float].
@@ -2957,6 +3091,8 @@ _mm_cvtpu8_ps(__m64 __a)
 /// \returns A 128-bit vector of [4 x float] whose lower 64 bits contain the
 ///    copied and converted values from the first operand. The upper 64 bits
 ///    contain the copied and converted values from the second operand.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m128 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtpi32x2_ps(__m64 __a, __m64 __b)
 {
@@ -2968,6 +3104,10 @@ _mm_cvtpi32x2_ps(__m64 __a, __m64 __b)
 
   return _mm_cvtpi32_ps(__c, __a);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts each single-precision floating-point element of a 128-bit
 ///    floating-point vector of [4 x float] into a 16-bit signed integer, and
@@ -2986,6 +3126,8 @@ _mm_cvtpi32x2_ps(__m64 __a, __m64 __b)
 ///    A 128-bit floating-point vector of [4 x float].
 /// \returns A 64-bit integer vector of [4 x i16] containing the converted
 ///    values.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtps_pi16(__m128 __a)
 {
@@ -2997,6 +3139,10 @@ _mm_cvtps_pi16(__m128 __a)
 
   return _mm_packs_pi32(__b, __c);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Converts each single-precision floating-point element of a 128-bit
 ///    floating-point vector of [4 x float] into an 8-bit signed integer, and
@@ -3016,6 +3162,8 @@ _mm_cvtps_pi16(__m128 __a)
 ///    128-bit floating-point vector of [4 x float].
 /// \returns A 64-bit integer vector of [8 x i8]. The lower 32 bits contain the
 ///    converted values and the uppper 32 bits are set to zero.
+#ifndef __FILC__
+#ifndef __FILC__
 static __inline__ __m64 __DEFAULT_FN_ATTRS_MMX
 _mm_cvtps_pi8(__m128 __a)
 {
@@ -3026,6 +3174,10 @@ _mm_cvtps_pi8(__m128 __a)
 
   return _mm_packs_pi16(__b, __c);
 }
+#endif /* __FILC__ */
+
+#endif /* __FILC__ */
+
 
 /// Extracts the sign bits from each single-precision floating-point
 ///    element of a 128-bit floating-point vector of [4 x float] and returns the

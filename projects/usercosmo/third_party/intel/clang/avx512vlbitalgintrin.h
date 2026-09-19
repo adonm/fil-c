@@ -24,12 +24,16 @@
                  __target__("avx512vl,avx512bitalg,no-evex512"),               \
                  __min_vector_width__(256)))
 
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_popcnt_epi16(__m256i __A)
 {
   return (__m256i) __builtin_ia32_vpopcntw_256((__v16hi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_mask_popcnt_epi16(__m256i __A, __mmask16 __U, __m256i __B)
 {
@@ -37,7 +41,10 @@ _mm256_mask_popcnt_epi16(__m256i __A, __mmask16 __U, __m256i __B)
               (__v16hi) _mm256_popcnt_epi16(__B),
               (__v16hi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_maskz_popcnt_epi16(__mmask16 __U, __m256i __B)
 {
@@ -45,13 +52,19 @@ _mm256_maskz_popcnt_epi16(__mmask16 __U, __m256i __B)
               __U,
               __B);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_popcnt_epi16(__m128i __A)
 {
   return (__m128i) __builtin_ia32_vpopcntw_128((__v8hi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_mask_popcnt_epi16(__m128i __A, __mmask8 __U, __m128i __B)
 {
@@ -59,7 +72,10 @@ _mm_mask_popcnt_epi16(__m128i __A, __mmask8 __U, __m128i __B)
               (__v8hi) _mm_popcnt_epi16(__B),
               (__v8hi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_maskz_popcnt_epi16(__mmask8 __U, __m128i __B)
 {
@@ -67,13 +83,19 @@ _mm_maskz_popcnt_epi16(__mmask8 __U, __m128i __B)
               __U,
               __B);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_popcnt_epi8(__m256i __A)
 {
   return (__m256i) __builtin_ia32_vpopcntb_256((__v32qi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_mask_popcnt_epi8(__m256i __A, __mmask32 __U, __m256i __B)
 {
@@ -81,7 +103,10 @@ _mm256_mask_popcnt_epi8(__m256i __A, __mmask32 __U, __m256i __B)
               (__v32qi) _mm256_popcnt_epi8(__B),
               (__v32qi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m256i __DEFAULT_FN_ATTRS256
 _mm256_maskz_popcnt_epi8(__mmask32 __U, __m256i __B)
 {
@@ -89,13 +114,19 @@ _mm256_maskz_popcnt_epi8(__mmask32 __U, __m256i __B)
               __U,
               __B);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_popcnt_epi8(__m128i __A)
 {
   return (__m128i) __builtin_ia32_vpopcntb_128((__v16qi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_mask_popcnt_epi8(__m128i __A, __mmask16 __U, __m128i __B)
 {
@@ -103,7 +134,10 @@ _mm_mask_popcnt_epi8(__m128i __A, __mmask16 __U, __m128i __B)
               (__v16qi) _mm_popcnt_epi8(__B),
               (__v16qi) __A);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __m128i __DEFAULT_FN_ATTRS128
 _mm_maskz_popcnt_epi8(__mmask16 __U, __m128i __B)
 {
@@ -111,7 +145,10 @@ _mm_maskz_popcnt_epi8(__mmask16 __U, __m128i __B)
               __U,
               __B);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __mmask32 __DEFAULT_FN_ATTRS256
 _mm256_mask_bitshuffle_epi64_mask(__mmask32 __U, __m256i __A, __m256i __B)
 {
@@ -119,7 +156,10 @@ _mm256_mask_bitshuffle_epi64_mask(__mmask32 __U, __m256i __A, __m256i __B)
               (__v32qi) __B,
               __U);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __mmask32 __DEFAULT_FN_ATTRS256
 _mm256_bitshuffle_epi64_mask(__m256i __A, __m256i __B)
 {
@@ -127,7 +167,10 @@ _mm256_bitshuffle_epi64_mask(__m256i __A, __m256i __B)
               __A,
               __B);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __mmask16 __DEFAULT_FN_ATTRS128
 _mm_mask_bitshuffle_epi64_mask(__mmask16 __U, __m128i __A, __m128i __B)
 {
@@ -135,7 +178,10 @@ _mm_mask_bitshuffle_epi64_mask(__mmask16 __U, __m128i __A, __m128i __B)
               (__v16qi) __B,
               __U);
 }
+#endif /* __FILC__ */
 
+
+#ifndef __FILC__
 static __inline__ __mmask16 __DEFAULT_FN_ATTRS128
 _mm_bitshuffle_epi64_mask(__m128i __A, __m128i __B)
 {
@@ -143,6 +189,8 @@ _mm_bitshuffle_epi64_mask(__m128i __A, __m128i __B)
               __A,
               __B);
 }
+#endif /* __FILC__ */
+
 
 
 #undef __DEFAULT_FN_ATTRS128

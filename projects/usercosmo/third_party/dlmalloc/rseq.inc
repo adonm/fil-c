@@ -21,7 +21,14 @@
 #define SLAB_SIZE __pagesize
 #define TRY_AGAIN ((void *)-1l)
 #define ALLOCATED ((struct Chunk *)-23l)
+#ifdef __FILC__
+/* Fil-C port: the rseq critical sections are inline asm with pointer
+   operands/returns, which the Fil-Pizlonator rejects at runtime.  The plain
+   (non-rseq) paths in this file are functionally equivalent, just slower. */
+#define HAVE_RSEQ 0
+#else
 #define HAVE_RSEQ (!IsTiny() && SupportsLinux() && __get_rseq()->cpu_id >= 0)
+#endif
 
 struct Chunk {
   struct Chunk *next;

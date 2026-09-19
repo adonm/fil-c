@@ -25,6 +25,9 @@
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sysv/consts/sicode.h"
 #include "libc/sysv/errfuns.h"
+#ifdef __FILC__
+#include <pizlonated_syscalls.h>
+#endif
 
 /**
  * Sends signal to self.
@@ -46,6 +49,11 @@
  */
 int raise(int sig) {
   int rc;
+#ifdef __FILC__
+  /* Fil-C port: sys_tkill is not routed through libpizlo; zsys_raise() is
+     the equivalent "send signal to self" primitive. */
+  return zsys_raise(__linux2sig(sig));
+#endif
   if (IsXnuSilicon()) {
     rc = _sysret(__syslib->__raise(__linux2sig(sig)));
   } else if (IsWindows()) {

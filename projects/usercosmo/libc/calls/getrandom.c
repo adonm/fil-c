@@ -199,7 +199,7 @@ ssize_t getrandom(void *p, size_t n, unsigned f) {
   return rc;
 }
 
-__attribute__((__constructor__(30))) static textstartup void getrandom_init(
+__attribute__((__constructor__(130))) static textstartup void getrandom_init(
     void) {
   int e, rc;
   if (IsWindows() || IsMetal())

@@ -37,17 +37,20 @@ std::string blake3_file_hash_hex(const std::string& path);
 //
 // Feedback (all of it on stderr, all prefixed "projeny:", so interactive
 // users and logs see the same story): before the transfer starts, a normal
-// line announces it ("downloading '<url>'"); while data arrives, progress
-// lines report the byte count (and, when the total size is known from
-// Content-Length, the whole-percentage) — each terminated by a bare '\r' and
-// using no other trick (no ANSI escapes, no backspaces, no isatty checks, no
-// padding), so a terminal redraws the line in place while a log file keeps
-// every line. A progress line prints only when BOTH at least 64 KiB have
-// arrived since the last printed line AND — when the total is known — the
-// whole-percent count has grown since then: a 70 MB tarball then reports its
-// ~100 whole percents instead of ~1100 64 KiB lines, smaller downloads (1%
-// under 64 KiB) degrade to plain 64 KiB steps, and unknown totals use 64 KiB
-// steps throughout. After a successful transfer one last '\r'-terminated
-// line reports the final byte count (skipped when the progress callback
-// already printed exactly that state).
+// line announces it ("downloading '<url>'" — the only line that names the
+// URL); while data arrives, short progress lines ("projeny: download
+// progress: ...") report the byte count (and, when the total size is known
+// from Content-Length, the whole-percentage) — each terminated by a bare
+// '\r' and using no other trick (no ANSI escapes, no backspaces, no isatty
+// checks, no padding), so a terminal redraws the line in place while a log
+// file keeps every line. The progress line's short form — the URL lives
+// only on the announcement, which it never repeats — keeps it within an
+// 80-column terminal. A progress line prints only when BOTH at least 64 KiB
+// have arrived since the last printed line AND — when the total is known —
+// the whole-percent count has grown since then: a 70 MB tarball then
+// reports its ~100 whole percents instead of ~1100 64 KiB lines, smaller
+// downloads (1% under 64 KiB) degrade to plain 64 KiB steps, and unknown
+// totals use 64 KiB steps throughout. After a successful transfer one last
+// '\r'-terminated line reports the final byte count (skipped when the
+// progress callback already printed exactly that state).
 bool try_download(const std::string& url, std::string* data, std::string* err);

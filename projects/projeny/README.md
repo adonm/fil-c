@@ -355,15 +355,17 @@ and the blake3 hash of its bytes (compute the hash with
 order listed: a download that fails or does not match its hash prints a
 warning and the next line is tried, and it is a hard error only when no
 URL yields a download matching its recorded hash. Every download is
-announced on stderr (`projeny: downloading '<url>'`), with progress
-printed every 64 KiB received — capped at whole-percent steps when the
-total size is known, so a 70 MB tarball reports ~100 updates, not ~1100.
-Progress lines end with a bare carriage return and use no other terminal
-tricks, so a terminal redraws the line in place while a run captured to a
-log retains every one. A verified download reports `blake3 hash verified`
-and the snapshot it wrote; a mismatched one warns and falls through to the
-next URL. The archive name (and the snapshot's name) is derived from the
-URL's basename (after stripping any scheme, `?query`, and `#fragment`), so
+announced on stderr (`projeny: downloading '<url>'` — the only line that
+names the URL), with short progress lines (`projeny: download progress:
+...`, sized to fit an 80-column terminal) printed every 64 KiB received —
+capped at whole-percent steps when the total size is known, so a 70 MB
+tarball reports ~100 updates, not ~1100. Progress lines end with a bare
+carriage return and use no other terminal tricks, so a terminal redraws
+the line in place while a run captured to a log retains every one. A
+verified download reports `blake3 hash verified` and the snapshot it
+wrote; a mismatched one warns and falls through to the next URL. The
+archive name (and the snapshot's name) is derived from the URL's basename
+(after stripping any scheme, `?query`, and `#fragment`), so
 the URL must name the tarball file itself. `Archive:` and `URL:` headers
 are mutually exclusive; see "Archive snapshots" below for how the download
 is cached and verified.
@@ -561,12 +563,15 @@ while files rewritten by patch application get fresh timestamps — except
 files with a [frozen mtime](#frozen-mtimes), which are re-stamped to the
 archive's mtime after every setup.
 
-Two libraries are linked into the binary (never invoked as subprocesses):
-libcurl (the `curl_easy` API) downloads the tarball of a URL:-based
-project, and blake3 (the `blake3_hasher` API) verifies downloads and backs
-`projeny hash`. Both are hard build requirements (`-lcurl -lblake3`); their
-dev packages must be installed (`libcurl4-openssl-dev` and a blake3 build
-on Debian/Ubuntu).
+libcurl is the only external library linked into the binary (never invoked
+as a subprocess): it (the `curl_easy` API) downloads the tarball of a
+URL:-based project, and it must be installed with its dev package
+(`libcurl4-openssl-dev` on Debian/Ubuntu; linked with `-lcurl`). blake3
+(the `blake3_hasher` API) verifies downloads and backs `projeny hash`; it
+is vendored as plain portable C in `src/blake3/` (upstream 1.8.7 files,
+SIMD disabled, CC0-licensed — see `src/blake3/LICENSE_CC0` and
+`src/blake3/README`) and compiled in by the Makefile, so no blake3 package
+is needed.
 
 ## Build and test
 
@@ -576,13 +581,14 @@ make test           # builds (if needed) and runs tests/run_tests.sh
 make clean          # removes the binary and all .o/.d files
 ```
 
-The Makefile honors `CXX` overrides (only the C++ compiler is used; build_projeny.sh
-passes both spellings) and generates header
-dependencies (`-MMD -MP`) so parallel builds work. The code is warning-free
-with `-Wall -Wextra` under both system `g++` and the Fil-C compiler:
+The Makefile honors `CC` and `CXX` overrides (the projeny sources are C++
+and the vendored blake3 is C; build_projeny.sh passes both spellings) and
+generates header dependencies (`-MMD -MP`) so parallel builds work. The
+code is warning-free with `-Wall -Wextra` under both system `g++`/`cc` and
+the Fil-C compiler:
 
 ```
-make clean && make CXX=$(pwd)/../../build/bin/clang++ -j$(nproc) && make test
+make clean && make CC=$(pwd)/../../build/bin/clang CXX=$(pwd)/../../build/bin/clang++ -j$(nproc) && make test
 ```
 
 Builds can also be out-of-tree. Pass `BUILD_DIR=<dir>` to `make` and all
@@ -596,12 +602,14 @@ Fil-C's build scripts use `BUILD_DIR=build-yolo` for the yolo build
 
 ## Testing with the Fil-C compiler
 
-After `./build_all_fast.sh`, `build/bin/clang++` exists at the repo root.
-Build and test projeny with it (absolute `CXX` path, from this directory):
+After `./build_all_fast.sh`, `build/bin/clang` and `build/bin/clang++`
+exist at the repo root. Build and test projeny with them (absolute `CC`
+and `CXX` paths, from this directory — both are needed, since the vendored
+blake3 is C and the rest is C++):
 
 ```
 make clean BUILD_DIR=build-filc
-make CXX=/path/to/fil-c/build/bin/clang++ BUILD_DIR=build-filc -j$(nproc)
+make CC=/path/to/fil-c/build/bin/clang CXX=/path/to/fil-c/build/bin/clang++ BUILD_DIR=build-filc -j$(nproc)
 make test BUILD_DIR=build-filc
 make clean BUILD_DIR=build-filc
 ```

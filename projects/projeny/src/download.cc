@@ -22,14 +22,15 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-// Downloading and hashing for URL:-based .projeny files. Links the curl and
-// blake3 libraries directly (curl_easy and blake3_hasher APIs) — projeny
-// never shells out to `curl` or `b3sum`.
+// Downloading and hashing for URL:-based .projeny files. Links the curl
+// library directly (curl_easy API) and compiles in the blake3 library
+// vendored in src/blake3/ (blake3_hasher API) — projeny never shells out
+// to `curl` or `b3sum`.
 #include "download.h"
 
 #include "util.h"
 
-#include <blake3.h>
+#include "blake3/blake3.h"
 #include <curl/curl.h>
 
 #include <cerrno>
@@ -67,26 +68,27 @@ size_t append_to_string(char* ptr, size_t size, size_t nmemb, void* userdata)
 // Progress state for one download: what was already printed, so the
 // callback can decide when the next line is due.
 struct DownloadProgress {
-    std::string url;
     curl_off_t printed_bytes = 0;  // received count at the last printed line
     int printed_pct = -1;          // whole-percent at the last printed line
     curl_off_t last_total = 0;     // the current transfer's dltotal (0 = unknown)
     bool printed_any = false;      // whether any progress line printed at all
 };
 
-// One progress line: bare '\r'-terminated (no ANSI escapes, no padding,
+// One progress line, in a deliberately short form: the announcement
+// ("downloading '<url>'") already names the URL, so the progress line does
+// not repeat it, and the short prefix keeps the line within an 80-column
+// terminal. The line is bare '\r'-terminated (no ANSI escapes, no padding,
 // no isatty tricks), so a terminal redraws the line in place while a log
 // file keeps every line.
-void print_progress_line(const DownloadProgress& st, curl_off_t now,
-                         curl_off_t total)
+void print_progress_line(curl_off_t now, curl_off_t total)
 {
     if (total > 0)
-        fprintf(stderr, "projeny: downloading '%s': %lld/%lld bytes (%d%%)\r",
-                st.url.c_str(), (long long)now, (long long)total,
+        fprintf(stderr, "projeny: download progress: %lld/%lld bytes (%d%%)\r",
+                (long long)now, (long long)total,
                 (int)((100 * now) / total));
     else
-        fprintf(stderr, "projeny: downloading '%s': %lld bytes\r",
-                st.url.c_str(), (long long)now);
+        fprintf(stderr, "projeny: download progress: %lld bytes\r",
+                (long long)now);
 }
 
 // curl xferinfo callback (CURLOPT_XFERINFOFUNCTION; needs
@@ -119,7 +121,7 @@ int download_progress_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     bool pct_step = !have_total || pct > st->printed_pct;
     if (!bytes_step || !pct_step)
         return 0;
-    print_progress_line(*st, dlnow, dltotal);
+    print_progress_line(dlnow, dltotal);
     st->printed_bytes = dlnow;
     st->printed_pct = pct;
     st->printed_any = true;
@@ -207,7 +209,6 @@ bool try_download(const std::string& url, std::string* data, std::string* err)
     // download_progress_cb to fire at all.
     note("downloading '" + url + "'");
     DownloadProgress progress;
-    progress.url = url;
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, download_progress_cb);
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &progress);
@@ -218,7 +219,7 @@ bool try_download(const std::string& url, std::string* data, std::string* err)
         // callback already printed exactly that state.
         if (!progress.printed_any ||
             progress.printed_bytes != (curl_off_t)body.size())
-            print_progress_line(progress, (curl_off_t)body.size(),
+            print_progress_line((curl_off_t)body.size(),
                                 progress.last_total);
     }
     curl_easy_cleanup(c);

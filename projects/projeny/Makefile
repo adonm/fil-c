@@ -26,14 +26,24 @@
 # Diff, patch application, and three-way merge are implemented internally
 # (git-compatible unified diffs); projeny never invokes git.
 # URL:-based .projeny files download their tarball with libcurl (linked in,
-# curl_easy API) and verify it with blake3 (linked in, blake3_hasher API);
-# the dev packages for both are hard build requirements.
-# Build requires only a C++17 compiler.
+# curl_easy API) and verify it with blake3 (vendored portable C in
+# src/blake3/, SIMD disabled, CC0 — compiled in, blake3_hasher API), so
+# libcurl is the only external build requirement.
+# Build requires only a C++17 compiler (plus a C compiler for the vendored
+# blake3).
+CC ?= cc
 CXX ?= g++
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra
+CFLAGS ?= -O2 -g -Wall -Wextra
 CPPFLAGS ?=
 LDFLAGS ?=
-LDLIBS ?= -lcurl -lblake3
+# The vendored blake3 (upstream 1.8.7 portable C, CC0 — see
+# src/blake3/README): compile its three sources with BLAKE3's documented
+# portable flags, which disable all SIMD paths so no intrinsics or assembly
+# are needed and the code builds warning-free with any C compiler.
+BLAKE3_SRC := src/blake3/blake3.c src/blake3/blake3_dispatch.c src/blake3/blake3_portable.c
+BLAKE3_FLAGS := -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512
+LDLIBS ?= -lcurl
 
 # Abort a target the moment one of its recipe commands fails, so a failing
 # compile never leaves a truncated .o (or binary) behind to be linked later.
@@ -47,7 +57,9 @@ LDLIBS ?= -lcurl -lblake3
 BUILD_DIR ?= .
 
 SRC := src/main.cc src/util.cc src/projeny_file.cc src/tree.cc src/ops.cc src/vcs.cc src/download.cc
-OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cc=.o))
+# The vendored blake3 objects join the C++ ones in OBJ (DEP derives from
+# OBJ, so -MMD -MP header dependencies keep working for both).
+OBJ := $(addprefix $(BUILD_DIR)/,$(SRC:.cc=.o) $(BLAKE3_SRC:.c=.o))
 DEP := $(OBJ:.o=.d)
 BIN := $(BUILD_DIR)/projeny
 
@@ -57,10 +69,16 @@ $(BIN): $(OBJ)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
 
-# Automatic header dependencies; parallel-safe (-j).
+# Automatic header dependencies; parallel-safe (-j). The .cc rule builds
+# the projeny sources; the .c rule builds the vendored blake3 with its
+# SIMD-disabling flags.
 $(BUILD_DIR)/%.o: %.cc
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+
+$(BUILD_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(BLAKE3_FLAGS) -MMD -MP -c $< -o $@
 
 -include $(DEP)
 
@@ -69,6 +87,6 @@ test check: all
 
 clean:
 	rm -f $(BIN) $(OBJ) $(DEP)
-	-rmdir $(BUILD_DIR)/src $(BUILD_DIR) 2>/dev/null
+	-rmdir $(BUILD_DIR)/src/blake3 $(BUILD_DIR)/src $(BUILD_DIR) 2>/dev/null
 
 .PHONY: all test check clean

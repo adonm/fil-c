@@ -10497,15 +10497,17 @@ else
          "cmp: snapshot vs v2 tarball"
 fi
 
-# --------- 220. download feedback: announce, 64 KiB progress, hash-verified, skip
+# --------- 220. download feedback: announce, short 64 KiB progress, hash-verified, skip
 # A fresh URL setup must SAY what it is doing, on stderr, in a form that
 # survives being captured into a log:
-#   - the attempt is announced: "downloading '<url>'";
-#   - progress arrives as '\r'-terminated lines naming byte counts and a
-#     whole percent, printed only when >= 64 KiB arrived since the last
-#     line (plus the closing line after perform) — with no ANSI escapes
-#     and no backspaces, so a terminal redraws in place while a log keeps
-#     every line;
+#   - the attempt is announced: "downloading '<url>'" (the only line that
+#     names the URL);
+#   - progress arrives as short '\r'-terminated lines ("projeny: download
+#     progress: ...") naming byte counts and a whole percent, printed only
+#     when >= 64 KiB arrived since the last line (plus the closing line
+#     after perform) — short enough to fit an 80-column terminal, with no
+#     ANSI escapes and no backspaces, so a terminal redraws in place while
+#     a log keeps every line;
 #   - a verified download reports "blake3 hash verified" and the snapshot
 #     it wrote.
 # file:// ticks arrive quantized in 64 KiB read chunks, which makes the
@@ -10575,6 +10577,25 @@ if [ "$np" -eq "$ncr" ]; then
 else
     fail "every progress line names byte counts and a whole percent" \
          "$np of $ncr lines matched 'bytes (N%)'"
+fi
+# The lines must be short: the announcement already names the URL, so a
+# progress line is just the "projeny: download progress: " prefix plus the
+# counts — the 2 MiB fixture's longest is 56 characters, well within an
+# 80-column terminal. URL-bearing lines (the old format) would overflow it,
+# so this is a hard bound on regressing to them.
+maxlen="$(printf '%s' "$out" | tr '\r' '\n' | grep '^projeny: download progress:' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')"
+if [ "$maxlen" -gt 0 ] && [ "$maxlen" -le 80 ]; then
+    ok "progress lines fit an 80-column terminal (longest is $maxlen chars)"
+else
+    fail "progress lines fit an 80-column terminal" \
+         "longest progress line is $maxlen chars, want 1..80"
+fi
+# ... and must never repeat the URL (the announcement already named it).
+if printf '%s' "$out" | tr '\r' '\n' | grep '^projeny: download progress:' | grep -q '://'; then
+    fail "progress lines never repeat the URL" \
+         "a progress line carried the URL the announcement already named"
+else
+    ok "progress lines never repeat the URL"
 fi
 case "$out" in
 *$'\033'*|*$'\b'*)
@@ -10775,12 +10796,12 @@ else
         fail "no percent is printed without a known total" \
              "$npct percent-form lines"
     fi
-    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "downloading 'http://[^']*': [0-9]+ bytes$")"
+    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "^projeny: download progress: [0-9]+ bytes$")"
     if [ "$nn" -eq "$ncr" ]; then
         ok "every progress line reports bare received bytes"
     else
         fail "every progress line reports bare received bytes" \
-             "$nn of $ncr lines matched 'downloading <url>: N bytes'"
+             "$nn of $ncr lines matched 'projeny: download progress: N bytes'"
     fi
     case "$out" in
     *"blake3 hash verified"*)
@@ -10913,17 +10934,17 @@ else
         fail "the unknown-length final body never reports a percent" \
              "$npct percent-form lines"
     fi
-    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "downloading 'http://[^']*': [0-9]+ bytes$")"
+    nn="$(printf '%s' "$out" | tr '\r' '\n' | grep -Ec "^projeny: download progress: [0-9]+ bytes$")"
     if [ "$nn" -eq "$ncr" ]; then
         ok "every progress line reports bare received bytes"
     else
         fail "every progress line reports bare received bytes" \
-             "$nn of $ncr lines matched 'downloading <url>: N bytes'"
+             "$nn of $ncr lines matched 'projeny: download progress: N bytes'"
     fi
     size220c="$(stat -c %s "$T220C/big-1.0.tar.gz")"
     lastp="$(printf '%s' "$out" | tr '\r' '\n' | grep ' bytes' | tail -1)"
     case "$lastp" in
-    *"downloading 'http://127.0.0.1:$port220c/hop.tar.gz': $size220c bytes")
+    *"projeny: download progress: $size220c bytes")
         ok "the closing line is the bare form at the received count"
         ;;
     *)

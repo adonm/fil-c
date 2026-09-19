@@ -19,6 +19,7 @@ The new mode (projeny):
     -> The old projeny style would have an Archive line instead of a URL line, and we'd check the archive into git as projects/foo-1.2.3.tar.gz, for example.
     -> DO NOT use the Archive style for new projeny files. CONVERT TO USING the the URL style whenever rebasing. I.e. never check in a new tarball to git. Always point projeny at the archive's URL.
     -> Projeny supports having multiple URL lines. Try to see if there are multiple URLs where the same package (same version, same software) can be downloaded from. If so, add multiple URL lines to the projeny file for redundancy.
+    -> For an example of a projects that already uses URL, see projects/dash.projeny.
 - Building the project involves doing a `projeny setup projects/foo.projeny`, which creates a directory called projects/foo, which contains the contents of the tarball plus the changes from the patch.
 
 The deprecated mode:
@@ -96,9 +97,13 @@ Another somewhat special project is mg. We're using a normally-versioned mg (lik
 
 Anther interesting case is util-linux, which has both a util-linux.projeny and a yolo-util-linux.projeny. They should point at the same archive (or archive URL, when we update them). When rebasing util-linux, make sure both projeny files are updated in tandem, and make sure they point at the same URLs.
 
+When changing the pizlix build, take a look at existing users of filc/projeny in pizlix/build*.sh. For example, in the prelc phase, we download packages using build_prelc_sub0_filc.sh. In the later phases, we have scripts like build_postlc_sub1_filc.sh. The convention is that projeny packages are created at filenames that the pizlix build can then copy using this:
+
+cp -v $FILCSRC/projects/*/pizlonated-*.tar.gz $LFS/sources
+
 Remember that you have the agent_browser tool. You can use that to research what new versions of the projects there are. Then, you can use curl to download the new tarball from within your container. Note that agent_browser does *not* work in your container, but outside of it, so at some point you'll use the output of agent_browser to work out what URL to pass to curl within the container. Agent_browser is better for reading web pages; curl is better for downloads.
 
-Remember that if you're rebasing packages used by optfil, you have to consider BOTH packages pulled in from projects/ AND packages pulled in from pizlix/. There are lots of packages used by optfil that do not require any changes, so we just use a tarball in pizlix/. Those need rebasing too! And, some of those rebases are the easiest - just pull a new tarball, commit it, repoint the scripts, and confirm that they build. Easy!
+Remember that if you're rebasing packages used by optfil, you have to consider BOTH packages pulled in from projects/ AND packages pulled in from pizlix/. There are lots of packages used by optfil that do not require any changes, so we just use a tarball in pizlix/. Those need rebasing too! Rebasing pizlix/ projects means turning them into projeny projects in the projects/ directory (with a URL, rather than checking the tarball into git).
 
 FINAL CHECKLIST: YOU ARE *NOT DONE* UNTIL YOU HAVE DONE THIS:
 - Does ./build_all.sh pass? This takes 1-2 hours. Run it anyway, wait until it's done.

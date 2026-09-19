@@ -43,10 +43,20 @@
  */
 int getpid(void) {
   int rc;
+#ifdef __FILC__
+  /* Fil-C port: cosmo's yolo boot initializes __get_pib()->pid, but this
+     (pizlonated) side of the world has its own copy of the PIB global, which
+     nothing initializes — so the cached value reads zero.  A zero return
+     value is catastrophic for callers like kill(getpid(), sig), since the
+     kernel reads pid==0 as "the whole process group".  Just issue the
+     syscall; getpid() is not on any hot path here. */
+  rc = sys_getpid().ax;
+#else
   if (!__vforked || IsWindows() || IsMetal()) {
     rc = __get_pib()->pid;
   } else {
     rc = sys_getpid().ax;
   }
+#endif
   return rc;
 }

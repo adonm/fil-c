@@ -242,6 +242,13 @@ def isCppEntry(entry)
     return Pathname.new(entry).extname == ".cpp"
 end
 
+# Returns true if the given source entry (a Pathname or a String) is a
+# hand-written assembly source file, i.e. the thing that cannot be pizlonated
+# by the compiler and (for the sarcasm tests) needs the sarcasm assembler.
+def isAsmEntry(entry)
+    return Pathname.new(entry).extname == ".s"
+end
+
 $testDirectory.each_entry {
     | testName |
     next if testName == Pathname.new(".")
@@ -400,13 +407,19 @@ $testDirectory.each_entry {
     # than merely failing at run time.
     if $hasCOSMO
         hasCppSource = false
+        hasAsmSource = false
         fullPath.each_entry {
             | entry |
             next unless isSourceEntry(entry)
             hasCppSource = true if isCppEntry(entry)
+            hasAsmSource = true if isAsmEntry(entry)
         }
         if hasCppSource
             puts "Skipping #{testName}, C++ not yet supported on COSMO"
+            next
+        end
+        if hasAsmSource
+            puts "Skipping #{testName}, assembly not supported on COSMO"
             next
         end
         hasSharedLibrary = false

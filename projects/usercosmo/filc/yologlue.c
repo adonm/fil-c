@@ -23,3 +23,16 @@
 long long llrintl(long double x) {
   return lrintl(x);
 }
+
+/* Some libyolort.a (compiler-rt) helpers — umodti3, modti3, divmodti4, ... —
+   are compiled with the stack protector and reference __stack_chk_fail.
+   Nothing in the cosmo flavor defines it (cosmo's own libc builds with
+   -fno-stack-protector), so a link that pulls one of those helpers fails.
+   These helpers never actually trip the canary (they are tiny frame-less
+   math routines), but the reference must resolve.  Never trip == fine, and
+   if it somehow tripped, we'd rather be loud than return. */
+#include <unistd.h>
+void __stack_chk_fail(void) {
+  write(2, "stack smashing detected in yolo helper (fil-c cosmo)\n", 53);
+  __builtin_trap();
+}

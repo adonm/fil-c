@@ -896,8 +896,21 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_r)) {
     if ((true)) {
+      // Cosmo links the C++ runtime as static archives.  Those archives
+      // reference each other (e.g. libc++experimental.a needs vtables from
+      // libc++.a), so scan them as a group, exactly like the yolo libs below.
+      // This is cosmo-only: in the other flavors the C++ runtime is usually
+      // shared, and the static archive link order works out there.
+      const bool LinkCxxGroup =
+          IsCosmo && ToolChain.ShouldLinkCXXStdlib(Args) &&
+          !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs,
+                       options::OPT_nostdlibxx);
+      if (LinkCxxGroup)
+        CmdArgs.push_back("--start-group");
       if (ToolChain.ShouldLinkCXXStdlib(Args))
         ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (LinkCxxGroup)
+        CmdArgs.push_back("--end-group");
       if (!Args.hasArg(options::OPT_nodefaultlibs)) {
         CmdArgs.push_back("-lc");
         if (D.CCCIsCXX())

@@ -327,6 +327,7 @@ res_state.c res_init.c resolvconf.c dns_parse.c dn_comp.c dn_expand.c \
 dn_skipname.c proto.c serv.c \
 setlocale.c locale_map.c newlocale.c duplocale.c freelocale.c uselocale.c \
 iswctype.c iswalnum.c iswalpha.c iswpunct.c wctrans.c towctrans.c \
+catopen.c catgets.c catclose.c \
 btowc.c wctob.c \
 mbrtowc.c wcrtomb.c mbsinit.c mbstowcs.c wcstombs.c mbsrtowcs.c \
 mbsnrtowcs.c wcsnrtombs.c wcsrtombs.c mbrlen.c mblen.c mbtowc.c \

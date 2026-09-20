@@ -51,6 +51,9 @@ else
     ./build_usercosmo.sh
 fi
 
-# Note: unlike build_base.sh, there is no ./build_cxx.sh, ./build_minilute.sh
-# or ./build_sarcasm.sh here: there is no libc++ port for cosmo yet (and the
-# sarcasm binary would itself have to be a cosmo binary in this flavor).
+# The C++ runtimes build static libc++/libc++abi against the cosmo libc, and
+# minilute/sarcasm build as cosmo binaries themselves (the sarcasm .s tests
+# need pizfix/bin/sarcasm).
+./build_cxx.sh
+./build_minilute.sh
+./build_sarcasm.sh

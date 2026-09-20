@@ -46,11 +46,35 @@ fi
 # glibc builds) only affects this cmake invocation, so changing it does not
 # require rebuilding LLVM.
 
+# The cosmo flavor is detected by probing for the yolo cosmo libc archive, the
+# same marker that the driver and filc/run-tests use.  Cosmo's user libc is
+# musl-like, so libc++ uses the same pthread/thread surface, but it gets its
+# own _LIBCPP_HAS_COSMO_LIBC knob (see libcxx/CMakeLists.txt) and it must be
+# built static-only, since cosmo mode has no shared libraries (the driver
+# refuses -shared and links -static).
+if test -e pizfix/lib/libyolocosmo.a
+then
+    IS_COSMO=1
+else
+    IS_COSMO=0
+fi
+
 if test "x$ALTLLVMLIBCOPT" = "x"
 then
     LLVMLIBCOPT="-DLIBCXX_HAS_MUSL_LIBC=ON"
 else
     LLVMLIBCOPT=$ALTLLVMLIBCOPT
+fi
+
+SHARED_LIBS=
+
+if test "x$IS_COSMO" = "x1"
+then
+    # Explicitly pin the musl knob off so that a stale cache entry cannot leak
+    # into the cosmo configuration, and build static archives only.  The musl
+    # and glibc flavors keep getting both .a and .so, exactly as before.
+    LLVMLIBCOPT="-DLIBCXX_HAS_MUSL_LIBC=OFF -DLIBCXX_HAS_COSMO_LIBC=ON"
+    SHARED_LIBS="-DLIBCXX_ENABLE_SHARED=OFF -DLIBCXXABI_ENABLE_SHARED=OFF"
 fi
 
 test -e build/bin/clang -a -e build/bin/clang++
@@ -74,6 +98,7 @@ cmake -S runtimes -B runtimes-build -G Ninja \
     -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON \
     -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DLIBCXX_HAS_PTHREAD_API=ON \
     $LLVMLIBCOPT -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+    $SHARED_LIBS \
     -DLIBCXX_FORCE_LIBCXXABI=ON \
     -DLLVM_ENABLE_ASSERTIONS=ON \
     -DLIBCXX_HARDENING_MODE=extensive \

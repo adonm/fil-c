@@ -18,8 +18,30 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/errno.h"
 #include "libc/runtime/syslib.internal.h"
 
+#ifdef __FILC__
+/* Fil-C port: on Linux this function can never do anything.
+ *
+ * The __syslib hook table lives in libc/sysv/syslib.S (assembly, excluded from
+ * this build) and is only ever filled in by cosmo's system-library loader,
+ * which is not part of the Fil-C cosmo flow, and the sys_sysctl thunk itself
+ * has no Linux syscall number (.scall ... 0xfff => ENOSYS).  Upstream cosmo
+ * running on Linux therefore always fails right here, so do that directly;
+ * the alternative would be a link-time failure whenever sysconf() pulls in
+ * sysinfo.c -> sysctl.c (which std::thread does). */
+int sysctl(int *name, unsigned namelen, void *oldp, size_t *oldlenp, void *newp,
+           size_t newlen) {
+  (void)name;
+  (void)namelen;
+  (void)oldp;
+  (void)oldlenp;
+  (void)newp;
+  (void)newlen;
+  return _sysret(-ENOSYS);
+}
+#else
 int sys_sysctl(int *, unsigned, void *, size_t *, void *, size_t) libcesque;
 
 int sysctl(int *name, unsigned namelen, void *oldp, size_t *oldlenp, void *newp,
@@ -31,3 +53,4 @@ int sysctl(int *name, unsigned namelen, void *oldp, size_t *oldlenp, void *newp,
     return sys_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
   }
 }
+#endif

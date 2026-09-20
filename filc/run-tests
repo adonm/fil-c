@@ -203,6 +203,12 @@ $hasGLIBC = (Pathname.new($pizfix) + "lib" + "libc.so.6666").exist?
 # marker artifact in pizfix/lib.
 $hasCOSMO = (Pathname.new($pizfix) + "lib" + "libyolocosmo.a").exist?
 
+# Sarcasm (the assembler for the .s tests) lives in pizfix/bin when
+# build_sarcasm.sh ran.  It is not part of build_base.sh, and in the cosmo
+# flavor it is optional (the sarcasm tool is itself a cosmo binary, built
+# through minilute), so the .s tests can only run when it is present.
+$hasSarcasm = (Pathname.new($pizfix) + "bin" + "sarcasm").exist?
+
 raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
@@ -401,24 +407,21 @@ $testDirectory.each_entry {
         puts "Skipping #{testName}, unsupported on COSMO"
         next
     end
-    # Structural cosmo limitations: cosmo builds are static-only and there is no
-    # libc++ port for cosmo yet.  Unlike unsupportedOnCOSMO, --test NAME does not
-    # override these skips, because such tests cannot even compile or link, rather
-    # than merely failing at run time.
+    # Structural cosmo limitations: cosmo builds are static-only.  Unlike
+    # unsupportedOnCOSMO, --test NAME does not override this skip, because such
+    # tests cannot even compile or link, rather than merely failing at run
+    # time.  C++ (libc++ / libc++abi) works on COSMO now, so it is not gated
+    # here.  Hand written assembly cannot be pizlonated by the compiler, so it
+    # always goes through the sarcasm assembler, which is optional in the
+    # cosmo flavor: the .s tests run there only if sarcasm was built.
     if $hasCOSMO
-        hasCppSource = false
         hasAsmSource = false
         fullPath.each_entry {
             | entry |
             next unless isSourceEntry(entry)
-            hasCppSource = true if isCppEntry(entry)
             hasAsmSource = true if isAsmEntry(entry)
         }
-        if hasCppSource
-            puts "Skipping #{testName}, C++ not yet supported on COSMO"
-            next
-        end
-        if hasAsmSource
+        if hasAsmSource and not $hasSarcasm
             puts "Skipping #{testName}, assembly not supported on COSMO"
             next
         end

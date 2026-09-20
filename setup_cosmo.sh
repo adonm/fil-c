@@ -32,7 +32,9 @@
 export ALTYOLO=./build_yolocosmo.sh
 export ALTUSER=./build_usercosmo.sh
 
-# Note: ALTLLVMLIBCOPT is deliberately not set and no libc++ is built for
-# cosmo yet: build_cxx.sh (libc++/libc++abi against the user libc) and the
-# minilute/sarcasm tools (which would have to be cosmo binaries themselves)
-# are intentionally not part of the cosmo flow at this time.
+# No ALTLLVMLIBCOPT here: build_cxx.sh detects the cosmo flavor on its own (by
+# probing for pizfix/lib/libyolocosmo.a, the same marker the driver uses) and
+# then configures libc++/libc++abi appropriately: _LIBCPP_HAS_COSMO_LIBC=ON,
+# the musl knob off, and static archives only (cosmo mode has no shared
+# libraries).  Minilute/sarcasm are not part of the cosmo flow (see
+# build_base_cosmo.sh).

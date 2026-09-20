@@ -39,7 +39,7 @@ the work tree is created next
 to it as well (named by the `Name:` header).
 
 ```
-projeny setup <f.projeny|dir>               unpack archive, apply patch
+projeny setup <f.projeny|dir> [...]         unpack archive(s), apply patch(es), in parallel
 projeny commit <f.projeny|dir>              fold workdir changes into the patch
 projeny add <f.projeny|dir> <path>          mark a file as added
 projeny rm <f.projeny|dir> <path>           delete a file, mark as removed
@@ -50,8 +50,9 @@ projeny status <f.projeny|dir>              show setup/conflict/pending state
 projeny diff <f.projeny|dir>                print a checkout's uncommitted diff
 projeny diff <dir> <other-dir>              print the diff between two trees
 projeny patch <dir> <patch-file>            apply a patch file to a tree
-projeny package <f.projeny|dir> <out>       setup, then tar the tracked files
-projeny extract <f.projeny|dir> <dest>      setup, then copy tracked files to a dir
+projeny package <f.projeny|dir> <out>       setup, then tar the tracked files; pairs run in parallel
+projeny extract <f.projeny|dir> <dest>      setup, then copy tracked files; pairs run in parallel
+projeny download <url> <hash> [...]         download URL/hash pairs into the cwd
 projeny freeze-mtime <f.projeny|dir> <file>...
 projeny unfreeze-mtime <f.projeny|dir> <file>...
 projeny list-frozen-mtimes <f.projeny|dir>
@@ -59,6 +60,13 @@ projeny get-attributes <f.projeny|dir> [<path or paths or directories>]
 projeny hash <file>                         print the blake3 hash of a file
 projeny help [command]                      show help (per-command with a name)
 ```
+
+`setup`, `package`, and `extract` also accept several projects at once and
+run them in parallel (`package`/`extract` take (project,
+output/destination) pairs), and `projeny download <url> <hash>...` fetches
+URL/hash pairs into the current directory. All three forms are controlled
+with -j/--jobs and -c/--curl-jobs; see
+[Parallel setup, package, extract, and download](#parallel-setup-package-extract-and-download).
 
 Paths into the work tree may be CWD-relative, absolute, or workdir-relative
 (`<Name>/...`); they are stored relative to the workdir.
@@ -176,6 +184,11 @@ Paths into the work tree may be CWD-relative, absolute, or workdir-relative
   hex chars and nothing else — the value to paste into a `URL: <url>
   <blake3-hash>` header of a [URL:-based](#projeny-format) `.projeny`
   file. Refuses anything that is not a regular readable file.
+- `download <url> <hash> [<url> <hash>...]`: downloads every URL into the
+  current directory (named after the URL's basename) as one parallel
+  batch, verifying each against its blake3 hash; a file already present
+  with a matching hash is kept instead of re-downloaded. See
+  [Parallel setup, package, extract, and download](#parallel-setup-package-extract-and-download).
 - `help [command]`: with a command name, prints a detailed explanation
   of that command.
 
@@ -461,6 +474,97 @@ project to a new tarball is done by editing the URL: header(s) to the new
 URL and hash (compute it with `projeny hash <file>`) and running `setup`,
 which re-downloads and merges local changes onto the new base; `rebase`
 refuses URL:-based projects.
+
+## Parallel setup, package, extract, and download
+
+`setup`, `package`, and `extract` accept any number of projects and run
+them in parallel:
+
+```
+projeny setup projects/foo.projeny projects/bar.projeny projects/baz.projeny
+projeny package foo.projeny foo.tar.gz bar.projeny bar.tar.gz
+projeny extract foo.projeny dest-foo bar.projeny dest-bar
+```
+
+`package` and `extract` take (project, output/destination) pairs. Two
+options control the parallelism; they may appear anywhere among the
+arguments, and are accepted by these three commands and `download` only
+(every other command keeps its exact argument shape):
+
+- `-j N` / `--jobs N` (also spelled `-jN` or `--jobs=N`) caps both the
+  per-project threads and the parallel blake3 hash checks at N; the
+  default is the CPU count.
+- `-c N` / `--curl-jobs N` (also spelled `-cN` or `--curl-jobs=N`) caps
+  the curl transfers in flight at N; the default is 8.
+
+Naming one project twice collapses into one operation — keyed on the
+resolved `.projeny` file, so two spellings of the same project (the
+checkout directory and the file, say) dedupe as well — with a warning
+naming the dropped argument (`'a.projeny' is listed more than once;
+setting it up only once`; the `package`/`extract` forms name the ignored
+output/destination). Two DIFFERENT projects whose package outputs or
+extract destinations resolve to the same path are warned about too
+(`package outputs 'x.tar.gz' and './x.tar.gz' both resolve to
+'/abs/x.tar.gz'; the parallel runs write the same file`), once per
+colliding group. One project's failure does not stop the others:
+each project's report is labeled with its file name (`[f.projeny] ...`),
+a project whose archive could not be obtained dies with `'<Name>'
+needs archive '<pkg>', but the parallel download phase failed
+to obtain it`, and a failed run ends with one summary line
+(`projeny: 1 of 3 setup(s) failed: f.projeny`) and a nonzero exit —
+after every other project finished. A single project runs the plain
+single-project command, byte-identically: no planning phase, no labels,
+no summary.
+
+The download work is separated from the per-project work entirely. Every
+named `.projeny` file is read first and all of its `URL:` headers are
+collected; the downloads then run as one batch — the curl multi API with
+at most `-c` transfers in flight, never two concurrent transfers of the
+same package, blake3 checks on at most `-j` threads, and one full retry
+pass over whatever still failed (parallel retries when several packages
+failed) — and only then do the projects themselves run, on at most `-j`
+threads.
+
+Because several files may want the same archive (the same URL basename),
+the batch is deduplicated by archive name: a shared archive downloads
+exactly once, and every file asking for it receives the same downloaded
+archive file. The candidate URLs tried for a shared package are the URLs
+all of its contributors have in common first (the remaining mirrors
+after that). Two loud warnings cover the conflicts this can hide:
+
+- files downloading archives with the same name but from DIFFERENT URL
+  sets get `WARNING: N PROJENY FILES DOWNLOAD ARCHIVES WITH THE SAME
+  NAME '<archive>' BUT WITH DIFFERENT URL SETS: ...` (naming the files;
+  the warning ends `DOWNLOADS ARE DEDUPLICATED BY ARCHIVE NAME, SO EVERY
+  ONE OF THEM WILL GET THE SAME ARCHIVE FILE.`), and
+- the same URL listed with different blake3 hashes warns even louder:
+  `WARNING: URL '<url>' IS LISTED WITH DIFFERENT BLAKE3 HASHES (<hash>,
+  <hash>) IN <files>. THIS IS ALMOST CERTAINLY A MISTAKE. ALL OF THESE
+  FILES WILL RECEIVE THE SAME DOWNLOADED ARCHIVE.`
+
+Both only warn — the download is deduplicated either way. A project
+whose snapshot already verifies against one of the hashes its archive
+was listed with needs no download at all. Each attempt is announced
+(`projeny: downloading '<archive>' from '<url>'`), a verified one
+reports `downloaded '<archive>' (<N> bytes); blake3 hash verified`, and
+a failing batch announces `retrying <k> failed download(s): <names>`
+before the retry pass. Batch downloads print no progress lines — the
+single-project download keeps them (see
+[`.projeny` format](#projeny-format)); interleaved transfers would only
+spam them.
+
+`projeny download <url> <hash> [<url> <hash>...]` runs any number of
+URL/hash pairs through the same machinery and writes each verified
+download into the current directory, named after the URL's basename
+(`https://foo.dev/foo-1.2.3.tar.gz` is saved as `foo-1.2.3.tar.gz`).
+The hashes are the same 64-hex-char blake3 values a `URL:` header wants
+(`projeny hash <file>` computes them; uppercase hex is accepted). A file
+already present with a matching hash is kept instead of re-downloaded
+(`already have <name> (blake3 hash verified)`); a verified download
+reports `wrote <name> (<N> bytes)`. Pairs sharing an archive basename
+deduplicate exactly like the setup batch above (exact duplicate URL/hash
+pairs collapse silently), and any failure — after every other package
+finished — exits nonzero.
 
 ## File naming and migration
 

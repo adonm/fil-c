@@ -37,6 +37,11 @@ CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra
 CFLAGS ?= -O2 -g -Wall -Wextra
 CPPFLAGS ?=
 LDFLAGS ?=
+# std::thread (util's run_parallel, the parallel hash checks) needs -pthread
+# on GNU/Linux. Kept as its own overridable variable — appended in the rules,
+# so an externally-provided CXXFLAGS still gets it, and a platform where the
+# flag is wrong can set PTHREAD_FLAGS= empty.
+PTHREAD_FLAGS ?= -pthread
 # The vendored blake3 (upstream 1.8.7 portable C, CC0 — see
 # src/blake3/README): compile its three sources with BLAKE3's documented
 # portable flags, which disable all SIMD paths so no intrinsics or assembly
@@ -67,14 +72,14 @@ all: $(BIN)
 
 $(BIN): $(OBJ)
 	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
+	$(CXX) $(CXXFLAGS) $(PTHREAD_FLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
 
 # Automatic header dependencies; parallel-safe (-j). The .cc rule builds
 # the projeny sources; the .c rule builds the vendored blake3 with its
 # SIMD-disabling flags.
 $(BUILD_DIR)/%.o: %.cc
 	@mkdir -p $(dir $@)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(PTHREAD_FLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)

@@ -25,6 +25,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // Resolved locations for "<pdir>/<archive>", "<pdir>/<name>/", etc.
@@ -41,6 +42,12 @@ struct Ctx {
 Ctx resolve_ctx(const std::string& projeny_arg);
 
 int cmd_setup(const std::string& projeny_arg);
+// Parallel multi-project setup: one cmd_setup per argument, run on at most
+// `jobs` threads after one batched download pass over every URL: header in
+// every named project (at most `curl_jobs` transfers in flight). A single
+// argument runs the plain single-project command, byte-identically.
+int cmd_setup_multi(const std::vector<std::string>& projeny_args, int jobs,
+                    int curl_jobs);
 int cmd_commit(const std::string& projeny_arg);
 int cmd_add(const std::string& projeny_arg, const std::string& path);
 int cmd_rm(const std::string& projeny_arg, const std::string& path);
@@ -54,6 +61,19 @@ int cmd_diff(const std::string& dir, const std::string& other_dir);
 int cmd_patch(const std::string& dir, const std::string& patch_file);
 int cmd_package(const std::string& projeny_arg, const std::string& output);
 int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir);
+// Parallel multi-project package/extract: (project, output/dest) pairs run
+// on at most `jobs` threads after one batched download pass (see
+// cmd_setup_multi). A single pair runs the plain single-project command,
+// byte-identically.
+int cmd_package_multi(const std::vector<std::pair<std::string, std::string>>& pairs,
+                      int jobs, int curl_jobs);
+int cmd_extract_multi(const std::vector<std::pair<std::string, std::string>>& pairs,
+                      int jobs, int curl_jobs);
+// Download URL HASH pairs (args is a flat url,hash,url,hash... list,
+// validated here) into the current directory as one parallel batch: at
+// most `curl_jobs` transfers in flight, blake3 hash checks on at most
+// `jobs` threads. Files are named after the URL's basename.
+int cmd_download(const std::vector<std::string>& args, int jobs, int curl_jobs);
 int cmd_freeze_mtime(const std::string& projeny_arg,
                      const std::vector<std::string>& files);
 int cmd_unfreeze_mtime(const std::string& projeny_arg,

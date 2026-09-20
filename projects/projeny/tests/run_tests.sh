@@ -29,6 +29,20 @@
 # query-string basename derivation, and the rest of the command surface on
 # URL projects (commit, URL-edit merge, rebase refusal, tolerant status,
 # package/extract/get-attributes, freeze-mtime).
+# The parallel sections cover the multi-project forms of
+# setup/package/extract and the download command: a repeat-everything
+# flakiness loop over fresh state (default -j, -j1, -j2, -j100), shared-
+# archive dedupe (one download per archive basename, common URLs first),
+# in-batch mirror fallback, the announced single retry pass, the loud
+# shared-package warnings, duplicate-argument collapsing (including the
+# paired package/extract forms and path-alias spellings), the parallel
+# failure isolation (labeled guard error + summary line, good projects
+# still set up), the URL HASH download pairs (byte-exact, already-have
+# skip, hash normalization, exact hard-error wordings), the -j/-c
+# option surface (accepted by setup/package/extract/download only), and
+# the parallel conflicted-file fallback (two conflicted .projeny files
+# sharing one archive download exactly once outside the empty-plan batch
+# phase, deterministically across repeated rounds).
 #
 # Bash is required (process substitution in the status-copy comparisons
 # below); /bin/sh (dash) cannot run this suite.
@@ -10967,6 +10981,1370 @@ else
              "the snapshot differs from the served file"
     fi
 fi
+
+# ---------------------------------- 222. parallel setup (three projects)
+# parallel-projeny.txt: "make sure that the projeny test suite has some kind
+# of parallel setup/extract/package test that runs a few times in a row, and
+# must succeed every time." Three URL-based projects in one directory share
+# one archive basename: the planning phase collapses the downloads to
+# exactly one, then the three setups run in parallel (-j threads).
+T222="$ROOT/t222"
+mkdir -p "$T222/fake-1.0/src"
+printf 'int alpha = 1;\n' > "$T222/fake-1.0/src/a.c"
+printf 'hello v1\n' > "$T222/fake-1.0/README"
+(cd "$T222" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+h222="$("$PROJENY" hash "$T222/fake-1.0.tar.gz")"
+for name in a b c; do
+    printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake%s\n\n    Parallel project %s.\n\n' \
+        "$T222" "$h222" "$name" "$name" > "$T222/$name.projeny"
+done
+parallel_setup_round() {
+    _round="$1"; _dir="$2"; _want_dl="$3"; shift 3
+    out="$(run_in "$_dir" "$PROJENY" "$@" 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        ok "parallel setup round $_round exits 0"
+    else
+        fail "parallel setup round $_round exits 0" "exit=$rc out: $out"
+    fi
+    ndl="$(printf '%s' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+    if [ "$ndl" -eq "$_want_dl" ]; then
+        ok "parallel setup round $_round downloads the shared archive $_want_dl time(s)"
+    else
+        fail "parallel setup round $_round downloads the shared archive $_want_dl time(s)" \
+             "got $ndl downloading lines, want exactly $_want_dl (out: $out)"
+    fi
+    for name in a b c; do
+        if [ "$(cat "$_dir/fake$name/README" 2>/dev/null)" = "hello v1" ]; then
+            ok "parallel setup round $_round checks out fake$name"
+        else
+            fail "parallel setup round $_round checks out fake$name" \
+                 "README missing or wrong: $(cat "$_dir/fake$name/README" 2>&1)"
+        fi
+    done
+    if cmp -s "$_dir/.fake-1.0.tar.gz.snapshot" "$_dir/fake-1.0.tar.gz"; then
+        ok "parallel setup round $_round writes a byte-exact snapshot"
+    else
+        fail "parallel setup round $_round writes a byte-exact snapshot" \
+             "the snapshot differs from the tarball"
+    fi
+}
+T222R1="$ROOT/t222r1"
+mkdir -p "$T222R1"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/c.projeny" \
+   "$T222/fake-1.0.tar.gz" "$T222R1/"
+parallel_setup_round 1 "$T222R1" 1 setup a.projeny b.projeny c.projeny
+T222R2="$ROOT/t222r2"
+mkdir -p "$T222R2"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/c.projeny" \
+   "$T222/fake-1.0.tar.gz" "$T222R2/"
+parallel_setup_round 2 "$T222R2" 1 setup -j2 a.projeny b.projeny c.projeny
+# A repeat parallel setup over existing checkouts must also succeed (the
+# no-op re-setup path runs in parallel too, and the verified snapshot means
+# no download happens at all).
+parallel_setup_round 3 "$T222R2" 0 setup a.projeny b.projeny c.projeny
+
+# -------------------------------------- 223. duplicate projects collapse
+# `projeny setup foo.projeny foo.projeny` warns and sets the project up
+# exactly once — never two (not even sequential) setups of one .projeny.
+T223="$ROOT/t223"
+mkdir -p "$T223"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T223/"
+out="$(run_in "$T223" "$PROJENY" setup a.projeny a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the duplicate-argument setup exits 0"
+else
+    fail "the duplicate-argument setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"'a.projeny' is listed more than once; setting it up only once"*)
+    ok "the duplicate argument warns and collapses"
+    ;;
+*)
+    fail "the duplicate argument warns and collapses" "out: $out"
+    ;;
+esac
+ndl="$(printf '%s' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the collapsed setup still downloads exactly once"
+else
+    fail "the collapsed setup still downloads exactly once" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if [ -d "$T223/fakea" ] && [ ! -e "$T223/fakea.projeny.x" ]; then
+    ok "the collapsed setup produces one checkout"
+else
+    fail "the collapsed setup produces one checkout" "ls: $(ls "$T223" 2>&1)"
+fi
+
+# --------------------------------------- 224. -j/--jobs and -c/--curl-jobs
+# The parallel commands accept -j N/-jN/--jobs N/--jobs=N and -c N/-cN/
+# --curl-jobs N/--curl-jobs=N anywhere among their arguments; values must
+# be integers >= 1; unknown option-looking tokens die.
+T224="$ROOT/t224"
+optidx224=0
+for optform in "-j2" "--jobs 2" "--jobs=2" "-c2" "--curl-jobs 2" "--curl-jobs=2" \
+               "-j2 -c2"; do
+    optidx224=$((optidx224 + 1))
+    T224D="$ROOT/t224-$optidx224"
+    mkdir -p "$T224D"
+    cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T224D/"
+    run_in "$T224D" expect_ok "setup accepts '$optform'" "$PROJENY" \
+        setup $optform a.projeny
+    if [ -f "$T224D/fakea/README" ]; then
+        ok "setup with '$optform' produced the checkout"
+    else
+        fail "setup with '$optform' produced the checkout" "ls: $(ls "$T224D")"
+    fi
+done
+T224B="$ROOT/t224bad"
+mkdir -p "$T224B"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T224B/"
+run_in "$T224B" expect_fail "-j0 is refused" "$PROJENY" setup -j0 a.projeny
+run_in "$T224B" expect_fail "-j abc is refused" "$PROJENY" setup -j abc \
+    a.projeny
+run_in "$T224B" expect_fail "-c0 is refused" "$PROJENY" setup -c0 a.projeny
+run_in "$T224B" expect_fail "an unknown option dies" "$PROJENY" setup \
+    --bogus a.projeny
+out="$(run_in "$T224B" "$PROJENY" setup -j0 a.projeny 2>&1)"
+case "$out" in
+*"-j must be >= 1"*)
+    ok "the -j0 error says -j must be >= 1"
+    ;;
+*)
+    fail "the -j0 error says -j must be >= 1" "out: $out"
+    ;;
+esac
+out="$(run_in "$T224B" "$PROJENY" setup -j abc a.projeny 2>&1)"
+case "$out" in
+*"invalid value for -j: 'abc'"*)
+    ok "the -j abc error names the bad value"
+    ;;
+*)
+    fail "the -j abc error names the bad value" "out: $out"
+    ;;
+esac
+out="$(run_in "$T224B" "$PROJENY" setup --bogus a.projeny 2>&1)"
+case "$out" in
+*"unknown option '--bogus'"*)
+    ok "the unknown-option error names the option"
+    ;;
+*)
+    fail "the unknown-option error names the option" "out: $out"
+    ;;
+esac
+# The paired parallel forms: package/extract take (project, output/dest)
+# pairs, so an odd or too-short argument count is a usage error.
+run_in "$T224B" expect_fail "package with one argument is a usage error" \
+    "$PROJENY" package a.projeny
+run_in "$T224B" expect_fail "package with three arguments is a usage error" \
+    "$PROJENY" package a.projeny o.tar.gz a.projeny
+run_in "$T224B" expect_fail "extract with one argument is a usage error" \
+    "$PROJENY" extract a.projeny
+run_in "$T224B" expect_fail "setup with no project is a usage error" \
+    "$PROJENY" setup
+
+# ------------------------------------------- 225. loud shared-package warnings
+# Two files naming the same archive basename with different URL sets get the
+# ALL-CAPS URL-set warning; the same URL with different hashes gets the
+# louder hash warning. Both proceed: one download feeds every file.
+T225="$ROOT/t225"
+mkdir -p "$T225/d1/fake-1.0" "$T225/d2/fake-1.0"
+printf 'version one\n' > "$T225/d1/fake-1.0/README"
+printf 'version two\n' > "$T225/d2/fake-1.0/README"
+(cd "$T225/d1" && tar -czf fake-1.0.tar.gz fake-1.0)
+(cd "$T225/d2" && tar -czf fake-1.0.tar.gz fake-1.0)
+h225a="$("$PROJENY" hash "$T225/d1/fake-1.0.tar.gz")"
+h225b="$("$PROJENY" hash "$T225/d2/fake-1.0.tar.gz")"
+mkdir -p "$T225/sets"
+printf 'URL: file://%s/d1/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakex\n\n    X.\n\n' \
+    "$T225" "$h225a" > "$T225/sets/x.projeny"
+printf 'URL: file://%s/d2/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakey\n\n    Y.\n\n' \
+    "$T225" "$h225b" > "$T225/sets/y.projeny"
+out="$(run_in "$T225/sets" "$PROJENY" setup x.projeny y.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the different-URL-set parallel setup exits 0"
+else
+    fail "the different-URL-set parallel setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"WARNING: 2 PROJENY FILES DOWNLOAD ARCHIVES WITH THE SAME NAME 'fake-1.0.tar.gz' BUT WITH DIFFERENT URL SETS: "*)
+    ok "the different-URL-set warning prints"
+    ;;
+*)
+    fail "the different-URL-set warning prints" "out: $out"
+    ;;
+esac
+ndl="$(printf '%s' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the differently-URLed files still share one download"
+else
+    fail "the differently-URLed files still share one download" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if [ -f "$T225/sets/fakex/README" ] && [ -f "$T225/sets/fakey/README" ]; then
+    ok "both differently-URLed projects still set up"
+else
+    fail "both differently-URLed projects still set up" "out: $out"
+fi
+T225H="$ROOT/t225h"
+mkdir -p "$T225H"
+printf 'URL: file://%s/d1/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakep\n\n    P.\n\n' \
+    "$T225" "$h225a" > "$T225H/p.projeny"
+printf 'URL: file://%s/d1/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeq\n\n    Q.\n\n' \
+    "$T225" "$h225b" > "$T225H/q.projeny"
+out="$(run_in "$T225H" "$PROJENY" setup p.projeny q.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the same-URL-different-hash parallel setup exits 0"
+else
+    fail "the same-URL-different-hash parallel setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"WARNING: URL 'file://$T225/d1/fake-1.0.tar.gz' IS LISTED WITH DIFFERENT BLAKE3 HASHES ($h225a, $h225b) IN "*)
+    ok "the different-hash warning prints"
+    ;;
+*)
+    fail "the different-hash warning prints" "out: $out"
+    ;;
+esac
+case "$out" in
+*"THIS IS ALMOST CERTAINLY A MISTAKE. ALL OF THESE FILES WILL RECEIVE THE SAME DOWNLOADED ARCHIVE."*)
+    ok "the different-hash warning says what happens"
+    ;;
+*)
+    fail "the different-hash warning says what happens" "out: $out"
+    ;;
+esac
+if [ -f "$T225H/fakep/README" ] && [ -f "$T225H/fakeq/README" ]; then
+    ok "both same-URL projects still set up"
+else
+    fail "both same-URL projects still set up" "out: $out"
+fi
+
+# --------------------------------- 226. parallel setup mixes Archive and URL
+# A classic Archive:-based project (checked-in tarball) contributes nothing
+# to the download batch; a URL project in the same run still batch-downloads
+# once.
+T226="$ROOT/t226"
+mkdir -p "$T226"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T226/"
+printf 'Archive: classic-1.0.tar.gz\nOrigname: fake-1.0\nName: classic\n\n    Classic.\n\n' \
+    > "$T226/classic.projeny"
+cp "$T222/fake-1.0.tar.gz" "$T226/classic-1.0.tar.gz"
+out="$(run_in "$T226" "$PROJENY" setup a.projeny classic.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the mixed Archive/URL parallel setup exits 0"
+else
+    fail "the mixed Archive/URL parallel setup exits 0" "exit=$rc out: $out"
+fi
+ndl="$(printf '%s' "$out" | grep -c "^projeny: downloading '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "only the URL project's archive downloads"
+else
+    fail "only the URL project's archive downloads" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if [ -f "$T226/fakea/README" ] && [ -f "$T226/classic/README" ]; then
+    ok "both the Archive and URL projects check out"
+else
+    fail "both the Archive and URL projects check out" "ls: $(ls "$T226")"
+fi
+
+# ------------------------------- 227. parallel package and parallel extract
+# (project, output) pairs package in parallel, and (project, dest) pairs
+# extract in parallel; the payloads carry exactly the tracked files.
+T227="$ROOT/t227"
+mkdir -p "$T227"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/fake-1.0.tar.gz" "$T227/"
+run_in "$T227" expect_ok "parallel package exits 0" "$PROJENY" \
+    package a.projeny o1.tar.gz b.projeny o2.tar.gz
+if [ -f "$T227/o1.tar.gz" ] && [ -f "$T227/o2.tar.gz" ]; then
+    ok "parallel package writes both outputs"
+else
+    fail "parallel package writes both outputs" "ls: $(ls "$T227")"
+fi
+if tar -tzf "$T227/o1.tar.gz" | grep -q "^o1/README$" &&
+    tar -tzf "$T227/o2.tar.gz" | grep -q "^o2/src/a.c$"; then
+    ok "the parallel packages hold the tracked files"
+else
+    fail "the parallel packages hold the tracked files" \
+         "o1: $(tar -tzf "$T227/o1.tar.gz" 2>&1); o2: $(tar -tzf "$T227/o2.tar.gz" 2>&1)"
+fi
+T227E="$ROOT/t227e"
+mkdir -p "$T227E"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/fake-1.0.tar.gz" "$T227E/"
+run_in "$T227E" expect_ok "parallel extract exits 0" "$PROJENY" \
+    extract a.projeny e1 b.projeny e2
+if [ "$(cat "$T227E/e1/README" 2>/dev/null)" = "hello v1" ] &&
+    [ "$(cat "$T227E/e2/src/a.c" 2>/dev/null)" = "int alpha = 1;" ]; then
+    ok "parallel extract fills both destinations"
+else
+    fail "parallel extract fills both destinations" \
+         "e1: $(ls "$T227E/e1" 2>&1); e2: $(ls "$T227E/e2" 2>&1)"
+fi
+run_in "$T227E" expect_fail "re-extracting over a filled dir fails" \
+    "$PROJENY" extract a.projeny e1 b.projeny e2
+
+# ------------------------------- 228. one failing project does not stop the
+# others: its package fails the batch (after the retry pass), its setup dies
+# with a labeled error naming it, the good projects still check out, and the
+# command exits nonzero with a one-line summary.
+T228="$ROOT/t228"
+mkdir -p "$T228/sub"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T228/"
+cp "$T222/fake-1.0.tar.gz" "$T228/fake-bad-1.0.tar.gz"
+printf 'URL: file://%s/fake-bad-1.0.tar.gz %s\nOrigname: fake-1.0\nName: badone\n\n    Bad.\n\n' \
+    "$T228" "0000000000000000000000000000000000000000000000000000000000000000" \
+    > "$T228/sub/bad.projeny"
+out="$(run_in "$T228" "$PROJENY" setup a.projeny sub/bad.projeny b.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "the mixed good/bad parallel setup exits nonzero"
+else
+    fail "the mixed good/bad parallel setup exits nonzero" "out: $out"
+fi
+case "$out" in
+*"[bad.projeny] error: 'badone' needs archive 'fake-bad-1.0.tar.gz', but the parallel download phase failed to obtain it"*)
+    ok "the failed project dies with a labeled error"
+    ;;
+*)
+    fail "the failed project dies with a labeled error" "out: $out"
+    ;;
+esac
+case "$out" in
+*"projeny: 1 of 3 setup(s) failed: bad.projeny"*)
+    ok "the summary line names the failed project"
+    ;;
+*)
+    fail "the summary line names the failed project" "out: $out"
+    ;;
+esac
+if [ -f "$T228/fakea/README" ] && [ -f "$T228/fakeb/README" ]; then
+    ok "the good projects still set up"
+else
+    fail "the good projects still set up" "ls: $(ls "$T228")"
+fi
+if [ ! -e "$T228/badone" ]; then
+    ok "the failed project leaves no checkout"
+else
+    fail "the failed project leaves no checkout" "ls: $(ls "$T228")"
+fi
+
+# ------------------------------------------------- 229. the download command
+# URL HASH pairs download into the cwd, named after the URL's basename; a
+# matching local file is kept ("already have"); a mismatching or failing
+# download exits nonzero after every other package finished.
+T229="$ROOT/t229"
+T229SRC="$ROOT/t229src"
+mkdir -p "$T229" "$T229SRC"
+cp "$T222/fake-1.0.tar.gz" "$T229SRC/fake-1.0.tar.gz"
+run_in "$T229" expect_ok "download fetches and verifies" "$PROJENY" \
+    download "file://$T229SRC/fake-1.0.tar.gz" "$h222"
+if cmp -s "$T229/fake-1.0.tar.gz" "$T229SRC/fake-1.0.tar.gz"; then
+    ok "the downloaded file is byte-exact"
+else
+    fail "the downloaded file is byte-exact" "the file differs from the source"
+fi
+out="$(run_in "$T229" "$PROJENY" download "file://$T229SRC/fake-1.0.tar.gz" "$h222" 2>&1)"
+case "$out" in
+*"already have fake-1.0.tar.gz (blake3 hash verified)"*)
+    ok "a matching local file is kept"
+    ;;
+*)
+    fail "a matching local file is kept" "out: $out"
+    ;;
+esac
+out="$(run_in "$T229" "$PROJENY" download "file://$T229SRC/fake-1.0.tar.gz" \
+    0000000000000000000000000000000000000000000000000000000000000000 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "a bad hash exits nonzero"
+else
+    fail "a bad hash exits nonzero" "out: $out"
+fi
+case "$out" in
+*"failed to download 1 of 1 package(s)"*)
+    ok "the bad-hash error summarizes the failure"
+    ;;
+*)
+    fail "the bad-hash error summarizes the failure" "out: $out"
+    ;;
+esac
+run_in "$T229" expect_fail "an odd argument count is a usage error" "$PROJENY" \
+    download "file://$T229SRC/fake-1.0.tar.gz"
+run_in "$T229" expect_fail "a non-hex hash is refused" "$PROJENY" download \
+    "file://$T229SRC/fake-1.0.tar.gz" zz
+run_in "$T229" expect_fail "a URL naming no file is refused" "$PROJENY" \
+    download "https://foo.dev/" "$h222"
+rm -f "$T229/fake-1.0.tar.gz"
+run_in "$T229" expect_ok "download accepts -j1 -c1" "$PROJENY" download -j1 \
+    -c1 "file://$T229SRC/fake-1.0.tar.gz" "$h222"
+if cmp -s "$T229/fake-1.0.tar.gz" "$T229SRC/fake-1.0.tar.gz"; then
+    ok "the -j1 -c1 download is byte-exact"
+else
+    fail "the -j1 -c1 download is byte-exact" "the file differs from the source"
+fi
+
+# --------------------------------- 230. one download, two directories
+# Two projects in DIFFERENT directories sharing an archive basename download
+# once; each directory gets its own verified snapshot copy.
+T230="$ROOT/t230"
+mkdir -p "$T230/pa" "$T230/pb"
+cp "$T222/fake-1.0.tar.gz" "$T230/fake-1.0.tar.gz"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakepa\n\n    PA.\n\n' \
+    "$T230" "$h222" > "$T230/pa/pa.projeny"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakepb\n\n    PB.\n\n' \
+    "$T230" "$h222" > "$T230/pb/pb.projeny"
+out="$(run_in "$T230" "$PROJENY" setup pa/pa.projeny pb/pb.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the two-directory parallel setup exits 0"
+else
+    fail "the two-directory parallel setup exits 0" "exit=$rc out: $out"
+fi
+ndl="$(printf '%s' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the two directories share one download"
+else
+    fail "the two directories share one download" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if [ -f "$T230/pa/fakepa/README" ] && [ -f "$T230/pb/fakepb/README" ]; then
+    ok "both directories check out"
+else
+    fail "both directories check out" "ls: $(ls "$T230/pa" "$T230/pb" 2>&1)"
+fi
+if cmp -s "$T230/pa/.fake-1.0.tar.gz.snapshot" "$T230/fake-1.0.tar.gz" &&
+    cmp -s "$T230/pb/.fake-1.0.tar.gz.snapshot" "$T230/fake-1.0.tar.gz"; then
+    ok "each directory gets its own byte-exact snapshot"
+else
+    fail "each directory gets its own byte-exact snapshot" \
+         "the snapshots differ from the tarball"
+fi
+
+# --------------------------------- 231. the flakiness loop: parallel
+# setup + extract + package succeed on every repeat
+# parallel-projeny.txt: "make sure that the projeny test suite has some kind
+# of parallel setup/extract/package test that runs a few times in a row, and
+# must succeed every time." Each round below re-creates its directory from
+# scratch (fresh .projeny copies and tarballs — never a prior round's
+# workdirs or snapshots) and runs a representative scenario: parallel setup
+# of three URL projects sharing one archive plus a classic Archive: project,
+# then parallel extract, then parallel package. The rounds vary -j from the
+# default (no flag at all) through -j1, -j2, and a make-style -j100, so a
+# scheduling or shared-state race cannot hide behind one thread count.
+T231="$ROOT/t231"
+mkdir -p "$T231"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/c.projeny" \
+   "$T222/fake-1.0.tar.gz" "$T231/"
+printf 'Archive: classic-1.0.tar.gz\nOrigname: fake-1.0\nName: classic\n\n    Classic.\n\n' \
+    > "$T231/classic.projeny"
+cp "$T222/fake-1.0.tar.gz" "$T231/classic-1.0.tar.gz"
+flakiness_round() {
+    _r231="$1"; _d231="$2"; _j231="$3"; _jdisp231="$4"
+    mkdir -p "$_d231"
+    cp "$T231/a.projeny" "$T231/b.projeny" "$T231/c.projeny" \
+       "$T231/classic.projeny" "$T231/fake-1.0.tar.gz" \
+       "$T231/classic-1.0.tar.gz" "$_d231/"
+    out="$(run_in "$_d231" "$PROJENY" setup $_j231 a.projeny b.projeny \
+        c.projeny classic.projeny 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        ok "flakiness round $_r231 ($_jdisp231): parallel setup exits 0"
+    else
+        fail "flakiness round $_r231 ($_jdisp231): parallel setup exits 0" \
+             "exit=$rc out: $out"
+    fi
+    ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+    if [ "$ndl" -eq 1 ]; then
+        ok "flakiness round $_r231 ($_jdisp231): the shared archive downloads once"
+    else
+        fail "flakiness round $_r231 ($_jdisp231): the shared archive downloads once" \
+             "got $ndl downloading lines (out: $out)"
+    fi
+    for _wd231 in fakea fakeb fakec classic; do
+        if [ "$(cat "$_d231/$_wd231/README" 2>/dev/null)" = "hello v1" ]; then
+            ok "flakiness round $_r231 ($_jdisp231): $_wd231 checked out"
+        else
+            fail "flakiness round $_r231 ($_jdisp231): $_wd231 checked out" \
+                 "README missing or wrong: $(cat "$_d231/$_wd231/README" 2>&1)"
+        fi
+    done
+    out="$(run_in "$_d231" "$PROJENY" extract $_j231 a.projeny ex1 \
+        c.projeny ex3 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        ok "flakiness round $_r231 ($_jdisp231): parallel extract exits 0"
+    else
+        fail "flakiness round $_r231 ($_jdisp231): parallel extract exits 0" \
+             "exit=$rc out: $out"
+    fi
+    ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading '")"
+    if [ "$ndl" -eq 0 ]; then
+        ok "flakiness round $_r231 ($_jdisp231): extract re-downloads nothing"
+    else
+        fail "flakiness round $_r231 ($_jdisp231): extract re-downloads nothing" \
+             "got $ndl downloading lines (out: $out)"
+    fi
+    for _dest231 in ex1 ex3; do
+        if [ "$(cat "$_d231/$_dest231/README" 2>/dev/null)" = "hello v1" ]; then
+            ok "flakiness round $_r231 ($_jdisp231): extract filled $_dest231"
+        else
+            fail "flakiness round $_r231 ($_jdisp231): extract filled $_dest231" \
+                 "README missing or wrong: $(cat "$_d231/$_dest231/README" 2>&1)"
+        fi
+    done
+    out="$(run_in "$_d231" "$PROJENY" package $_j231 b.projeny pk2.tar.gz \
+        classic.projeny pkc.tar.gz 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        ok "flakiness round $_r231 ($_jdisp231): parallel package exits 0"
+    else
+        fail "flakiness round $_r231 ($_jdisp231): parallel package exits 0" \
+             "exit=$rc out: $out"
+    fi
+    for _pkg231 in pk2.tar.gz pkc.tar.gz; do
+        if [ -f "$_d231/$_pkg231" ]; then
+            ok "flakiness round $_r231 ($_jdisp231): package wrote $_pkg231"
+        else
+            fail "flakiness round $_r231 ($_jdisp231): package wrote $_pkg231" \
+                 "ls: $(ls "$_d231" 2>&1)"
+        fi
+    done
+}
+i231=0
+for jflag231 in "" "-j1" "-j2" "-j100"; do
+    i231=$((i231 + 1))
+    flakiness_round "$i231" "$ROOT/t231r$i231" "$jflag231" \
+        "${jflag231:-default -j}"
+done
+
+# ------------------------------ 232. shared packages prefer their common URLs
+# parallel-projeny.txt: "If multiple projeny files want the same package but
+# have different URLs, then you should prioritize trying whatever URLs they
+# have in common; otherwise just pick one." x.projeny lists a shared mirror
+# first and a private one second; y.projeny lists the shared mirror and a
+# different private one. The batch must download the archive exactly once,
+# from the URL both files share — never from either private mirror.
+T232="$ROOT/t232"
+mkdir -p "$T232/uniqx" "$T232/uniqy"
+cp "$T222/fake-1.0.tar.gz" "$T232/fake-1.0.tar.gz"
+cp "$T222/fake-1.0.tar.gz" "$T232/uniqx/fake-1.0.tar.gz"
+cp "$T222/fake-1.0.tar.gz" "$T232/uniqy/fake-1.0.tar.gz"
+h232="$h222"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nURL: file://%s/uniqx/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakex\n\n    Shared mirror first.\n\n' \
+    "$T232" "$h232" "$T232" "$h232" > "$T232/x.projeny"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nURL: file://%s/uniqy/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakey\n\n    Shared mirror first too.\n\n' \
+    "$T232" "$h232" "$T232" "$h232" > "$T232/y.projeny"
+out="$(run_in "$T232" "$PROJENY" setup x.projeny y.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the overlapping-URL-set parallel setup exits 0"
+else
+    fail "the overlapping-URL-set parallel setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"WARNING: 2 PROJENY FILES DOWNLOAD ARCHIVES WITH THE SAME NAME 'fake-1.0.tar.gz' BUT WITH DIFFERENT URL SETS: "*)
+    ok "the overlapping sets still warn (the URL sets differ)"
+    ;;
+*)
+    fail "the overlapping sets still warn (the URL sets differ)" "out: $out"
+    ;;
+esac
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the shared package downloads exactly once"
+else
+    fail "the shared package downloads exactly once" \
+         "got $ndl downloading lines (out: $out)"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading 'fake-1.0.tar.gz' from 'file://$T232/fake-1.0.tar.gz'")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the download used the URL both files share"
+else
+    fail "the download used the URL both files share" \
+         "got $ndl downloading lines from the common URL (out: $out)"
+fi
+if printf '%s\n' "$out" | grep -q "downloading 'fake-1.0.tar.gz' from 'file://$T232/uniqx/"; then
+    fail "no download ever comes from x's private mirror" "out: $out"
+else
+    ok "no download ever comes from x's private mirror"
+fi
+if printf '%s\n' "$out" | grep -q "downloading 'fake-1.0.tar.gz' from 'file://$T232/uniqy/"; then
+    fail "no download ever comes from y's private mirror" "out: $out"
+else
+    ok "no download ever comes from y's private mirror"
+fi
+if [ -f "$T232/fakex/README" ] && [ -f "$T232/fakey/README" ]; then
+    ok "both overlapping-URL-set projects check out"
+else
+    fail "both overlapping-URL-set projects check out" "ls: $(ls "$T232" 2>&1)"
+fi
+
+# ---------------- 233. a failed mirror falls through inside the batch
+# A package's candidate URLs are mirrors: the batch scheduler moves to the
+# next candidate when one fails to transfer, and a package that succeeds on
+# a later mirror never reaches the retry pass at all. m.projeny names a
+# nonexistent first URL (whose basename still names the archive and the
+# snapshot) and the real tarball second; o.projeny names only the real one.
+T233="$ROOT/t233"
+mkdir -p "$T233"
+cp "$T222/fake-1.0.tar.gz" "$T233/"
+h233="$h222"
+printf 'URL: file://%s/nonexistent-XYZ.tar.gz %s\nURL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakem\n\n    Mirror fallback in the batch.\n\n' \
+    "$T233" "$h233" "$T233" "$h233" > "$T233/m.projeny"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeo\n\n    Plain.\n\n' \
+    "$T233" "$h233" > "$T233/o.projeny"
+out="$(run_in "$T233" "$PROJENY" setup m.projeny o.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the batch mirror fallback setup exits 0"
+else
+    fail "the batch mirror fallback setup exits 0" "exit=$rc out: $out"
+fi
+nfail="$(printf '%s\n' "$out" | grep -c "^projeny: warning: failed to download 'nonexistent-XYZ.tar.gz' from 'file://$T233/nonexistent-XYZ.tar.gz'")"
+if [ "$nfail" -eq 1 ]; then
+    ok "the dead mirror warned exactly once"
+else
+    fail "the dead mirror warned exactly once" "got $nfail lines (out: $out)"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading 'nonexistent-XYZ.tar.gz' from '")"
+if [ "$ndl" -eq 2 ]; then
+    ok "the package tried the dead mirror then its live one"
+else
+    fail "the package tried the dead mirror then its live one" \
+         "got $ndl downloading lines for the package (out: $out)"
+fi
+nretry="$(printf '%s\n' "$out" | grep -c "^projeny: retrying ")"
+if [ "$nretry" -eq 0 ]; then
+    ok "a package that recovered on a later mirror needs no retry pass"
+else
+    fail "a package that recovered on a later mirror needs no retry pass" \
+         "got $nretry retrying lines (out: $out)"
+fi
+if [ "$(cat "$T233/fakem/README" 2>/dev/null)" = "hello v1" ]; then
+    ok "the mirror-fallback project checked out"
+else
+    fail "the mirror-fallback project checked out" \
+         "README: $(cat "$T233/fakem/README" 2>&1)"
+fi
+if cmp -s "$T233/.nonexistent-XYZ.tar.gz.snapshot" "$T233/fake-1.0.tar.gz"; then
+    ok "the snapshot is still named after the first URL's basename"
+else
+    fail "the snapshot is still named after the first URL's basename" \
+         "the snapshot is missing or differs from the tarball"
+fi
+
+# ---------------- 234. the retry pass: announced once, then the guard dies
+# A package whose every URL fails is retried exactly once (the retry pass
+# restarts from the first candidate URL), the retry is announced with the
+# failed packages' names, and only then does the batch give up: the
+# contributing project dies with the labeled guard error and the command
+# exits nonzero with the summary line — while the good projects still set
+# up. A second invocation with TWO failing packages pins the parallel
+# retry pass's announcement listing both names.
+T234="$ROOT/t234"
+mkdir -p "$T234/sub"
+cp "$T222/fake-1.0.tar.gz" "$T234/"
+h234="$h222"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeg\n\n    Good.\n\n' \
+    "$T234" "$h234" > "$T234/good.projeny"
+printf 'URL: file://%s/gone-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakebad\n\n    Unreachable.\n\n' \
+    "$T234" "$h234" > "$T234/sub/bad.projeny"
+out="$(run_in "$T234" "$PROJENY" setup good.projeny sub/bad.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "the unreachable-package setup exits nonzero"
+else
+    fail "the unreachable-package setup exits nonzero" "out: $out"
+fi
+nretry="$(printf '%s\n' "$out" | grep -c "^projeny: retrying 1 failed download(s): gone-1.0.tar.gz$")"
+if [ "$nretry" -eq 1 ]; then
+    ok "the retry pass is announced with the failed package's name"
+else
+    fail "the retry pass is announced with the failed package's name" \
+         "got $nretry retrying lines (out: $out)"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading 'gone-1.0.tar.gz' from '")"
+if [ "$ndl" -eq 2 ]; then
+    ok "the failed package was attempted once per pass (2 downloading lines)"
+else
+    fail "the failed package was attempted once per pass (2 downloading lines)" \
+         "got $ndl downloading lines (out: $out)"
+fi
+nfail="$(printf '%s\n' "$out" | grep -c "^projeny: warning: failed to obtain 'gone-1.0.tar.gz':")"
+if [ "$nfail" -eq 1 ]; then
+    ok "the batch failure is summarized with 'failed to obtain'"
+else
+    fail "the batch failure is summarized with 'failed to obtain'" \
+         "got $nfail lines (out: $out)"
+fi
+case "$out" in
+*"[bad.projeny] error: 'fakebad' needs archive 'gone-1.0.tar.gz', but the parallel download phase failed to obtain it"*)
+    ok "the guarded project dies with the labeled guard error"
+    ;;
+*)
+    fail "the guarded project dies with the labeled guard error" "out: $out"
+    ;;
+esac
+case "$out" in
+*"projeny: 1 of 2 setup(s) failed: bad.projeny"*)
+    ok "the summary line names the failed project"
+    ;;
+*)
+    fail "the summary line names the failed project" "out: $out"
+    ;;
+esac
+if [ -f "$T234/fakeg/README" ]; then
+    ok "the good project still set up alongside the failed one"
+else
+    fail "the good project still set up alongside the failed one" \
+         "ls: $(ls "$T234" 2>&1)"
+fi
+if [ -e "$T234/fakebad" ]; then
+    fail "the failed project leaves no checkout" "ls: $(ls "$T234")"
+else
+    ok "the failed project leaves no checkout"
+fi
+T234B="$ROOT/t234b"
+mkdir -p "$T234B/sub"
+cp "$T222/fake-1.0.tar.gz" "$T234B/"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeg2\n\n    Good.\n\n' \
+    "$T234B" "$h234" > "$T234B/good.projeny"
+printf 'URL: file://%s/gone1-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeb1\n\n    Unreachable.\n\n' \
+    "$T234B" "$h234" > "$T234B/sub/bad1.projeny"
+printf 'URL: file://%s/gone2-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeb2\n\n    Unreachable.\n\n' \
+    "$T234B" "$h234" > "$T234B/sub/bad2.projeny"
+out="$(run_in "$T234B" "$PROJENY" setup good.projeny sub/bad1.projeny \
+    sub/bad2.projeny 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "the two-unreachable-packages setup exits nonzero"
+else
+    fail "the two-unreachable-packages setup exits nonzero" "out: $out"
+fi
+nretry="$(printf '%s\n' "$out" | grep -c "^projeny: retrying 2 failed download(s): gone1-1.0.tar.gz, gone2-1.0.tar.gz$")"
+if [ "$nretry" -eq 1 ]; then
+    ok "the parallel retry pass lists every failed package"
+else
+    fail "the parallel retry pass lists every failed package" \
+         "got $nretry retrying lines (out: $out)"
+fi
+case "$out" in
+*"projeny: 2 of 3 setup(s) failed: bad1.projeny, bad2.projeny"*)
+    ok "the summary lists every failed project"
+    ;;
+*)
+    fail "the summary lists every failed project" "out: $out"
+    ;;
+esac
+if [ -f "$T234B/fakeg2/README" ] && [ ! -e "$T234B/fakeb1" ] &&
+    [ ! -e "$T234B/fakeb2" ]; then
+    ok "the good project set up and the failed ones left nothing"
+else
+    fail "the good project set up and the failed ones left nothing" \
+         "ls: $(ls "$T234B" 2>&1)"
+fi
+
+# ---------------- 235. duplicate package/extract pairs collapse
+# The duplicate-argument rule covers the paired forms too: naming one
+# project twice in one package/extract invocation warns and runs the
+# operation exactly once — the second pair's output/destination is named
+# in the warning and is never created.
+T235="$ROOT/t235"
+mkdir -p "$T235"
+cp "$T222/fake-1.0.tar.gz" "$T235/classic-1.0.tar.gz"
+printf 'Archive: classic-1.0.tar.gz\nOrigname: fake-1.0\nName: classic\n\n    Classic.\n\n' \
+    > "$T235/classic.projeny"
+out="$(run_in "$T235" "$PROJENY" package classic.projeny out1.tar.gz \
+    classic.projeny out2.tar.gz 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the duplicate-pair package exits 0"
+else
+    fail "the duplicate-pair package exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"'classic.projeny' is listed more than once; packaging it only once (the output 'out2.tar.gz' is ignored)"*)
+    ok "the duplicate pair warns and names the ignored output"
+    ;;
+*)
+    fail "the duplicate pair warns and names the ignored output" "out: $out"
+    ;;
+esac
+if [ -f "$T235/out1.tar.gz" ]; then
+    ok "the first pair's output was packaged"
+else
+    fail "the first pair's output was packaged" "ls: $(ls "$T235" 2>&1)"
+fi
+if [ -e "$T235/out2.tar.gz" ]; then
+    fail "the ignored output was never created" "ls: $(ls "$T235")"
+else
+    ok "the ignored output was never created"
+fi
+if tar -tzf "$T235/out1.tar.gz" | grep -q "^out1/README$"; then
+    ok "the collapsed package still holds the tracked files"
+else
+    fail "the collapsed package still holds the tracked files" \
+         "tar: $(tar -tzf "$T235/out1.tar.gz" 2>&1)"
+fi
+out="$(run_in "$T235" "$PROJENY" extract classic.projeny ex1 \
+    classic.projeny ex2 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the duplicate-pair extract exits 0"
+else
+    fail "the duplicate-pair extract exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"'classic.projeny' is listed more than once; extracting it only once (the destination 'ex2' is ignored)"*)
+    ok "the duplicate pair warns and names the ignored destination"
+    ;;
+*)
+    fail "the duplicate pair warns and names the ignored destination" \
+         "out: $out"
+    ;;
+esac
+if [ "$(cat "$T235/ex1/README" 2>/dev/null)" = "hello v1" ]; then
+    ok "the first pair's destination was extracted"
+else
+    fail "the first pair's destination was extracted" \
+         "ls: $(ls "$T235/ex1" 2>&1)"
+fi
+if [ -e "$T235/ex2" ]; then
+    fail "the ignored destination was never created" "ls: $(ls "$T235")"
+else
+    ok "the ignored destination was never created"
+fi
+
+# Two DIFFERENT projects whose outputs (or destinations) resolve to the same
+# path would race on one file when the workers run in parallel, so run_multi
+# warns once per colliding group after dedupe. The spellings differ but
+# absolutize to one path; the racy runs still proceed, so only the warning
+# itself is asserted here (not the exit code or the surviving bytes).
+T235B="$ROOT/t235b"
+mkdir -p "$T235B"
+cp "$T235/classic-1.0.tar.gz" "$T235/classic.projeny" "$T235B/"
+printf 'Archive: classic-1.0.tar.gz\nOrigname: fake-1.0\nName: double\n\n    Twin.\n\n' \
+    > "$T235B/twin.projeny"
+out="$(run_in "$T235B" "$PROJENY" package classic.projeny same.tar.gz \
+    twin.projeny ./same.tar.gz 2>&1)"
+case "$out" in
+*"package outputs 'same.tar.gz' and './same.tar.gz' both resolve to "*\
+*"the parallel runs write the same file"*)
+    ok "the colliding package outputs warn"
+    ;;
+*)
+    fail "the colliding package outputs warn" "out: $out"
+    ;;
+esac
+nout235="$(printf '%s\n' "$out" | grep -c "the parallel runs write the same file")"
+if [ "$nout235" -eq 1 ]; then
+    ok "the colliding package outputs warn exactly once"
+else
+    fail "the colliding package outputs warn exactly once" \
+         "got $nout235 warning lines (out: $out)"
+fi
+out="$(run_in "$T235B" "$PROJENY" extract classic.projeny samedest \
+    twin.projeny ./samedest 2>&1)"
+case "$out" in
+*"extract destinations 'samedest' and './samedest' both resolve to "*\
+*"the parallel runs write the same file"*)
+    ok "the colliding extract destinations warn"
+    ;;
+*)
+    fail "the colliding extract destinations warn" "out: $out"
+    ;;
+esac
+
+# ---------------- 236. download: several pairs, and the already-have skip
+# One invocation takes any number of URL HASH pairs: every file lands in
+# the cwd byte-exact, named after its URL's basename, with one note per
+# verified package. A second run over files that already verify is a
+# no-op — each reports the keep ("already have ... (blake3 hash
+# verified)") and nothing downloads at all.
+T236="$ROOT/t236"
+mkdir -p "$T236/dlb-1.0"
+printf 'hello dl-b\n' > "$T236/dlb-1.0/README"
+(cd "$T236" && tar -czf dl-b-1.0.tar.gz dlb-1.0 && rm -rf dlb-1.0)
+cp "$T222/fake-1.0.tar.gz" "$T236/dl-a-1.0.tar.gz"
+h236a="$("$PROJENY" hash "$T236/dl-a-1.0.tar.gz")"
+h236b="$("$PROJENY" hash "$T236/dl-b-1.0.tar.gz")"
+T236R="$ROOT/t236r"
+mkdir -p "$T236R"
+out="$(run_in "$T236R" "$PROJENY" download "file://$T236/dl-a-1.0.tar.gz" \
+    "$h236a" "file://$T236/dl-b-1.0.tar.gz" "$h236b" 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the two-pair download exits 0"
+else
+    fail "the two-pair download exits 0" "exit=$rc out: $out"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading '")"
+if [ "$ndl" -eq 2 ]; then
+    ok "both pairs downloaded (2 downloading lines)"
+else
+    fail "both pairs downloaded (2 downloading lines)" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if printf '%s\n' "$out" | grep -qF 'projeny: wrote dl-a-1.0.tar.gz (' &&
+    printf '%s\n' "$out" | grep -qF 'projeny: wrote dl-b-1.0.tar.gz ('; then
+    ok "each verified package reports the file it wrote"
+else
+    fail "each verified package reports the file it wrote" "out: $out"
+fi
+if cmp -s "$T236R/dl-a-1.0.tar.gz" "$T236/dl-a-1.0.tar.gz" &&
+    cmp -s "$T236R/dl-b-1.0.tar.gz" "$T236/dl-b-1.0.tar.gz"; then
+    ok "both downloaded files are byte-exact in the cwd"
+else
+    fail "both downloaded files are byte-exact in the cwd" \
+         "ls: $(ls "$T236R" 2>&1)"
+fi
+out="$(run_in "$T236R" "$PROJENY" download "file://$T236/dl-a-1.0.tar.gz" \
+    "$h236a" "file://$T236/dl-b-1.0.tar.gz" "$h236b" 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the re-run over present files exits 0"
+else
+    fail "the re-run over present files exits 0" "exit=$rc out: $out"
+fi
+if printf '%s\n' "$out" | grep -qF 'projeny: already have dl-a-1.0.tar.gz (blake3 hash verified)' &&
+    printf '%s\n' "$out" | grep -qF 'projeny: already have dl-b-1.0.tar.gz (blake3 hash verified)'; then
+    ok "both present files report the already-have keep"
+else
+    fail "both present files report the already-have keep" "out: $out"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading '")"
+if [ "$ndl" -eq 0 ]; then
+    ok "the already-have run downloads nothing"
+else
+    fail "the already-have run downloads nothing" \
+         "got $ndl downloading lines (out: $out)"
+fi
+if cmp -s "$T236R/dl-a-1.0.tar.gz" "$T236/dl-a-1.0.tar.gz" &&
+    cmp -s "$T236R/dl-b-1.0.tar.gz" "$T236/dl-b-1.0.tar.gz"; then
+    ok "the already-have run leaves both files untouched"
+else
+    fail "the already-have run leaves both files untouched" \
+         "the files differ from their sources"
+fi
+
+# ---------------- 237. download: conflicting hashes, uppercase, -j2 -c2
+# The same URL listed twice with two different hashes gets the loud
+# (ALL-CAPS) hash warning exactly once and still downloads (bytes
+# matching EITHER listed hash verify — one of the two hashes is simply
+# wrong, and the warning already said so). Hashes are case-insensitive:
+# an uppercase digest downloads and verifies, and a follow-up lowercase
+# run proves the normalization by reporting the already-have skip.
+# -j2 -c2 is accepted alongside the pairs.
+T237="$ROOT/t237"
+mkdir -p "$T237"
+cp "$T222/fake-1.0.tar.gz" "$T237/"
+h237="$h222"
+zero237="0000000000000000000000000000000000000000000000000000000000000000"
+T237A="$ROOT/t237a"
+mkdir -p "$T237A"
+out="$(run_in "$T237A" "$PROJENY" download "file://$T237/fake-1.0.tar.gz" \
+    "$h237" "file://$T237/fake-1.0.tar.gz" "$zero237" 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the same-URL-two-hashes download exits 0"
+else
+    fail "the same-URL-two-hashes download exits 0" "exit=$rc out: $out"
+fi
+nwarn="$(printf '%s\n' "$out" | grep -cF "WARNING: URL 'file://$T237/fake-1.0.tar.gz' IS LISTED WITH DIFFERENT BLAKE3 HASHES ($h237, $zero237)")"
+if [ "$nwarn" -eq 1 ]; then
+    ok "the conflicting hashes warn loudly exactly once"
+else
+    fail "the conflicting hashes warn loudly exactly once" \
+         "got $nwarn warning lines (out: $out)"
+fi
+if cmp -s "$T237A/fake-1.0.tar.gz" "$T237/fake-1.0.tar.gz"; then
+    ok "the conflicting-hash download still wrote the verified bytes"
+else
+    fail "the conflicting-hash download still wrote the verified bytes" \
+         "the file differs from the source"
+fi
+T237B="$ROOT/t237b"
+mkdir -p "$T237B"
+up237="$(printf '%s' "$h237" | tr 'a-f' 'A-F')"
+run_in "$T237B" expect_ok "download accepts an uppercase hash" "$PROJENY" \
+    download "file://$T237/fake-1.0.tar.gz" "$up237"
+if cmp -s "$T237B/fake-1.0.tar.gz" "$T237/fake-1.0.tar.gz"; then
+    ok "the uppercase-hash download is byte-exact"
+else
+    fail "the uppercase-hash download is byte-exact" \
+         "the file differs from the source"
+fi
+out="$(run_in "$T237B" "$PROJENY" download "file://$T237/fake-1.0.tar.gz" \
+    "$h237" 2>&1)"
+rc=$?
+case "$out" in
+*"projeny: already have fake-1.0.tar.gz (blake3 hash verified)"*)
+    if [ $rc -eq 0 ]; then
+        ok "the lowercase re-run keeps the uppercase download (hashes normalize)"
+    else
+        fail "the lowercase re-run keeps the uppercase download (hashes normalize)" \
+             "output matched but exit=$rc out: $out"
+    fi
+    ;;
+*)
+    fail "the lowercase re-run keeps the uppercase download (hashes normalize)" \
+         "exit=$rc out: $out"
+    ;;
+esac
+T237C="$ROOT/t237c"
+mkdir -p "$T237C"
+run_in "$T237C" expect_ok "download accepts -j2 -c2" "$PROJENY" download \
+    -j2 -c2 "file://$T237/fake-1.0.tar.gz" "$h237"
+if cmp -s "$T237C/fake-1.0.tar.gz" "$T237/fake-1.0.tar.gz"; then
+    ok "the -j2 -c2 download is byte-exact"
+else
+    fail "the -j2 -c2 download is byte-exact" "the file differs from the source"
+fi
+
+# ---------------- 238. download: the exact hard-error wordings
+# Section 229 pins that these refusals fail; this section pins the exact
+# die messages: a hash that is not exactly 64 hex chars dies naming the
+# hash and the URL, and a URL whose basename would be empty dies with
+# "does not name a file".
+T238="$ROOT/t238"
+mkdir -p "$T238"
+short238="${h222%?}" # 63 of the 64 hex chars
+out="$(run_in "$T238" "$PROJENY" download "file://$T238/no-such.tar.gz" \
+    "$short238" 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "the 63-char hash is refused"
+else
+    fail "the 63-char hash is refused" "out: $out"
+fi
+case "$out" in
+*"invalid blake3 hash '$short238' for file://$T238/no-such.tar.gz"*)
+    ok "the short-hash error names the hash and the URL"
+    ;;
+*)
+    fail "the short-hash error names the hash and the URL" "out: $out"
+    ;;
+esac
+out="$(run_in "$T238" "$PROJENY" download "file://$T238/" "$h222" 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "the trailing-slash URL is refused"
+else
+    fail "the trailing-slash URL is refused" "out: $out"
+fi
+case "$out" in
+*"URL 'file://$T238/' does not name a file"*)
+    ok "the no-basename error says the URL does not name a file"
+    ;;
+*)
+    fail "the no-basename error says the URL does not name a file" \
+         "out: $out"
+    ;;
+esac
+
+# ---------------- 239. two spellings of one project collapse
+# The dedupe keys on the resolved .projeny path, not the spelling: the
+# bare-name alias (`a` for a.projeny — the checkout does not exist yet, so
+# the <arg>.projeny sibling rule resolves it) and the explicit file name
+# collapse into one setup with one warning. Once a checkout exists, the
+# workdir-sibling spelling (the workdir named by Name: is `fakeb`, sitting
+# next to `fakeb.projeny`) aliases the same way.
+T239="$ROOT/t239"
+mkdir -p "$T239"
+cp "$T222/fake-1.0.tar.gz" "$T239/"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakea\n\n    Alias.\n\n' \
+    "$T239" "$h222" > "$T239/a.projeny"
+out="$(run_in "$T239" "$PROJENY" setup a a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the aliased-argument setup exits 0"
+else
+    fail "the aliased-argument setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"'a.projeny' is listed more than once; setting it up only once"*)
+    ok "the alias collapse warns"
+    ;;
+*)
+    fail "the alias collapse warns" "out: $out"
+    ;;
+esac
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading '")"
+if [ "$ndl" -eq 1 ]; then
+    ok "the collapsed alias setup downloads exactly once"
+else
+    fail "the collapsed alias setup downloads exactly once" \
+         "got $ndl downloading lines (out: $out)"
+fi
+nset="$(printf '%s\n' "$out" | grep -c "up 'fakea' from 'fake-1.0.tar.gz")"
+if [ "$nset" -eq 1 ]; then
+    ok "the collapsed alias setup runs the project once"
+else
+    fail "the collapsed alias setup runs the project once" \
+         "got $nset setup lines (out: $out)"
+fi
+if [ -d "$T239/fakea" ] && [ -f "$T239/fakea/README" ]; then
+    ok "the collapsed alias setup produced the checkout"
+else
+    fail "the collapsed alias setup produced the checkout" \
+         "ls: $(ls "$T239" 2>&1)"
+fi
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fakeb\n\n    Workdir alias.\n\n' \
+    "$T239" "$h222" > "$T239/fakeb.projeny"
+run_in "$T239" expect_ok "the workdir-alias fixture sets up" "$PROJENY" \
+    setup fakeb.projeny
+out="$(run_in "$T239" "$PROJENY" setup fakeb fakeb.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the workdir-sibling alias setup exits 0"
+else
+    fail "the workdir-sibling alias setup exits 0" "exit=$rc out: $out"
+fi
+case "$out" in
+*"'fakeb.projeny' is listed more than once; setting it up only once"*)
+    ok "the workdir-sibling alias collapse warns too"
+    ;;
+*)
+    fail "the workdir-sibling alias collapse warns too" "out: $out"
+    ;;
+esac
+nset="$(printf '%s\n' "$out" | grep -c "up 'fakeb' from 'fake-1.0.tar.gz")"
+if [ "$nset" -eq 1 ]; then
+    ok "the workdir-sibling alias runs the project once"
+else
+    fail "the workdir-sibling alias runs the project once" \
+         "got $nset setup lines (out: $out)"
+fi
+ndl="$(printf '%s\n' "$out" | grep -c "^projeny: downloading '")"
+if [ "$ndl" -eq 0 ]; then
+    ok "the workdir-sibling alias re-setup downloads nothing"
+else
+    fail "the workdir-sibling alias re-setup downloads nothing" \
+         "got $ndl downloading lines (out: $out)"
+fi
+
+# ---------------- 240. -j/-c are setup/package/extract/download-only
+# Every other command keeps its exact argument shape: a -j2 (or --jobs=2)
+# token after `status`/`commit` is just one argument too many, so the
+# command prints the usage text and exits 1 — the parallel options are
+# never silently eaten by the non-parallel commands.
+T240="$ROOT/t240"
+mkdir -p "$T240"
+cp "$T222/fake-1.0.tar.gz" "$T240/"
+cp "$T222/a.projeny" "$T240/"
+out="$(run_in "$T240" "$PROJENY" status a.projeny -j2 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "status with -j2 exits nonzero"
+else
+    fail "status with -j2 exits nonzero" "out: $out"
+fi
+case "$out" in
+*"usage: "*"status <f.projeny|dir>"*)
+    ok "status with -j2 prints the usage text"
+    ;;
+*)
+    fail "status with -j2 prints the usage text" "out: $out"
+    ;;
+esac
+out="$(run_in "$T240" "$PROJENY" status a.projeny --jobs=2 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "status with --jobs=2 exits nonzero"
+else
+    fail "status with --jobs=2 exits nonzero" "out: $out"
+fi
+case "$out" in
+*"usage: "*)
+    ok "status with --jobs=2 prints the usage text"
+    ;;
+*)
+    fail "status with --jobs=2 prints the usage text" "out: $out"
+    ;;
+esac
+out="$(run_in "$T240" "$PROJENY" commit a.projeny -j2 2>&1)"
+rc=$?
+if [ $rc -ne 0 ]; then
+    ok "commit with -j2 exits nonzero"
+else
+    fail "commit with -j2 exits nonzero" "out: $out"
+fi
+case "$out" in
+*"usage: "*)
+    ok "commit with -j2 prints the usage text"
+    ;;
+*)
+    fail "commit with -j2 prints the usage text" "out: $out"
+    ;;
+esac
+
+# ------------------------------------------ 241. parallel conflicted setup
+# Two git-conflicted .projeny files in ONE directory sharing one archive
+# basename (so both projects share one .<archive>.snapshot), set up in one
+# parallel `projeny setup a.projeny b.projeny -j2`. Neither file parses
+# during the planning phase (conflict markers), so the batch plan is EMPTY
+# and no batch download runs; each per-project worker then needs the shared
+# archive outside the plan. The serialized fallback (mutex + re-check under
+# it) must yield exactly one real download regardless of interleaving, the
+# conflicted fresh-setup path must not stale the shared snapshot (the setup
+# journal exists from setup_conflicted_merge's first write onward, so the
+# journal guard keeps disregard_stale_state out), and both workdirs must
+# come out complete. Both conflict sides are IDENTICAL, so the force-resolve
+# is deterministic and the merge trivial; the opener is merge-convention
+# `<<<<<<< HEAD` (which never votes) and the closer names upstream, so
+# conflict_sides_swapped resolves decisively with no status file present.
+# The whole section loops over fresh directories and thread counts so an
+# interleaving-dependent race cannot hide behind one lucky schedule.
+T241="$ROOT/t241"
+mkdir -p "$T241/fake-1.0/src"
+printf 'int alpha = 1;\n' > "$T241/fake-1.0/src/a.c"
+printf 'hello v1\n' > "$T241/fake-1.0/README"
+(cd "$T241" && tar -czf fake-1.0.tar.gz fake-1.0 && rm -rf fake-1.0)
+h241="$("$PROJENY" hash "$T241/fake-1.0.tar.gz")"
+# The resolved (force-taken upstream) form of a conflicted fixture file, and
+# the conflicted form itself: git-style markers around the URL: header only,
+# both sides byte-identical, `>>>>>>> upstream` closer so the direction
+# resolves without a status copy.
+plain_241() {
+    _dir="$1"; _name="$2"
+    printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake%s\n\n    Conflicted parallel %s.\n\n' \
+        "$_dir" "$h241" "$_name" "$_name" > "$_dir/$_name.projeny"
+}
+conflicted_241() {
+    _dir="$1"; _name="$2"
+    {
+        printf '<<<<<<< HEAD\n'
+        sed -n '1p' "$_dir/$_name.projeny"
+        printf '=======\n'
+        sed -n '1p' "$_dir/$_name.projeny"
+        printf '>>>>>>> upstream\n'
+        sed -n '2,$p' "$_dir/$_name.projeny"
+    } > "$_dir/$_name.projeny.conflicted"
+    mv "$_dir/$_name.projeny.conflicted" "$_dir/$_name.projeny"
+}
+conflicted_round_241() {
+    _r241="$1"; _d241="$2"; _j241="$3"; _jdisp241="$4"
+    mkdir -p "$_d241"
+    cp "$T241/fake-1.0.tar.gz" "$_d241/"
+    plain_241 "$_d241" a
+    cp "$_d241/a.projeny" "$_d241/expected-a.projeny"
+    conflicted_241 "$_d241" a
+    plain_241 "$_d241" b
+    cp "$_d241/b.projeny" "$_d241/expected-b.projeny"
+    conflicted_241 "$_d241" b
+    out="$(run_in "$_d241" "$PROJENY" setup $_j241 a.projeny b.projeny 2>&1)"
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): parallel setup exits 0"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): parallel setup exits 0" \
+             "exit=$rc out: $out"
+    fi
+    # The plan is empty, so the batch download phase never runs: zero
+    # batch-style lines ("downloading '<archive>' from '<url>'").
+    nbatch="$(printf '%s\n' "$out" | grep -c "downloading 'fake-1.0.tar.gz' from '")"
+    if [ "$nbatch" -eq 0 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): no batch download"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): no batch download" \
+             "got $nbatch batch-style lines (out: $out)"
+    fi
+    # Exactly one worker downloads outside the batch phase, announces the
+    # URL exactly once, and reports exactly one hash verification.
+    nfb="$(printf '%s\n' "$out" | grep -c "downloading 'fake-1.0.tar.gz' outside the batch download phase (conflicted projeny file)")"
+    if [ "$nfb" -eq 1 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): the fallback note appears once"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): the fallback note appears once" \
+             "got $nfb fallback notes (out: $out)"
+    fi
+    nurl="$(printf '%s\n' "$out" | grep -c "downloading 'file://")"
+    if [ "$nurl" -eq 1 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): the URL announcement appears once"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): the URL announcement appears once" \
+             "got $nurl URL announcements (out: $out)"
+    fi
+    nh241="$(printf '%s\n' "$out" | grep -c "blake3 hash verified")"
+    if [ "$nh241" -eq 1 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): one hash verification"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): one hash verification" \
+             "got $nh241 hash-verified lines (out: $out)"
+    fi
+    nret="$(printf '%s\n' "$out" | grep -c "retrying")"
+    if [ "$nret" -eq 0 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): no retrying line"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): no retrying line" \
+             "got $nret retrying lines (out: $out)"
+    fi
+    # Both workdirs exist with the archive's contents.
+    for _wd241 in fakea fakeb; do
+        if [ "$(cat "$_d241/$_wd241/README" 2>/dev/null)" = "hello v1" ] &&
+           [ "$(cat "$_d241/$_wd241/src/a.c" 2>/dev/null)" = "int alpha = 1;" ]; then
+            ok "conflicted round $_r241 ($_jdisp241): $_wd241 checked out"
+        else
+            fail "conflicted round $_r241 ($_jdisp241): $_wd241 checked out" \
+                 "workdir missing or wrong: $(ls "$_d241" 2>&1)"
+        fi
+    done
+    # Both .projeny files were force-resolved to the (identical) upstream
+    # text: byte-equal to the plain form saved before the markers were
+    # wrapped around the URL line.
+    if cmp -s "$_d241/a.projeny" "$_d241/expected-a.projeny"; then
+        ok "conflicted round $_r241 ($_jdisp241): a.projeny force-resolved"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): a.projeny force-resolved" \
+             "$(cat "$_d241/a.projeny" 2>&1)"
+    fi
+    if cmp -s "$_d241/b.projeny" "$_d241/expected-b.projeny"; then
+        ok "conflicted round $_r241 ($_jdisp241): b.projeny force-resolved"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): b.projeny force-resolved" \
+             "$(cat "$_d241/b.projeny" 2>&1)"
+    fi
+    # One shared snapshot, byte-exact with the tarball.
+    if cmp -s "$_d241/.fake-1.0.tar.gz.snapshot" "$_d241/fake-1.0.tar.gz"; then
+        ok "conflicted round $_r241 ($_jdisp241): the shared snapshot is byte-exact"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): the shared snapshot is byte-exact" \
+             "the snapshot differs from the tarball"
+    fi
+    # Both status files record no conflicts (identical sides merge cleanly).
+    nconf="$(cat "$_d241/.a.projeny.status" "$_d241/.b.projeny.status" 2>/dev/null | grep -c '^Conflict:')"
+    if [ "$nconf" -eq 0 ]; then
+        ok "conflicted round $_r241 ($_jdisp241): no conflicts recorded"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): no conflicts recorded" \
+             "got $nconf Conflict: lines"
+    fi
+    # No stale-renamed snapshot left behind: the journal guard kept
+    # disregard_stale_state from staling the shared snapshot mid-flight.
+    if [ ! -e "$_d241/.fake-1.0.tar.gz.snapshot.stale" ] &&
+       [ ! -e "$_d241/fake-1.0.tar.gz.snapshot.stale" ]; then
+        ok "conflicted round $_r241 ($_jdisp241): the snapshot was never staled"
+    else
+        fail "conflicted round $_r241 ($_jdisp241): the snapshot was never staled" \
+             "ls: $(ls "$_d241" 2>&1)"
+    fi
+}
+# Twelve rounds (three passes over four thread counts), each in a fresh
+# directory: every round must satisfy every assertion above.
+i241=0
+for pass241 in 1 2 3; do
+    for jflag241 in "" "-j1" "-j2" "-j100"; do
+        i241=$((i241 + 1))
+        conflicted_round_241 "$i241" "$ROOT/t241r$i241" "$jflag241" \
+            "${jflag241:-default -j}"
+    done
+done
 
 # ------------------------------------------------------------- summary
 echo "---"

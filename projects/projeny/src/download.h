@@ -24,7 +24,9 @@
  */
 #pragma once
 
+#include <set>
 #include <string>
+#include <vector>
 
 // BLAKE3 (64 lowercase hex chars) of in-memory data / of a file's contents.
 // The file variant dies if the file cannot be read.
@@ -54,3 +56,52 @@ std::string blake3_file_hash_hex(const std::string& path);
 // '\r'-terminated line reports the final byte count (skipped when the
 // progress callback already printed exactly that state).
 bool try_download(const std::string& url, std::string* data, std::string* err);
+
+// One package to download in a batch: `name` is the identity (the archive
+// basename; two callers wanting the same name share one download), `urls`
+// are candidate URLs in priority order (mirrors of the same archive), and
+// `accepted_hashes` are the blake3 (64 lowercase hex) hashes any of which
+// verifies the download.
+struct BatchPackageSpec {
+    std::string name;
+    std::vector<std::string> urls;
+    std::set<std::string> accepted_hashes;
+};
+
+struct BatchPackageResult {
+    std::string name;
+    bool ok = false;                  // transferred AND hash-verified
+    std::string data;                 // accepted bytes (valid iff ok)
+    std::string hash;                 // blake3 hex of data (iff ok)
+    std::string url;                  // URL the accepted bytes came from
+    std::vector<std::string> errors;  // one human-readable line per failed attempt
+};
+
+// Parallel batch download. Phase 1 drives the curl MULTI API with at most
+// `curl_jobs` (>=1) easy handles in flight; each in-flight handle belongs to
+// a distinct package (NEVER two concurrent transfers of the same package,
+// neither from the same URL nor from different URLs), and a package whose
+// transfer fails moves on to its next candidate URL. All curl API calls
+// happen on the calling thread (curl handles are not thread-safe); workers
+// never touch curl. Phase 2 blake3-hash-checks every transferred package on
+// at most `hash_jobs` (>=1) threads (run_parallel). Packages that fail
+// (transfer error or hash mismatch) then get ONE full retry pass: the
+// scheduler runs again over the failed packages' candidate lists (still
+// <= curl_jobs in flight, still one handle per package, candidates
+// restarting from the first URL) followed by another parallel hash round.
+//
+// Feedback, one atomic line per event (note/warn, serialized by
+// g_output_mutex):
+//   per attempt start:      "downloading '<name>' from '<url>'"
+//   transfer failure:       "failed to download '<name>' from '<url>': <curl error>"
+//   hash mismatch:          "downloaded '<name>' from '<url>' but blake3 hash mismatch (got <hash>)"
+//   verified:               "downloaded '<name>' (<N> bytes); blake3 hash verified"
+//   retry pass (k>0):       "retrying <k> failed download(s): <comma-separated names>"
+// Batch mode uses NO per-transfer progress callback (no '\r' spam from
+// concurrent transfers; NOPROGRESS=1 on the easy handles). Returns one
+// result per spec, in spec order. Never dies on download failures — every
+// failure lands in the result's `errors` (a die() would mean an internal or
+// allocation-level error only). All packages are held in RAM, exactly like
+// try_download.
+std::vector<BatchPackageResult> download_batch(const std::vector<BatchPackageSpec>& specs,
+                                               int curl_jobs, int hash_jobs);

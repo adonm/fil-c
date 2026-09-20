@@ -123,6 +123,8 @@ build/bin/clang++ -o program program.cpp -g -O -std=c++20
   - `diff <dir> <other-dir>` - Raw tree-vs-tree patch
   - `patch <dir> <patch-file>` - Apply with conflict markers
   - `package` / `extract` - Tracked-files-only tarballs
+  - `setup`/`package`/`extract` accept multiple projects (`setup a.projeny b.projeny ...`; package/extract take (project, output/dest) pairs) and run them in parallel: `-j/--jobs` threads (default the CPU count; also the blake3 hash-check threads), `-c/--curl-jobs` curl transfers in flight (default 8). The URL: downloads of every named file are collected first and deduplicated by archive basename — shared archives download exactly once and every file gets the same archive file — with ALL-CAPS warnings when files share an archive name but disagree on URL sets or hashes; duplicate project arguments collapse into one operation with a warning
+  - `download <url> <hash> [<url> <hash>...]` - Fetch URL/hash pairs into the cwd as one parallel batch, naming each file after the URL's basename (same 64-hex blake3 hashes a `URL:` header wants); a file already present with a matching hash is kept instead of re-downloaded, and any failure exits nonzero after the other packages finished
 - **`projeny diff <f>.projeny` semantics** (new feature; the gory details):
   - Prints the uncommitted change: workdir vs. what a fresh `projeny setup` of the current `.projeny` would check out (tarball + current patch)
   - Refuses when the `.projeny` file differs from the status file's embedded copy ("run setup to merge first") or when unresolved conflicts exist

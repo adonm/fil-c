@@ -36,6 +36,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <unistd.h>
 
@@ -203,11 +204,35 @@ std::string legacy_snapshot_path_for(const std::string& archive)
     return bare + ".snapshot";
 }
 
+// Move src to dst, tolerating a lost race against a parallel sibling that
+// moved src first: multi-project commands can legitimately have two workers
+// performing the same bookkeeping move on one shared path (the legacy
+// snapshot of an archive two projects share, say), and the rename is then a
+// race whose loser's source has already moved. The goal of such a move is
+// only "src is no longer at src", so a failure that leaves src gone means
+// the goal is already met. Any failure that leaves src in place is still
+// fatal (rethrown verbatim). Returns true when THIS call performed the
+// move, so callers can keep their one warning line per actual move.
+bool move_path_shared(const std::string& src, const std::string& dst)
+{
+    try {
+        move_path(src, dst);
+        return true;
+    } catch (const ProjenyFatalError&) {
+        if (path_exists(src))
+            throw; // not a lost race: the source is still there
+        return false;
+    }
+}
+
 // If the dotted snapshot is missing but the legacy undotted one exists,
 // rename it into the canonical dotted form. Called at every point of use
 // (ensure_snapshot, resolve_status_archive, status's live diff, stale-state
 // reconciliation), so any command finishes the upgrade. Idempotent no-op
-// when the dotted snapshot exists or neither form does.
+// when the dotted snapshot exists or neither form does. Parallel workers of
+// one multi-project command can run this on the same archive concurrently;
+// move_path_shared makes the loser of that race a no-op instead of a
+// spurious hard error.
 void migrate_snapshot(const std::string& archive)
 {
     std::string snap = snapshot_path_for(archive);
@@ -216,7 +241,7 @@ void migrate_snapshot(const std::string& archive)
     std::string legacy = legacy_snapshot_path_for(archive);
     if (!path_exists(legacy))
         return;
-    move_path(legacy, snap);
+    move_path_shared(legacy, snap);
 }
 
 // Byte-equality of two regular files: sizes first, then a chunked content
@@ -308,58 +333,69 @@ std::string url_snapshot_path(const std::string& pdir, const ProjenyFile& pf)
 // snapshot it just materialized, and commit materializes the same archive
 // twice (the unpack and the expected-tree build), so without this a healthy
 // run would print the identical skip line two or three times. Tracking one
-// snapshot path keeps the message to once per snapshot per process, while a
+// snapshot path keeps the message to once per snapshot per thread, while a
 // genuinely different snapshot — the two sides of a conflicted merge, say —
-// still gets its own line.
-std::string g_skip_announced_for;
+// still gets its own line. thread_local (not shared): parallel workers
+// touch it concurrently, and per-thread dedup is exactly right — two
+// workers never share a snapshot path (projects are deduplicated and each
+// snapshot lives in its project's own directory).
+thread_local std::string g_skip_announced_for;
 
-// Make sure the URL archive's snapshot exists and matches at least one URL:
-// hash. No-op (no network!) when the snapshot already matches. Otherwise
-// download+verify each URL: line in order (warn + next on failure/mismatch,
-// per the spec) and atomically write the first good download to the snapshot
-// via write_file_bytes. Dies (mentioning `what`) only when every URL failed.
-//
-// Feedback, all on stderr: try_download announces each attempt and reports
-// '\r'-terminated progress itself; here a verified download reports the
-// snapshot it wrote, and — only when `announce_skip` is true — an already-
-// matching snapshot reports that the download is skipped (deduplicated once
-// per snapshot per process by g_skip_announced_for). announce_skip is false
-// on the read-only reconstruction paths (resolve_status_archive, the
-// write_status bookkeeping re-assertion, status's live-diff section): those
-// must stay completely silent on a healthy checkout — `projeny diff` and
-// `projeny get-attributes` print nothing when the snapshot matches — while
-// materialize_archive (setup/commit) passes true. The download-side messages
-// are never gated: they only exist when a real download happens.
-std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
-                                const std::string& what, bool announce_skip);
+// One archive package shared by one or more contributing .projeny files,
+// keyed by the archive basename (downloads are deduplicated by name). The
+// planning phase of a multi-project command fills one per package BEFORE
+// any per-project work starts; the per-project phase's snapshot guard (see
+// try_ensure_url_snapshot) consults the map to accept the batch's download
+// and to fail cleanly when the batch failed.
+struct PlannedPackage {
+    // Candidate URLs in priority order (the URLs every contributor lists
+    // first, then the rest) and the union of every contributor's URL
+    // hashes: the batch download verifies against all of them, so one
+    // package can satisfy files that recorded different hashes.
+    std::vector<std::string> urls;
+    std::set<std::string> accepted_hashes;
+    // Distinct (sorted) directories of the contributing .projeny files:
+    // each gets its own .<archive>.snapshot copy of the download.
+    std::vector<std::string> pdirs;
+    // Filled by the download phase: attempted/ok record whether the batch
+    // tried (and managed) to obtain the package; verified_hashes collects
+    // every blake3 hash known good for this package (the batch download's
+    // hash plus the hashes of pre-existing satisfying snapshots); errors
+    // carries the batch's per-attempt failure lines for the guard's report.
+    bool attempted = false;
+    bool ok = false;
+    std::set<std::string> verified_hashes;
+    std::vector<std::string> errors;
+    // Per-pdir "already satisfied when planning ran" flags (parallel to
+    // pdirs): only unsatisfied dirs receive the batch's bytes.
+    std::vector<bool> pdir_satisfied;
+};
 
-// Non-dying variant for informational commands: returns true + *out = snapshot
-// path, or false + *err.
-bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
-                             std::string* out, std::string* err,
-                             bool announce_skip)
+// The multi-project plan while a multi command's per-project phase runs;
+// null otherwise (single-project commands, the planning phase itself). A
+// non-null pointer IS the "multi mode" flag: the snapshot guard below does
+// nothing unless this is set, so legacy single-project output stays
+// byte-identical. Set before run_parallel starts the workers and cleared
+// (RAII) after they join, so no thread ever writes it while workers exist.
+const std::map<std::string, PlannedPackage>* g_multi_plan = nullptr;
+
+// Serializes the unplanned-package fallback download (a conflicted —
+// therefore unparseable — .projeny file whose package the batch never
+// covered): never two concurrent downloads of the same package, even for
+// packages the planning phase could not see.
+std::mutex g_fallback_download_mu;
+
+// The sequential download loop shared by the legacy single-project path and
+// the multi-mode unplanned-package fallback: download+verify each URL: line
+// in order (warn + next on failure/mismatch, per the spec) and atomically
+// write the first good download to the snapshot via write_file_bytes. The
+// caller has already printed the "re-downloading"/fallback announcements.
+// Returns true + *out = snapshot path, or false + *err when every URL
+// failed.
+bool download_url_snapshot_sequential(const std::string& snap,
+                                      const ProjenyFile& pf,
+                                      std::string* out, std::string* err)
 {
-    std::string snap = url_snapshot_path(pdir, pf);
-    // The snapshot is the local cache of the downloaded archive: when it
-    // already matches at least one URL: hash, it IS the archive — verify and
-    // use it without touching the network. Only a missing snapshot (or one
-    // that matches no hash) is (re-)downloaded.
-    if (is_readable_file(snap)) {
-        std::string have = blake3_file_hash_hex(snap);
-        for (const ProjenyUrl& u : pf.urls) {
-            if (have == u.hash) {
-                if (announce_skip && g_skip_announced_for != snap) {
-                    note("using existing snapshot '" + snap +
-                         "' (blake3 hash matches); skipping the download");
-                    g_skip_announced_for = snap;
-                }
-                *out = snap;
-                return true;
-            }
-        }
-        warn("existing snapshot '" + snap +
-             "' does not match any URL: hash; re-downloading");
-    }
     std::string last_err;
     size_t tried = 0;
     for (const ProjenyUrl& u : pf.urls) {
@@ -394,6 +430,127 @@ bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
            "recorded blake3 hash)" +
            (last_err.empty() ? "" : "; the last error was: " + last_err);
     return false;
+}
+
+// Make sure the URL archive's snapshot exists and matches at least one URL:
+// hash. No-op (no network!) when the snapshot already matches. Otherwise
+// download+verify each URL: line in order (warn + next on failure/mismatch,
+// per the spec) and atomically write the first good download to the snapshot
+// via write_file_bytes. Dies (mentioning `what`) only when every URL failed.
+//
+// Feedback, all on stderr: try_download announces each attempt and reports
+// '\r'-terminated progress itself; here a verified download reports the
+// snapshot it wrote, and — only when `announce_skip` is true — an already-
+// matching snapshot reports that the download is skipped (deduplicated once
+// per snapshot per thread by g_skip_announced_for). announce_skip is false
+// on the read-only reconstruction paths (resolve_status_archive, the
+// write_status bookkeeping re-assertion, status's live-diff section): those
+// must stay completely silent on a healthy checkout — `projeny diff` and
+// `projeny get-attributes` print nothing when the snapshot matches — while
+// materialize_archive (setup/commit) passes true. The download-side messages
+// are never gated: they only exist when a real download happens.
+//
+// In multi mode (g_multi_plan set — the per-project phase of a parallel
+// setup/package/extract), the batch download phase has already run, so this
+// never downloads a planned package: the guard accepts the batch's snapshot
+// when it verifies against the plan's hashes (the package may have come
+// from a URL another contributing file listed — loudly warned during
+// planning), dies cleanly when the batch failed, and only a package the
+// plan cannot know about (a conflicted, therefore unparseable, .projeny
+// file) falls back to a serialized download here.
+std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
+                                const std::string& what, bool announce_skip);
+
+// Non-dying variant for informational commands: returns true + *out = snapshot
+// path, or false + *err.
+bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
+                             std::string* out, std::string* err,
+                             bool announce_skip)
+{
+    std::string snap = url_snapshot_path(pdir, pf);
+    // The snapshot is the local cache of the downloaded archive: when it
+    // already matches at least one URL: hash, it IS the archive — verify and
+    // use it without touching the network. Only a missing snapshot (or one
+    // that matches no hash) is (re-)downloaded.
+    std::string have;
+    bool snapshot_readable = false;
+    if (is_readable_file(snap)) {
+        have = blake3_file_hash_hex(snap);
+        snapshot_readable = true;
+        for (const ProjenyUrl& u : pf.urls) {
+            if (have == u.hash) {
+                if (announce_skip && g_skip_announced_for != snap) {
+                    note("using existing snapshot '" + snap +
+                         "' (blake3 hash matches); skipping the download");
+                    g_skip_announced_for = snap;
+                }
+                *out = snap;
+                return true;
+            }
+        }
+    }
+    // Multi-mode guard (never reached on legacy single-project paths: the
+    // plan pointer is null there). The file's own URL hashes were just
+    // checked above, so only the plan's hashes can still accept the
+    // snapshot.
+    if (g_multi_plan) {
+        auto it = g_multi_plan->find(pf.archive);
+        if (it != g_multi_plan->end()) {
+            const PlannedPackage& plan = it->second;
+            if (snapshot_readable && plan.verified_hashes.count(have) > 0) {
+                // The batch download phase put this archive here (or it was
+                // already satisfying another contributor): it verifies
+                // against a hash some contributing file listed, which the
+                // planning phase's loud warnings covered. Just do it.
+                *out = snap;
+                return true;
+            }
+            if (!plan.ok && plan.attempted) {
+                // The batch tried and failed to obtain this package; a
+                // retry here would just fail the same way.
+                die("'" + pf.name + "' needs archive '" + pf.archive +
+                        "', but the parallel download phase failed to "
+                        "obtain it",
+                    bullet_list(plan.errors));
+            }
+            // The batch succeeded (or never needed to run), but this
+            // project's directory holds no usable snapshot. Only a
+            // conflicted — therefore unparseable, therefore not a batch
+            // contributor, therefore not one of the pdirs the batch wrote
+            // its verified snapshot into — .projeny file can get here.
+            // Fall through to the serialized download below: it re-checks
+            // the snapshot under the fallback mutex (a worker that lost
+            // such a race may have just written one) and downloads only if
+            // none appeared.
+        }
+        // Not in the plan (or in the plan without a usable local
+        // snapshot): only a conflicted (therefore deferred,
+        // unparseable) .projeny file gets here. Download serialized: never
+        // two concurrent downloads of the same package, and a worker that
+        // lost the race re-checks the snapshot another worker may have just
+        // written before going to the network itself.
+        std::lock_guard<std::mutex> lk(g_fallback_download_mu);
+        std::string rehave;
+        bool re_readable = is_readable_file(snap);
+        if (re_readable)
+            rehave = blake3_file_hash_hex(snap);
+        for (const ProjenyUrl& u : pf.urls) {
+            if (re_readable && rehave == u.hash) {
+                *out = snap;
+                return true;
+            }
+        }
+        if (re_readable)
+            warn("existing snapshot '" + snap +
+                 "' does not match any URL: hash; re-downloading");
+        note("downloading '" + pf.archive +
+             "' outside the batch download phase (conflicted projeny file)");
+        return download_url_snapshot_sequential(snap, pf, out, err);
+    }
+    if (snapshot_readable)
+        warn("existing snapshot '" + snap +
+             "' does not match any URL: hash; re-downloading");
+    return download_url_snapshot_sequential(snap, pf, out, err);
 }
 
 // The dying wrapper: same behavior, but dies naming `what` when every URL
@@ -587,29 +744,33 @@ void disregard_stale_state(const Ctx& ctx,
     };
 
     // Stale one logical file under both of its names: `dotted` is the
-    // canonical name, `legacy` the pre-dot-naming name.
+    // canonical name, `legacy` the pre-dot-naming name. Parallel workers
+    // of one multi-project command can stale the same shared file at the
+    // same time (several projects using one archive); move_path_shared
+    // makes the losers of those races silent no-ops instead of spurious
+    // hard errors, and the warning lines then name only real moves.
     auto stale_pair = [&](const std::string& dotted,
                           const std::string& legacy) {
         if (!path_exists(dotted) && path_exists(legacy)) {
             // Only the legacy form exists: migrate it into the dotted form
             // first, so it is staled under the dotted .stale name.
-            move_path(legacy, dotted);
+            move_path_shared(legacy, dotted);
         }
         if (!path_exists(dotted))
             return;
         std::string dest = next_stale_name(dotted);
-        warn("workdir for '" + ctx.projeny_arg + "' is missing; renaming "
-             "stale '" +
-             dotted + "' to '" + dest + "'");
-        move_path(dotted, dest);
+        if (move_path_shared(dotted, dest))
+            warn("workdir for '" + ctx.projeny_arg + "' is missing; "
+                 "renaming stale '" +
+                 dotted + "' to '" + dest + "'");
         if (path_exists(legacy)) {
             // Both forms existed: disregard the legacy copy too, under its
             // own name (same numbering, based on the undotted name).
             std::string ldest = next_stale_name(legacy);
-            warn("workdir for '" + ctx.projeny_arg + "' is missing; renaming "
-                 "stale '" +
-                 legacy + "' to '" + ldest + "'");
-            move_path(legacy, ldest);
+            if (move_path_shared(legacy, ldest))
+                warn("workdir for '" + ctx.projeny_arg + "' is missing; "
+                     "renaming stale '" +
+                     legacy + "' to '" + ldest + "'");
         }
     };
 
@@ -619,6 +780,23 @@ void disregard_stale_state(const Ctx& ctx,
             continue;
         std::string archive = join_path(ctx.pdir, a);
         migrate_snapshot(archive);
+        // Multi mode: a snapshot that the plan knows is good is NOT stale
+        // state from a removed checkout — it is the archive the batch
+        // download phase just fetched (or verified) for every project in
+        // this directory, some of which may not have a workdir yet. Staling
+        // it would destroy the shared download and break the other
+        // projects' setups, so a plan-verifying snapshot stays. Single-
+        // project runs (no plan) keep the exact legacy behavior.
+        if (g_multi_plan) {
+            auto it = g_multi_plan->find(a);
+            if (it != g_multi_plan->end()) {
+                std::string snap = snapshot_path_for(archive);
+                if (is_readable_file(snap) &&
+                    it->second.verified_hashes.count(
+                        blake3_file_hash_hex(snap)) > 0)
+                    continue;
+            }
+        }
         stale_pair(snapshot_path_for(archive),
                    legacy_snapshot_path_for(archive));
     }
@@ -3794,6 +3972,507 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
     return 0;
 }
 
+// ---- parallel multi-project commands ----
+//
+// setup/package/extract accept several projects and download/download
+// accepts URL HASH pairs. The multi-project commands run in two phases
+// (see parallel-projeny.txt): first every .projeny file is read to collect
+// its URL: headers, shared archive basenames download ONCE as one batch
+// (curl multi, -c/--curl-jobs transfers in flight; blake3 checks on
+// -j/--jobs threads; one retry pass), then the per-project work runs on at
+// most -j/--jobs threads. A single-project invocation takes the legacy
+// fast path: the plain single-project command, byte-identically.
+
+namespace {
+
+// One source of "URL: <url> <hash>" lines for one archive package: a
+// contributing .projeny file (the multi-command planning phase) or one
+// command-line URL HASH pair (`projeny download`). `name` is the display
+// name for the loud shared-package warnings: the .projeny path, or the URL.
+struct PkgUrlSource {
+    std::string name;
+    std::vector<ProjenyUrl> urls;
+};
+
+// Candidate URL order for one package: the URLs every source lists first
+// (first-seen order), then the remaining URLs (first-seen order). Common
+// URLs try first so mirrors of the same archive are preferred — the batch
+// scheduler walks candidates in order.
+std::vector<std::string> candidate_urls(const std::vector<PkgUrlSource>& sources)
+{
+    std::vector<std::string> order;        // first-seen URL order
+    std::map<std::string, size_t> per_url; // url -> sources listing it
+    std::set<std::string> seen;
+    for (const PkgUrlSource& s : sources) {
+        std::set<std::string> mine;
+        for (const ProjenyUrl& u : s.urls) {
+            if (!mine.insert(u.url).second)
+                continue; // a repeated URL line counts once per source
+            if (seen.insert(u.url).second)
+                order.push_back(u.url);
+            ++per_url[u.url];
+        }
+    }
+    std::vector<std::string> out;
+    for (const std::string& u : order)
+        if (per_url[u] == sources.size())
+            out.push_back(u);
+    for (const std::string& u : order)
+        if (per_url[u] != sources.size())
+            out.push_back(u);
+    return out;
+}
+
+// The two loud shared-package warnings (all caps, per the spec), shared by
+// the planning phase and `projeny download` so the wording stays identical:
+// one when the sources of one package name different URL sets, and a louder
+// one — per affected URL — when the same URL is listed with different
+// blake3 hashes. Both only warn: the download is deduplicated by archive
+// name either way and every source receives the same archive.
+void warn_shared_package(const std::string& pkg,
+                         const std::vector<PkgUrlSource>& sources)
+{
+    if (sources.size() < 2)
+        return;
+    // Different URL sets among the contributors of one package?
+    bool differ = false;
+    {
+        std::set<std::string> first;
+        for (const ProjenyUrl& u : sources[0].urls)
+            first.insert(u.url);
+        for (size_t i = 1; i < sources.size() && !differ; ++i) {
+            std::set<std::string> mine;
+            for (const ProjenyUrl& u : sources[i].urls)
+                mine.insert(u.url);
+            differ = mine != first;
+        }
+    }
+    if (differ) {
+        std::string files;
+        for (size_t i = 0; i < sources.size(); ++i) {
+            if (i > 0)
+                files += "; ";
+            files += sources[i].name;
+        }
+        warn("WARNING: " + std::to_string(sources.size()) +
+             " PROJENY FILES DOWNLOAD ARCHIVES WITH THE SAME NAME '" + pkg +
+             "' BUT WITH DIFFERENT URL SETS: " + files +
+             ". DOWNLOADS ARE DEDUPLICATED BY ARCHIVE NAME, SO EVERY ONE OF "
+             "THEM WILL GET THE SAME ARCHIVE FILE.");
+    }
+    // Same URL listed with different hashes across the contributors? One
+    // line per affected URL, hashes (and the files listing them) in
+    // first-seen order.
+    std::vector<std::string> url_order;
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>>
+        sightings; // url -> (hash, source name) in first-seen order
+    {
+        std::set<std::string> seen_urls;
+        for (const PkgUrlSource& s : sources) {
+            std::set<std::string> mine;
+            for (const ProjenyUrl& u : s.urls) {
+                if (seen_urls.insert(u.url).second)
+                    url_order.push_back(u.url);
+                if (!mine.insert(u.url).second)
+                    continue; // a repeated URL line counts once per source
+                sightings[u.url].emplace_back(u.hash, s.name);
+            }
+        }
+    }
+    for (const std::string& url : url_order) {
+        const auto& seen = sightings[url];
+        std::vector<std::string> hashes;
+        std::string hash_list, files;
+        for (const auto& sh : seen) {
+            if (std::find(hashes.begin(), hashes.end(), sh.first) ==
+                hashes.end()) {
+                hashes.push_back(sh.first);
+                if (!hash_list.empty())
+                    hash_list += ", ";
+                hash_list += sh.first;
+            }
+            if (!files.empty())
+                files += "; ";
+            files += sh.second;
+        }
+        if (hashes.size() < 2)
+            continue;
+        warn("WARNING: URL '" + url +
+             "' IS LISTED WITH DIFFERENT BLAKE3 HASHES (" + hash_list +
+             ") IN " + files +
+             ". THIS IS ALMOST CERTAINLY A MISTAKE. ALL OF THESE FILES WILL "
+             "RECEIVE THE SAME DOWNLOADED ARCHIVE.");
+    }
+}
+
+// One requested per-project operation: the .projeny argument exactly as
+// given on the command line, plus the package output / extract destination
+// ("" for setup).
+struct MultiJob {
+    std::string projeny_arg;
+    std::string extra;
+};
+
+// The shared multi-project body. `verb` names the command for the summary
+// line ("setup(s) failed"), `verb_phrase` spells the dedupe warning
+// ("setting it up"), `extra_noun` names the dropped duplicate's second
+// argument ("output"/"destination", "" for setup), and run_one runs the
+// single-project command: cmd_setup(arg) / cmd_package(arg, extra) /
+// cmd_extract(arg, extra).
+int run_multi(const char* verb, const char* verb_phrase,
+              const char* extra_noun,
+              const std::function<int(const std::string&, const std::string&)>&
+                  run_one,
+              const std::vector<MultiJob>& requested, int jobs, int curl_jobs)
+{
+    // Legacy fast path: exactly one project means exactly the single-project
+    // command — byte-identical output, no planning phase, no labels, and no
+    // resolution duplication (the command resolves the argument itself).
+    if (requested.size() == 1)
+        return run_one(requested[0].projeny_arg, requested[0].extra);
+
+    // 1. Resolve + dedupe: two spellings of one .projeny file must never run
+    // concurrently (and never twice). The FIRST occurrence wins.
+    struct Resolved {
+        std::string arg;  // as given
+        std::string extra;
+        std::string abs;  // absolutized .projeny path
+    };
+    std::vector<Resolved> projects;
+    std::set<std::string> seen;
+    projects.reserve(requested.size());
+    for (const MultiJob& j : requested) {
+        std::string abs = absolutize(resolve_projeny_path(j.projeny_arg, verb));
+        if (!seen.insert(abs).second) {
+            std::string dropped =
+                extra_noun[0] ? " (the " + std::string(extra_noun) + " '" +
+                                    j.extra + "' is ignored)"
+                              : "";
+            warn("'" + j.projeny_arg + "' is listed more than once; " +
+                 verb_phrase + " only once" + dropped);
+            continue;
+        }
+        projects.push_back({j.projeny_arg, j.extra, abs});
+    }
+
+    // 1b. Parallel package/extract only: two DIFFERENT projects whose
+    // outputs (package) or destinations (extract) resolve to the same path
+    // would race on one file — each worker writes or renames the full
+    // result, so which bytes survive depends on scheduling. Absolutize each
+    // output/destination (lexical absolutize() is fine for
+    // not-yet-existing paths), group by the absolute path, and warn once
+    // per colliding group. Setup has no second argument and cannot collide.
+    // The runs still proceed: this is a loud heads-up, not a refusal.
+    if (extra_noun[0] != '\0') {
+        std::map<std::string, std::vector<size_t>> collisions;
+        for (size_t i = 0; i < projects.size(); ++i)
+            collisions[absolutize(projects[i].extra)].push_back(i);
+        for (const auto& kv : collisions) {
+            if (kv.second.size() < 2)
+                continue;
+            std::string listed;
+            for (size_t k = 0; k < kv.second.size(); ++k) {
+                if (!listed.empty())
+                    listed +=
+                        (k + 1 == kv.second.size()) ? " and " : ", ";
+                listed += "'" + projects[kv.second[k]].extra + "'";
+            }
+            warn(std::string(verb) + " " + extra_noun + "s " + listed +
+                 (kv.second.size() == 2 ? " both" : " all") +
+                 " resolve to '" + kv.first +
+                 "'; the parallel runs write the same file");
+        }
+    }
+
+    // 2. Collect URLs (the download-planning phase: read every projeny file
+    // up front). A file that cannot be read or parsed, or one with git
+    // conflict markers, contributes nothing here: its per-project task dies
+    // with the canonical message or handles the conflicts itself — and as a
+    // deferred file it may fall back to a serialized download in the guard.
+    std::map<std::string, std::vector<PkgUrlSource>> collect;
+    for (const Resolved& r : projects) {
+        std::string raw;
+        if (!try_read_file_bytes(r.abs, &raw))
+            continue;
+        if (projeny_has_conflict_markers(raw))
+            continue;
+        ProjenyFile pf;
+        try {
+            pf = ProjenyFile::parse_bytes(raw, "'" + r.abs + "'");
+        } catch (const ProjenyFatalError&) {
+            continue; // the per-project task reproduces this error
+        }
+        if (!pf.is_url_based() || pf.archive.empty())
+            continue; // classic Archive: project: nothing to download
+        PkgUrlSource src;
+        src.name = r.abs;
+        src.urls = pf.urls;
+        collect[pf.archive].push_back(std::move(src));
+    }
+
+    // 3-5. Build the plan: loud warnings for shared packages, candidate URL
+    // order, contributing pdirs, and the existing-snapshot check (a pdir
+    // whose .<archive>.snapshot already verifies against any accepted hash
+    // needs no download at all).
+    std::map<std::string, PlannedPackage> plan;
+    std::vector<BatchPackageSpec> specs;
+    for (const auto& kv : collect) {
+        const std::string& pkg = kv.first;
+        const std::vector<PkgUrlSource>& sources = kv.second;
+        warn_shared_package(pkg, sources);
+        PlannedPackage p;
+        p.urls = candidate_urls(sources);
+        for (const PkgUrlSource& s : sources)
+            for (const ProjenyUrl& u : s.urls)
+                p.accepted_hashes.insert(u.hash);
+        std::set<std::string> dirs;
+        for (const PkgUrlSource& s : sources)
+            dirs.insert(dirname_of(s.name));
+        p.pdirs.assign(dirs.begin(), dirs.end());
+        bool all_satisfied = true;
+        for (const std::string& dir : p.pdirs) {
+            // Same construction try_ensure_url_snapshot uses:
+            // <pdir>/.<archive>.snapshot.
+            std::string snap = snapshot_path_for(join_path(dir, pkg));
+            bool satisfied = false;
+            if (is_readable_file(snap)) {
+                std::string h = blake3_file_hash_hex(snap);
+                if (p.accepted_hashes.count(h) > 0) {
+                    satisfied = true;
+                    p.verified_hashes.insert(h);
+                }
+            }
+            p.pdir_satisfied.push_back(satisfied);
+            all_satisfied = all_satisfied && satisfied;
+        }
+        plan[pkg] = std::move(p);
+        if (!all_satisfied) {
+            BatchPackageSpec spec;
+            spec.name = pkg;
+            spec.urls = plan[pkg].urls;
+            spec.accepted_hashes = plan[pkg].accepted_hashes;
+            specs.push_back(std::move(spec));
+        }
+    }
+
+    // 6. Download: one batch for every package that still needs it (never
+    // two concurrent downloads of the same package — download_batch
+    // guarantees one handle per package), then the verified bytes go into
+    // each unsatisfied pdir's snapshot.
+    if (!specs.empty()) {
+        std::vector<BatchPackageResult> results =
+            download_batch(specs, curl_jobs, jobs);
+        for (size_t i = 0; i < specs.size(); ++i) {
+            PlannedPackage& p = plan[specs[i].name];
+            p.attempted = true;
+            const BatchPackageResult& r = results[i];
+            if (!r.ok) {
+                p.errors = r.errors;
+                std::string joined;
+                for (size_t k = 0; k < r.errors.size(); ++k) {
+                    if (k > 0)
+                        joined += "; ";
+                    joined += r.errors[k];
+                }
+                warn("failed to obtain '" + r.name + "': " + joined);
+                continue;
+            }
+            p.ok = true;
+            p.verified_hashes.insert(r.hash);
+            for (size_t k = 0; k < p.pdirs.size(); ++k) {
+                if (p.pdir_satisfied[k])
+                    continue;
+                write_file_bytes(snapshot_path_for(join_path(p.pdirs[k],
+                                                             r.name)),
+                                 r.data);
+            }
+        }
+    }
+
+    // 7. Per-project phase: every project on its own thread (at most `jobs`
+    // at a time), labeled so its note/warn/die lines name the project. The
+    // guard in try_ensure_url_snapshot reads the plan while this runs.
+    std::vector<int> rcs(projects.size(), 0);
+    std::vector<std::string> labels(projects.size());
+    for (size_t i = 0; i < projects.size(); ++i)
+        labels[i] = basename_of(projects[i].abs);
+    g_multi_plan = &plan;
+    struct PlanUninstall {
+        ~PlanUninstall() { g_multi_plan = nullptr; }
+    } plan_uninstall;
+    run_parallel(jobs, projects.size(), [&](size_t i) {
+        set_output_label(labels[i]);
+        try {
+            // The absolutized path: resolution happened once, above, so no
+            // worker re-resolves a spelling after another worker may have
+            // removed the directory the process's CWD sits in.
+            rcs[i] = run_one(projects[i].abs, projects[i].extra);
+        } catch (const ProjenyFatalError&) {
+            // die() already printed the labeled report; do not repeat it.
+            rcs[i] = 1;
+        }
+        set_output_label("");
+    });
+
+    // 8. Exit code: nonzero when any project failed (nonzero return or
+    // death), with one summary line. Success prints nothing extra.
+    size_t failed = 0;
+    std::string failed_labels;
+    for (size_t i = 0; i < projects.size(); ++i) {
+        if (rcs[i] == 0)
+            continue;
+        ++failed;
+        if (!failed_labels.empty())
+            failed_labels += ", ";
+        failed_labels += labels[i];
+    }
+    if (failed > 0)
+        fprintf(stderr, "projeny: %zu of %zu %s(s) failed: %s\n", failed,
+                projects.size(), verb, failed_labels.c_str());
+    return failed > 0 ? 1 : 0;
+}
+
+} // namespace
+
+int cmd_setup_multi(const std::vector<std::string>& projeny_args, int jobs,
+                    int curl_jobs)
+{
+    std::vector<MultiJob> requested;
+    requested.reserve(projeny_args.size());
+    for (const std::string& a : projeny_args)
+        requested.push_back({a, ""});
+    return run_multi(
+        "setup", "setting it up", "",
+        [](const std::string& arg, const std::string&) {
+            return cmd_setup(arg);
+        },
+        requested, jobs, curl_jobs);
+}
+
+int cmd_package_multi(
+    const std::vector<std::pair<std::string, std::string>>& pairs, int jobs,
+    int curl_jobs)
+{
+    std::vector<MultiJob> requested;
+    requested.reserve(pairs.size());
+    for (const auto& p : pairs)
+        requested.push_back({p.first, p.second});
+    return run_multi(
+        "package", "packaging it", "output",
+        [](const std::string& arg, const std::string& extra) {
+            return cmd_package(arg, extra);
+        },
+        requested, jobs, curl_jobs);
+}
+
+int cmd_extract_multi(
+    const std::vector<std::pair<std::string, std::string>>& pairs, int jobs,
+    int curl_jobs)
+{
+    std::vector<MultiJob> requested;
+    requested.reserve(pairs.size());
+    for (const auto& p : pairs)
+        requested.push_back({p.first, p.second});
+    return run_multi(
+        "extract", "extracting it", "destination",
+        [](const std::string& arg, const std::string& extra) {
+            return cmd_extract(arg, extra);
+        },
+        requested, jobs, curl_jobs);
+}
+
+// Download URL HASH pairs into the current directory, as one parallel batch
+// (the same machinery the multi-project commands use in their planning
+// phase). Files are named after the URL's basename; a file already present
+// with a matching hash is kept. Any failure is fatal — after every other
+// package finished.
+int cmd_download(const std::vector<std::string>& args, int jobs, int curl_jobs)
+{
+    if (args.size() < 2 || args.size() % 2 != 0)
+        die("download takes URL HASH pairs; pass an even number of "
+            "arguments");
+    std::map<std::string, std::vector<PkgUrlSource>> by_pkg;
+    std::set<std::pair<std::string, std::string>> exact;
+    for (size_t i = 0; i + 1 < args.size(); i += 2) {
+        const std::string& url = args[i];
+        const std::string& hash = args[i + 1];
+        // Same rules as a .projeny file's "URL: <url> <hash>" header
+        // (parse_url_value): exactly 64 hex chars, normalized lowercase.
+        std::string lower;
+        bool ok = hash.size() == 64;
+        for (char c : hash) {
+            if (!isxdigit(static_cast<unsigned char>(c)))
+                ok = false;
+            lower.push_back(
+                static_cast<char>(tolower(static_cast<unsigned char>(c))));
+        }
+        if (!ok)
+            die("invalid blake3 hash '" + hash + "' for " + url);
+        std::string pkg = archive_name_from_url(url);
+        if (pkg.empty())
+            die("URL '" + url + "' does not name a file");
+        if (!exact.insert({url, lower}).second)
+            continue; // exact duplicate (url,hash) pair: dedupe silently
+        PkgUrlSource src;
+        src.name = url;
+        src.urls.push_back({url, lower});
+        by_pkg[pkg].push_back(std::move(src));
+    }
+
+    std::vector<BatchPackageSpec> specs;
+    for (const auto& kv : by_pkg) {
+        const std::string& pkg = kv.first;
+        const std::vector<PkgUrlSource>& sources = kv.second;
+        warn_shared_package(pkg, sources);
+        std::string local = "./" + pkg;
+        // Pre-check: a local file that already verifies against one of the
+        // listed hashes IS the download.
+        if (is_readable_file(local)) {
+            std::string h = blake3_file_hash_hex(local);
+            bool have = false;
+            for (const PkgUrlSource& s : sources)
+                for (const ProjenyUrl& u : s.urls)
+                    if (u.hash == h)
+                        have = true;
+            if (have) {
+                note("already have " + pkg + " (blake3 hash verified)");
+                continue;
+            }
+        }
+        BatchPackageSpec spec;
+        spec.name = pkg;
+        spec.urls = candidate_urls(sources);
+        for (const PkgUrlSource& s : sources)
+            for (const ProjenyUrl& u : s.urls)
+                spec.accepted_hashes.insert(u.hash);
+        specs.push_back(std::move(spec));
+    }
+
+    if (specs.empty())
+        return 0;
+    std::vector<BatchPackageResult> results =
+        download_batch(specs, curl_jobs, jobs);
+    size_t failed = 0;
+    std::vector<std::string> failed_lines;
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const BatchPackageResult& r = results[i];
+        if (!r.ok) {
+            ++failed;
+            failed_lines.insert(failed_lines.end(), r.errors.begin(),
+                                r.errors.end());
+            continue;
+        }
+        write_file_bytes("./" + r.name, r.data);
+        note("wrote " + r.name + " (" + std::to_string(r.data.size()) +
+             " bytes)");
+    }
+    if (failed > 0)
+        die("failed to download " + std::to_string(failed) + " of " +
+                std::to_string(specs.size()) + " package(s)",
+            bullet_list(failed_lines));
+    return 0;
+}
+
 // ---- frozen-mtime and attribute commands ----
 //
 // freeze-mtime pins a tracked file's checkout timestamp to what the archive
@@ -4130,7 +4809,7 @@ int cmd_help(const std::string& arg0)
     printf("\n"
            "Manage \"project = release tarball + patch\" pairs.\n"
            "\n"
-           "  setup <f.projeny|dir>            unpack archive, apply patch\n"
+           "  setup <f.projeny|dir> [...]      unpack archive, apply patch\n"
            "  commit <f.projeny|dir>           fold workdir changes into the patch\n"
            "  add <f.projeny|dir> <path>       mark a file as added\n"
            "  rm <f.projeny|dir> <path>        delete a file, mark as removed\n"
@@ -4141,8 +4820,11 @@ int cmd_help(const std::string& arg0)
            "  diff <f.projeny|dir>             print a checkout's uncommitted diff\n"
            "  diff <dir> <other-dir>           print the diff between two trees\n"
            "  patch <dir> <patch-file>         apply a patch file to a tree\n"
-           "  package <f.projeny|dir> <out>    setup, then tar the tracked files\n"
-           "  extract <f.projeny|dir> <dest>   setup, then copy tracked files to a dir\n"
+           "  package <f.projeny|dir> <out> [...]\n"
+           "                                   setup, then tar the tracked files\n"
+           "  extract <f.projeny|dir> <dest> [...]\n"
+           "                                   setup, then copy tracked files to a dir\n"
+           "  download <url> <hash> [...]      download URL HASH pairs into the cwd\n"
            "  freeze-mtime <f.projeny|dir> <file>...\n"
            "                                   pin a file's mtime to the tarball's\n"
            "  unfreeze-mtime <f.projeny|dir> <file>...\n"
@@ -4153,6 +4835,11 @@ int cmd_help(const std::string& arg0)
            "                                   show special attributes of files\n"
            "  hash <file>                      print the blake3 hash of a file\n"
            "  help [command]                   show this message or command help\n"
+           "\n"
+           "  options for setup/package/extract/download: -j[--jobs] N, "
+           "-c[--curl-jobs] N\n"
+           "  setup/package/extract take several projects (parallel); download\n"
+           "  takes <url> <hash> pairs.\n"
            "\n"
            "Project arguments (<f.projeny|dir>) may be the .projeny file, the\n"
            "workdir or another directory holding exactly one .projeny file, or\n"
@@ -4273,12 +4960,38 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                ".projeny file is refused without touching the workdir or\n"
                "status file.\n"
                "\n"
+               "Parallel mode: `%s setup <f.projeny|dir> [...]` sets up\n"
+               "several projects in one run, in two phases. First every\n"
+               ".projeny file named on the command line is read to collect\n"
+               "its URL: headers, and everything that needs downloading runs\n"
+               "as one batch: at most -c/--curl-jobs transfers in flight\n"
+               "(default 8), blake3 hash checks on at most -j/--jobs threads\n"
+               "(default the CPU count), one retry pass over the failures.\n"
+               "Then the per-project setups run on at most -j/--jobs\n"
+               "threads. A single-project setup runs exactly as it always\n"
+               "has.\n"
+               "\n"
+               "Downloads are deduplicated by archive name (the URL's\n"
+               "basename): when several named projects fetch archives with\n"
+               "the same name, one download feeds all of them, and the URLs\n"
+               "every file lists are tried first. projeny prints a loud\n"
+               "(ALL-CAPS) warning when files name the same archive with\n"
+               "different URL sets, and a louder one when the same URL is\n"
+               "listed with different blake3 hashes — and proceeds anyway:\n"
+               "every one of those files receives the same downloaded\n"
+               "archive. Listing one project twice collapses into a single\n"
+               "setup with a warning (never two setups of one .projeny, not\n"
+               "even sequential ones). A project whose download fails dies\n"
+               "with a labeled error line naming it; the other projects\n"
+               "still set up, and the command exits nonzero with a one-line\n"
+               "summary of what failed.\n"
+               "\n"
                "Like every project-taking command, the <f.projeny> argument\n"
                "may also be the workdir or another directory holding exactly\n"
                "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
                "exists (typically a missing checkout directory, or a bare\n"
                "name like 'fake' for 'fake.projeny').\n",
-               t);
+               t, t);
         return 0;
     }
     if (topic == "commit") {
@@ -4530,8 +5243,19 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                ".tar.bz2/.tbz2/.tbz (bzip2), .tar.xz/.txz (xz),\n"
                ".tar.zst/.tzst (zstd). When `setup` reports conflicts the\n"
                "command prints them and exits nonzero without writing any\n"
-               "archive.\n",
-               t);
+               "archive.\n"
+               "\n"
+               "Parallel mode: `%s package <f.projeny|dir> <output-tarball>\n"
+               "[...]` takes (project, output) pairs and packages them in\n"
+               "parallel, with the same two-phase download batching as\n"
+               "parallel `setup` (-j/--jobs bounds both the per-project\n"
+               "parallelism and the hash-check parallelism, default the CPU\n"
+               "count; -c/--curl-jobs bounds transfers, default 8). Listing\n"
+               "one project twice collapses into one packaging with a\n"
+               "warning — the first pair's output is the one produced — and\n"
+               "projects sharing an archive basename download it once, with\n"
+               "the same loud warnings as parallel `setup`.\n",
+               t, t);
         return 0;
     }
     if (topic == "extract") {
@@ -4549,8 +5273,19 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "destination must not exist or must be an empty directory\n"
                "(remove it first to redo an extraction).\n"
                "When `setup` reports conflicts the command prints them and\n"
-               "exits nonzero without writing anything.\n",
-               t);
+               "exits nonzero without writing anything.\n"
+               "\n"
+               "Parallel mode: `%s extract <f.projeny|dir> <dest-dir>\n"
+               "[...]` takes (project, destination) pairs and extracts them\n"
+               "in parallel, with the same two-phase download batching as\n"
+               "parallel `setup` (-j/--jobs bounds both the per-project\n"
+               "parallelism and the hash-check parallelism, default the CPU\n"
+               "count; -c/--curl-jobs bounds transfers, default 8). Listing\n"
+               "one project twice collapses into one extraction with a\n"
+               "warning — the first pair's destination is the one filled —\n"
+               "and projects sharing an archive basename download it once,\n"
+               "with the same loud warnings as parallel `setup`.\n",
+               t, t);
         return 0;
     }
     if (topic == "freeze-mtime") {
@@ -4679,14 +5414,46 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                t);
         return 0;
     }
+    if (topic == "download") {
+        printf("%s download <url> <blake3-hash> [<url> <blake3-hash>...]\n"
+               "\n"
+               "Download every URL into the current directory, named after\n"
+               "the URL's basename (https://foo.dev/foo-1.2.3.tar.gz is\n"
+               "saved as foo-1.2.3.tar.gz), and verify each download\n"
+               "against its blake3 hash — the same hash `projeny hash`\n"
+               "computes, and the same 64-hex-char form a .projeny file's\n"
+               "`URL: <url> <blake3-hash>` header wants. Each URL must name\n"
+               "the archive file itself (the basename names the output).\n"
+               "\n"
+               "The downloads run as one parallel batch, exactly like the\n"
+               "download phase of parallel setup/package/extract: at most\n"
+               "-c/--curl-jobs transfers in flight (default 8) and blake3\n"
+               "hash checks on at most -j/--jobs threads (default the CPU\n"
+               "count), with one retry pass over the failures. Packages are\n"
+               "deduplicated by archive basename: two URLs sharing a\n"
+               "basename download once (the URLs every pair lists are tried\n"
+               "first), with a loud (ALL-CAPS) warning when their URL sets\n"
+               "differ and a louder one when the same URL is listed with\n"
+               "different hashes. Exact duplicate URL HASH pairs are\n"
+               "collapsed silently. A file that already exists in the\n"
+               "current directory with a matching hash is kept (\"already\n"
+               "have <name>\") and not re-downloaded; an existing file that\n"
+               "matches no listed hash is replaced by the download.\n"
+               "\n"
+               "The command exits nonzero — after finishing every other\n"
+               "package — when any download fails or no URL yields bytes\n"
+               "matching a listed hash; otherwise it exits 0.\n",
+               t);
+        return 0;
+    }
     if (topic == "help") {
         printf("%s help [command]\n"
                "\n"
                "With no arguments, list all commands. With a command name\n"
                "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
-               "patch, package, extract, freeze-mtime, unfreeze-mtime,\n"
-               "list-frozen-mtimes, get-attributes, hash, help), print a\n"
-               "detailed explanation of that command.\n",
+               "patch, package, extract, download, freeze-mtime,\n"
+               "unfreeze-mtime, list-frozen-mtimes, get-attributes, hash,\n"
+               "help), print a detailed explanation of that command.\n",
                t);
         return 0;
     }

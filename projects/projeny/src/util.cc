@@ -25,54 +25,214 @@
 #include "util.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <exception>
 #include <fcntl.h>
+#include <functional>
+#include <mutex>
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 extern char** environ;
 
+// Serializes every stderr line (note/warn/die and the download progress
+// lines) so parallel workers never interleave partial lines. See util.h.
+std::mutex g_output_mutex;
+
 namespace {
+
+// The temp-dir registry is shared: in parallel mode each worker thread
+// registers its own temp dirs while main() (or, later, a joining worker)
+// sweeps the remains. A dedicated mutex keeps register/unregister/cleanup
+// from racing; note it never nests with g_output_mutex, so the two can't
+// deadlock.
+std::mutex g_tempdirs_mu;
 std::vector<std::string> g_tempdirs;
+
+// Per-thread output label (see set_output_label in util.h): empty on the
+// main thread, the project name inside a parallel worker. thread_local means
+// no locking and no cross-thread leakage.
+thread_local std::string t_output_label;
+
+// "[<label>] " when this thread has a label, "" otherwise. note/warn/die
+// splice it in right after the "projeny:" prefix, so a labeled line stays
+// exactly one line: "projeny: [<label>] <msg>" (and the .../warning:/error:
+// variants). An empty label contributes nothing, keeping single-threaded
+// output byte-identical to the unlabeled form.
+std::string label_prefix()
+{
+    if (t_output_label.empty())
+        return "";
+    return "[" + t_output_label + "] ";
+}
+
+} // namespace
+
+void set_output_label(const std::string& label)
+{
+    t_output_label = label;
+}
+
+const std::string& output_label()
+{
+    return t_output_label;
+}
+
+ProjenyFatalError::ProjenyFatalError(std::string message)
+    : message_(std::move(message))
+{
+}
+
+const char* ProjenyFatalError::what() const noexcept
+{
+    return message_.c_str();
+}
+
+const std::string& ProjenyFatalError::message() const noexcept
+{
+    return message_;
 }
 
 void register_tempdir(const std::string& path)
 {
+    std::lock_guard<std::mutex> lk(g_tempdirs_mu);
     g_tempdirs.push_back(path);
 }
 
 void unregister_tempdir(const std::string& path)
 {
+    std::lock_guard<std::mutex> lk(g_tempdirs_mu);
     g_tempdirs.erase(std::remove(g_tempdirs.begin(), g_tempdirs.end(), path),
                      g_tempdirs.end());
 }
 
+void cleanup_tempdirs()
+{
+    std::vector<std::string> dirs;
+    {
+        std::lock_guard<std::mutex> lk(g_tempdirs_mu);
+        dirs.swap(g_tempdirs);
+    }
+    for (auto it = dirs.rbegin(); it != dirs.rend(); ++it)
+        remove_recursive(*it);
+}
+
 void die(const std::string& msg, const std::string& detail)
 {
-    for (auto it = g_tempdirs.rbegin(); it != g_tempdirs.rend(); ++it)
-        remove_recursive(*it);
-    fprintf(stderr, "projeny: error: %s\n", msg.c_str());
-    if (!detail.empty())
-        fprintf(stderr, "%s", detail.c_str());
-    exit(1);
+    std::string m = "projeny: " + label_prefix() + "error: " + msg + "\n";
+    {
+        // One lock for the whole report (message line + detail, verbatim
+        // bytes of the report die() has always printed) so a parallel
+        // worker's error never interleaves with another thread's output.
+        std::lock_guard<std::mutex> lk(g_output_mutex);
+        fprintf(stderr, "%s", m.c_str());
+        if (!detail.empty())
+            fprintf(stderr, "%s", detail.c_str());
+    }
+    // The report is out; hand the failure to the caller. main() catches
+    // ProjenyFatalError, sweeps any still-registered temp dirs (all threads
+    // have joined by then), and exits 1 — the same observable behavior the
+    // exit(1) here used to produce, while letting worker threads isolate
+    // per-project failures instead.
+    throw ProjenyFatalError(msg);
 }
 
 void warn(const std::string& msg)
 {
-    fprintf(stderr, "projeny: warning: %s\n", msg.c_str());
+    std::lock_guard<std::mutex> lk(g_output_mutex);
+    fprintf(stderr, "projeny: %swarning: %s\n", label_prefix().c_str(),
+            msg.c_str());
 }
 
 void note(const std::string& msg)
 {
-    fprintf(stderr, "projeny: %s\n", msg.c_str());
+    std::lock_guard<std::mutex> lk(g_output_mutex);
+    fprintf(stderr, "projeny: %s%s\n", label_prefix().c_str(), msg.c_str());
+}
+
+void run_parallel(int nthreads, size_t ntasks,
+                  const std::function<void(size_t)>& task)
+{
+    if (ntasks == 0)
+        return; // no tasks: no threads at all
+    size_t n = nthreads < 1 ? 1 : (size_t)nthreads;
+    if (n > ntasks)
+        n = ntasks; // never more threads than tasks
+
+    // A mutex + condition_variable worker pool: the shared state below is
+    // guarded by `mu`, and workers that find the task queue momentarily
+    // empty block on `cv` until the pool quiesces (the queue never refills,
+    // so the last worker out wakes everybody to let them exit). Exceptions
+    // are captured (never allowed to escape a thread — that would
+    // std::terminate) with the lowest failing index remembered; after the
+    // join the winner is rethrown on this thread.
+    std::mutex mu;
+    std::condition_variable cv;
+    size_t next_index = 0; // next task index to hand out (guarded by mu)
+    size_t running = 0;    // tasks currently executing (guarded by mu)
+    std::exception_ptr first_exc;
+    size_t first_index = ntasks; // past-the-end sentinel: nothing failed yet
+    std::vector<std::thread> threads;
+    threads.reserve(n);
+    for (size_t t = 0; t < n; ++t) {
+        threads.emplace_back([&]() {
+            std::unique_lock<std::mutex> lk(mu);
+            for (;;) {
+                if (next_index < ntasks) {
+                    // Take the next task and run it with the lock released,
+                    // so tasks finish in whatever order the threads get to
+                    // them and a slow task never idles the others.
+                    size_t i = next_index++;
+                    ++running;
+                    lk.unlock();
+                    try {
+                        task(i);
+                    } catch (...) {
+                        // Keep going: every remaining task still runs (a
+                        // per-project failure must not starve the others).
+                        lk.lock();
+                        if (i < first_index) {
+                            first_index = i;
+                            first_exc = std::current_exception();
+                        }
+                        --running;
+                        continue;
+                    }
+                    lk.lock();
+                    --running;
+                    continue;
+                }
+                if (running > 0) {
+                    // Other workers are still finishing the handed-out
+                    // tasks: wait for the pool to quiesce. (Spurious
+                    // wakeups re-check from the top.)
+                    cv.wait(lk);
+                    continue;
+                }
+                // Every task handed out and finished: wake any fellow
+                // waiters so they exit too, and leave.
+                cv.notify_all();
+                return;
+            }
+        });
+    }
+    for (auto& t : threads)
+        t.join();
+    if (first_exc)
+        std::rethrow_exception(first_exc);
 }
 
 namespace {
@@ -293,7 +453,16 @@ bool write_file_bytes_try(const std::string& path, const std::string& data,
         return false;
     };
     // Write-then-rename so a crash never leaves a half-written file behind.
-    std::string tmp = path + ".tmp";
+    // The temp name is unique per write (pid plus a process-wide counter):
+    // parallel workers of one multi-project command can write the same
+    // target path concurrently (the shared snapshot of two projects that
+    // use one archive, say), and a fixed ".tmp" suffix would let one
+    // worker's rename move the shared temp out from under another, whose
+    // own rename would then fail with ENOENT (TSAN and stress probes both
+    // caught exactly that).
+    static std::atomic<unsigned long long> tmp_counter(0);
+    std::string tmp = path + ".tmp." + std::to_string(getpid()) + "." +
+                      std::to_string(tmp_counter.fetch_add(1));
     int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
     if (fd < 0)
         return fail(errno);
@@ -748,8 +917,13 @@ TempDir::TempDir(const std::string& parent, const std::string& prefix)
 TempDir::~TempDir()
 {
     if (owned_) {
-        // Unregister first: remove_recursive dies on failure, and the die()
-        // cleanup pass must not try to re-remove a (partially) deleted tree.
+        // Unregister first so a cleanup_tempdirs() sweep can never re-remove
+        // a (partially) deleted tree; and this destructor must stay
+        // non-dying — it runs during exception unwinding (die() throws), and
+        // a throw from here would std::terminate. remove_recursive reports
+        // failure via its return value, which is deliberately ignored: a
+        // temp dir that cannot be removed is not worth failing the real
+        // work over.
         unregister_tempdir(path);
         remove_recursive(path);
     }
@@ -940,16 +1114,15 @@ std::string base64_encode(const std::string& data)
 
 bool base64_decode(const std::string& s, std::string* out)
 {
-    static signed char rev[256];
-    static bool init = false;
-    if (!init) {
+    static const std::array<signed char, 256> rev = [] {
+        std::array<signed char, 256> r{};
         for (int i = 0; i < 256; ++i)
-            rev[i] = -1;
+            r[i] = -1;
         const char* tab = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         for (int i = 0; tab[i]; ++i)
-            rev[(unsigned char)tab[i]] = (signed char)i;
-        init = true;
-    }
+            r[(unsigned char)tab[i]] = (signed char)i;
+        return r;
+    }();
     out->clear();
     if (s.empty())
         return true;

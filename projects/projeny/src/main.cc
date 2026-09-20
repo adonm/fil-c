@@ -38,7 +38,7 @@ int usage(const char* arg0, bool err)
     fprintf(f,
             "usage: %s "
             "<setup|commit|add|rm|mv|resolve|rebase|status|diff|patch|package|extract|"
-            "download|freeze-mtime|unfreeze-mtime|list-frozen-mtimes|get-attributes|hash|"
+            "download|erase-setup|freeze-mtime|unfreeze-mtime|list-frozen-mtimes|get-attributes|hash|"
             "help> "
             "[args]\n"
             "  setup <f.projeny|dir> [...]\n"
@@ -55,6 +55,7 @@ int usage(const char* arg0, bool err)
             "  package <f.projeny|dir> <output> [...]\n"
             "  extract <f.projeny|dir> <dest> [...]\n"
             "  download <url> <hash> [<url> <hash>...]\n"
+            "  erase-setup <f.projeny|dir> [...] [--erase-snapshots]\n"
             "  freeze-mtime <f.projeny|dir> <filenames...>\n"
             "  unfreeze-mtime <f.projeny|dir> <filenames...>\n"
             "  list-frozen-mtimes <f.projeny|dir>\n"
@@ -62,7 +63,8 @@ int usage(const char* arg0, bool err)
             "  hash <file>\n"
             "  help [command]\n"
             "  options for setup/package/extract/download: -j[--jobs] N, "
-            "-c[--curl-jobs] N\n",
+            "-c[--curl-jobs] N\n"
+            "  options for erase-setup: -j[--jobs] N, --erase-snapshots\n",
             arg0);
     return err ? 1 : 0;
 }
@@ -211,6 +213,42 @@ int main(int argc, char** argv)
             if (rest.size() < 2 || rest.size() % 2 != 0)
                 return usage(arg0.c_str(), true);
             return cmd_download(rest, jobs, curl_jobs);
+        }
+        // erase-setup is a parallel-mode command too: -j/--jobs anywhere,
+        // plus the valueless --erase-snapshots flag. It has NO download
+        // phase, so there is nothing for -c/--curl-jobs to control: those
+        // spellings are just unknown options here.
+        if (cmd == "erase-setup") {
+            int jobs = default_jobs();
+            bool erase_snapshots = false;
+            std::vector<std::string> rest;
+            for (size_t i = 1; i < args.size(); ++i) {
+                const std::string& tok = args[i];
+                if (tok == "-j" || tok == "--jobs") {
+                    if (i + 1 >= args.size())
+                        die("option " + tok + " requires a value");
+                    jobs = parse_jobs_value(tok, args[++i]);
+                } else if (starts_with(tok, "-j") && tok.size() > 2 &&
+                           looks_like_jobs_value(tok.substr(2))) {
+                    jobs = parse_jobs_value("-j", tok.substr(2));
+                } else if (starts_with(tok, "--jobs=")) {
+                    jobs = parse_jobs_value("--jobs", tok.substr(7));
+                } else if (tok == "--erase-snapshots") {
+                    erase_snapshots = true;
+                } else if (tok.size() > 2 && starts_with(tok, "-c") &&
+                           looks_like_jobs_value(tok.substr(2))) {
+                    // The attached-value spelling of -c: name the option,
+                    // not the spelling, so every -c form reports alike.
+                    die("unknown option '-c'");
+                } else if (starts_with(tok, "-")) {
+                    die("unknown option '" + tok + "'");
+                } else {
+                    rest.push_back(tok);
+                }
+            }
+            if (rest.empty())
+                return usage(arg0.c_str(), true);
+            return cmd_erase_setup_multi(rest, jobs, erase_snapshots);
         }
         if (cmd == "commit") {
             if (args.size() != 2)

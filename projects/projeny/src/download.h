@@ -97,8 +97,40 @@ struct BatchPackageResult {
 //   hash mismatch:          "downloaded '<name>' from '<url>' but blake3 hash mismatch (got <hash>)"
 //   verified:               "downloaded '<name>' (<N> bytes); blake3 hash verified"
 //   retry pass (k>0):       "retrying <k> failed download(s): <comma-separated names>"
-// Batch mode uses NO per-transfer progress callback (no '\r' spam from
-// concurrent transfers; NOPROGRESS=1 on the easy handles). Returns one
+//
+// Progress is ONE combined line for the whole batch — never one line per
+// transfer — rendered on the calling thread (the xferinfo callbacks only
+// record counts; they fire inside curl_multi_perform on that same thread)
+// under g_output_mutex, in the exact form try_download's progress lines
+// use: stderr, the "projeny: download progress: " prefix, bare '\r'
+// termination, no ANSI escapes, no backspaces, no padding, no isatty
+// checks — a terminal redraws the line in place while a log keeps every
+// line. The line carries one single-token entry per IN-FLIGHT transfer, in
+// the order those transfers' "downloading '<name>' from '<url>'"
+// announcements printed, so the line correlates with the announcements:
+//   <entry> = "N%"  — the transfer's whole-percent, clamped to 100 (only a
+//                     server lying about its Content-Length could exceed it)
+//           | "?"   — the transfer's total size is unknown (no
+//                     Content-Length); "?" instead of a byte count keeps
+//                     every entry a single greppable token
+// Re-renders are throttled, mirroring try_download's two-gate rule: at most
+// one line per scheduler loop iteration, and only when BOTH at least 200ms
+// passed since the last render AND something visible changed (some
+// in-flight transfer's whole-percent grew, or >= 64 KiB arrived for an
+// unknown-total transfer). When a round completes (every package
+// transferred or out of candidate URLs) exactly one closing line lists
+// EVERY package that round announced, in first-announcement order: "100%"
+// for a package holding a completed transfer, "?" for one that never
+// finished one (a hash mismatch still reads "100%" — the transfer itself
+// completed; the mismatch is the hash pass's report). The closing line ends
+// the progress sequence with a newline after its '\r': a terminal keeps the
+// final state visible on its own line (the following
+// "downloaded ... (N bytes); blake3 hash verified" notes print below it,
+// not over it), and a log's line structure stays intact — the in-flight
+// lines, like try_download's, are bare-'\r'-terminated and glue whatever
+// follows onto their log line. The closing line is
+// deterministic (the in-flight lines are not), so tests pin it; the retry
+// pass prints its own closing line for its own round. Returns one
 // result per spec, in spec order. Never dies on download failures — every
 // failure lands in the result's `errors` (a die() would mean an internal or
 // allocation-level error only). All packages are held in RAM, exactly like

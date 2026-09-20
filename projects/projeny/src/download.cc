@@ -33,7 +33,9 @@
 #include "blake3/blake3.h"
 #include <curl/curl.h>
 
+#include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -86,8 +88,8 @@ struct DownloadProgress {
 void print_progress_line(curl_off_t now, curl_off_t total)
 {
     // Serialized so a try_download running inside a parallel worker (the
-    // batch downloader never enables progress callbacks) can never
-    // interleave a partial line with another thread's output.
+    // multi-mode fallback download) can never interleave a partial line
+    // with another thread's output.
     std::lock_guard<std::mutex> lk(g_output_mutex);
     if (total > 0)
         fprintf(stderr, "projeny: download progress: %lld/%lld bytes (%d%%)\r",
@@ -135,6 +137,49 @@ int download_progress_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     return 0;
 }
 
+// Whole-percent (0..100) of a batch transfer whose total size is known.
+// Clamped: only a server lying about its Content-Length can push the raw
+// ratio past 100, and a clamped entry keeps every progress line honest.
+int batch_whole_percent(curl_off_t now, curl_off_t total)
+{
+    int pct = (int)((100 * now) / total);
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100)
+        pct = 100;
+    return pct;
+}
+
+// One combined batch progress line, printed exactly like try_download's
+// single-transfer lines (stderr, the "projeny: download progress: " prefix,
+// bare '\r' termination — no ANSI escapes, no backspaces, no padding, no
+// isatty checks — so a terminal redraws the line in place while a log keeps
+// every line) and serialized by g_output_mutex like every other output.
+// `entries` holds one single token per transfer: the transfer's
+// whole-percent ("N%"), or "?" when its total size is unknown. "?" (rather
+// than a byte count) keeps every entry one greppable token, so the line
+// stays grep-friendly and correlates 1:1 with the "downloading '<name>'
+// from '<url>'" announcements in print order. The round's closing line is
+// printed with closing=true: it ends the progress sequence with a newline
+// after the '\r', so a terminal keeps the final state visible on its own
+// line instead of letting the hash-phase reports overwrite it, and a log's
+// line structure stays intact (the next "downloaded"/"failed to
+// obtain"/"retrying" line starts at column 0).
+void print_batch_progress_line(const std::vector<std::string>& entries,
+                               bool closing)
+{
+    std::string line = "projeny: download progress:";
+    for (const std::string& e : entries) {
+        line += ' ';
+        line += e;
+    }
+    std::lock_guard<std::mutex> lk(g_output_mutex);
+    if (closing)
+        fprintf(stderr, "%s\r\n", line.c_str());
+    else
+        fprintf(stderr, "%s\r", line.c_str());
+}
+
 // One-time global setup shared by try_download and download_batch. The
 // function-local static's once-guard runs the init exactly once per process;
 // both call sites run it on the calling thread before any other libcurl call
@@ -152,8 +197,10 @@ bool ensure_curl_global()
 // as an error, no signals, and the same hung-transfer timeouts. Deliberately
 // does NOT set CURLOPT_ERRORBUFFER (each caller owns its error-buffer
 // storage and reads it after the transfer) nor any progress wiring
-// (try_download enables its progress callback itself; batch mode sets
-// NOPROGRESS=1 — no '\r' spam from concurrent transfers).
+// (try_download enables its own progress callback after this call; the
+// batch scheduler wires its record-only xferinfo callback after it — the
+// combined batch progress line is rendered by the scheduler loop, not by
+// the callbacks).
 void configure_easy(CURL* c, const std::string& url, std::string* data)
 {
     curl_easy_setopt(c, CURLOPT_URL, url.c_str());
@@ -173,8 +220,8 @@ void configure_easy(CURL* c, const std::string& url, std::string* data)
 
 // Internal per-package state for one download_batch run. One instance per
 // spec, constructed up front in spec order and never resized afterwards, so
-// an in-flight easy handle can safely hold pointers into buffer and
-// curl_err for the whole transfer pass.
+// an in-flight easy handle can safely hold pointers into buffer, curl_err,
+// and the xfer fields for the whole transfer pass.
 struct BatchWork {
     const BatchPackageSpec* spec = nullptr;
     CURL* handle = nullptr;          // non-null while the package is in flight
@@ -185,7 +232,34 @@ struct BatchWork {
     bool transferred = false;        // buffer holds an unverified transfer
     bool verified = false;           // hash matched; buffer/url are final
     std::string hash;                // blake3 hex of buffer (once verified)
+    // Latest counts the xferinfo callback reported for the in-flight (or
+    // last) attempt: written during curl_multi_perform on the scheduler's
+    // thread and read by that same thread's combined progress-line render.
+    // xfer_total <= 0 means the total size is unknown (no Content-Length);
+    // it is mirrored, never latched, so a redirect hop's Content-Length
+    // cannot survive into a target that sends none.
+    curl_off_t xfer_now = 0;
+    curl_off_t xfer_total = -1;
 };
+
+// The batch scheduler's xferinfo callback (CURLOPT_XFERINFOFUNCTION, with
+// CURLOPT_NOPROGRESS lifted per handle). Unlike try_download's callback it
+// prints nothing: one combined line for the whole batch is rendered by the
+// scheduler loop instead, so N concurrent transfers share one line rather
+// than spamming N '\r' lines each. It only records the latest counts into
+// the owning package's BatchWork, and it always runs on the scheduler's
+// thread (libcurl fires it inside curl_multi_perform, which only the
+// scheduler calls), so no locking is needed here.
+int batch_xferinfo_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
+                      curl_off_t ultotal, curl_off_t ulnow)
+{
+    (void)ultotal; (void)ulnow;
+    BatchWork* w = static_cast<BatchWork*>(clientp);
+    if (dlnow >= 0)
+        w->xfer_now = dlnow;
+    w->xfer_total = dltotal > 0 ? dltotal : -1;
+    return 0;
+}
 
 // One phase-1 scheduler run over work: fills the curl_jobs budget with at
 // most one easy handle per package (packages with transferred-but-unverified
@@ -202,6 +276,30 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
         die("curl_multi_init failed");
     size_t in_flight = 0;
     std::unordered_map<CURL*, size_t> handle_owner;
+
+    // Combined progress-line bookkeeping, all touched on this (calling)
+    // thread: the xferinfo callbacks write the per-package counts (fired
+    // inside curl_multi_perform below, still on this thread) and the loop
+    // renders from them under g_output_mutex. announce_seq stamps each
+    // attempt's "downloading" announcement; cur_seq[i] holds the stamp of
+    // the announcement that started package i's current (or last) attempt,
+    // so in-flight entries render in the order their "downloading" lines
+    // printed. announce_order lists each package the first time a pass
+    // announces it, so the closing line can list every announced package in
+    // announcement order. rendered_pct/rendered_bytes hold the last
+    // rendered state per package (the re-render throttle's baseline);
+    // start_transfer resets them per attempt, alongside the transfer state
+    // itself, because every attempt starts from zero bytes and must never
+    // be gated by what a previous attempt last rendered. last_render_ns is
+    // the steady-clock time (ns) of the last render (0 = never, so the
+    // first due render is not delayed).
+    unsigned long announce_seq = 0;
+    std::vector<unsigned long> cur_seq(work.size(), 0);
+    std::vector<bool> announced_once(work.size(), false);
+    std::vector<size_t> announce_order;
+    std::vector<int> rendered_pct(work.size(), -1);
+    std::vector<curl_off_t> rendered_bytes(work.size(), 0);
+    long long last_render_ns = 0;
 
     // Internal-error escape: detach and free everything still in flight so
     // the die() below (which throws, not exits) doesn't leak handles.
@@ -223,6 +321,21 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
         w.attempt_url = url;
         w.buffer.clear(); // a fresh attempt never appends to old bytes
         w.curl_err[0] = 0;
+        w.xfer_now = 0;
+        w.xfer_total = -1;
+        // The re-render baselines reset with the transfer state: a new
+        // attempt starts from zero bytes, so the previous attempt's
+        // last-rendered percent (or byte count) must not gate this one's
+        // renders — otherwise the combined progress line would keep the
+        // dead attempt's stale, higher-than-actual percentage on display
+        // until the new attempt climbed past it.
+        rendered_pct[i] = -1;
+        rendered_bytes[i] = 0;
+        cur_seq[i] = announce_seq++;
+        if (!announced_once[i]) {
+            announced_once[i] = true;
+            announce_order.push_back(i);
+        }
         note("downloading '" + w.spec->name + "' from '" + url + "'");
         CURL* c = curl_easy_init();
         if (!c) {
@@ -231,7 +344,13 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
         }
         configure_easy(c, url, &w.buffer);
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, w.curl_err);
-        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 1L);
+        // Lift NOPROGRESS and record the transfer's counts into w: the
+        // combined progress line for the whole batch is rendered by the
+        // scheduler loop below (one throttled line, never one line per
+        // transfer).
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, batch_xferinfo_cb);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, &w);
         CURLMcode mrc = curl_multi_add_handle(multi, c);
         if (mrc != CURLM_OK) {
             curl_easy_cleanup(c);
@@ -318,6 +437,57 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
                 r.errors.push_back(line);
             }
         }
+        // Combined progress line: at most one per scheduler loop iteration,
+        // and only when BOTH re-render gates pass — at least 200ms since
+        // the last render, and something visible changed (some in-flight
+        // transfer's whole-percent grew, or >= 64 KiB arrived for an
+        // unknown-total transfer). The entries cover the in-flight
+        // transfers only, in the order their "downloading" lines printed
+        // (cur_seq); the closing line after the loop reports the round's
+        // final state deterministically.
+        if (in_flight > 0) {
+            long long now_ns =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+            bool changed = false;
+            for (const auto& kv : handle_owner) {
+                const BatchWork& w = work[kv.second];
+                if (w.xfer_total > 0) {
+                    if (batch_whole_percent(w.xfer_now, w.xfer_total) >
+                        rendered_pct[kv.second])
+                        changed = true;
+                } else if (w.xfer_now - rendered_bytes[kv.second] >= 65536) {
+                    changed = true;
+                }
+            }
+            if (changed && now_ns - last_render_ns >= 200000000LL) {
+                std::vector<size_t> order;
+                order.reserve(handle_owner.size());
+                for (const auto& kv : handle_owner)
+                    order.push_back(kv.second);
+                std::sort(order.begin(), order.end(),
+                          [&](size_t a, size_t b) {
+                              return cur_seq[a] < cur_seq[b];
+                          });
+                std::vector<std::string> entries;
+                entries.reserve(order.size());
+                for (size_t i : order) {
+                    const BatchWork& w = work[i];
+                    if (w.xfer_total > 0) {
+                        int pct =
+                            batch_whole_percent(w.xfer_now, w.xfer_total);
+                        rendered_pct[i] = pct;
+                        entries.push_back(std::to_string(pct) + "%");
+                    } else {
+                        rendered_bytes[i] = w.xfer_now;
+                        entries.push_back("?");
+                    }
+                }
+                print_batch_progress_line(entries, /*closing=*/false);
+                last_render_ns = now_ns;
+            }
+        }
         if (still_running > 0) {
             // Sleep until something socket-ish happens (or 200ms, so a
             // wedged transfer still cycles the loop); file:// transfers
@@ -329,6 +499,24 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
                     curl_multi_strerror(mrc));
             }
         }
+    }
+
+    // The round's closing progress line: exactly one per pass, listing
+    // EVERY package this pass announced (first-announcement order) with
+    // its final state — "100%" for a package holding a completed transfer,
+    // "?" for one that never finished one (its attempts failed before any
+    // bytes arrived, or mid-transfer). Unlike the throttled in-flight
+    // lines this is deterministic, so tests can pin the entry count and
+    // values; a hash mismatch does not change the entry (the transfer
+    // completed — the mismatch is the hash pass's report). The retry pass
+    // runs this function again and prints its own closing line for its
+    // own round. Silent only when the pass announced nothing at all.
+    if (!announce_order.empty()) {
+        std::vector<std::string> entries;
+        entries.reserve(announce_order.size());
+        for (size_t i : announce_order)
+            entries.push_back(work[i].transferred ? "100%" : "?");
+        print_batch_progress_line(entries, /*closing=*/true);
     }
     curl_multi_cleanup(multi);
 }

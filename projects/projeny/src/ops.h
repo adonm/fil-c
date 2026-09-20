@@ -74,6 +74,19 @@ int cmd_extract_multi(const std::vector<std::pair<std::string, std::string>>& pa
 // most `curl_jobs` transfers in flight, blake3 hash checks on at most
 // `jobs` threads. Files are named after the URL's basename.
 int cmd_download(const std::vector<std::string>& args, int jobs, int curl_jobs);
+
+// Erase every project's setup state (always the parallel machinery, even
+// for one argument): the checkout (pdir/<Name>, removed recursively —
+// uncommitted changes included), the dotted .<f>.projeny.status status
+// file plus its legacy undotted form, and the <f>.projeny.setup-journal
+// crash-recovery file (silently). With `erase_snapshots`, the exact
+// .<archive>.snapshot the next setup would use goes too (never a
+// similarly named snapshot, never the checked-in tarball). A missing
+// thing warns and counts as success; a deletion that fails prints an
+// error, fails its project, and the remaining deletions still run. At
+// most `jobs` threads.
+int cmd_erase_setup_multi(const std::vector<std::string>& projeny_args,
+                          int jobs, bool erase_snapshots);
 int cmd_freeze_mtime(const std::string& projeny_arg,
                      const std::vector<std::string>& files);
 int cmd_unfreeze_mtime(const std::string& projeny_arg,

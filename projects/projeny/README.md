@@ -53,6 +53,7 @@ projeny patch <dir> <patch-file>            apply a patch file to a tree
 projeny package <f.projeny|dir> <out>       setup, then tar the tracked files; pairs run in parallel
 projeny extract <f.projeny|dir> <dest>      setup, then copy tracked files; pairs run in parallel
 projeny download <url> <hash> [...]         download URL/hash pairs into the cwd
+projeny erase-setup <f.projeny|dir> [...]   delete the checkout + status file (DESTRUCTIVE); parallel
 projeny freeze-mtime <f.projeny|dir> <file>...
 projeny unfreeze-mtime <f.projeny|dir> <file>...
 projeny list-frozen-mtimes <f.projeny|dir>
@@ -63,9 +64,13 @@ projeny help [command]                      show help (per-command with a name)
 
 `setup`, `package`, and `extract` also accept several projects at once and
 run them in parallel (`package`/`extract` take (project,
-output/destination) pairs), and `projeny download <url> <hash>...` fetches
-URL/hash pairs into the current directory. All three forms are controlled
-with -j/--jobs and -c/--curl-jobs; see
+output/destination) pairs), `projeny download <url> <hash>...` fetches
+URL/hash pairs into the current directory, and `projeny erase-setup`
+erases several projects' setup state at once (see
+[Erasing a setup](#erasing-a-setup)). `setup`/`package`/`extract`/`download`
+are controlled with -j/--jobs and -c/--curl-jobs; `erase-setup` takes
+-j/--jobs and the --erase-snapshots flag (it has no download phase, so
+-c/--curl-jobs is an unknown option there); see
 [Parallel setup, package, extract, and download](#parallel-setup-package-extract-and-download).
 
 Paths into the work tree may be CWD-relative, absolute, or workdir-relative
@@ -548,10 +553,22 @@ was listed with needs no download at all. Each attempt is announced
 (`projeny: downloading '<archive>' from '<url>'`), a verified one
 reports `downloaded '<archive>' (<N> bytes); blake3 hash verified`, and
 a failing batch announces `retrying <k> failed download(s): <names>`
-before the retry pass. Batch downloads print no progress lines — the
-single-project download keeps them (see
-[`.projeny` format](#projeny-format)); interleaved transfers would only
-spam them.
+before the retry pass. The whole batch shares ONE combined progress line
+(`projeny: download progress: <e1> <e2> ...`, redrawn in place like the
+single-project line): one single-token entry per in-flight transfer, in
+the order those transfers were announced — the transfer's whole-percent
+(`N%`), or `?` while its total size is unknown (no Content-Length).
+Renders are throttled: at most one per scheduler iteration, only after
+at least 200ms, and only when something visibly changed (a transfer's
+whole-percent grew, or 64 KiB arrived for an unknown total). Each
+download round closes with one deterministic final progress line listing
+every package it announced — `100%` per transferred package, `?` for one
+that never finished one — on its own line. The per-project phase of a
+parallel command stays silent about snapshots: a `using existing
+snapshot` note belongs to single-project runs only, since in parallel
+mode the batch phase has already said what it downloaded (the
+single-project download keeps its own progress form, see
+[`.projeny` format](#projeny-format)).
 
 `projeny download <url> <hash> [<url> <hash>...]` runs any number of
 URL/hash pairs through the same machinery and writes each verified
@@ -565,6 +582,60 @@ reports `wrote <name> (<N> bytes)`. Pairs sharing an archive basename
 deduplicate exactly like the setup batch above (exact duplicate URL/hash
 pairs collapse silently), and any failure — after every other package
 finished — exits nonzero.
+
+## Erasing a setup
+
+`projeny erase-setup <f.projeny|dir> [...]` deletes what a `setup` created
+for each named project, in parallel (at most `-j/--jobs` threads, default
+the CPU count; options may appear anywhere among the arguments). This is
+DESTRUCTIVE and cannot be undone — the checkout is discarded whole,
+uncommitted changes included:
+
+- the checkout directory — the workdir named by the `Name:` header, e.g.
+  `lua/` for `lua.projeny` — removed recursively, exactly like
+  `rm -rf lua/` (note the project argument's stem is irrelevant: a
+  `weird.projeny` whose header says `Name: realname` erases `realname/`),
+- the status file `.<f>.projeny.status`, plus the legacy undotted
+  `<f>.projeny.status` when it exists (both names, so nothing survives
+  under either form),
+- the crash-recovery setup journal `<f>.projeny.setup-journal`, deleted
+  silently (it is not worth a warning when absent, and leaving it would
+  make the next `setup` run crash recovery against a checkout that no
+  longer exists).
+
+The `.projeny` file itself, the checked-in `Archive:` tarball, and
+everything else next to them are left alone. With `--erase-snapshots`, the
+`.<archive>.snapshot` file the next setup would pick up is deleted too —
+for a URL:-based project the snapshot named after the first URL's
+basename, for a classic project the snapshot of the `Archive:` tarball,
+plus the legacy undotted `<Archive>.snapshot` form (setup would otherwise
+migrate it back into use). ONLY that exact snapshot goes: a similarly
+named snapshot for a different version (the `.<old-archive>.snapshot` a
+rebase left behind, say) survives, and the checked-in tarball is never
+touched. The next `setup` then re-downloads (URL: projects) or unpacks
+from the checked-in tarball (Archive: projects).
+
+Missing things are not errors: a checkout that is already gone or a status
+file that does not exist only prints a warning (`'<path>' did not exist;
+nothing to erase`) and counts as success, so erasing twice is harmless.
+Anything that cannot be deleted prints an error naming the path (with the
+errno detail) and fails that project — but erase-setup still tries to
+finish the rest of that project's deletions and the other projects': a
+failed run ends with the usual one-line summary
+(`projeny: 1 of 2 erase-setup(s) failed: f.projeny`) and exit status 1
+after everything else finished. Each successful project reports one line
+naming what it erased (`erased setup state for 'lua' (checkout 'lua',
+status '.lua.projeny.status'[, snapshot '.lua-5.4.7.tar.bz2.snapshot'])`);
+a project with nothing left reports `nothing to erase for '<Name>'`.
+
+The `.projeny` file must be readable and parseable — it names what would
+be deleted — so a missing, garbage, or git-conflicted file fails its own
+project without anything being erased (the other projects still erase).
+Naming one project twice collapses into a single erase with a warning
+(`'a.projeny' is listed more than once; erasing it only once`), keyed on
+the resolved `.projeny` path like every parallel command. There is no
+`-c/--curl-jobs` for erase-setup: it never downloads anything, so that
+spelling is rejected as an unknown option.
 
 ## File naming and migration
 

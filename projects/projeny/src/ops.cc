@@ -440,9 +440,16 @@ bool download_url_snapshot_sequential(const std::string& snap,
 //
 // Feedback, all on stderr: try_download announces each attempt and reports
 // '\r'-terminated progress itself; here a verified download reports the
-// snapshot it wrote, and — only when `announce_skip` is true — an already-
-// matching snapshot reports that the download is skipped (deduplicated once
-// per snapshot per thread by g_skip_announced_for). announce_skip is false
+// snapshot it wrote, and — only when `announce_skip` is true AND this is a
+// single-project run (g_multi_plan null) — an already-matching snapshot
+// reports that the download is skipped (deduplicated once per snapshot per
+// thread by g_skip_announced_for). In multi mode the note is suppressed:
+// the batch download phase already reported every package it fetched
+// ("downloading ... / downloaded ... (N bytes); blake3 hash verified") and
+// silently verified the pre-existing ones, so a "using existing snapshot"
+// note in the per-project phase would only echo the batch's own lines —
+// the snapshot exists BECAUSE the batch just wrote it — and read like an
+// error. announce_skip is false
 // on the read-only reconstruction paths (resolve_status_archive, the
 // write_status bookkeeping re-assertion, status's live-diff section): those
 // must stay completely silent on a healthy checkout — `projeny diff` and
@@ -457,7 +464,10 @@ bool download_url_snapshot_sequential(const std::string& snap,
 // from a URL another contributing file listed — loudly warned during
 // planning), dies cleanly when the batch failed, and only a package the
 // plan cannot know about (a conflicted, therefore unparseable, .projeny
-// file) falls back to a serialized download here.
+// file) falls back to a serialized download here. Every snapshot in multi
+// mode is silent about the skip — including one whose bytes a fallback
+// download just wrote — while the "does not match any URL: hash;
+// re-downloading" warning prints in every mode.
 std::string ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
                                 const std::string& what, bool announce_skip);
 
@@ -479,7 +489,14 @@ bool try_ensure_url_snapshot(const std::string& pdir, const ProjenyFile& pf,
         snapshot_readable = true;
         for (const ProjenyUrl& u : pf.urls) {
             if (have == u.hash) {
-                if (announce_skip && g_skip_announced_for != snap) {
+                // Single-project runs announce the skip (once per snapshot
+                // per thread). Multi mode stays silent: the batch download
+                // phase already reported every download it made and
+                // silently verified the pre-existing snapshots, so this
+                // note would only repeat the batch's own report — and right
+                // after it, it reads like an error.
+                if (announce_skip && !g_multi_plan &&
+                    g_skip_announced_for != snap) {
                     note("using existing snapshot '" + snap +
                          "' (blake3 hash matches); skipping the download");
                     g_skip_announced_for = snap;
@@ -4381,6 +4398,330 @@ int cmd_extract_multi(
         requested, jobs, curl_jobs);
 }
 
+// ---- erase-setup ----
+//
+// Delete what a `setup` created, for any number of projects in parallel
+// (always through the parallel machinery — a new command has no legacy
+// single-project fast path to preserve, and there is no download phase, so
+// g_multi_plan stays untouched):
+//
+//   checkout dir   pdir/<Name>, removed recursively (rm -rf): uncommitted
+//                  changes are discarded with it — that is the point
+//   status file    .<f>.projeny.status (exactly resolve_ctx's canonical
+//                  dotted form) plus the legacy undotted <f>.projeny.status
+//                  when it exists — the same two-name pair the stale-state
+//                  handling covers, so nothing survives under either name
+//   setup journal  <f>.projeny.setup-journal, deleted silently: it is not
+//                  worth a warning when absent, and leaving it would make
+//                  the next setup run crash recovery against a checkout
+//                  that no longer exists
+//   snapshot       .<archive>.snapshot plus its legacy undotted form —
+//                  only with --erase-snapshots, and ONLY the exact
+//                  snapshot the next setup would pick up (the URL-derived
+//                  basename for a URL: project, the Archive: value for a
+//                  classic one): never a similarly named snapshot for a
+//                  different version, and never the checked-in archive
+//                  tarball itself, which is git-tracked
+//
+// A missing thing warns ("did not exist; nothing to erase") and counts as
+// success; a deletion that cannot be completed prints an error naming the
+// path, fails that project, and the remaining deletions still run (spec:
+// "try to finish the rest of the deletion"). A run with failures ends with
+// the standard one-line summary and exit 1, after every project finished.
+
+namespace {
+
+// Outcome of one erase-setup deletion.
+enum class EraseOutcome {
+    Missing, // nothing was there: warn (or stay silent) and succeed
+    Erased,  // removed
+    Failed   // could not be removed; *err names the path and the reason
+};
+
+// Delete one file-shaped path (a status file, snapshot, or setup journal)
+// with unlink(2). These paths are expected to be plain files, so a
+// directory sitting at one is NOT recursed into: the unlink fails (EISDIR,
+// even for root) and the failure is reported — silently rm -rf'ing a
+// directory someone put at a status-file path could destroy unrelated
+// files. A missing path is Missing, and so is one a parallel sibling
+// removed first (two projects sharing one snapshot): gone is gone.
+EraseOutcome erase_file_item(const std::string& path, std::string* err)
+{
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT)
+            return EraseOutcome::Missing;
+        *err = "cannot inspect '" + path + "': " + strerror(errno);
+        return EraseOutcome::Failed;
+    }
+    if (unlink(path.c_str()) != 0) {
+        if (errno == ENOENT)
+            return EraseOutcome::Missing;
+        *err = std::string("cannot remove '") + path + "': " +
+               strerror(errno);
+        return EraseOutcome::Failed;
+    }
+    return EraseOutcome::Erased;
+}
+
+// Delete one path the rm -rf way (the checkout: a directory tree, or
+// whatever else sits at its Name). remove_recursive reports the first
+// failing syscall's errno into *err while removing the rest.
+EraseOutcome erase_tree_item(const std::string& path, std::string* err)
+{
+    struct stat st;
+    if (lstat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT)
+            return EraseOutcome::Missing;
+        *err = "cannot inspect '" + path + "': " + strerror(errno);
+        return EraseOutcome::Failed;
+    }
+    std::string derr;
+    if (!remove_recursive(path, &derr)) {
+        *err = "cannot remove '" + path + "'" +
+               (derr.empty() ? "" : ": " + derr);
+        return EraseOutcome::Failed;
+    }
+    return EraseOutcome::Erased;
+}
+
+// Print one error line in die()'s exact format ("projeny: [<label>] error:
+// <msg>") WITHOUT throwing: erase-setup reports each failed deletion and
+// keeps deleting, and the failed project is only counted once its task is
+// done. output_label() is this worker's project; the main thread (never a
+// caller today) would print unlabeled, like die() there.
+void print_erase_error(const std::string& msg)
+{
+    std::string prefix =
+        output_label().empty() ? "" : "[" + output_label() + "] ";
+    std::lock_guard<std::mutex> lk(g_output_mutex);
+    fprintf(stderr, "projeny: %serror: %s\n", prefix.c_str(), msg.c_str());
+}
+
+// One resolved erase-setup request: the argument as given plus its
+// absolutized .projeny path. Resolution happens once, on the main thread,
+// so no worker re-resolves a spelling after another worker's deletion may
+// have removed the directory the process's CWD sits in.
+struct EraseJob {
+    std::string arg;
+    std::string abs;
+};
+
+// What one project erases, computed on the main thread from the parsed
+// .projeny file. Empty path fields name nothing to do; a non-empty `error`
+// fails the project before anything is deleted (the per-project task
+// reports it under the project's label).
+struct ErasePlan {
+    std::string name;            // Name: header, for the notes
+    std::string workdir;         // pdir/<Name>
+    std::string status;          // .<f>.projeny.status (the canonical form)
+    std::string legacy_status;   // <f>.projeny.status (deleted when present)
+    std::string journal;         // <f>.projeny.setup-journal (silent)
+    std::string snapshot;        // .<archive>.snapshot (--erase-snapshots)
+    std::string legacy_snapshot; // <archive>.snapshot (when present)
+    std::string error;           // non-empty: fail the project with this
+};
+
+// Erase one project's setup state. Returns 0, or 1 when any deletion
+// failed — every remaining deletion still ran.
+int erase_one_project(const ErasePlan& p)
+{
+    std::vector<std::string> erased; // "role 'path'" entries for the note
+    bool failed = false;
+
+    // The checkout, rm -rf.
+    auto erase_tree_at = [&](const std::string& path) {
+        std::string err;
+        EraseOutcome o = erase_tree_item(path, &err);
+        if (o == EraseOutcome::Missing) {
+            warn("'" + rel_to_cwd(path) + "' did not exist; nothing to erase");
+        } else if (o == EraseOutcome::Failed) {
+            print_erase_error(err);
+            failed = true;
+        } else {
+            erased.push_back("checkout '" + rel_to_cwd(path) + "'");
+        }
+    };
+
+    // One file-shaped item. Missing paths warn (unless the item is deleted
+    // silently) and count as success; failures report and fail the project
+    // without stopping the remaining items.
+    auto erase_file_at = [&](const std::string& path, const char* role,
+                             bool warn_missing, bool in_note) {
+        std::string err;
+        EraseOutcome o = erase_file_item(path, &err);
+        if (o == EraseOutcome::Missing) {
+            if (warn_missing)
+                warn("'" + rel_to_cwd(path) +
+                     "' did not exist; nothing to erase");
+        } else if (o == EraseOutcome::Failed) {
+            print_erase_error(err);
+            failed = true;
+        } else if (in_note) {
+            erased.push_back(std::string(role) + " '" + rel_to_cwd(path) +
+                             "'");
+        }
+    };
+
+    erase_tree_at(p.workdir);
+
+    // The status file under both of its names: when both are gone, ONE
+    // warning names the canonical dotted form (the same shape the stale
+    // pair's warnings take).
+    if (path_exists(p.status) || path_exists(p.legacy_status)) {
+        erase_file_at(p.status, "status", false, true);
+        erase_file_at(p.legacy_status, "status", false, true);
+    } else {
+        erase_file_at(p.status, "status", true, true);
+    }
+
+    // The crash-recovery setup journal: always attempted, never warned
+    // about when absent, never in the note.
+    erase_file_at(p.journal, "", false, false);
+
+    // With --erase-snapshots: the exact snapshot the next setup would use,
+    // under both of its names (migrate_snapshot would otherwise rename the
+    // legacy form back into use). Same one-warning rule as the status.
+    if (!p.snapshot.empty()) {
+        if (path_exists(p.snapshot) || path_exists(p.legacy_snapshot)) {
+            erase_file_at(p.snapshot, "snapshot", false, true);
+            erase_file_at(p.legacy_snapshot, "snapshot", false, true);
+        } else {
+            erase_file_at(p.snapshot, "snapshot", true, true);
+        }
+    }
+
+    if (failed)
+        return 1;
+    if (erased.empty()) {
+        note("nothing to erase for '" + p.name + "'");
+        return 0;
+    }
+    std::string list;
+    for (size_t k = 0; k < erased.size(); ++k) {
+        if (k > 0)
+            list += ", ";
+        list += erased[k];
+    }
+    note("erased setup state for '" + p.name + "' (" + list + ")");
+    return 0;
+}
+
+} // namespace
+
+int cmd_erase_setup_multi(const std::vector<std::string>& projeny_args,
+                          int jobs, bool erase_snapshots)
+{
+    // 1. Resolve + dedupe, exactly like the other parallel commands: two
+    // spellings of one .projeny file must never erase twice (and never
+    // concurrently). The FIRST occurrence wins.
+    std::vector<EraseJob> projects;
+    std::set<std::string> seen;
+    projects.reserve(projeny_args.size());
+    for (const std::string& a : projeny_args) {
+        std::string abs = absolutize(resolve_projeny_path(a, "erase-setup"));
+        if (!seen.insert(abs).second) {
+            warn("'" + a + "' is listed more than once; erasing it only "
+                       "once");
+            continue;
+        }
+        projects.push_back({a, abs});
+    }
+
+    // 2. Parse every unique .projeny on the main thread: the Name: header
+    // names the checkout to delete and, with --erase-snapshots, the
+    // Archive:/URL archive names the snapshot. A file that cannot be read
+    // or parsed fails its own project — the per-project task reports the
+    // canonical error under the project's label — and the other projects
+    // still erase.
+    std::vector<ErasePlan> plans(projects.size());
+    std::vector<std::string> labels(projects.size());
+    for (size_t i = 0; i < projects.size(); ++i) {
+        ErasePlan& p = plans[i];
+        labels[i] = basename_of(projects[i].abs);
+        std::string raw;
+        if (!try_read_file_bytes(projects[i].abs, &raw)) {
+            p.error = "cannot read '" + projects[i].abs +
+                      "' (missing?); refusing to erase anything for it (the "
+                      ".projeny file names what would be deleted)";
+            continue;
+        }
+        ProjenyFile pf;
+        try {
+            pf = ProjenyFile::parse_bytes(raw, "'" + projects[i].abs + "'");
+        } catch (const ProjenyFatalError& e) {
+            // die() already printed the canonical report (unlabeled, like
+            // the other parallel commands' planning phase); the per-project
+            // task reproduces it under the label.
+            p.error = e.message();
+            continue;
+        }
+        // Belt-and-suspenders (parse_bytes already rejects every one of
+        // these with "bad Name: header"): never let a Name: that does not
+        // name a single directory inside pdir turn into a deletion.
+        if (pf.name.empty() || pf.name == "." || pf.name == ".." ||
+            pf.name.find('/') != std::string::npos) {
+            p.error = "cannot erase '" + projects[i].abs +
+                      "': its Name: header does not name a checkout "
+                      "directory; refusing to delete anything";
+            continue;
+        }
+        std::string pdir = dirname_of(projects[i].abs);
+        p.name = pf.name;
+        p.workdir = join_path(pdir, pf.name);
+        p.status = dotname(projects[i].abs) + ".status";
+        p.legacy_status = projects[i].abs + ".status";
+        p.journal = projects[i].abs + ".setup-journal";
+        if (erase_snapshots) {
+            // The exact snapshot the next setup would use: for a URL
+            // project url_snapshot_path's dotted form, for a classic one
+            // snapshot_path_for(pdir/<archive>) — the same formula, since
+            // url_snapshot_path is snapshot_path_for(join_path(pdir,
+            // pf.archive)). The checked-in archive tarball itself
+            // (pdir/<archive>) is never touched, and neither is any
+            // similarly named snapshot for a different version.
+            std::string archive = join_path(pdir, pf.archive);
+            p.snapshot = snapshot_path_for(archive);
+            p.legacy_snapshot = legacy_snapshot_path_for(archive);
+        }
+    }
+
+    // 3. Per-project phase: every project on its own thread (at most
+    // `jobs` at a time), labeled so its warnings, errors, and notes name
+    // the project.
+    std::vector<int> rcs(projects.size(), 0);
+    run_parallel(jobs, projects.size(), [&](size_t i) {
+        set_output_label(labels[i]);
+        try {
+            const ErasePlan& p = plans[i];
+            if (!p.error.empty())
+                die(p.error);
+            rcs[i] = erase_one_project(p);
+        } catch (const ProjenyFatalError&) {
+            // die() already printed the labeled report; do not repeat it.
+            rcs[i] = 1;
+        }
+        set_output_label("");
+    });
+
+    // 4. Exit code: nonzero when any project failed, with one summary line
+    // after every worker joined. Success prints nothing extra.
+    size_t failed = 0;
+    std::string failed_labels;
+    for (size_t i = 0; i < projects.size(); ++i) {
+        if (rcs[i] == 0)
+            continue;
+        ++failed;
+        if (!failed_labels.empty())
+            failed_labels += ", ";
+        failed_labels += labels[i];
+    }
+    if (failed > 0)
+        fprintf(stderr, "projeny: %zu of %zu erase-setup(s) failed: %s\n",
+                failed, projects.size(), failed_labels.c_str());
+    return failed > 0 ? 1 : 0;
+}
+
 // Download URL HASH pairs into the current directory, as one parallel batch
 // (the same machinery the multi-project commands use in their planning
 // phase). Files are named after the URL's basename; a file already present
@@ -4825,6 +5166,7 @@ int cmd_help(const std::string& arg0)
            "  extract <f.projeny|dir> <dest> [...]\n"
            "                                   setup, then copy tracked files to a dir\n"
            "  download <url> <hash> [...]      download URL HASH pairs into the cwd\n"
+           "  erase-setup <f.projeny|dir> [...]  delete a checkout and its status file\n"
            "  freeze-mtime <f.projeny|dir> <file>...\n"
            "                                   pin a file's mtime to the tarball's\n"
            "  unfreeze-mtime <f.projeny|dir> <file>...\n"
@@ -4838,8 +5180,9 @@ int cmd_help(const std::string& arg0)
            "\n"
            "  options for setup/package/extract/download: -j[--jobs] N, "
            "-c[--curl-jobs] N\n"
-           "  setup/package/extract take several projects (parallel); download\n"
-           "  takes <url> <hash> pairs.\n"
+           "  options for erase-setup: -j[--jobs] N, --erase-snapshots\n"
+           "  setup/package/extract/erase-setup take several projects (parallel);\n"
+           "  download takes <url> <hash> pairs.\n"
            "\n"
            "Project arguments (<f.projeny|dir>) may be the .projeny file, the\n"
            "workdir or another directory holding exactly one .projeny file, or\n"
@@ -5446,12 +5789,76 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                t);
         return 0;
     }
+    if (topic == "erase-setup") {
+        printf("%s erase-setup <f.projeny|dir> [...] [--erase-snapshots]\n"
+               "\n"
+               "Delete everything a `setup` created for the named projects:\n"
+               "the checkout directory (the workdir named by the Name:\n"
+               "header — removed recursively, like `rm -rf`, uncommitted\n"
+               "changes included), and the .<f>.projeny.status status file\n"
+               "(under both of its names: the dotted form and the legacy\n"
+               "undotted one). This is DESTRUCTIVE and cannot be undone:\n"
+               "any uncommitted changes in the checkout are discarded along\n"
+               "with it. The .projeny file itself, the checked-in Archive:\n"
+               "tarball, and everything else next to them are left alone.\n"
+               "\n"
+               "Each named project is erased independently, on at most\n"
+               "-j/--jobs threads (default the CPU count; -j0 and non-\n"
+               "numeric values are refused). A checkout that is already\n"
+               "gone, or a status file that does not exist, only prints a\n"
+               "warning ('<path>' did not exist; nothing to erase) — a\n"
+               "missing thing is never an error. Anything that cannot be\n"
+               "deleted prints an error naming the path and fails that\n"
+               "project, but erase-setup still tries to finish the rest of\n"
+               "that project's deletions and the other projects': a failed\n"
+               "run ends with one summary line (`projeny: 1 of 2\n"
+               "erase-setup(s) failed: f.projeny`) and exit status 1 after\n"
+               "everything else finished. Each successful project reports\n"
+               "one line naming what it erased (`erased setup state for\n"
+               "'<Name>' (checkout '<dir>', status '<statusfile>'[, snapshot\n"
+               "'<snap>'])`); a project with nothing left reports `nothing\n"
+               "to erase for '<Name>'`.\n"
+               "\n"
+               "The crash-recovery setup journal (<f>.projeny.setup-journal)\n"
+               "is deleted too, silently: it is not worth a warning when\n"
+               "absent, and leaving it behind would make the next `setup`\n"
+               "run crash recovery against a checkout that no longer\n"
+               "exists.\n"
+               "\n"
+               "With --erase-snapshots, the .<archive>.snapshot file setup\n"
+               "would have used is deleted as well — for a URL:-based\n"
+               "project the snapshot named after the first URL's basename,\n"
+               "for a classic project the snapshot of the Archive: tarball\n"
+               "(the legacy undotted <Archive>.snapshot form goes too, since\n"
+               "setup would migrate it back into use). ONLY that exact\n"
+               "snapshot is deleted: a similarly named snapshot for a\n"
+               "different version of the archive (the .<old-archive>.snapshot\n"
+               "a rebase left behind, say) survives, and the checked-in\n"
+               "tarball itself is never touched. The next setup then\n"
+               "re-downloads (URL: projects) or unpacks from the checked-in\n"
+               "tarball (Archive: projects).\n"
+               "\n"
+               "The .projeny file must be readable and parseable — it names\n"
+               "what would be deleted, so a missing, garbage, or\n"
+               "git-conflicted file fails its own project without anything\n"
+               "being erased (the other projects still erase). Naming one\n"
+               "project twice collapses into a single erase with a warning,\n"
+               "keyed on the resolved .projeny path.\n"
+               "\n"
+               "Like every project-taking command, the <f.projeny> argument\n"
+               "may also be the workdir or another directory holding exactly\n"
+               "one .projeny file, or a path whose '<arg>.projeny' sibling\n"
+               "exists (typically the checkout directory itself, or a bare\n"
+               "name like 'fake' for 'fake.projeny').\n",
+               t);
+        return 0;
+    }
     if (topic == "help") {
         printf("%s help [command]\n"
                "\n"
                "With no arguments, list all commands. With a command name\n"
                "(setup, commit, add, rm, mv, resolve, rebase, status, diff,\n"
-               "patch, package, extract, download, freeze-mtime,\n"
+               "patch, package, extract, download, erase-setup, freeze-mtime,\n"
                "unfreeze-mtime, list-frozen-mtimes, get-attributes, hash,\n"
                "help), print a detailed explanation of that command.\n",
                t);

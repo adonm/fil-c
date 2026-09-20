@@ -937,31 +937,53 @@ void TempDir::release()
     }
 }
 
-bool remove_recursive(const std::string& path)
+bool remove_recursive(const std::string& path, std::string* err)
 {
+    // Report the FIRST failure reason into *err (naming the path and the
+    // syscall's errno) while continuing to remove the remaining entries.
+    // Every failure point calls this immediately, so the errno it reads is
+    // still the failing syscall's.
+    auto fail = [&](const char* what) {
+        if (err != nullptr && err->empty())
+            *err = std::string(what) + " '" + path + "': " + strerror(errno);
+        return false;
+    };
     struct stat st;
-    if (lstat(path.c_str(), &st) != 0)
-        return errno == ENOENT;
+    if (lstat(path.c_str(), &st) != 0) {
+        if (errno == ENOENT)
+            return true;
+        return fail("cannot lstat");
+    }
     if (!S_ISDIR(st.st_mode)) {
-        if (unlink(path.c_str()) != 0)
-            return false;
+        if (unlink(path.c_str()) != 0) {
+            // A parallel sibling may have removed it first (two erase-setup
+            // workers sharing one snapshot, say): gone is gone.
+            if (errno == ENOENT)
+                return true;
+            return fail("cannot remove");
+        }
         return true;
     }
     DIR* d = opendir(path.c_str());
-    if (!d)
-        return false;
+    if (!d) {
+        if (errno == ENOENT)
+            return true;
+        return fail("cannot open directory");
+    }
     bool ok = true;
     struct dirent* e;
     while ((e = readdir(d)) != nullptr) {
         std::string n = e->d_name;
         if (n == "." || n == "..")
             continue;
-        if (!remove_recursive(join_path(path, n)))
+        if (!remove_recursive(join_path(path, n), err))
             ok = false;
     }
     closedir(d);
-    if (rmdir(path.c_str()) != 0)
+    if (rmdir(path.c_str()) != 0 && errno != ENOENT) {
         ok = false;
+        fail("cannot remove directory");
+    }
     return ok;
 }
 

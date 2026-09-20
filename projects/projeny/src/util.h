@@ -221,7 +221,13 @@ class TempDir {
     bool owned_ = false;
 };
 
-bool remove_recursive(const std::string& path); // true on success; missing -> true
+// Remove `path` recursively (rm -rf): files, symlinks, and directory trees.
+// True on success; a missing path is success. When `err` is non-null it
+// receives the FIRST failing syscall's strerror-style reason (naming the
+// path) while the removal of everything else continues — a caller that must
+// press on after a failed deletion (erase-setup) uses it to report what
+// went wrong without stopping.
+bool remove_recursive(const std::string& path, std::string* err = nullptr);
 void fsync_dir(const std::string& path); // persist dir entries, dies on failure
 void make_dirs(const std::string& path);        // mkdir -p, dies on failure
 std::vector<std::string> list_dir_names(const std::string& path); // sorted, no . / ..

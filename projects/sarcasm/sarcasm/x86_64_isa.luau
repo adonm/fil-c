@@ -90,6 +90,12 @@ local SHIFT_COUNT = { sal=true, shl=true, sar=true, shr=true, ror=true, rol=true
 -- imul are NOT lockable in hardware): add/adc/and/or/sbb/sub/xor.
 local LOCKABLE_ALU = { add=true, adc=true, ["and"]=true, ["or"]=true, sbb=true, sub=true, xor=true }
 
+-- Trap mnemonics: instructions that unconditionally trap (never fall through,
+-- never return). classify routes these to the terminal-trap branch — see the
+-- comment there. `ud2` (including `.byte 0x0f,0x0b`, which the byte decoder
+-- turns into the `ud2` mnemonic) is the one that matters in practice.
+local TRAP_MNEM = { ud2 = true, int3 = true, int = true, hlt = true }
+
 -- May this instruction carry a `lock` prefix? The prefix is only sound to pass
 -- through on instructions whose memory effects sarcasm models EXACTLY — a
 -- memory-destination read-modify-write in the hardware locked-instruction set:
@@ -558,9 +564,17 @@ local function isGpr(op) return op and op.kind == "reg" and op.rc == "gpr" end
 --     store to it (movb/movw) preserves the register's upper bits exactly like
 --     a narrow memory store preserves the neighboring bytes. (A 32-bit store
 --     to a slot zero-extends the colored register — a full def of the web,
---     like arm64's `str w` virtualization; a wider reload of that slot then
---     reads zeroes where memory would have preserved bytes — a pre-existing,
---     documented slot-virtualization gap, NOT expressible as register RMW.)
+--     like arm64's `str w` virtualization. For a web that HAS no wider
+--     identity — no 8-byte traffic at its granule — that stays the documented
+--     slot-virtualization gap: a wider reload of that slot then reads zeroes
+--     where memory would have preserved bytes, not expressible as register
+--     RMW. The frame pass routes narrow accesses that DO fall inside an
+--     8-byte granule to the containing web with an x86_slotPartial marker;
+--     the transform lowers those into explicit extract/read-modify-write
+--     sequences, and this classifier marks the routed STORE as a web RMW
+--     (use+def) so the lift unifies the web's reaching value with the
+--     re-written one — the emitted sequence reads the old value and the
+--     model must agree.)
 -- A partial write must be modeled as def+use+rmw of the web — modeling it as a
 -- pure def lets reaching-definitions kill the previous web, so DCE drops the
 -- instruction that produced the preserved bits while the emitted instruction
@@ -948,6 +962,15 @@ function x86.classify(insn)
 
 	local m = x86.baseMnemonic(insn.mnemonic)
 	local ops = insn.operands or {}
+	-- A trap mnemonic spelled with a MEMORY operand (`int (%rax)`) is not a real
+	-- encoding: trapHasMem routes it AWAY from classify's terminal-trap branch so
+	-- it keeps the unknown-mnemonic rejection it always got (see the trap branch).
+	local trapHasMem = false
+	if TRAP_MNEM[m] and m ~= "ud2" then
+		for _, o in ops do
+			if o.kind == "mem" then trapHasMem = true break end
+		end
+	end
 
 	-- Absolute-address (moffs) operands: a bare (non-$-prefixed) symbol or a bare
 	-- numeric literal operand is, in gas's dialects, an ABSOLUTE MEMORY operand,
@@ -1146,8 +1169,29 @@ function x86.classify(insn)
 		if ops[1] and (isGpr(ops[1]) or ops[1].kind == "mem") then control = "indcall"; useOperand(ops[1]) end
 	elseif m == "ret" then
 		control, fallsThrough = "return", false
-	elseif m == "nop" or m == "ud2" or m == "leave" then
+	elseif m == "nop" or m == "leave" then
 		-- no gpr effects we model (leave restores rsp/rbp; frame handled elsewhere)
+	elseif m == "ud2" or (TRAP_MNEM[m] and not trapHasMem) then
+		-- Trapping instructions NEVER fall through: `ud2` raises #UD unconditionally
+		-- (and `.byte 0x0f,0x0b` decodes to the `ud2` mnemonic, so both spellings get
+		-- these semantics), `int3`/`int $3` raise SIGTRAP, `hlt` is privileged, and
+		-- `int N` for N != 3 is rejected by fp.unsafeReject above — so the only `int`
+		-- that can reach an accepted body is `int $3`, whose SIGTRAP terminates (Fil-C
+		-- refuses to install SIGTRAP handlers or even ignore the signal, so nothing
+		-- can resume past the trap; the Linux `int 0x80` return path is unreachable
+		-- because `int N`, N != 3, never passes fp.unsafeReject). A control-flow path
+		-- through a trap therefore has NO successors, exactly like `ret`: a body may
+		-- end in `ud2` with no trailing `ret`, and validateBody/regalloc/lift/DCE all
+		-- take the no-fall-through edge from this fallsThrough=false. This mirrors
+		-- x86_64_frame's own precise CFG (successors()), which has treated the same
+		-- trap set as terminal all along. (`ud2` keeps control == "none": it takes no
+		-- modeled operands — exactly like the nop/leave branch above, whose operand
+		-- ignoring is preserved — and no gpr effects; only the fall-through edge
+		-- changes.) int/int3/hlt spellings with a MEMORY operand (`int (%rax)`) are
+		-- not real encodings and keep the unknown-mnemonic rejection they always got
+		-- (trapHasMem routes them to the fallback below), so this branch is a pure
+		-- fall-through relaxation with no new acceptances of malformed shapes.
+		control, fallsThrough = "none", false
 	elseif string.match(m, "^loop[bwlq]?$") then
 		-- LOOP/LOOPQ/LOOPL: a label-target CONDITIONAL branch whose counter is the
 		-- implicit rcx (ecx for the 0x67-address-size loopl spelling). Hardware
@@ -1692,6 +1736,21 @@ function x86.classify(insn)
 			and not (m == "setcc" and not ops[1].isSlot) then
 			table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
 		end
+		-- A CONTAINING-GRANULE narrow slot store (x86_slotPartial — the frame pass
+		-- routed this access into the 8-byte web at its granule base): the transform
+		-- lowers it into an explicit read-modify-write of the web, so the model must
+		-- treat the store as a web RMW (use+def of the same web) — otherwise the lift
+		-- would key the store's def onto a web disconnected from the reaching value
+		-- the emitted sequence reads, and the preserved bytes would be garbage. The
+		-- use operand is a FRESH table (the lift keys opTemp by operand identity — a
+		-- def and a use of one register must never share a table). Loads keep their
+		-- ordinary (use-only) model: the routed load's slot operand is a use already.
+		if m == "mov" and isGpr(ops[1]) and ops[1].isSlot
+			and insn.x86_slotPartial and insn.x86_slotPartial.write then
+			table.insert(uses, { kind = "reg", rc = "gpr", num = ops[1].num,
+				width = 64, name = ops[1].name, isSlot = true, implicit = true })
+			table.insert(rmw, ops[1].num)
+		end
 		for i = 2, #ops do
 			local o = ops[i]
 			if o and o.kind == "mem" then memRegs(o, uses)
@@ -1781,6 +1840,11 @@ x86.ALLOCATABLE = { "rax","rcx","rdx","rbx","rbp","rsi","rdi","r8","r9","r10","r
 x86.CALLEE_SAVED = { rbx=true, rbp=true, r12=true, r13=true, r14=true, r15=true }
 x86.CALLEE_SAVED_ORDER = { "rbx","rbp","r12","r13","r14","r15" }  -- push order (r15 pushed last)
 x86.CALLER_SAVED = { rax=true, rcx=true, rdx=true, rsi=true, rdi=true, r8=true, r9=true, r10=true }
+-- The SysV AMD64 INTEGER argument registers, by register number: a call (or a
+-- local-call clone entry) reads them as its arguments even though classify
+-- models no operand uses for a direct call. Keyed by num for the frame pass's
+-- register-number-based scans.
+x86.ARG_REGS = { [7]=true, [6]=true, [2]=true, [1]=true, [8]=true, [9]=true }
 x86.SCRATCH = "r11"       -- non-allocatable glue scratch
 x86.SCRATCH_NUM = 11
 -- caller-saved register numbers clobbered by a call (used to model call defs).

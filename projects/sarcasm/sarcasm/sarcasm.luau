@@ -1054,44 +1054,49 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 	-- one stack-alias register that aliases the stack at different offsets).
 	if target.arch == "x86_64" then
 		x86_64_frame.beginStackBufResolution()
+		-- The collection helper shared by the function-body scan and the local
+		-- subroutine scan below: parse a statement's `#! stack buffer (...)`
+		-- annotation and record it on the statement (the long forms are the
+		-- declarations the resolution consumes; a short form only needs the
+		-- parse so validateBody and the frame pass see a consistent statement).
+		local function collectStackBufAnno(st, decls)
+			if st.kind ~= "insn" or not st.annotation then return end
+			local sb = transform.parseStackBufAnno(st.annotation)
+			if sb then
+				st.stackBufAnno = sb
+				if not sb.short then
+					-- Only collect declarations whose statement has the basic
+					-- shape (a stack-relative memory operand or a string op);
+					-- anything else is validateBody's business (it runs before
+					-- the per-function frame analysis and rejects the shape
+					-- with its precise message).
+					local shaped = false
+					local m = string.lower(st.mnemonic)
+					if st.repPrefix ~= nil
+						or (#(st.operands or {}) == 0
+							and (string.match(m, "^movs[bwlqd]?$")
+								or string.match(m, "^stos[bwlqd]?$"))) then
+						-- A rep string op or a bare single-step string op.
+						shaped = true
+					else
+						-- The cheap gate only checks that the statement names
+						-- memory at all (mirroring validateBody); whether the
+						-- base is %rsp/%rbp, a live stack alias, or something
+						-- unresolvable is the frame pass's precise business.
+						for _, o in (st.operands or {}) do
+							if o.kind == "mem" and o.base and o.base.kind == "reg" then
+								shaped = true
+							end
+						end
+					end
+					if shaped then table.insert(decls, st) end
+				end
+			end
+		end
 		for _, fn in functions do
 			local decls = {}
 			for _, st in fn.body do
-				if st.kind == "insn" and st.annotation then
-					local sb = transform.parseStackBufAnno(st.annotation)
-					if sb then
-						st.stackBufAnno = sb
-						-- Only collect declarations whose statement has the basic
-						-- shape (a stack-relative memory operand or a string op);
-						-- anything else is validateBody's business (it runs before
-						-- the per-function frame analysis and rejects the shape
-						-- with its precise message).
-						local shaped = false
-						if sb.short then
-							shaped = true
-						else
-							local m = string.lower(st.mnemonic)
-							if st.repPrefix ~= nil
-								or (#(st.operands or {}) == 0
-									and (string.match(m, "^movs[bwlqd]?$")
-										or string.match(m, "^stos[bwlqd]?$"))) then
-								-- A rep string op or a bare single-step string op.
-								shaped = true
-							else
-								-- The cheap gate only checks that the statement names
-								-- memory at all (mirroring validateBody); whether the
-								-- base is %rsp/%rbp, a live stack alias, or something
-								-- unresolvable is the frame pass's precise business.
-								for _, o in (st.operands or {}) do
-									if o.kind == "mem" and o.base and o.base.kind == "reg" then
-										shaped = true
-									end
-								end
-							end
-						end
-						if shaped and not sb.short then table.insert(decls, st) end
-					end
-				end
+				collectStackBufAnno(st, decls)
 			end
 			if #decls > 0 then
 				-- Resolution needs each statement's depth/carrier marks: run the
@@ -1114,6 +1119,67 @@ function sarcasm.compile(stmts, fileDirective, debug, target)
 								.. tostring(hi) .. ") (the offsets must match): "
 								.. (st.raw or st.mnemonic))
 						end
+					end
+				end
+			end
+		end
+		-- LOCAL SUBROUTINE bodies: a long form inside a subroutine's own text
+		-- (which becomes a per-caller clone with its own `sub` frame) registers
+		-- the buffer's canonical range in the SUBROUTINE'S OWN frame coordinates
+		-- — caller-independent, so two callers' clones re-resolve it consistently
+		-- and a same-named declaration outside the subroutine at different
+		-- offsets still hits the canonical mismatch. The subroutine's statements
+		-- are only ever COMPILED as clones (their per-caller keying is the real
+		-- story), so a resolution failure here is best-effort: the clones' own
+		-- per-function scans re-derive everything they need, and a skipped
+		-- registration only loses the cross-function mismatch check for that id.
+		if locals then
+			local names = {}
+			for nm in pairs(locals.subs) do table.insert(names, nm) end
+			table.sort(names)
+			for _, nm in names do
+				local sub = locals.subs[nm]
+				local decls = {}
+				for _, st in sub.region.stmts do
+					collectStackBufAnno(st, decls)
+				end
+				if #decls > 0 then
+					local ok, err = pcall(function()
+						x86_64_frame.analyzeFrame(sub.region.stmts, nil, {})
+						for _, st in decls do
+							local lo, hi = x86_64_frame.resolveStackBufDeclAt(st)
+							if lo then
+								local canon = x86_64_frame.stackBufCanonOf(st.stackBufAnno.id)
+								if canon == nil then
+									x86_64_frame.recordStackBufCanon(st.stackBufAnno.id,
+										lo, hi, nm, true)
+								elseif canon.lo ~= lo or canon.hi ~= hi then
+									local where = canon.sub and "local subroutine '"
+										.. tostring(canon.fn) .. "'" or "function '"
+										.. tostring(canon.fn) .. "'"
+									error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+										.. ")` long forms disagree: the declaration in " .. where
+										.. " resolves to [" .. tostring(canon.lo)
+										.. ", " .. tostring(canon.hi) .. ") but the declaration in '"
+										.. nm .. "' resolves to [" .. tostring(lo) .. ", "
+										.. tostring(hi) .. ") (the offsets must match): "
+										.. (st.raw or st.mnemonic))
+								end
+							end
+						end
+					end)
+					if not ok then
+						-- The file-wide canonical rejection is a REAL user-facing
+						-- rejection: re-raise it. Any OTHER failure is the
+						-- subroutine's standalone analysis hitting a shape its
+						-- CLONE context would not (a clone executes at the
+						-- caller's depth with the +8 keying) — skip the
+						-- registration; the clones' own scans own the proof.
+						if type(err) == "string"
+							and string.find(err, "the offsets must match", 1, true) then
+							error(err)
+						end
+						prof.mark("  [sub " .. nm .. "] stackBufDecl skipped")
 					end
 				end
 			end

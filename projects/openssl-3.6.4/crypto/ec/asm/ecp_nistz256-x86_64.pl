@@ -3069,16 +3069,12 @@ my ($poly1,$poly3)=($acc6,$acc7);
 sub load_for_mul () {
 my ($a,$b,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
-# Single-step negative-offset frame lea: sarcasm proves these exactly like
-# the two-step materialize-and-subtract form, so the pristine spelling serves
-# both modes ($bias is -128 exactly for the x-variants, 0 otherwise).
-my $a_lea = "	lea	$bias+$a, $a_ptr";
 
 "	mov	$b, $src0
 	lea	$b, $b_ptr
 	mov	8*0+$a, $acc1
 	mov	8*1+$a, $acc2
-$a_lea
+	lea	$bias+$a, $a_ptr
 	mov	8*2+$a, $acc3
 	mov	8*3+$a, $acc4"
 }
@@ -3086,12 +3082,10 @@ $a_lea
 sub load_for_sqr () {
 my ($a,$src0) = @_;
 my $bias = $src0 eq "%rax" ? 0 : -128;
-# (see load_for_mul: single-step negative-offset frame lea for both modes)
-my $a_lea = "	lea	$bias+$a, $a_ptr";
 
 "	mov	8*0+$a, $src0
 	mov	8*1+$a, $acc6
-$a_lea
+	lea	$bias+$a, $a_ptr
 	mov	8*2+$a, $acc7
 	mov	8*3+$a, $acc0"
 }
@@ -3306,10 +3300,14 @@ $code.=<<___;
 .cfi_adjust_cfa_offset	32*5+24
 ___
 if ($ENV{SARCASM}) {
-  # Heap scratch for the local-subroutine scalar slots (same
-  # layout as the gas frame block); frame-slot pointers cannot
-  # be materialized under sarcasm, so the subs address this
-  # GC buffer instead (gas keeps the frame block).
+  # Scratch for the local-subroutine scalar slots (same layout as the
+  # gas frame block): the scratch base pointers are computed
+  # (`lea $S($FR), $r_ptr`) and passed as destination arguments to the
+  # shared localcall callees (__ecp_nistz256_mul_montw & co), which
+  # callers with differently sized scratch blocks reuse -- a declared
+  # stack buffer would need the same canonical range in every caller,
+  # so the GC '.alloca' provides the one capability-carrying object
+  # (gas keeps the frame block).
   $code.=<<___;
 	.alloca	\$160,\$16,%fil_dbl
 ___
@@ -3474,7 +3472,6 @@ $code.=<<___;
 	cmovz	$acc0, $acc3
 	mov	$acc0, $S+8*2($FR)
 ___
-# Single-step negative-offset frame lea (see load_for_mul).
 $code.=<<___;
 	lea	$S-$bias($FR), $a_ptr
 	cmovz	$acc1, $acc4
@@ -3595,10 +3592,14 @@ $code.=<<___;
 .cfi_adjust_cfa_offset	32*18+24
 ___
 if ($ENV{SARCASM}) {
-  # Heap scratch for the local-subroutine scalar slots (same
-  # layout as the gas frame block); frame-slot pointers cannot
-  # be materialized under sarcasm, so the subs address this
-  # GC buffer instead (gas keeps the frame block).
+  # Scratch for the local-subroutine scalar slots (same layout as the
+  # gas frame block): the scratch base pointers are computed
+  # (`lea $S($FR), $r_ptr`) and passed as destination arguments to the
+  # shared localcall callees (__ecp_nistz256_mul_montw & co), which
+  # callers with differently sized scratch blocks reuse -- a declared
+  # stack buffer would need the same canonical range in every caller,
+  # so the GC '.alloca' provides the one capability-carrying object
+  # (gas keeps the frame block).
   $code.=<<___;
 	.alloca	\$576,\$16,%fil_add
 ___
@@ -4044,10 +4045,14 @@ $code.=<<___;
 .cfi_adjust_cfa_offset	32*15+24
 ___
 if ($ENV{SARCASM}) {
-  # Heap scratch for the local-subroutine scalar slots (same
-  # layout as the gas frame block); frame-slot pointers cannot
-  # be materialized under sarcasm, so the subs address this
-  # GC buffer instead (gas keeps the frame block).
+  # Scratch for the local-subroutine scalar slots (same layout as the
+  # gas frame block): the scratch base pointers are computed
+  # (`lea $S($FR), $r_ptr`) and passed as destination arguments to the
+  # shared localcall callees (__ecp_nistz256_mul_montw & co), which
+  # callers with differently sized scratch blocks reuse -- a declared
+  # stack buffer would need the same canonical range in every caller,
+  # so the GC '.alloca' provides the one capability-carrying object
+  # (gas keeps the frame block).
   $code.=<<___;
 	.alloca	\$480,\$16,%fil_aff
 ___
@@ -4112,7 +4117,6 @@ $code.=<<___;
 	pshufd	\$0, %xmm4, %xmm4		# in2infty
 
 ___
-# Single-step negative-offset frame lea (see load_for_mul).
 $code.=<<___;
 	lea	$Z1sqr-$bias($FR), $a_ptr
 	mov	$acc7, $acc4

@@ -672,7 +672,13 @@ $code.=<<___;
 	mov	$key,(%rsp)	# key schedule
 	mov	%rbp,8(%rsp)	# end of key schedule
 ___
-# Pick the Te4 copy that cannot L1-alias the stack frame or key schedule.
+# Te4 copy select: (key schedule pointer - Te4 pointer) & 0x300 picks the
+# 1KB Te4 copy the compact loop uses; the masked value stays in %rbp,
+# exactly as upstream.  Upstream's dynamic frame shift also kept the chosen
+# copy from L1-aliasing the frame and key schedule; under sarcasm the frame
+# is fixed and its spills are sarcasm's own, so that de-aliasing is
+# best-effort only (this table-driven path is dead code on AES-NI/VAES-
+# capable x86-64; it is exercised by forcing the codepath).
 # The '#!' capability annotations are gas comments, so they are emitted
 # unconditionally; under sarcasm the table capability is saved on the base
 # lea and restored on the final aliased lea (straight-line, so the save
@@ -1330,13 +1336,12 @@ $code.=<<___;
 	mov	$key,(%rsp)	# key schedule
 	mov	%rbp,8(%rsp)	# end of key schedule
 ___
-# Keep the Td4-copy L1-aliasing countermeasure (including the "magic" shr
-# correction, restored to upstream's 'add' spelling: %rbp is an integer here
-# — 'sub' of the two table pointers kills capabilities and 'shr' keeps it
-# that way — so natural pointer flow keeps $sbox's table capability across
-# the lea and the add in straight-line code, with no save/restore pair: a
-# lone 'save' with no 'restore' is dead (sarcasm only threads a save's frozen
-# snapshot into a restore), so none is emitted here.
+# Td4 copy select: (key schedule pointer - Td4 pointer) & 0x300 picks which
+# 1KB Td4 copy the compact loop uses.  %rbp holds an integer here, so the
+# sub of the two pointers is a plain integer difference -- the value the
+# select needs -- and capability semantics keep $sbox's table capability
+# alive across the lea and the "magic" add below in straight-line code, so
+# no capability save/restore pair is needed here.
 {
   $code.=<<___;
 	lea	.LAES_Td+2048(%rip),$sbox
@@ -1825,9 +1830,6 @@ AES_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 	cmp	\$0,%rdx	# check length
 	je	.Lcbc_epilogue
 ___
-# No C fallback: the asm CBC loops below run under SARCASM directly (GPR
-# scalar accesses need only hardware-required alignment, so arbitrarily
-# aligned buffers just work).
 if ($ENV{SARCASM}) {
   # pushfq/popfq omitted: sarcasm keeps a literal pushfq across the body,
   # leaving %rsp 8 bytes lower than its frame model assumes and injecting
@@ -1951,10 +1953,10 @@ $code.=<<___;
 
 	mov	240($key),%eax		# key->rounds
 ___
-# Keep the key-schedule-copy L1-aliasing countermeasure (including the
-# copy/no-copy decision): the ptr-ptr subtract leaves an integer, and the
-# copy address derives from the frame base ($FR: the dynamic frame under
-# gas, the '.alloca' buffer under sarcasm).
+# Key-schedule copy/no-copy decision: (key schedule pointer - table
+# pointer) & 0xfff bounds the distance; the copy address derives from the
+# frame base ($FR).  Cache de-aliasing is best-effort under sarcasm (see
+# the AES_encrypt Te4 select comment).
 {
   $code.=<<___;
 	# do we copy key schedule to stack?
@@ -2193,9 +2195,9 @@ $code.=<<___;
 	mov	%rax,$keyend
 
 ___
-# Keep the slow-path Te4-copy L1-aliasing countermeasure. Both sides were
-# instruction-identical (only comments differed), so a single unconditional
-# block serves gas and sarcasm alike.
+# Slow-path T-table copy select: the same (key - table) & 0x300 hash as the
+# compact paths above, in one unconditional block for gas and sarcasm
+# alike; cache de-aliasing is best-effort under sarcasm (see the Te4 note).
 # NOTE: no save/restore here: $sbox at this point is the Te/Td
 # cmoveq merge (one capability per table is impossible), so the
 # result rides sarcasm's dynamic lower in lockstep with that cmov.

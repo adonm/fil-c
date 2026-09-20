@@ -100,6 +100,18 @@ local function isRetMnem(m, arch)
 	return x86_64_isa.baseMnemonic(m) == "ret"
 end
 
+-- Unconditionally trapping mnemonics (ud2 — including the `.byte 0x0f,0x0b`
+-- spelling, which decodes to ud2 — int3/int $3/hlt): a control-flow path through
+-- a trap has NO successors, exactly like ret. Mirrors x86_64_isa.classify's
+-- fallsThrough=false and x86_64_frame's successors(); the clone-range walk below
+-- is mnemonic-based (it runs on raw source statements, before classify), so it
+-- needs its own copy of the trap set.
+local TRAP_MNEM = { ud2 = true, int3 = true, int = true, hlt = true }
+
+local function isTrapMnem(m)
+	return TRAP_MNEM[string.lower(m or "")] == true
+end
+
 -- Is `st` a potentially-local call (a direct call with a bare-symbol target,
 -- unannotated or carrying the explicit `#! local` marker)?
 local function localCallTarget(st, arch)
@@ -391,6 +403,10 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 								for _, p in (labelPos[op.text] or {}) do table.insert(work, p) end
 							end
 							ft = b ~= "jmp"
+						elseif isTrapMnem(st.mnemonic) then
+							-- a trap terminates the path (no successors, no
+							-- fall-through), exactly like ret
+							ft = false
 						end
 					end
 					if ft then table.insert(work, pos + 1) end

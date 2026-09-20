@@ -84,9 +84,9 @@ if ($avx512vaes) {
   # used directly.
   # Sarcasm: $TW is a 64-aligned GC-allocated '.alloca' buffer, not the
   # stack (gas keeps the original %rsp frame plus its `and $-64`
-  # realignment). A plain `sub` frame leaves sarcasm's spill area
-  # misaligned (the observed crash: an xmm spill at 8-mod-16); the
-  # directive guarantees the alignment, so no per-site masking is needed.
+  # realignment). A plain `sub` frame can leave sarcasm's xmm spill
+  # area misaligned; the directive guarantees the alignment, so no
+  # per-site masking is needed.
   my $TW = $ENV{SARCASM} ? "%fil_xtstweak" : "%rsp";
   my $TEMPHIGH = "%rbx";
   my $TEMPLOW = "%rax";
@@ -1170,15 +1170,13 @@ ___
       endbranch
 ___
     }
-    if (!$ENV{SARCASM}) {
-    $code .= "push 	 %rbp\n";
-    }
     if ($ENV{SARCASM}) {
       $code .= ".alloca\t\$$VARIABLE_OFFSET,\$64,$TW\n";
     } else {
+      $code .= "push 	 %rbp\n";
       $code .= "mov 	 $TW,%rbp\n";
       $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\n";
-      $code .= "and 	 \$-64,$TW\n";
+      $code .= "and 	 \$0xffffffffffffffc0,$TW\n";
     }
     $code .= "mov 	 %rbx,$GP_STORAGE($TW)\n";
 
@@ -1565,8 +1563,6 @@ ___
     {
     if (!$ENV{SARCASM}) {
     $code .= "    mov %rbp,$TW\n";
-    }
-    if (!$ENV{SARCASM}) {
     $code .= "    pop %rbp\n";
     }
     $code .= <<___;
@@ -1863,15 +1859,13 @@ ___
       endbranch
 ___
     }
-    if (!$ENV{SARCASM}) {
-    $code .= "push 	 %rbp\n";
-    }
     if ($ENV{SARCASM}) {
       $code .= ".alloca\t\$$VARIABLE_OFFSET,\$64,$TW\n";
     } else {
+      $code .= "push 	 %rbp\n";
       $code .= "mov 	 $TW,%rbp\n";
       $code .= "sub 	 \$$VARIABLE_OFFSET,$TW\n";
-      $code .= "and 	 \$-64,$TW\n";
+      $code .= "and 	 \$0xffffffffffffffc0,$TW\n";
     }
     $code .= "mov 	 %rbx,$GP_STORAGE($TW)\n";
 
@@ -2411,8 +2405,6 @@ ___
     {
     if (!$ENV{SARCASM}) {
     $code .= "    mov %rbp,$TW\n";
-    }
-    if (!$ENV{SARCASM}) {
     $code .= "    pop %rbp\n";
     }
     $code .= <<___;
@@ -2879,9 +2871,7 @@ ___
     .globl  aesni_xts_128_decrypt_avx512
 
     aesni_xts_128_encrypt_avx512: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
-    .byte   0x0f,0x0b    # ud2
-    ret
-    aesni_xts_128_decrypt_avx512: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+    aesni_xts_128_decrypt_avx512:
     .byte   0x0f,0x0b    # ud2
     ret
 
@@ -2889,9 +2879,7 @@ ___
     .globl  aesni_xts_256_decrypt_avx512
 
     aesni_xts_256_encrypt_avx512: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
-    .byte   0x0f,0x0b    # ud2
-    ret
-    aesni_xts_256_decrypt_avx512: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+    aesni_xts_256_decrypt_avx512:
     .byte   0x0f,0x0b    # ud2
     ret
 

@@ -1005,18 +1005,15 @@ ___
 
 $code .= <<___;
 .globl     ossl_aes_cfb128_vaes_enc
-.type      ossl_aes_cfb128_vaes_enc,\@function,6
 .globl     ossl_aes_cfb128_vaes_dec
-.type      ossl_aes_cfb128_vaes_dec,\@function,6
 
 # Mock implementations of AES-CFB128 encryption/decryption
 # that always fail. Should not be executed under normal circumstances.
 
 ossl_aes_cfb128_vaes_enc: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
+ossl_aes_cfb128_vaes_dec:
     .byte 0x0f,0x0b                # Undefined Instruction in the Intel architecture
-    ret
-ossl_aes_cfb128_vaes_dec: #! void(ptr,ptr,size_t,ptr,ptr,ptr)
-    .byte 0x0f,0x0b                # Undefined Instruction
+                                   # Raises the Invalid Opcode exception
     ret
 
 #################################################################

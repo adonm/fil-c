@@ -669,6 +669,10 @@ local function validateBody(body, cgm, funcName)
 	--   * conditional branch (control == "condbranch", incl. cbz/tbz/b.cond) ->
 	--     its label target + fall-through;
 	--   * `ret` (control == "return") -> nothing;
+	--   * trapping instructions (classify reports fallsThrough == false with
+	--     control == "none": ud2/int3/int/hlt — a trap never falls through and
+	--     never returns, so a path through one has no successors, like ret) ->
+	--     nothing;
 	--   * every other statement — instructions (including calls and indirect forms,
 	--     which return to the fall-through), labels, blanks and directives ->
 	--     fall-through.
@@ -701,6 +705,14 @@ local function validateBody(body, cgm, funcName)
 							end
 						end
 					elseif c.control == "return" then
+						fallsThrough = false
+					elseif c.fallsThrough == false then
+						-- classify reports fallsThrough=false for the trapping
+						-- instructions (ud2/int3/int/hlt — see x86_64_isa.classify,
+						-- which mirrors x86_64_frame's successors()): a control-flow
+						-- path through a trap has NO successors, exactly like ret.
+						-- A body may therefore end in a `ud2` (or `.byte 0x0f,0x0b`,
+						-- which decodes to ud2) with no trailing `ret`.
 						fallsThrough = false
 					end
 				end
@@ -3509,6 +3521,96 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				uses = { pColored(a1), pColored(a2), pColored(a3) } }))
 	end
 
+	-- By-ADDRESS annotated stack-buffer access (`#! stack buffer (id)` on an
+	-- access whose base register is an ordinary web holding a buffer byte
+	-- address — materialized by a buffer-interior `leaq K(%rsp), %reg`, then
+	-- computed on, stored, reloaded, or cmov'd): emit the runtime BOUNDS CHECK
+	-- of the base against the buffer's lowered range before the VERBATIM
+	-- instruction. No capability check: the base's capability, if it happens to
+	-- carry one, is ignored — the address is an ordinary integer, exactly the
+	-- value Fil-C hands out for "where is my stack" questions.
+	--
+	-- The check is ONE unsigned compare, overflow-safe in both directions:
+	--   t1 = the lowered buffer group's base address (leaq g.base(%rsp) tagged
+	--        stackBuf, so the buffer-base shift below finalizes it into the real
+	--        output-frame address);
+	--   t2 = base - t1 + dispEff   (mod 2^64: a base below the group wraps to a
+	--        huge unsigned value and fails; one above exceeds the count);
+	--   fail iff t2 >=u (span - w + 1),  span = g.hi - g.lo.
+	-- This accepts exactly the bases whose dispEff-offset access
+	-- [base + dispEff, base + dispEff + w) lies inside the group [t1, t1+span)
+	-- — the same modular arithmetic the indexed check uses, so a negative
+	-- dispEff (a negative constant displacement) folds in with wrapping
+	-- semantics and accepts exactly [buflo - dispEff, bufhi - w - dispEff).
+	-- The failure marshals filc_optimized_stack_access_check_fail(offset, size,
+	-- origin) with the (possibly wrapped) group-relative offset of the access
+	-- start and the group's span — the same attribution shape as the indexed
+	-- stub. The ORIGINAL instruction is emitted verbatim afterwards (original
+	-- base register, original displacement) with no capability machinery: the
+	-- base web must stay live across the check (the instruction uses it).
+	local function emitStackBufAddrCheck(node, mem, ba)
+		local raw = node.stmt.raw or node.stmt.mnemonic
+		local baseT = node.opTemp and node.opTemp[mem.base] or nil
+		if not baseT then
+			error("sarcasm: internal error: by-address buffer access base has no web"
+				.. " temp: " .. raw)
+		end
+		local g = ba.group
+		local span = g.hi - g.lo
+		-- fail iff (base + dispEff) - t1 >=u count, so the accepted
+		-- base+dispEff range is [t1, t1 + count - 1] — the access
+		-- [base+dispEff, base+dispEff+w) must lie inside [t1, t1+span), i.e.
+		-- base+dispEff <= t1 + span - w: count = span - w + 1 (the indexed
+		-- check's inclusive idxMax convention — an access ENDING exactly at the
+		-- group's top byte is inside and must not trap).
+		local count = span - ba.w + 1
+		if count < 0 then
+			error("sarcasm: internal error: by-address buffer access wider than its"
+				.. " lowered group: " .. raw)
+		end
+		stackBufFailCounter += 1
+		local lbl = ".Lsbfail_" .. name .. "_" .. stackBufFailCounter
+		local aco = ".Lfilc_saco_" .. name .. "_" .. stackBufFailCounter
+		table.insert(accessOrigins, { sym = aco, size = ba.w,
+			align = math.min(ba.areq or 1, 8), write = ba.write and true or false,
+			line = curLine })
+		-- t1 = the group's base address in the output frame. The placeholder
+		-- displacement g.base rides the same stackBuf tagging (and the same
+		-- final shift) as every redirected buffer operand, so the check and the
+		-- buffer's real bytes always agree.
+		local t1 = allocTemp({ role = "stackbufbase" })
+		emit(build.insn("lea", { build.rt(t1),
+			{ kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				scale = 1, dispVal = g.base, stackBuf = true } },
+			{ defs = { t1 } }))
+		local t2 = allocTemp({ role = "stackbufdiff" })
+		cg.move(t2, baseT)
+		emit(build.insn("sub", { build.rt(t2), build.rt(t1) },
+			{ defs = { t2 }, uses = { t2, t1 } }))
+		if (ba.dispEff or 0) ~= 0 then cg.addImm(t2, t2, ba.dispEff) end
+		cg.cmpImmBranchWidened(t2, count, "uge", lbl)
+		-- The fail stub: t2 already holds the (possibly wrapped) group-relative
+		-- offset of the access start; hand it to the runtime with the group's
+		-- span so the panic attributes the real range.
+		table.insert(failStubs, build.label(lbl))
+		local offT = allocTemp({ role = "stackbufoff" })
+		table.insert(failStubs, build.insn("mov", { build.rt(offT), build.rt(t2) },
+			{ defs = { offT }, uses = { t2 } }))
+		local fa1, fa2, fa3 = cc.rtArg(1), cc.rtArg(2), cc.rtArg(3)
+		table.insert(failStubs, build.insn("mov", { build.rp(fa1), build.rt(offT) },
+			{ defs = { pColored(fa1) }, uses = { offT } }))
+		table.insert(failStubs, build.insn("mov", { build.rp(fa2), build.imm(span) },
+			{ defs = { pColored(fa2) } }))
+		table.insert(failStubs, build.insn("lea",
+			{ build.rp(fa3), build.memx({ kind = "reg", rc = "rip" }, { dispSym = aco }) },
+			{ defs = { pColored(fa3) } }))
+		table.insert(failStubs, build.insn("call",
+			{ build.sym("filc_optimized_stack_access_check_fail", "plt") },
+			{ control = "call", noreturnCall = true,
+				uses = { pColored(fa1), pColored(fa2), pColored(fa3) } }))
+	end
+
 	local function emitRepString(node)
 		local rep = node.c.rep
 		local raw = node.stmt.raw or node.stmt.mnemonic
@@ -3946,6 +4048,269 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		return cg.regionRedirect(node, regionOf)
 	end
 
+	-- Partial (narrow) slot-access lowering. The frame rewrite routes a narrow
+	-- (1/2/4-byte) scalar access that falls inside a granule carrying 8-byte slot
+	-- traffic to the CONTAINING slot web and marks the statement x86_slotPartial =
+	-- { sub = <byte offset in the granule>, w = <width in bytes>, write = <bool> }.
+	-- The virtualized web is a colored register standing for the granule's 8 bytes,
+	-- so a narrow access must be lowered into explicit extract / merge sequences to
+	-- behave like the memory it stands for:
+	--
+	--   narrow LOAD at sub > 0:  movq web,%t ; shrq $(sub*8),%t ; <the access reads
+	--     %t at its own width> — the field lands in the temp's low bytes, and the
+	--     original instruction's own width semantics apply unchanged (a 32-bit read
+	--     zero-extends, a 16/8-bit read is the partial write it always was).
+	--   narrow LOAD at sub == 0: no lowering — the access already reads the low
+	--     bytes of the web (its historical spelling).
+	--   narrow STORE (any sub):  read-modify-write of the web — keep = old bytes
+	--     outside the field (double-shift, or movabs+and for a middle field), new =
+	--     the (zero-extended) source or the original instruction recomputed on the
+	--     extracted field, then or + a full 8-byte store back. This also fixes the
+	--     documented same-offset gap (a 32-bit store to offset 0 no longer
+	--     zero-extending-kills the 8-byte web's high bytes).
+	--
+	-- FLAGS: the extract/merge instructions write EFLAGS (shrq/shlq/orq/andq). The
+	-- lowering therefore brackets the whole sequence with the transform's standard
+	-- flag save/restore whenever the program's flags are live at the access
+	-- (withFlagSave — the same bracket every injected bounds check uses), and it
+	-- orders a flag-READING instruction's own op FIRST so it consumes the real
+	-- pending condition. Two shapes cannot be made sound this way and are REJECTED
+	-- with a clear message: a flag-reading read-modify-write (adc/sbb) at a non-zero
+	-- sub-offset, and a flag-reading load — the field extraction would necessarily
+	-- run between the flag write the instruction consumes and the instruction
+	-- itself. (Rejection, not a silent clobber: the pending condition would be
+	-- corrupted.)
+	--
+	-- CAPABILITIES: a web carrying a pointer (pf.isPtr — seeded by `store ptr` /
+	-- `load ptr` or propagated) is handled conservatively:
+	--   * at sub == 0 the access keeps its HISTORICAL form (no marker lowering): a
+	--     narrow store is the documented capability kill — its zero-extending def
+	--     corrupts the web's intval while the rooted lower survives, so every later
+	--     use fails its capability check (fail-closed; a truncated-but-in-bounds
+	--     intval can only pass the check into the SAME object, never out of bounds);
+	--   * at sub > 0 the access is REJECTED: the extract/merge would rewrite the
+	--     capability's intval bytes as raw integer data — sound only by the
+	--     fail-closed argument above, but pointless to accept when re-spelling with
+	--     a wide access plus register shifts is trivial.
+	--
+	-- Returns true when the node was fully replaced (stores); false when only
+	-- sequences were injected ahead of it (loads — the walk emits the node itself).
+	local function lowerPartialSlot(node)
+		local st = node.stmt
+		local part = st.x86_slotPartial
+		local ops = st.operands
+		local raw = st.raw or st.mnemonic or "?"
+		local slotOp = nil
+		for _, o in ops do
+			if o.kind == "reg" and o.isSlot then slotOp = slotOp or o end
+		end
+		if not slotOp then
+			error("sarcasm: internal error: partial slot access has no slot operand: " .. raw)
+		end
+		local webT = node.opTemp and node.opTemp[slotOp] or nil
+		if not webT then
+			error("sarcasm: internal error: partial slot access has no lifted web temp: " .. raw)
+		end
+		-- Capability safety (see the function comment).
+		if pf.isPtr[webT] then
+			if part.sub == 0 then
+				-- Aligned narrow traffic on a capability-carrying web: the historical
+				-- form (a shared web at the same offset) — including the documented
+				-- narrow-store capability kill. Emit via the ordinary walk path.
+				return false
+			end
+			error("sarcasm: narrow (" .. tostring(part.w)
+				.. "-byte) access into a capability-carrying frame slot is not supported"
+				.. " (the slot's web holds a pointer; extracting or merging its bytes as"
+				.. " integer data would corrupt the capability — load the wide value and"
+				.. " shift in a register instead): " .. raw)
+		end
+		if not part.write and part.sub == 0 then
+			-- Granule-aligned narrow load: the access already reads the web's low
+			-- bytes. Emit it via the ordinary walk path (which handles pinning).
+			return false
+		end
+		local readsFlags = cgm.flagUse and cgm.flagUse(st) or false
+		-- Does the store's instruction READ the field (a true RMW rather than a
+		-- plain overwrite)? The classify model said so whenever the slot operand is
+		-- also a use (ALU2/DST_ONLY and the routed-store marker in the mov branch).
+		local isRmw = false
+		for _, u in (node.c and node.c.uses or {}) do
+			if u == slotOp then isRmw = true break end
+		end
+		-- The two unsoundable flag-reading shapes (see the function comment): the
+		-- field extraction would sit between the consumed condition and its reader.
+		if readsFlags and ((not part.write and part.sub > 0)
+			or (part.write and isRmw and part.sub > 0)) then
+			error("sarcasm: narrow slot access on a flag-reading instruction at a"
+				.. " non-zero granule offset is not supported (the field extraction"
+				.. " would clobber the condition the instruction consumes): " .. raw)
+		end
+		if part.write and node.c and node.c.pin then
+			-- A store-path node is replaced by a fresh instruction; the implicit-
+			-- register pin moves (rax/rdx for div/mul/cmpxchg, rcx for %-cl shifts)
+			-- would be lost. Loads pass through the ordinary pinned emission.
+			error("sarcasm: narrow slot store on an implicit-register-pinned"
+				.. " instruction (div/mul/cmpxchg/shift-by-%cl/...) is not supported: " .. raw)
+		end
+		local sub8 = part.sub * 8
+		-- keep = the web's value with the field cleared. The two run shapes (field at
+		-- the top / at the bottom) are two shifts; a middle field needs a materialized
+		-- mask (movabsq + andq — the mask never fits a sign-extended imm32).
+		local function emitKeep(t)
+			local lo, hi = sub8, sub8 + part.w * 8
+			if lo == 0 then
+				emit(build.insn("shr", { build.rt(t), build.imm(hi) }, { defs = { t }, uses = { t } }))
+				emit(build.insn("shl", { build.rt(t), build.imm(hi) }, { defs = { t }, uses = { t } }))
+			elseif hi == 64 then
+				emit(build.insn("shl", { build.rt(t), build.imm(64 - lo) }, { defs = { t }, uses = { t } }))
+				emit(build.insn("shr", { build.rt(t), build.imm(64 - lo) }, { defs = { t }, uses = { t } }))
+			else
+				-- keep bits outside [lo, hi) in each 32-bit word (bit32 arithmetic is
+				-- exact), then materialize the 64-bit mask as a hex literal — Luau
+				-- numbers are doubles, so a mask with significant bits at both ends
+				-- (e.g. bytes [0,8) and [16,64)) cannot ride a numeric constant.
+				local function wordMask(wlo, whi)
+					wlo = math.max(0, math.min(32, wlo))
+					whi = math.max(0, math.min(32, whi))
+					local low = 0
+					if wlo >= 32 then low = 0xFFFFFFFF
+					elseif wlo > 0 then low = bit32.lshift(1, wlo) - 1 end
+					local high = 0
+					if whi < 32 then high = bit32.lshift(0xFFFFFFFF, whi) end
+					return bit32.bor(low, high)
+				end
+				local lo32 = wordMask(sub8, sub8 + part.w * 8)
+				local hi32 = wordMask(sub8 - 32, sub8 + part.w * 8 - 32)
+				local tk = allocTemp({ role = "slotmask" })
+				cg.movBig(tk, string.format("0x%08x%08x", hi32, lo32))
+				emit(build.insn("and", { build.rt(t), build.rt(tk) },
+					{ defs = { t }, uses = { t, tk } }))
+			end
+		end
+		if not part.write then
+			-- Narrow load at sub > 0: extract the field into a fresh temp and re-point
+			-- the access at it. The node keeps its own def/use model (the def is the
+			-- destination's web; the slot use becomes the temp use). The extraction
+			-- writes flags, so bracket it when the program's flags are live (the node
+			-- itself does not read flags — that shape was rejected above).
+			withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+				local t = allocTemp({ role = "slottook" })
+				cg.move(t, webT)
+				if sub8 > 0 then
+					emit(build.insn("shr", { build.rt(t), build.imm(sub8) },
+						{ defs = { t }, uses = { t } }))
+				end
+				node.opTemp[slotOp] = t
+				for ti, ut in node.useTemps do
+					if ut == webT then node.useTemps[ti] = t break end
+				end
+			end)
+			-- The walk emits the node itself (the ordinary no-mem path).
+			return false
+		end
+		-- Narrow store (or RMW: any instruction whose destination is the field —
+		-- mov/add/or/sub/adc/sbb/inc/dec/neg/not/shift/setcc): replace the node with
+		-- an explicit merge sequence ending in a full 8-byte store back to the web.
+		withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+			local t1 = allocTemp({ role = "slotrmw" })
+			cg.move(t1, webT)  -- old
+			local t2 = allocTemp({ role = "slotfield" })
+			if isRmw then
+				-- Extract the field, run the original instruction on it (register
+				-- form), then shift it into place. The extraction's upper bytes hold
+				-- the old web's bytes above the field; a sub-32-bit instruction
+				-- preserves them and the shift below carries them back over keep's
+				-- (zeroed) copy of exactly those bytes — the OR is idempotent there.
+				-- (A flag-reading RMW at sub > 0 was rejected above; at sub == 0 the
+				-- copies below are flag-neutral, so the op consumes the real
+				-- pending condition.)
+				cg.move(t2, webT)
+				if sub8 > 0 then
+					emit(build.insn("shr", { build.rt(t2), build.imm(sub8) },
+						{ defs = { t2 }, uses = { t2 } }))
+				end
+				local newops, newUses = {}, {}
+				for _, o in ops do
+					if o == slotOp then
+						table.insert(newops, build.rt(t2, part.w * 8))
+					elseif o.kind == "reg" then
+						local ut = node.opTemp and node.opTemp[o] or nil
+						if not ut then
+							error("sarcasm: internal error: partial slot RMW operand has no"
+								.. " lifted web temp: " .. raw)
+						end
+						table.insert(newops, build.rt(ut, o.width or 64))
+						table.insert(newUses, ut)
+					elseif o.kind == "imm" then
+						table.insert(newops, o)  -- renders verbatim ($text)
+					else
+						error("sarcasm: narrow slot access on '" .. (st.mnemonic or "?")
+							.. "' with a " .. tostring(o.kind) .. " operand is not supported"
+							.. " (re-spell it through a register): " .. raw)
+					end
+				end
+				table.insert(newUses, t2)  -- the read of the extracted field
+				emit(build.insn(st.mnemonic, newops, { defs = { t2 }, uses = newUses }))
+				if sub8 > 0 then
+					emit(build.insn("shl", { build.rt(t2), build.imm(sub8) },
+						{ defs = { t2 }, uses = { t2 } }))
+				end
+			else
+				-- Plain overwrite: zero-extend the source to the field's position. A
+				-- 32-bit move IS a zero-extension (full def of the temp's web);
+				-- narrower register sources need an explicit movzx; an immediate
+				-- source rides a 32-bit move (zero-extending) and, below 4 bytes, a
+				-- shift truncation to the field width (a sub-32-bit register move
+				-- would not zero-extend, and the fresh temp's upper bytes are
+				-- undefined). A flag-reading overwrite (setcc) is ordered FIRST
+				-- (above), so it consumes the real pending condition before any of
+				-- the flag-writing merge instructions run.
+				local srcOp = nil
+				for _, o in ops do
+					if o ~= slotOp then srcOp = srcOp or o end
+				end
+				if not srcOp then
+					error("sarcasm: internal error: partial slot store has no value operand: " .. raw)
+				end
+				if srcOp.kind == "imm" then
+					emit(build.insn("mov", { build.rt(t2, 32), srcOp },
+						{ defs = { t2 }, uses = {} }))
+					if part.w < 4 then
+						emit(build.insn("shl", { build.rt(t2), build.imm(32 - part.w * 8) },
+							{ defs = { t2 }, uses = { t2 } }))
+						emit(build.insn("shr", { build.rt(t2), build.imm(32 - part.w * 8) },
+							{ defs = { t2 }, uses = { t2 } }))
+					end
+				else
+					local srcT = node.opTemp and node.opTemp[srcOp] or nil
+					if srcOp.kind ~= "reg" or not srcT then
+						error("sarcasm: narrow slot store on '" .. (st.mnemonic or "?")
+							.. "' with a " .. tostring(srcOp.kind) .. " value operand is not"
+							.. " supported (re-spell it through a register or immediate): " .. raw)
+					end
+					if part.w == 4 then
+						emit(build.insn("mov", { build.rt(t2, 32), build.rt(srcT, 32) },
+							{ defs = { t2 }, uses = { srcT } }))
+					else
+						emit(build.insn("movzx", { build.rt(t2), build.rt(srcT, part.w * 8) },
+							{ defs = { t2 }, uses = { srcT } }))
+					end
+				end
+				if sub8 > 0 then
+					emit(build.insn("shl", { build.rt(t2), build.imm(sub8) },
+						{ defs = { t2 }, uses = { t2 } }))
+				end
+			end
+			emitKeep(t1)
+			emit(build.insn("or", { build.rt(t1), build.rt(t2) },
+				{ defs = { t1 }, uses = { t1, t2 } }))
+			emit(build.insn("mov", { build.rt(webT), build.rt(t1) },
+				{ defs = { webT }, uses = { t1 } }))
+		end)
+		return true
+	end
+
 	-- The promoted fixed-frame region's allocation (D9): emitted ONCE, up top,
 	-- before any body statement — every fixed-frame access and lea redirects
 	-- into the region, so it must exist from the first instruction. Mirrors
@@ -4046,6 +4411,10 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 					emitRepString(node)
 				end)
+			elseif node.stmt.x86_slotPartial ~= nil and lowerPartialSlot(node) then
+				-- Narrow scalar traffic into a containing 8-byte slot web: lowered in
+				-- place (stores — the node was replaced by the merge sequence; aligned
+				-- narrow loads fall through to the ordinary emission below).
 			else
 				local mem = cgm.memOperand(node.stmt)
 				local fref = funcrefNodes[node]
@@ -4058,6 +4427,15 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if node.stmt.x86StackBufIdx then
 					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 						emitStackBufBoundsCheck(node, mem, node.stmt.x86StackBufIdx)
+					end)
+				end
+				-- Annotated STACK BUFFER by-address access: emit the runtime
+				-- bounds check on the base web first (the instruction itself is
+				-- emitted verbatim by the x86StackBufAddr arm below — original
+				-- base register, original displacement, no capability check).
+				if node.stmt.x86StackBufAddr then
+					withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
+						emitStackBufAddrCheck(node, mem, node.stmt.x86StackBufAddr)
 					end)
 				end
 				if fref then
@@ -4168,6 +4546,56 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					table.insert(node.useTemps, effTemp)
 					if node.c and node.c.uses then table.insert(node.c.uses, newBase) end
 					if not (cg.emitPinned and cg.emitPinned(node)) then emit(node) end
+				elseif node.stmt.x86StackBufAddr then
+					-- A by-address `#! stack buffer` access: the runtime bounds
+					-- check ran just above; emit the ORIGINAL instruction
+					-- VERBATIM (original base register, original displacement) —
+					-- no computeAddr, no capability check. The base web stays
+					-- live across the check (the instruction itself uses it).
+					-- A lowerable {%kN}-masked vector move (the frame pass recorded
+					-- the scratch register and the unmasked twin in the mark)
+					-- lowers exactly like the frame pass's masked stack lowering
+					-- rides a redirected buffer operand: the FULL width was
+					-- bounds-checked above, so the unmasked full-width old-bytes
+					-- traffic and the original masked register-register move touch
+					-- only proven bytes, and masked-off lanes keep their memory.
+					local mk = node.stmt.x86StackBufAddr.masked
+					if mk then
+						local isStore = (node.stmt.operands[1] == mem)
+						local vop = isStore and node.stmt.operands[2] or node.stmt.operands[1]
+						local w = (vop.width or 128) // 8
+						local pfx = (w >= 64) and "zmm" or (w >= 32) and "ymm" or "xmm"
+						local scratch = { kind = "reg", rc = "xmm", num = mk.num,
+							width = w * 8, name = pfx .. mk.num }
+						local matU = {}
+						for kk, vv in pairs(mem) do matU[kk] = vv end
+						matU.deco = nil
+						if isStore then
+							-- scratch = old memory; scratch = k ? src : scratch
+							-- (the ORIGINAL masked move, its mask decorator moved
+							-- onto the scratch destination); store scratch back
+							emit(build.insn(mk.unal, { scratch, matU },
+								{ raw = node.stmt.raw, line = node.stmt.line }))
+							local dst = {}
+							for kk, vv in pairs(scratch) do dst[kk] = vv end
+							dst.deco = mk.deco
+							emit(build.insn(node.stmt.mnemonic, { dst, vop },
+								{ raw = node.stmt.raw, line = node.stmt.line }))
+							emit(build.insn(mk.unal, { matU, scratch },
+								{ raw = node.stmt.raw, line = node.stmt.line }))
+						else
+							-- scratch = full load; dest = k ? scratch : dest
+							emit(build.insn(mk.unal, { scratch, matU },
+								{ raw = node.stmt.raw, line = node.stmt.line }))
+							local dst = {}
+							for kk, vv in pairs(vop) do dst[kk] = vv end
+							dst.deco = mk.deco
+							emit(build.insn(node.stmt.mnemonic, { dst, scratch },
+								{ raw = node.stmt.raw, line = node.stmt.line }))
+						end
+					elseif not (cg.emitPinned and cg.emitPinned(node)) then
+						emit(node)
+					end
 				elseif cg.lowerSpecial(node, mem) then
 					-- arch-specific passthrough lowering (e.g. x86 cltq -> movslq, lea passthrough)
 				elseif loadPtrDefs[node] then
@@ -4387,6 +4815,14 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if sblShift then
 			for _, g in (sblShift.groups or {}) do
 				if g.areq and g.areq > alignMod then alignMod = math.min(g.areq, 64) end
+				-- Absolute-alignment identities (xor-toggle feature) raise the
+				-- frame's effective alignment (see the return's frameAlignReq,
+				-- and computeLayout which consumes it) — this shift must mirror
+				-- the SAME widening, or the shifted slots land outside the
+				-- laid-out region.
+				if g.abs and g.abs.mod and g.abs.mod > alignMod then
+					alignMod = g.abs.mod
+				end
 			end
 		end
 		if alignMod > 16 then
@@ -4430,11 +4866,53 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		end
 		for _, g in (stackBufLayout and stackBufLayout.groups or {}) do
 			if g.areq and g.areq > alignMod then alignMod = math.min(g.areq, 64) end
+			-- An absolute-alignment identity (the xor-toggle feature) needs the
+			-- frame aligned to its modulus: the identity's residue story only
+			-- holds while rsp ≡ 0 (mod N), which the prologue's `and $-N` (the
+			-- frame's effective alignment below) provides. Uncapped: the
+			-- modulus comes from the INPUT's own `and $-N` note, whose width
+			-- the layout machinery handles for any power of two.
+			if g.abs and g.abs.mod and g.abs.mod > alignMod then
+				alignMod = g.abs.mod
+			end
 		end
 		if alignMod > 16 then
 			while ((8 * nRoots + fpPad) % alignMod) ~= 0 do fpPad += 8 end
 		end
 		local bufShift = 16 + 8 * nRoots + fpPad + fpSaveB + fpB + yoloB
+		-- Absolute-alignment identity placement: pad the START of the buffer
+		-- region so every identity-bearing group's base lands on its required
+		-- residue mod N. The pad shifts all groups uniformly, so identities are
+		-- jointly satisfiable exactly when the groups' base deltas match their
+		-- residue deltas; the frame pass proved each group's own residue, this
+		-- proves the cross-group deltas and pins the pad.
+		local sbPad = 0
+		do
+			local anchor = nil
+			for _, g in (stackBufLayout and stackBufLayout.groups or {}) do
+				if g.abs and g.abs.mod then
+					if anchor == nil then
+						anchor = g
+					else
+						local n = anchor.abs.mod
+						if n ~= g.abs.mod
+							or ((g.abs.res - anchor.abs.res - (g.base - anchor.base))
+								% n + n) % n ~= 0 then
+							error("sarcasm: stack buffer groups with absolute"
+								.. " alignment identities cannot be placed together"
+								.. " (one region pad cannot satisfy both residue"
+								.. " stories)")
+						end
+					end
+				end
+			end
+			if anchor ~= nil then
+				local n = anchor.abs.mod
+				sbPad = ((anchor.abs.res - bufShift - anchor.base) % n + n) % n
+				bufShift += sbPad
+				bufBytes += sbPad
+			end
+		end
 		local seenBuf = {}
 		local function shiftBufOps(ops)
 			for _, o in (ops or {}) do
@@ -4492,6 +4970,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			if sbl then
 				for _, g in (sbl.groups or {}) do
 					if g.areq and g.areq > effA then effA = math.min(g.areq, 64) end
+					-- Absolute-alignment identities (xor-toggle feature) raise
+					-- the frame's effective alignment to their modulus (see the
+					-- bufShift block above); uncapped like the input's own
+					-- `and $-N` note.
+					if g.abs and g.abs.mod and g.abs.mod > effA then
+						effA = g.abs.mod
+					end
 				end
 			end
 			return effA

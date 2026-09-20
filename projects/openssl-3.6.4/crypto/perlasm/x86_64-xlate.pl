@@ -130,9 +130,7 @@ elsif (`$ENV{CC} -V 2>/dev/null`
 # in crypto/aes/asm/aes-x86_64.pl), and direct call sites to other asm
 # functions carry their `#! <sig>` the same way (sig last on the line).
 # Local subroutines carry no signature: sarcasm auto-discovers them, so
-# their call sites must stay unannotated. (An earlier revision kept a
-# %SARCASM_SIGS table here and injected these annotations; all entries
-# have since migrated into the generators and the table was deleted.)
+# their call sites must stay unannotated.
 
 # Number of arguments in a sarcasm signature string.
 sub sarcasm_sig_narg {

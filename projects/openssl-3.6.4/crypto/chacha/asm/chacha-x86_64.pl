@@ -105,19 +105,8 @@ open OUT,"| \"$^X\" \"$xlate\" $flavour \"$output\""
 # input parameter block
 ($out,$inp,$len,$key,$counter)=("%rdi","%rsi","%rdx","%rcx","%r8");
 
-# The .Loop_tail* loops below index the keystream block at (%rsp) with a
-# dynamic index register. Under SARCASM that used to require a perlasm
-# workaround (an unrolled chacha_tail_sarcasm emitter with its own register
-# allocation) because sarcasm rejected stack buffers (a) on statements inside
-# B2 shared-tail clones -- the variants' tails are cloned into
-# ChaCha20_ctr32's body -- and (b) in `and $-N, %rsp`-aligned frames. Both
-# restrictions are gone: a long-form `#! stack buffer (ks, %rsp, %rsp + 64)`
-# on each tail's `movzb (%rsp,%idx),...` line resolves in each clone's own
-# frame context, and buffer groups in dynamically aligned frames are placed
-# from their accesses' own alignment residues. Reduced scenarios are pinned
-# by filc/tests/sarcasm-stackbuf-b2clone-att (+ -oob), the
-# sarcasm-reject-stackbuf-b2clone-* rejections, and
-# filc/tests/sarcasm-stackbuf-andframe-att (+ the -fp rejection).
+# Each tail loop reads its 64-byte keystream block straight off the stack;
+# the `#! stack buffer` annotations on the tail loads declare those areas.
 
 $code.=<<___;
 .text
@@ -281,10 +270,6 @@ ChaCha20_ctr32: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_startproc
 	cmp	\$0,$len
 	je	.Lno_data
-___
-# GPR scalar loads need only hardware-required alignment, so the pristine
-# 8-byte capability-word load serves both modes.
-$code.=<<___;
 	mov	OPENSSL_ia32cap_P+4(%rip),%r10
 ___
 $code.=<<___	if ($avx>2);
@@ -4105,19 +4090,6 @@ foreach (split("\n",$code)) {
 	s/\`([^\`]*)\`/eval $1/ge;
 
 	s/%x#%[yz]/%x/g;	# "down-shift"
-
-  # SARCASM-only: the 4x/4xop/8x bodies address the frame through
-  # offload bases (%rcx = %rsp+0x100, %rax = %rsp+0x200, a size
-  # optimization for shorter encodings), but taking the frame's
-  # address is rejected, so use plain %rsp-relative accesses instead
-  # (address-preserving: D-0x100(%rcx) == D(%rsp)). Applied here so
-  # the bodies above stay untouched for the gas path.
-  if ($ENV{SARCASM}) {
-    s/-0x100\(%rcx\)/(%rsp)/g;
-    s/-0x200\(%rax\)/(%rsp)/g;
-    next if (/^\tlea\t\t0x100\(%rsp\),%rcx\t# size optimization$/);
-    next if (/^\tlea\t\t0x200\(%rsp\),%rax\t# size optimization$/);
-  }
 
 	print $_,"\n";
 }

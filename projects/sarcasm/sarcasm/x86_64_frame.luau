@@ -238,6 +238,24 @@ end
 -- runs (via frame.preprocess) before any rewrite call for the same body, single-threaded.
 local D0 = 0  -- net rsp depth at the end of the prologue prefix (the frame base)
 local rbpNorm = 0  -- rbp-relative normalization base (D0 - fpDepth; 0 without an fp)
+-- Highest-numbered vector register (0-31) the most recently analyzed body never
+-- names, or nil when all are used: the rewrite's {%kN}-masked stack lowering
+-- rides it as scratch (see the vecUsed scan in analyzeFrame). Single-threaded
+-- discipline, exactly like D0/rbpNorm.
+local maskScratchNum = nil
+
+-- The {%kN}-masked vector-move mnemonics the stack rewrite can lower exactly
+-- (masked-off lanes preserved by the load / register-masked-move / store
+-- sequence): the mnemonic and its unaligned-load/store twin (the unmasked slot
+-- traffic never carries the aligned form's alignment promise — the FULL width
+-- is bounds-proven and materialized instead).
+local MASKED_STACK_MOVE = {
+	vmovdqu8 = "vmovdqu8", vmovdqu16 = "vmovdqu16",
+	vmovdqu32 = "vmovdqu32", vmovdqu64 = "vmovdqu64",
+	vmovdqa32 = "vmovdqu32", vmovdqa64 = "vmovdqu64",
+	vmovups = "vmovups", vmovupd = "vmovupd",
+	vmovaps = "vmovups", vmovapd = "vmovupd",
+}
 
 -- Desired stack alignment (max over the prologue/mid-function `and $-N, %rsp`
 -- notes, 16 when none was seen) and the rsp depth at the strongest note.
@@ -249,6 +267,20 @@ local rbpNorm = 0  -- rbp-relative normalization base (D0 - fpDepth; 0 without a
 -- analyzeFrame (single-threaded discipline, like D0).
 local frameAlignReq = 16
 local frameAndDepth = 0
+local frameAndIdx = nil  -- the prologue `and $-N, %rsp` statement's index, if any
+
+-- Containing-granule map for PARTIAL (narrow) slot accesses (set by analyzeFrame;
+-- single-threaded discipline, like D0): maps a normalized frame offset with 8-byte
+-- GPR slot traffic (an 8-byte access the rewrite virtualizes into a slot web) to
+-- true. A narrow (1/2/4-byte) access whose address falls inside such a granule
+-- routes to the CONTAINING web with a partial-access marker (x86_slotPartial)
+-- instead of creating a fresh web at its own offset — mirroring real memory, where
+-- a narrow store writes bytes of the enclosing qword and a narrow load reads them.
+-- (Without this, `mov 4(%rsp),%ebx` after `movq %rax,0(%rsp)` reads a web nothing
+-- ever defined — the "sarcasm miscompiles 4-byte loads from the high half of an
+-- 8-byte slot" gap, and a 32-bit store to offset 0 zero-extending-kills the 8-byte
+-- web's high bytes.) Reset per analyzeFrame run, exactly like frameAlignReq.
+local slotGranules = {}
 
 -- Whether the latest analyzeFrame run executed the cloneRet balance proof
 -- (true exactly when it ran with regions ~= nil). The rewrite's cloneRet
@@ -323,8 +355,8 @@ function x86_64_frame.stackBufCanonOf(id)
 	return nil
 end
 
-function x86_64_frame.recordStackBufCanon(id, lo, hi, fnName)
-	sbCanon[id] = { lo = lo, hi = hi, fn = fnName }
+function x86_64_frame.recordStackBufCanon(id, lo, hi, fnName, isSub)
+	sbCanon[id] = { lo = lo, hi = hi, fn = fnName, sub = isSub and true or nil }
 end
 
 -- The buffer layout of the most recently analyzed function: groups (merged,
@@ -398,16 +430,25 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 				.. sb.id .. ", %rsp, %rsp + N)` on a buffer access in some function): "
 				.. (st.raw or st.mnemonic))
 		end
+		if canon.sub and not st.localClone then
+			error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+				.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
+				.. " subroutine's own frame); only that subroutine's cloned code"
+				.. " addresses it - declare a buffer in this function with the"
+				.. " long form instead: " .. (st.raw or st.mnemonic))
+		end
 		loN, hiN = canon.lo, canon.hi
 	else
 		if d == nil then
 			error("sarcasm: `stack buffer` annotation on an unreachable (dead-code)"
 				.. " statement cannot be resolved: " .. (st.raw or st.mnemonic))
 		end
-		if st.localClone then
+		if st.localClone and sb.base ~= "rsp" then
 			error("sarcasm: `stack buffer` annotation on a local subroutine clone"
-				.. " statement is not supported (only shared-tail (B2) clone"
-				.. " statements may declare a buffer): " .. (st.raw or st.mnemonic))
+				.. " statement must use %rsp as its base (%" .. sb.base
+				.. " names a register whose clone-context binding the analysis"
+				.. " cannot attribute to the clone's own frame): "
+				.. (st.raw or st.mnemonic))
 		end
 		local k
 		if sb.base == "rsp" then
@@ -421,6 +462,21 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 				-- continuation of the jumper's tracking — resolve exactly like
 				-- any other clone access: k = D0 - d.
 				k = D0 - d
+			elseif st.localClone then
+				-- Feature (stack buffers in localcall clones): the clone's own
+				-- `sub` frame keys with the +8 return-address compensation
+				-- (the hardware `call` the subroutine was written against
+				-- pushes a return address the clone model does not store), so
+				-- the declaration's %rsp bounds resolve in the clone's own
+				-- keyed coordinates exactly like every other clone access:
+				-- k = D0 - d - 8. The buffer's bytes live in the clone's own
+				-- sub-frame area (checkRangeFits proves the extent against the
+				-- clone's own allocated stack). A clone declaration resolves IN
+				-- THE CLONE'S OWN CONTEXT and does not participate in the
+				-- file-wide canonical table (each caller's clone re-resolves it;
+				-- the subroutine's own text registered the canonical SUB-FRAME
+				-- range in the pre-pass).
+				k = D0 - d - 8
 			else
 				if inPrologue and d ~= D0 then
 					-- A statement in the prologue prefix at a depth other than the
@@ -463,7 +519,7 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 			k = D0 - e.depth
 		end
 		loN, hiN = k + sb.lo, k + sb.hi
-		if not st.b2clone then
+		if not st.b2clone and not st.localClone then
 			local canon = sbCanon and sbCanon[sb.id] or nil
 			if canon then
 				if canon.lo ~= loN or canon.hi ~= hiN then
@@ -610,19 +666,115 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86_aliasSaveIdx = nil
 		st.x86_midAnd = nil
 		st.x86_preAnd = nil
+		st.x86_postAnd = nil
 		st.x86_smap = nil
 		st.x86_b2band = nil
 		st.x86StackBufAccess = nil
 		st.x86StackBufIdx = nil
 		st.x86StackBufRep = nil
 		st.x86StackBufLea = nil
+		st.x86StackBufAddr = nil
+		st.x86StackBufLeaValue = nil
+		st.x86StackBufLeaValueComputed = nil
 	end
 	frameAlignReq = 16
 	frameAndDepth = 0
+	frameAndIdx = nil
+	slotGranules = {}
 	-- Record whether this run executes the cloneRet balance proof below
 	-- (regions ~= nil). The rewrite asserts the flag before consuming any
 	-- cloneRet exemption — the machine check behind the early-run skip.
 	cloneRetProofRan = (regions ~= nil)
+
+	-- Feature A (by-address `#! stack buffer` accesses), pre-fixpoint probe: the
+	-- canonical ranges of every buffer id LONG-FORM-declared in this body. The
+	-- fixpoint's carrier recognition consults them to keep a buffer-interior
+	-- `leaq K(%rsp), %reg` from parking a PHANTOM carrier when its destination is
+	-- used as a VALUE (the web must hold a real — lowered — buffer address). The
+	-- ranges are the canonical ones the driver pre-pass resolved; for this
+	-- function's own declarations they are exact (the canonical rule pins every
+	-- non-clone long form of an id to one file-wide normalized range, and the
+	-- per-function scan re-checks it). For a subroutine-declared id the canonical
+	-- range is in the SUBROUTINE's own frame coordinates, which a clone's leas
+	-- only reach through a per-caller shift this early pass cannot know — such a
+	-- lea keeps today's path (a false negative, never unsound). A FALSE POSITIVE
+	-- (a lea whose offset coincides with a canonical range it does not belong to)
+	-- is equally safe: the lea only stops parking a carrier, and the escape
+	-- detector — which uses the exact post-fixpoint ranges — still routes it
+	-- through today's D9 promotion.
+	local bufProbeRanges = nil
+	local bufProbeSuppress = false
+	-- Per-B2-clone raw declaration ranges (see the collection above): clone idx
+	-- -> array of `stackBufAnno` long forms declared on the clone's statements.
+	local bufB2DeclRaw = nil
+	-- Registers whose value an ANNOTATED rep consumes as its stack-alias side:
+	-- the carrier path (not the by-address value path) materializes those, so
+	-- the value-lea exemption below must leave them alone.
+	local bufRepRegs = {}
+	do
+		for _, st in body do
+			if st.kind == "insn" and st.stackBufAnno and st.repPrefix ~= nil then
+				-- The implicit %rsi (6) and %rdi (7) of a rep movs*/stos*: the
+				-- rep's stack-alias sides ride the carrier machinery, so a lea
+				-- parking one of them must stay a carrier even when its offset
+				-- lands inside a declared buffer.
+				bufRepRegs[6] = true
+				bufRepRegs[7] = true
+			end
+		end
+	end
+	do
+		local hasDecl = false
+		for _, st in body do
+			if st.kind == "insn" and st.stackBufAnno and not st.stackBufAnno.short then
+				hasDecl = true break
+			end
+		end
+		if hasDecl then
+			-- Resolution-only runs (the driver pre-pass) have an incomplete
+			-- canonical table — the pre-pass records each declaration only AFTER
+			-- this analysis. There the fixpoint merely suppresses the carrier
+			-- value-use rejection for lea-form carriers (the analysis output the
+			-- pre-pass consumes — depths, carriers, aliases — is re-derived by
+			-- every later run; only the resolution reads it), so a value-used
+			-- buffer lea cannot abort the pre-pass before the canonical table
+			-- exists.
+			bufProbeSuppress = sbResolving
+			for _, st in body do
+				if st.kind == "insn" and st.stackBufAnno and not st.stackBufAnno.short then
+					local canon = sbCanon and sbCanon[st.stackBufAnno.id] or nil
+					if canon then
+						if not bufProbeRanges then bufProbeRanges = {} end
+						table.insert(bufProbeRanges, { lo = canon.lo, hi = canon.hi,
+							id = st.stackBufAnno.id })
+					end
+				end
+			end
+			-- B2 shared-tail clone declarations, keyed per clone index: the raw
+			-- (%rsp + lo, %rsp + hi) annotation ranges the clone's own statements
+			-- declare. The fixpoint's clone-lea probe (below) tests a clone lea's
+			-- RAW displacement against them — in the clone's own frame coordinates
+			-- the declaration and the lea key the same way (both %rsp-relative at
+			-- the statement's depth), so a `leaq K(%rsp)` whose K lands inside a
+			-- raw declared range is a buffer-interior lea even though its
+			-- normalized offset lives in the clone's band. A clone's declarations
+			-- and its buffer leas sit at the same post-prologue depth in every
+			-- shape this models (the OpenSSL mb bodies); if a future shape
+			-- separates them by pushes, the probe's raw test and the buffer
+			-- scan's exact banded test disagree and the lea falls back to
+			-- today's carrier path (whose value-use rejection fails the compile
+			-- closed — never unsound).
+			for _, st in body do
+				if st.kind == "insn" and st.stackBufAnno and not st.stackBufAnno.short
+					and type(st.b2clone) == "number" then
+					if not bufB2DeclRaw then bufB2DeclRaw = {} end
+					local lst = bufB2DeclRaw[st.b2clone]
+					if not lst then lst = {} bufB2DeclRaw[st.b2clone] = lst end
+					table.insert(lst, st.stackBufAnno)
+				end
+			end
+		end
+	end
 
 	-- Fixed-alloca region lookup mirroring frame.preprocess's: `dyn` selects the
 	-- alignment-anchored regions ("dyn"-depth rsp coordinates), static the
@@ -792,6 +944,24 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				elseif b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp"
 					and not usesRbp then
 					usesRbp = true; fpDepth = depth
+				elseif b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].name == "rbp"
+					and ops[2] and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+					and not ops[2].index and not ops[2].dispSym and (ops[2].dispVal or 0) == 0 then
+					-- `leaq 0(%rsp), %rbp` (and the displacement-less `leaq (%rsp), %rbp`):
+					-- the lea spelling of the frame-pointer establishment `movq %rsp, %rbp`
+					-- (OpenSSL's aes-gcm-avx512 prologue). Identical semantics — rbp parks
+					-- the current rsp — so it establishes the frame pointer exactly like the
+					-- mov form: usesRbp/fpDepth drive rbpNorm, the fp state, and every
+					-- rbp-relative key downstream. A SECOND establishment inside the prefix
+					-- ends it (the statement is then rejected mid-body by the rewrite, the
+					-- same as a second `movq %rsp, %rbp`, which the prefix ends via
+					-- insnTouchesFrame — this branch must run before the transparent
+					-- lea-reads-sp case below, which would otherwise swallow it).
+					if not usesRbp then
+						usesRbp = true; fpDepth = depth
+					else
+						prologueEnd = i break
+					end
 				elseif b == "mov" and ops[2] and ops[2].rc == "sp"
 					and ops[1] and ops[1].rc == "gpr" and ops[1].name ~= "rbp" then
 					-- `movq %rsp, %rbx`: the prologue parked the (known) stack pointer in
@@ -850,6 +1020,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if n > frameAlignReq then
 							frameAlignReq = n; frameAndDepth = depth
 						end
+						-- The and's own position: the carrier/alias keying below
+						-- decides "parked after the and" by prefix order when the
+						-- alignment and is a PROLOGUE one (the mid-function walk
+						-- owns the mid-function case).
+						frameAndIdx = i
 					else
 						prologueEnd = i break
 					end
@@ -1029,6 +1204,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- Establishing the frame pointer (`movq %rsp, %rbp`): from here %rbp holds a
 			-- fixed frame-relative value on this path. Re-establishing it mid-function
 			-- is rejected by the rewrite, so this is the one transition to "est".
+			return d, sv, "est"
+		end
+		if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].name == "rbp"
+			and ops[2] and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+			and not ops[2].index and not ops[2].dispSym and (ops[2].dispVal or 0) == 0 then
+			-- `leaq 0(%rsp), %rbp`: the lea spelling of the frame-pointer establishment
+			-- (see the prologue prefix scan) — the same single transition to "est".
 			return d, sv, "est"
 		end
 		if isDynDepth(d) or sv == "dyn" then
@@ -1490,6 +1672,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		local ro = d.scopeDepth - e.depth + (mem.dispVal or 0)
 		return ro >= d.anchored.base and ro < d.anchored.base + d.anchored.size
 	end
+	-- Feature (D0 interior lea-save carriers): conservative reachability scan for
+	-- the prologue-depth carrier relaxation (see the transfer's isLeaSave block).
+	-- Assigned below, after `successors` (the fixpoint's own CFG) is defined —
+	-- `transfer` above closes over the upvalue, and the fixpoint only calls it
+	-- once that assignment has run. Results are cached per lea statement (the
+	-- scan is deterministic within one analyzeFrame run; the cache table is a
+	-- local of this run, so a later run with different regions recomputes).
+	local leaSaveUsesMemoryOnly = nil
+	local leaMemOnlyCache = {}
 	local function transfer(st, d, sv, smap, fp, idx)
 		local ops = st.operands
 		-- A save form records its save wherever the depth is provable (a "dyn" or
@@ -1534,7 +1725,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			and d ~= nil and not isDynDepth(d)
 			and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
 			local mem = ops[2]
-			if ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr" and ops[1].name ~= "rbp"
+			-- Feature (lea-save carriers at provable depths): the destination may be
+			-- %rbp too, when %rbp is NOT the frame pointer (usesRbp false — the same
+			-- freedom carrierCopyOf grants the rsaz-avx2 `movq %rax,%rbp` shape); with
+			-- a frame pointer established, a lea into %rbp would clobber the FP and
+			-- stays unrecognized (the rewrite rejects it).
+			if ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+				and (ops[1].name ~= "rbp" or not usesRbp)
 				and mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
 				and not mem.index and not mem.dispSym then
 				local k = mem.dispVal or 0
@@ -1543,9 +1740,132 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- membership test keys its displacement the same way.
 				local pk = st.localClone and (k - 8) or k
 				local rkey = st.localClone and (k + D0 - d - 8) or k
-				if (pk == d or pk <= 0) and not regionOf(rkey, false) then
-					isLeaSave = true
-					leaSaveForm = "leaq " .. k .. "(%rsp)"
+				-- Feature (lea-save carriers at provable depths): a `leaq K(%rsp), %reg`
+				-- at ANY provable depth parks a carrier whose value is
+				-- entry_rsp - (d - K) — an ABSOLUTE entry-relative address exactly like
+				-- the historical forms. An access `disp(%reg)` through it resolves to
+				-- the normalized offset K + disp + D0 - d — the SAME slot an rsp-relative
+				-- access `(disp + K)(%rsp)` at depth d keys — so the carrier spelling is
+				-- pure sugar over the existing (fixpoint-proven) rsp-relative machinery:
+				-- the alias window, bounds checks, region membership, and FP-cluster
+				-- keying below are all shared. This is what real perlasm parks mid-body:
+				-- chacha's `leaq 0x100(%rsp),%rcx` behind a dispatch merge label (the
+				-- prologue scan stopped, so d=328 while D0=0) and poly1305's
+				-- `leaq 0x90(%rsp),%rax` post-`and` frame anchor. Restricting the new
+				-- form to NUMBER depths keeps the {anchored}/{dynreg} scopes (table d)
+				-- on their own restore-base lea paths, and keeping it off localcall
+				-- clone statements keeps their region-pointer leas exactly as they
+				-- were. B2 shared-tail clone statements ARE included: their carrier
+				-- recognition is gated to the shapes the escape detector would have
+				-- REJECTED (see the pre-detector pass below) so today's promoted
+				-- value-escaping clone leas keep today's path byte for byte.
+				local leaAny = type(d) == "number" and (d ~= D0 or ops[1].name == "rbp")
+					and not st.localClone
+				-- Feature (D0 interior lea-save carriers): at the PROLOGUE depth
+				-- (d == D0) the historical forms (K == d: the entry-rsp park;
+				-- K <= 0: the below-rsp anchor) are joined by the frame-INTERIOR
+				-- K when every reachable use of the destination register between
+				-- this lea and its (re)definition is a single plain memory-base
+				-- use — the exact shape the carrier discipline's aliasOk check
+				-- legalizes (chacha's 4xop/8x bodies: `leaq 0x100(%rsp),%rcx`
+				-- inside the prologue prefix, whose register the body only ever
+				-- reads as an addressing base). Parking the carrier keeps the lea
+				-- out of the D9 escape detector, which would otherwise promote
+				-- the whole fixed frame to a GC region and collide with any
+				-- declared stack buffer. The scan is CONSERVATIVE: any value use
+				-- (an ALU operand, a push, an address-taking lea through the
+				-- register, an indexed or symbolic memory form, a control-flow
+				-- read, a second use in one statement, or anything classify
+				-- cannot model exactly), any carrier use whose alias window or
+				-- region membership the alias check would reject, and any
+				-- control-flow ambiguity about whether the register still holds
+				-- the carrier all keep today's promotion path byte for byte.
+				-- B2-clone statements stay on their own banding pass, and the
+				-- %rbp destination stays on the leaAny path (it is one when the
+				-- frame pointer is not established).
+				local leaD0 = nil
+				-- B2 shared-tail clone statements are included: a clone entered at
+				-- the jumper's entry depth re-runs its own prologue, so its
+				-- frame-INTERIOR leas sit at dd == D0 exactly like the jumper's
+				-- own (the OpenSSL sha1-mb shared 4x bodies). The carrier's parked
+				-- value is entry-relative (absolute), and an access through it
+				-- keys `disp + D0 - depth` — the SAME slot the clone's rsp-relative
+				-- spelling keys — so the clone banding is a no-op here and the
+				-- same conservative memory-only scan that legalizes the jumper's
+				-- lea legalizes the clone's.
+				if type(d) == "number" and d == D0 and not st.localClone
+					and ops[1].name ~= "rbp"
+					and k > 0 and k ~= d then
+					leaD0 = leaSaveUsesMemoryOnly(st, idx, d - k)
+				end
+				-- Feature (by-address buffer value leas): a `leaq K(%rsp), %reg`
+				-- whose computed normalized offset lands inside a DECLARED STACK
+				-- BUFFER's range does not park a phantom carrier when the carrier
+				-- scan would reject its uses — the destination web is an ordinary
+				-- integer web holding the buffer byte address (the rewrite lowers
+				-- the lea into the buffer region and the annotated accesses
+				-- through it become runtime-checked by-address accesses). The
+				-- memory-only-use shapes the carrier discipline legalizes keep
+				-- today's static carrier path (leaSaveUsesMemoryOnly re-proves
+				-- them here); only the value-use shapes (an ALU operand, a
+				-- cmov source, a store to memory, ...) fall out to the ordinary
+				-- def. The HISTORICAL forms (K == d: the entry-rsp park;
+				-- K <= 0: the below-rsp anchor) never fall out — a buffer may
+				-- overlap the below-rsp window, and their carrier + static
+				-- classification already handles its accesses.
+				-- B2 shared-tail clone statements are included (Feature A in
+				-- clones, the aesni-mb dec8x shape): their probe tests the lea's
+				-- RAW displacement against the clone's own raw declared ranges
+				-- (bufB2DeclRaw above) — the clone's band is applied later, by
+				-- the buffer scan's exact banded re-check in phase (a0), so a
+				-- probe hit only decides carrier-vs-web here. A probe hit also
+				-- suppresses the carrier value-use rejection for the toggle
+				-- idiom (`xorq $0x80, %reg` — the aesni-mb dec8x base flip): the
+				-- web is a real value, and computing on it is ordinary integer
+				-- arithmetic.
+				local inBufProbe = false
+				if bufProbeRanges and type(d) == "number" and not isDynDepth(d) then
+					if st.b2clone then
+						local lst = bufB2DeclRaw and bufB2DeclRaw[st.b2clone] or nil
+						if lst then
+							for _, sba in lst do
+								if k >= sba.lo and k < sba.hi then
+									inBufProbe = true break
+								end
+							end
+						end
+					else
+						local loff = k + D0 - d - (st.localClone and 8 or 0)
+						for _, r in bufProbeRanges do
+							if loff >= r.lo and loff < r.hi then inBufProbe = true break end
+						end
+					end
+				end
+				if (pk == d or pk <= 0 or leaAny or leaD0) and not regionOf(rkey, false) then
+					if inBufProbe and not bufRepRegs[ops[1].num]
+						and not leaSaveUsesMemoryOnly(st, idx, d - k) then
+						-- a buffer-interior VALUE lea: an ordinary web definition.
+						-- The web's value is COMPUTED ON (this is the fall-out
+						-- reason: the lea's uses are not all memory-only — the
+						-- aesni-mb dec8x `xorq $0x80, %rbp` base flip) — recorded
+						-- for the buffer scan's group alignment identity (a
+						-- computed base's arithmetic keys absolute address bits,
+						-- which the lowered group must preserve).
+						st.x86StackBufLeaValueComputed = true
+					elseif inBufProbe and st.localClone then
+						-- A buffer-interior lea inside a localcall clone: the
+						-- carrier's parked value would key the clone's alias
+						-- accesses through the return-address compensation
+						-- twice (the transfer parks clone leas 8 deep AND the
+						-- alias keying subtracts 8), so the carrier spelling
+						-- cannot name the buffer bytes. The value-lea form is
+						-- uniformly correct for clone buffer leas: the rewrite
+						-- emits the lea into the lowered buffer region with the
+						-- same keying the by-address checks use.
+					else
+						isLeaSave = true
+						leaSaveForm = "leaq " .. k .. "(%rsp)"
+					end
 				end
 			end
 		end
@@ -1608,6 +1928,48 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					leaSaveParked = parked
 				end
 			end
+		end
+		-- Feature (derived stack carriers): a `leaq K(%carrier), %reg` whose base
+		-- register provably holds an UNREDEFINED saved-rsp carrier derives a NEW
+		-- carrier parked at the base's depth minus K. The parked value is
+		-- entry-relative and absolute exactly like the base's (the base holds
+		-- entry_rsp - depth; adding K gives entry_rsp - (depth - K)), so the
+		-- derived carrier rides the same discipline: dropped by the rewrite,
+		-- every non-carrier use rejected, and accesses through it key slots via
+		-- the same aliasSlotOf normalization (disp + D0 - depth) — with the
+		-- clone-band shift applied by the existing aliasOff banding pass, since
+		-- the derived carrier's saveIdx names the deriving lea (clone code when
+		-- the base was parked there). This is the perlasm rolling-cursor shape
+		-- (sha1-avx2's X[]+K[] window: `leaq 128(%rsp),%r13` then
+		-- `leaq 256(%r13),%r13` per schedule phase). A K that would park above
+		-- the entry rsp (depth - K < 0) stays unproven and falls through to the
+		-- ordinary carrier-use rejection. Runs before the recovery/carrier-flow
+		-- detection below: the derivation both READS the base carrier (legally)
+		-- and defines the destination.
+		local derivedDepth = nil
+		if x86.baseMnemonic(string.lower(st.mnemonic)) == "lea"
+			and ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+			and (ops[1].name ~= "rbp" or not usesRbp)
+			and (ops[1].width == 64 or ops[1].width == nil)
+			and ops[2] and ops[2].kind == "mem" and ops[2].base
+			and ops[2].base.kind == "reg" and ops[2].base.rc == "gpr"
+			and (ops[2].base.name ~= "rbp" or not usesRbp)
+			and not ops[2].index and not ops[2].dispSym then
+			local e = smap[ops[2].base.name]
+			local k = ops[2].dispVal or 0
+			if e and not e.redefined and not e.slot and not e.roff and not e.conflict
+				and type(e.depth) == "number" and e.depth - k >= 0 then
+				derivedDepth = e.depth - k
+			end
+		end
+		if derivedDepth then
+			local out = {}
+			for k2, e2 in pairs(smap) do out[k2] = e2 end
+			out[ops[1].name] = { name = ops[1].name, num = ops[1].num,
+				depth = derivedDepth, saveIdx = idx,
+				redefined = false }
+			local nd0, nsv0, nfp0 = transferCore(st, d, sv, fp, nil)
+			return nd0, nsv0, out, nfp0
 		end
 		local owned = nil  -- the historical allocaPlace/allocaOwned marks are never set
 		-- (the `;! alloca` annotations are gone), so recovery/carrier detection always runs.
@@ -1860,7 +2222,27 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						else
 							aw = gprStackWidth(string.lower(st.mnemonic), amem)
 						end
-						if aw and ao >= -128 and ao + aw <= frameSize
+						-- The alias window's LOWER bound follows the access point's own
+						-- provable depth, exactly like a direct rsp-relative access at
+						-- that depth (whose valid window extends down to the current rsp
+						-- and its red zone when the depth is perturbed: the rewrite's
+						-- `lowB = min(-128, D0 - d - 128)`). The carrier spelling names
+						-- the same addresses as the rsp-relative spelling (the keys are
+						-- address-canonical), so it must get the same window — this is
+						-- what lets poly1305's `leaq -88(%rsp),%r11` anchor reach its
+						-- frame at normalized offsets well below -128. A "dyn"/scope
+						-- depth keeps the historical conservative [-128, frameSize)
+						-- window. (The upper bound stays frameSize for both spellings.)
+						local lowA = -128
+						if type(d) == "number" then lowA = math.min(-128, D0 - d - 128) end
+						-- The UPPER bound is deferred for B2 shared-tail clone statements:
+						-- their (unbanded, absolute) carrier offsets feed the frame-size
+						-- extension below, which runs after this fixpoint — checking them
+						-- against the pre-extension extent would reject shapes the final
+						-- frame provably covers. The rewrite's checkBounds (running with
+						-- the FINAL extent) remains the binding gate.
+						if aw and ao >= lowA
+							and (st.b2clone or ao + aw <= frameSize)
 							and not regionOf(ao, false) then
 							aliasOk = true
 						end
@@ -1894,6 +2276,16 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					end
 				end
 				local repSide = false
+				if nUses == 1 and st.stackBufAnno and c.rep and st.localClone then
+					-- A `rep` string op carrying a stack-buffer annotation inside a
+					-- localcall clone: the clone's +8 keying would need its own
+					-- alias-side model (the carrier's parked depth and the
+					-- rep's dynamic count check both shift), which is not built.
+					error("sarcasm: `stack buffer` annotation on a rep string op inside"
+						.. " a local subroutine clone is not supported (the clone's"
+						.. " return-address compensation would need its own rep alias"
+						.. " model): " .. (st.raw or st.mnemonic))
+				end
 				if nUses == 1 and st.stackBufAnno and c.rep and not owned then
 					local sideNum = nil
 					local isWrite = nil
@@ -1940,11 +2332,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- vanishes. Any OTHER use observes the phantom value.
 					and not (nUses == 1 and regionCarrierAccess(st, d, e))
 					and not aliasOk then
-					error("sarcasm: reading %" .. name .. " while it holds the prologue"
+					-- Resolution-only runs (the driver pre-pass) suppress the
+					-- rejection for LEA-form carriers: a buffer-interior value
+					-- lea only legalizes once the canonical table exists (see
+					-- bufProbeRanges above), and the pre-pass's analysis output
+					-- is re-derived by every later run — only the declaration
+					-- resolution reads it. The use falls through to the ordinary
+					-- def-marking (a redefining use kills the carrier, as today).
+					if not (bufProbeSuppress and e.form ~= nil) then
+						error("sarcasm: reading %" .. name .. " while it holds the prologue"
 						.. " `" .. (e.form or "movq %rsp") .. ", %" .. name .. "` save cannot be proven safe (the"
 						.. " save is dropped by the rewrite — the register's stack value"
 						.. " does not exist in the output; recover %rsp from it first or"
 						.. " redefine it): " .. (st.raw or st.mnemonic))
+					end
 				end
 			end
 			if not e.redefined and not e.slot then
@@ -2154,9 +2555,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		-- invents paths that can never execute. (`leave`, by contrast, IS
 		-- fallthrough — an rsp/rbp update whose execution continues on the next
 		-- instruction — so it keeps the fallthrough below deliberately.)
-		-- NOTE: x86.classify still reports fallsThrough=true for these (the
-		-- lift's reaching-definitions over-approximates, which is sound); this
-		-- function is the frame pass's own precise CFG and terminates there.
+		-- NOTE: x86.classify mirrors this trap set (fallsThrough=false for the
+		-- same mnemonics), so validateBody's reachability, the lift's
+		-- reaching-definitions, regalloc and DCE all model these as terminal too;
+		-- this function remains the frame pass's own precise CFG.
 		if m == "ud2" or m == "int3" or m == "int" or m == "hlt" then return out end
 		if b == "jmp" then
 			local o = st.operands[1]
@@ -2169,6 +2571,287 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 		if nxt <= #body then table.insert(out, nxt) end
 		return out
+	end
+
+	-- Feature (D0 interior lea-save carriers): the conservative scan behind the
+	-- transfer's `leaD0` relaxation (see the long comment there). Question: may
+	-- the `leaq K(%rsp), %reg` at statement `idx` (executing at the prologue
+	-- depth, K inside the frame) park a carrier — i.e. is every use of `reg`
+	-- on every path from this lea until the register's next definition a use
+	-- the carrier discipline legalizes? It walks the SAME CFG the depth
+	-- fixpoint walks (successors above), forward from the function entry, with
+	-- a four-state abstract value for the register (merged on arrival):
+	--   0 — the register holds no parked value (before the lea, or after a
+	--       definition of it on every path reaching this point);
+	--   1 — it provably holds THIS lea's carrier (parked depth parkedDepth);
+	--   2 — it holds a carrier parked by a DIFFERENT lea (a foreign park): its
+	--       uses are that lea's own scan's business, but a merge with state 1
+	--       is a smap depth disagreement (CONFLICT);
+	--   3 — CONFLICT: paths disagree about whether any parked value is live
+	--       (the smap merge records an explicit conflict entry, and the
+	--       rewrite statically rejects every memory access through a
+	--       conflicted base register) — so a memory-base use here falls back.
+	-- The walk also carries its own rsp-depth tracking (`dstate`, a number or
+	-- "dyn", mirroring the depth fixpoint's transitions with conservative
+	-- "dyn" fallbacks) — used ONLY to compute a foreign park's parked depth,
+	-- so two leas parking the same value (chacha 8x's re-park: same K at the
+	-- same depth) merge as state 1 instead of falsely conflicting.
+	-- At state 1 the only legal use shape is the aliasOk one: exactly one
+	-- modeled use of the register, as the plain (no index, no symbolic
+	-- displacement) base of the statement's single memory operand, on an
+	-- instruction that neither computes an address through the carrier (`lea`)
+	-- nor reads it for control flow (`call *`/`jmp *`), with the self-xor/
+	-- self-sub zeroing idiom exempt (the written value does not depend on the
+	-- old one) and an incoming yolo stack-argument read redirected. The access
+	-- must also resolve inside the alias window (normalized offset
+	-- disp + D0 - parkedDepth in [-128, frameSize), outside every promoted
+	-- region) — the same proof the fixpoint's aliasOk re-runs at the use, with
+	-- the lea's own depth as the window's depth (every later use point's window
+	-- is at least as wide, so this is the tightest bound). A definition of the
+	-- register (any width — the same modeled-def rule the smap's def-marking
+	-- uses) drops the carrier on outgoing edges. A plain `ret` reached while
+	-- the register holds the carrier (state 1, or state 3 for %rax in a
+	-- function returning an integer class) is the one non-memory read classify
+	-- does not model — the rewrite rejects a %rax carrier live at a returning
+	-- ret — so it falls back too. A hardware call reads the SysV integer
+	-- argument registers (classify models neither that nor the caller-saved
+	-- clobber, so the scan owns both). Anything the scan cannot prove (a
+	-- statement classify rejects, a shape it does not know) returns false,
+	-- which keeps today's D9 escape promotion path byte for byte.
+		leaSaveUsesMemoryOnly = function(st, idx, parkedDepth)
+		local cached = leaMemOnlyCache[st]
+		if cached ~= nil then return cached end
+		local res = false
+		local failWhy = nil
+		while true do
+		local dest = st.operands and st.operands[1]
+		if not (dest and dest.kind == "reg" and dest.rc == "gpr") then break end
+		local parsed = x86parse.classifyReg(dest.name)
+		if not (parsed and parsed.rc == "gpr") then break end
+		local regNum = parsed.num
+		local regName = dest.name
+		-- The rewrite's returning-ret guard keys on the integer-class return
+		-- (the same expression the annotation pass uses below).
+		local retIsGpr = sigDesc and not sigDesc.isVoid
+			and not (sigDesc.retTypes[1] and sig.isFpClass(sigDesc.retTypes[1]))
+		local firstInsn
+		for i, s0 in body do
+			if s0.kind == "insn" then firstInsn = i break end
+		end
+		if firstInsn == nil then break end
+		-- Abstract state per statement index, merged on arrival:
+		--   cstate 0 — the register does not hold any parked value here;
+		--   cstate 1 — it holds THIS lea's carrier (parked depth parkedDepth);
+		--   cstate 2 — it holds a carrier parked by a DIFFERENT lea whose parked
+		--              depth provably differs from (or is unknown against) this
+		--              one — uses are that lea's own business, but a merge with
+		--              state 1 is a smap CONFLICT;
+		--   cstate 3 — CONFLICT/ambiguous: paths disagree (the smap merge would
+		--              record an explicit conflict entry — the rewrite statically
+		--              rejects every memory access through a conflicted base).
+		-- `dstate` is this walk's own rsp-depth tracking (number, or "dyn"), used
+		-- ONLY to compute another same-destination lea's parked depth — it
+		-- mirrors the depth fixpoint's transitions with conservative "dyn"
+		-- fallbacks, so a provable depth here is the depth the fixpoint proves.
+		local seen = {}
+		local instateC, instateD = {}, {}
+		local work = { { firstInsn, 0, 0 } }
+		instateC[firstInsn] = 0
+		instateD[firstInsn] = 0
+		res = true
+		while #work > 0 do
+			local item = table.remove(work)
+			local i, s, dv = item[1], item[2], item[3]
+			local key = i .. ":" .. s .. ":" .. tostring(dv)
+			if seen[key] then continue end
+			seen[key] = true
+			local st2 = body[i]
+			-- (successors only ever yields insn indices, but stay defensive.)
+			if not (st2 and st2.kind == "insn") then res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break end
+			local okC, c = pcall(classOf, st2)
+			if not (okC and c) then res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break end
+			local bm = string.lower(st2.mnemonic)
+			local bb = x86.baseMnemonic(bm)
+			local ops2 = st2.operands or {}
+			-- Outgoing carrier state.
+			local out = s
+			local isMyLea = (i == idx)
+			if not isMyLea and bb == "lea" and ops2[1] and ops2[1].kind == "reg"
+				and ops2[1].rc == "gpr" and ops2[1].num == regNum
+				and ops2[2] and ops2[2].kind == "mem" and ops2[2].base
+				and ops2[2].base.rc == "sp" and not ops2[2].index
+				and not ops2[2].dispSym then
+				-- Another lea parks the same register: the parked value is
+				-- rsp + K at THIS statement's depth.
+
+				if type(dv) == "number" then
+					local pdf = dv - (ops2[2].dispVal or 0)
+					out = (pdf == parkedDepth) and 1 or 2
+				else
+					out = 2
+				end
+			elseif isMyLea then
+				out = 1
+			else
+				for _, dd in c.defs do
+					if dd.kind == "reg" and dd.rc == "gpr" and dd.num == regNum then
+						out = 0 break
+					end
+				end
+			end
+			-- A hardware call reads the SysV integer ARGUMENT registers (the
+			-- callee receives them) and clobbers every caller-saved register.
+			-- classify models neither, so the scan owns both: an argument
+			-- register holding the carrier at a call is a VALUE use (fall back
+			-- — the promotion path's region pointer is a real, defined value
+			-- there), and any caller-saved carrier dies at the call exactly
+			-- like the smap's call poison. A LOCAL call is a branch to an
+			-- inlined clone: it reads the arguments too (the clone consumes
+			-- them) but clobbers nothing by itself.
+			if bb == "call" then
+				if (s == 1 or s == 3) and x86.ARG_REGS[regNum] then
+					res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break
+				end
+				-- Only a LIVE (unconflicted) caller-saved carrier dies at the
+				-- call — the smap's poison loop skips conflicted entries, so a
+				-- conflict survives it and every later memory-base use through
+				-- the register still rejects (the state must stay 3).
+				if st2.localCall == nil and (out == 1 or out == 2)
+					and not x86.CALLEE_SAVED[regName] then
+					out = 0
+				end
+			end
+			-- Outgoing rsp depth (mirrors the depth fixpoint's transitions).
+			local ndv = dv
+			if type(dv) == "number" then
+				if bb == "push" then ndv = dv + 8
+				elseif bb == "pop" then ndv = dv - 8
+				elseif (bb == "sub" or bb == "add") and ops2[1] and ops2[1].rc == "sp"
+					and ops2[2] and ops2[2].kind == "imm" then
+					ndv = (bb == "sub") and (dv + immVal(ops2[2])) or (dv - immVal(ops2[2]))
+				elseif bb == "lea" and ops2[1] and ops2[1].rc == "sp" and ops2[2]
+					and ops2[2].kind == "mem" and ops2[2].base and ops2[2].base.rc == "sp"
+					and not ops2[2].index and not ops2[2].dispSym then
+					ndv = dv - (ops2[2].dispVal or 0)
+				elseif bb == "and" and ops2[1] and ops2[1].rc == "sp" then
+					-- `and $-N, %rsp`: the depth fixpoint propagates the depth
+					-- unchanged (the alignment machinery owns the and's slack).
+				elseif bb == "leave" or insnWritesSp(st2) then
+					ndv = "dyn"  -- mov reg,rsp / leave / rbp recoveries: unprovable here
+				end
+			end
+			-- Use checks at the IN state. State 2 (holding a foreign carrier)
+			-- checks nothing here: the foreign lea's own scan governs its uses
+			-- (and a state-2/state-1 MERGE below is what records the conflict).
+			if s == 1 or s == 3 then
+				local nUses = 0
+				for _, u in c.uses do
+					if u.kind == "reg" and u.rc == "gpr" and u.num == regNum then
+						nUses += 1
+					end
+				end
+				if nUses > 0 then
+					-- The self-xor/self-sub zeroing idiom observes nothing (the
+					-- same exemption the carrier discipline's use-check grants).
+					local zeroing = (bb == "xor" or bb == "sub") and #ops2 >= 2
+						and ops2[1] and ops2[2]
+						and ops2[1].kind == "reg" and ops2[2].kind == "reg"
+						and ops2[1].num == regNum and ops2[2].num == regNum
+					if not zeroing then
+						if s == 3 then
+							-- A conflicted carrier: the rewrite rejects every
+							-- memory access through the register (it cannot
+							-- decide stack+offset against heap/argument pointer),
+							-- so any memory-base use falls back. A value use
+							-- rides the ordinary register webs — legal.
+							local mem2, memCount2 = nil, 0
+							for _, o in ops2 do
+								if o.kind == "mem" then mem2 = o; memCount2 += 1 end
+							end
+							if mem2 and mem2.base and mem2.base.kind == "reg"
+								and mem2.base.rc == "gpr" and mem2.base.num == regNum then
+								res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break
+							end
+						else
+							local mem2, memCount2 = nil, 0
+							for _, o in ops2 do
+								if o.kind == "mem" then mem2 = o; memCount2 += 1 end
+							end
+							local baseOk = mem2 ~= nil and memCount2 == 1
+								and mem2.base and mem2.base.kind == "reg"
+								and mem2.base.rc == "gpr" and mem2.base.num == regNum
+								and not mem2.index and not mem2.dispSym
+							-- A `leaq K(%carrier), %reg` through the tracked
+							-- carrier is a DERIVATION (the smap's derived-carrier
+							-- feature): the tracked value flows into the new
+							-- carrier legally — it is not an observation of the
+							-- phantom. The tracked register's state after it is
+							-- governed by the def handling below (dest == base
+							-- kills the tracked carrier; dest ~= base keeps it);
+							-- the derived register's own uses are the smap's.
+							if not (baseOk and nUses == 1)
+								or (bb == "lea" and not (baseOk and nUses == 1))
+								or bb == "call" or bb == "jmp" then
+								res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break
+							end
+							-- The aliasOk window/region proof (see the fixpoint's
+							-- use-check): the access must resolve inside the
+							-- frame window and outside every promoted region.
+							if not yoloArgSlotOf(st2, regName, parkedDepth) then
+								local ao = (mem2.dispVal or 0) + D0 - parkedDepth
+								local afpe = fpKnowledge.lookup(bm)
+								local aw = nil
+								if isFpInsn(afpe, st2) then
+									local okW, ww = pcall(fpKnowledge.accessWidth,
+										bm, ops2, st2.raw)
+									if not (okW and ww) then res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break end
+									aw = ww
+								else
+									aw = gprStackWidth(bm, mem2)
+								end
+								if not aw then res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break end
+								if ao < -128 or ao + aw > frameSize
+									or regionOf(ao, false) then
+									res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break
+								end
+							end
+						end
+					end
+				end
+			end
+			-- A plain `ret` reads the integer return register in the ABI sense
+			-- (the rewrite rejects a %rax carrier live at such a ret).
+			if bb == "ret" and not st2.localRet and not st2.tailRet
+				and retIsGpr and regNum == 0 and (s == 1 or s == 3) then
+				res = false failWhy = "at: " .. (st2 and (st2.raw or st2.mnemonic) or "?") break
+			end
+			-- Propagate, merging on arrival: holding-states of different provenance
+			-- conflict (0+holding -> 3, 1+2 -> 3, 2+2 -> 3, anything+3 -> 3);
+			-- identical holding states agree; depths merge to "dyn" on mismatch.
+			for _, s2 in successors(i) do
+				local curC, curD = instateC[s2], instateD[s2]
+				local mergedC
+				if curC == nil then mergedC = out
+				elseif curC == 3 or out == 3 then mergedC = 3
+				elseif curC == 0 and out == 0 then mergedC = 0
+				elseif curC == out then mergedC = curC
+				else mergedC = 3 end
+				local mergedD
+				if curD == nil then mergedD = ndv
+				elseif curD == "dyn" or ndv == "dyn" then mergedD = "dyn"
+				elseif curD == ndv then mergedD = curD
+				else mergedD = "dyn" end
+				if curC == nil or mergedC ~= curC or mergedD ~= curD then
+					instateC[s2] = mergedC
+					instateD[s2] = mergedD
+					table.insert(work, { s2, mergedC, mergedD })
+				end
+			end
+		end
+		break
+		end
+		leaMemOnlyCache[st] = res
+		return res
 	end
 
 	-- Are the condition flags DEAD after statement i — nothing reads the
@@ -2557,20 +3240,105 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- anchor parking a deeper carrier): mark it for the rewrite's drop.
 				-- The condition mirrors the fixpoint's isLeaSave computation exactly —
 				-- including the +8 rule for clone statements (K = d + 8 parks the
-				-- entry rsp).
+				-- entry rsp) and the provable-depth carrier relaxation (any K at a
+				-- provable NUMBER depth off the clone statements — see the fixpoint
+				-- comment there).
 				if regions ~= nil and not isDynDepth(depthIn[i])
 					and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
 					local ops = st.operands
 					local mem = ops[2]
 					if ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
-						and ops[1].name ~= "rbp"
+						and (ops[1].name ~= "rbp" or not usesRbp)
 						and mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
 						and not mem.index and not mem.dispSym then
 						local k = mem.dispVal or 0
 						local pk = st.localClone and (k - 8) or k
 						local rkey = st.localClone and (k + D0 - depthIn[i] - 8) or k
-								if (pk == depthIn[i] or pk <= 0) and not regionOf(rkey, false)
+						local leaAny = type(depthIn[i]) == "number"
+							and (depthIn[i] ~= D0 or ops[1].name == "rbp")
+							and not st.b2clone and not st.localClone
+						-- Feature (D0 interior lea-save carriers): the mirror of
+						-- the fixpoint's `leaD0` relaxation (see the long comment
+						-- there) — the same conservative scan, cached per lea
+						-- statement, so this mark and the fixpoint's carrier
+						-- registration can never disagree.
+						local leaD0 = nil
+						if type(depthIn[i]) == "number" and depthIn[i] == D0
+							and not st.localClone
+							and ops[1].name ~= "rbp" and k > 0 and k ~= depthIn[i] then
+							leaD0 = leaSaveUsesMemoryOnly(st, i, depthIn[i] - k)
+						end
+						if (pk == depthIn[i] or pk <= 0 or leaAny or leaD0)
+							and not regionOf(rkey, false)
 							and not (yoloCount > 0 and k == 0) then
+							-- Feature (by-address buffer value leas): the same
+							-- exemption the fixpoint's carrier registration
+							-- applies (see transfer above) — a buffer-interior
+							-- lea is a VALUE definition, not a phantom carrier,
+							-- and inside a localcall clone the carrier spelling
+							-- cannot name buffer bytes at all (the +8
+							-- compensation would be applied twice). This mark
+							-- and the fixpoint can never disagree: the
+							-- bufProbeRanges set and the memory-only scan are
+							-- identical inputs.
+							local probe = false
+							if bufProbeRanges and type(depthIn[i]) == "number"
+								and not isDynDepth(depthIn[i]) then
+								if st.b2clone then
+									-- The fixpoint's B2 clone probe (see the
+									-- transfer): the clone's own raw declared
+									-- ranges, tested against the lea's raw
+									-- displacement — the mark and the fixpoint
+									-- can never disagree.
+									local lst = bufB2DeclRaw
+										and bufB2DeclRaw[st.b2clone] or nil
+									if lst then
+										for _, sba in lst do
+											if k >= sba.lo and k < sba.hi then
+												probe = true break
+											end
+										end
+									end
+								else
+									local loff = k + D0 - depthIn[i]
+										- (st.localClone and 8 or 0)
+									for _, r in bufProbeRanges do
+										if loff >= r.lo and loff < r.hi then
+											probe = true break
+										end
+									end
+								end
+							end
+							if probe and not bufRepRegs[ops[1].num]
+								and (not leaSaveUsesMemoryOnly(st, i, depthIn[i] - k)
+									or st.localClone) then
+								-- a buffer-interior VALUE lea: no carrier mark
+							else
+								st.x86_leaSave = true
+							end
+						end
+					end
+				end
+				-- Feature (derived stack carriers): mark a `leaq K(%carrier),
+				-- %reg` whose base holds an unredefined carrier for the rewrite's
+				-- drop, mirroring the fixpoint's derived-carrier registration
+				-- exactly (same conditions, same converged smap).
+				if not st.x86_leaSave and regions ~= nil
+					and not isDynDepth(depthIn[i])
+					and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
+					local dops = st.operands
+					local dmem = dops[2]
+					if dops[1] and dops[1].kind == "reg" and dops[1].rc == "gpr"
+						and (dops[1].name ~= "rbp" or not usesRbp)
+						and dmem and dmem.kind == "mem" and dmem.base
+						and dmem.base.kind == "reg" and dmem.base.rc == "gpr"
+						and (dmem.base.name ~= "rbp" or not usesRbp)
+						and not dmem.index and not dmem.dispSym then
+						local de = smapIn[i] and smapIn[i][dmem.base.name]
+						local dk = dmem.dispVal or 0
+						if de and not de.redefined and not de.slot and not de.roff
+							and not de.conflict and type(de.depth) == "number"
+							and de.depth - dk >= 0 then
 							st.x86_leaSave = true
 						end
 					end
@@ -2751,6 +3519,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	end
 
 	local andDomOf = {}
+	local reachedFromAnd = {}  -- see the pre/post-`and` reachability walk below
 	-- Direct rsp-relative slot traffic positioned BEFORE the first mid-function
 	-- `and $-N, %rsp` keys pre-and numbering, which the and shifts by a dynamic
 	-- slack: the rewrite rejects it (alias-carrier and rbp-relative accesses are
@@ -2814,8 +3583,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- slack-free rsp — entry-absolute when parked at the entry depth —
 			-- no matter where the ands sit in body order (a dispatch-exclusive
 			-- path's and never executes alongside another path's park/use, e.g.
-			-- the aesni-mb shared 4x/8x bodies).
-			local reachedFromAnd = {}
+			-- the aesni-mb shared 4x/8x bodies). The set is function-scoped
+			-- (reachedFromAnd) because the FP-cluster keying and the pre/post-`and`
+			-- slot-web intersection check consume it later: a statement reached
+			-- from an `and` keys its rsp-relative coordinates at the and's
+			-- slack=0 convention, and a carrier whose PARK site it names keys the
+			-- same way. Each such statement is also marked x86_postAnd for the
+			-- rewrite (a pre-and-only rsp access is now legal — Feature 2 — while
+			-- a statement BOTH reachable-from-an-and and able-to-reach-one still
+			-- names two different real addresses for one key and stays rejected).
 			do
 				local work2 = {}
 				for _, a in ipairs(andIdxs) do
@@ -2829,6 +3605,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if not reachedFromAnd[s] then
 							reachedFromAnd[s] = true; table.insert(work2, s)
 						end
+					end
+				end
+				for j, st2 in body do
+					if st2.kind == "insn" and reachedFromAnd[j] and not isAnd[j] then
+						st2.x86_postAnd = true
 					end
 				end
 			end
@@ -3007,6 +3788,37 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				end
 			end
 		end
+	end
+	-- Did the park site at body index `saveIdx` execute after the frame's
+	-- alignment `and` (so the parked value carries the and's dynamic slack
+	-- and keys the and's slack=0 coordinate system)? A MID-FUNCTION and
+	-- answers through the reachedFromAnd walk above (the park site is
+	-- post-and iff it is reachable from one). A PROLOGUE and (frameAndIdx)
+	-- has no mid-function walk: the prefix is straight-line, so every
+	-- statement after the and's position parks the rounded rsp — and every
+	-- body statement does (the prefix holds no slot traffic). With both
+	-- kinds present the mid-function walk stays authoritative (its ands are
+	-- the deeper rounding; a prefix-and park between them keeps its own
+	-- slack story, which the walk's reachability already expresses).
+	local anyMidAnd = false
+	for _, st0 in body do
+		if st0.kind == "insn" and st0.x86_midAnd then anyMidAnd = true break end
+	end
+	local function parkPostOf(saveIdx)
+		if saveIdx == nil then return false end
+		if reachedFromAnd[saveIdx] then return true end
+		-- A park textually after the prologue `and` note executes after it on
+		-- every path (the prologue prefix is straight-line from entry), so its
+		-- parked value is the rounded rsp — and-keyed — even when OTHER paths
+		-- of the merged body carry mid-function ands (the sha1-mb shared
+		-- bodies: the scalar body's carrier parks after the prologue note
+		-- while the cloned bodies re-run their own mid-function ands). A park
+		-- reachable from a mid-function and was already classified post by the
+		-- reachedFromAnd walk above, which covers exactly those.
+		if frameAndIdx ~= nil and saveIdx > frameAndIdx then
+			return true
+		end
+		return false
 	end
 
 	-- Clone subframe balance: a localcall clone's `sub $N,%rsp` scratch
@@ -3369,16 +4181,32 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		local extents = {}  -- idx -> { lo, hi } unbiased-off range
 		for _, st in body do
 			local idx = st.b2clone
-			if st.kind == "insn" and type(idx) == "number" and not st.x86_prologue
-				and st.x86_aliasOff == nil then
+			if st.kind == "insn" and type(idx) == "number" and not st.x86_prologue then
 				local d = st.x86_depth
 				if d ~= nil and not isDynDepth(d) then
+					-- A clone's carrier access whose carrier was parked INSIDE clone
+					-- code addresses the clone's PRIVATE frame (the same real bytes
+					-- its rsp-relative spellings address) and is banded exactly like
+					-- them — so its (unbanded, canonical) extent must join the band's
+					-- extent or two bands could overlap. A carrier parked in the
+					-- JUMPER resolves to true absolute addresses (the jumper's own
+					-- frame) and keeps unbanded keying (see the banding pass below).
+					local aliasBand = st.x86_aliasOff ~= nil and not st.x86_dropRestore
+						and not st.x86_regionCarrier and st.x86_aliasSaveIdx ~= nil
+						and body[st.x86_aliasSaveIdx] ~= nil
+						and body[st.x86_aliasSaveIdx].b2clone ~= nil
 					for _, o in (st.operands or {}) do
-						if o.kind == "mem" and o.base and o.base.rc == "sp"
+						if o.kind == "mem" and o.base and o.base.kind == "reg"
 							and not o.index and not o.dispSym
-							and not regionOf((o.dispVal or 0), false) then
-							local off = (o.dispVal or 0)
-							if d ~= D0 then off = off + D0 - d end
+							and (o.base.rc == "sp" or aliasBand)
+							and (aliasBand or not regionOf((o.dispVal or 0), false)) then
+							local off
+							if aliasBand then
+								off = st.x86_aliasOff
+							else
+								off = (o.dispVal or 0)
+								if d ~= D0 then off = off + D0 - d end
+							end
 							local e = extents[idx]
 							if not e then extents[idx] = { lo = off, hi = off }
 							else
@@ -3417,6 +4245,68 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			st.x86_b2band = b2base[st.b2clone] or 0
 		end
 	end
+	-- Band the clone's own carrier accesses (see the extents comment above): a
+	-- carrier parked inside clone code addresses the clone's PRIVATE frame, so
+	-- its accesses must land in the same banded homes the clone's rsp-relative
+	-- spellings of the same bytes use — otherwise one real byte would map to two
+	-- modeled homes (and the clone's scratch would share webs with the jumper's
+	-- same-o slots, the exact aliasing the bands exist to separate). A carrier
+	-- parked in the JUMPER (b2clone == nil park site) holds a true absolute
+	-- address and keeps unbanded keying; dropped traffic (restore loads, region
+	-- redirects) never reaches a slot home and is not banded either.
+	for _, st in body do
+		if st.kind == "insn" and type(st.b2clone) == "number"
+			and st.x86_aliasOff ~= nil and not st.x86_dropRestore
+			and not st.x86_regionCarrier and st.x86_aliasSaveIdx ~= nil
+			and body[st.x86_aliasSaveIdx] ~= nil
+			and body[st.x86_aliasSaveIdx].b2clone ~= nil then
+			st.x86_aliasOff += b2base[st.b2clone] or 0
+		end
+	end
+
+	-- Feature (post-`and` frame extent): a prologue `and $-N, %rsp` is DROPPED
+	-- from the output (the synthesized frame is emitted N-aligned in its
+	-- place), so the post-and traffic's keyed offsets ARE the frame's
+	-- coordinates — and the input's `sub` may size the frame SHORTER than the
+	-- post-and traffic reaches: the gas path relies on the and's dynamic
+	-- rounding-down slack (the OpenSSL poly1305 avx512 body's table spills
+	-- reach 0x140 above the post-and rsp while its `sub` is 0x128). That slack
+	-- is unobservable in the output — the and is dropped, every post-and
+	-- access shifts as a unit, and the and-keyed alignment residues are
+	-- preserved by the N-aligned synthesized frame — so cover the traffic:
+	-- extend the frame to the widest post-and access extent. Pre-and traffic
+	-- keys TRUE entry-relative coordinates and cannot name these bytes (the
+	-- pre-/post-and intersection guard rejects any overlap), and clone traffic
+	-- rides its own band extents, so nothing else shares them. Runs before the
+	-- stack-buffer scan so a buffer declared over post-and traffic is checked
+	-- against the covered extent.
+	if frameAndDepth ~= 0 then
+		for _, st in body do
+			if st.kind == "insn" and not st.x86_prologue and not st.localClone
+				and not st.b2clone and not st.x86_preAnd
+				and type(st.x86_depth) == "number" and st.x86_depth >= frameAndDepth then
+				local mem
+				for _, o in (st.operands or {}) do if o.kind == "mem" then mem = o end end
+				if mem and mem.base and mem.base.kind == "reg" and mem.base.rc == "sp"
+					and not mem.index and not mem.dispSym
+					and x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea" then
+					local m = string.lower(st.mnemonic)
+					local fpe = fp.lookup(m)
+					local w = nil
+					if isFpInsn(fpe, st) then
+						local okW, ww = pcall(fp.accessWidth, m, st.operands, st.raw)
+						w = okW and ww or nil
+					else
+						w = gprStackWidth(m, mem)
+					end
+					if w then
+						local off = (mem.dispVal or 0) + D0 - st.x86_depth
+						if off + w > frameSize then frameSize = off + w end
+					end
+				end
+			end
+		end
+	end
 
 	-- -----------------------------------------------------------------------
 	-- STACK BUFFER scan, phase 1 (x86_64 `#! stack buffer (...)`): resolve the
@@ -3451,6 +4341,16 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	local sbOutgoing = 0   -- largest outgoing stack-argument area (bytes)
 	local maxSaves = 0     -- largest outstanding push count anywhere
 	local anyDynSaves = false
+	-- Feature (stack buffers in localcall clones): per-clone declared ranges
+	-- (clone id -> buffer id -> {lo, hi} in the clone's own keyed coordinates),
+	-- collected from the clone's long forms, and the ids this body declares
+	-- OUTSIDE any clone. A short form inside a clone resolves through the
+	-- clone's own declaration (the subroutine's own frame, shifted by the
+	-- clone's keying) or through a declaration in the enclosing function's own
+	-- body (the caller's frame, which clone accesses key into directly); a
+	-- buffer declared only in some third function is out of reach.
+	local cloneDeclRanges = {}
+	local ownDeclIds = {}
 	sbLayout = nil
 	-- (During the driver's resolution-only runs (sbResolving) the buffer scan is
 	-- skipped entirely: the canonical ranges are not complete yet, so neither
@@ -3483,6 +4383,34 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 		end
 		local pushTop = D0 - 8 * maxSaves
+		-- Feature (stack buffers in localcall clones): each clone's ENTRY depth
+		-- (the callsite's model depth — the state flows through the localCall
+		-- edge unchanged), keyed by clone id. A clone declaration's upper bound
+		-- must stay inside the clone's own sub-frame (below the phantom return
+		-- address word of the hardware call it was written against).
+		local cloneEntryDepth = {}
+		do
+			for i, st in body do
+				if st.localCloneEntry then
+					-- The entry MARK sits on the clone's first statement (a
+					-- label, which carries no localClone id or depth): the
+					-- entry depth is the clone's first INSTRUCTION's depth (the
+					-- state flows through the localCall edge unchanged, so the
+					-- first instruction executes at the callsite's depth).
+					for j = i, #body do
+						local st2 = body[j]
+						if st2.kind == "insn" then
+							if st2.localClone and st2.x86_depth ~= nil
+								and not isDynDepth(st2.x86_depth)
+								and cloneEntryDepth[st2.localClone] == nil then
+								cloneEntryDepth[st2.localClone] = st2.x86_depth
+							end
+							break
+						end
+					end
+				end
+			end
+		end
 		local function checkRangeFits(loN, hiN, homeLo, homeHi, id, dDecl, st)
 			-- `loN`/`hiN` are the declaring statement's UNBANDED normalized
 			-- range; `homeLo`/`homeHi` are the range in the coordinate space
@@ -3523,6 +4451,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- declaring depth proves exactly its own allocated bytes.
 			local frameFloor = 0
 			if dDecl ~= nil and not isDynDepth(dDecl) then frameFloor = D0 - dDecl end
+			-- Feature (stack buffers in localcall clones): a clone statement's
+			-- model depth overstates the hardware allocation floor by the
+			-- return-address word the subroutine was written against (the +8
+			-- rule) — the clone's own `sub` allocates [entry_rsp - d - 8, ...)
+			-- in hardware coordinates, so its own-frame floor sits 8 lower.
+			if st and st.localClone and dDecl ~= nil and not isDynDepth(dDecl) then
+				frameFloor = frameFloor - 8
+			end
 			if loN < frameFloor then
 				error("sarcasm: stack buffer (" .. id .. ") reaches below the"
 					.. " function's own allocated stack (normalized offset "
@@ -3534,12 +4470,46 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					.. "): " .. tostring(loN) .. " < " .. tostring(frameFloor))
 			end
 			if homeLo < D0 and homeHi > pushTop then
-				error("sarcasm: stack buffer (" .. id .. ") extends to normalized"
-					.. " offset " .. tostring(homeHi) .. ", past the frame's usable top "
-					.. tostring(pushTop) .. " (the frame is [0, " .. tostring(D0)
-					.. ") and its top " .. tostring(8 * maxSaves) .. " bytes are the"
-					.. " outstanding push/callee-save slots): " .. tostring(homeHi)
-					.. " > " .. tostring(pushTop))
+				-- Feature (post-`and` frame extent): with an `and $-N, %rsp`
+				-- note and NO outstanding pushed-register saves anywhere (an
+				-- empty push pad), the post-and traffic keys above the pre-and
+				-- frame base — the dropped and's slack is unobservable in the
+				-- output (every post-and access shifts as a unit and the
+				-- and-keyed alignment residues are preserved by the N-aligned
+				-- synthesized frame) — so a buffer may reach up to the grown
+				-- frame extent: the bytes it names there are the post-and
+				-- traffic's own homes, not the caller's frame. With a non-empty
+				-- pad the old rule stands (a buffer crossing the frame base
+				-- would overlap the pad's save slots).
+				local andTop = (frameAndDepth ~= 0 and maxSaves == 0)
+					and frameSize or nil
+				if not (andTop ~= nil and homeHi <= andTop) then
+					error("sarcasm: stack buffer (" .. id .. ") extends to normalized"
+						.. " offset " .. tostring(homeHi) .. ", past the frame's usable top "
+						.. tostring(pushTop) .. " (the frame is [0, " .. tostring(D0)
+						.. ") and its top " .. tostring(8 * maxSaves) .. " bytes are the"
+						.. " outstanding push/callee-save slots): " .. tostring(homeHi)
+						.. " > " .. tostring(pushTop))
+				end
+			end
+			-- Feature (stack buffers in localcall clones): a clone-declared
+			-- buffer lives in the CLONE's own sub-frame — the bytes the clone's
+			-- own `sub` allocated BELOW the phantom return-address word (the +8
+			-- rule). Reaching above that word would name the CALLER's frame
+			-- bytes (whose slots virtualize separately in every caller); a
+			-- buffer with no visible clone entry depth is likewise rejected
+			-- (its extent cannot be proven).
+			if st and st.localClone then
+				local ed = cloneEntryDepth[st.localClone]
+				local cloneTop = (ed ~= nil) and (D0 - ed - 8) or nil
+				if cloneTop == nil or hiN > cloneTop then
+					error("sarcasm: stack buffer (" .. id .. ") is declared inside a"
+						.. " local subroutine clone but reaches normalized offset "
+						.. tostring(hiN) .. ", above the clone's own sub-frame (top "
+						.. tostring(cloneTop) .. "); a clone-declared buffer must live"
+						.. " in the subroutine's own frame below its caller's"
+						.. " return-address word: " .. (st.raw or st.mnemonic))
+				end
 			end
 			-- The push-pad model above covers the JUMPER's own pushes (their
 			-- slots are exactly the pad [D0 - 8*maxSaves, D0)). A B2 clone's own
@@ -3607,11 +4577,63 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 			return gprStackWidth(m, mem) or mem.size, nil
 		end
+		-- Resolve the buffer range a SHORT form names for statement `st` (the
+		-- canonical table, adjusted for localcall clones): inside a clone the
+		-- subroutine's own declaration wins (the clone's own keyed coordinates,
+		-- collected in phase (a)); otherwise a declaration in the enclosing
+		-- function's own body or any other function's canonical range applies.
+		-- A buffer declared only inside some OTHER subroutine is out of reach.
+		local function resolveShortRangeFor(st)
+			local sb = st.stackBufAnno
+			local canon = sbCanon and sbCanon[sb.id] or nil
+			if st.localClone then
+				local cm = cloneDeclRanges[st.localClone]
+				local r = cm and cm[sb.id] or nil
+				if r then return r.lo, r.hi end
+				if canon == nil then
+					error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long"
+						.. " form anywhere in this file (declare the buffer with e.g."
+						.. " `#! stack buffer (" .. sb.id .. ", %rsp, %rsp + N)` on a buffer"
+						.. " access in some function): " .. (st.raw or st.mnemonic))
+				end
+				if not ownDeclIds[sb.id] then
+					error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+						.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
+						.. " subroutine's own frame); only that subroutine's cloned code"
+						.. " addresses it - declare a buffer in this function with the"
+						.. " long form instead: " .. (st.raw or st.mnemonic))
+				end
+				return canon.lo, canon.hi
+			end
+			if canon == nil then
+				if sbResolving then return nil, nil end
+				error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long form"
+					.. " anywhere in this file (declare the buffer with e.g. `#! stack buffer ("
+					.. sb.id .. ", %rsp, %rsp + N)` on a buffer access in some function): "
+					.. (st.raw or st.mnemonic))
+			end
+			if canon.sub then
+				error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+					.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
+					.. " subroutine's own frame); only that subroutine's cloned code"
+					.. " addresses it - declare a buffer in this function with the"
+					.. " long form instead: " .. (st.raw or st.mnemonic))
+			end
+			return canon.lo, canon.hi
+		end
 		-- (a) declarations FIRST (all of them, before any access is classified
 		-- against the ranges — a declaration may appear after the accesses that
 		-- fall inside it).
-		for _, st in body do
-			if st.kind == "insn" and st.stackBufAnno then
+		for ia, st in body do
+			if st.kind == "insn" and st.stackBufAnno
+				and not (st.stackBufAnno.short and st.localClone) then
+				-- A short form on a CLONE statement is skipped here: the
+				-- canonical range lives in the SUBROUTINE's own frame
+				-- coordinates, which this function's frame-fit check cannot
+				-- see (the clone's own declaration carried the range in the
+				-- clone's keyed coordinates, inserted above); the clone's
+				-- short forms resolve per access through the clone's own
+				-- declaration or the enclosing function's own.
 				local loN, hiN = resolveBufRangeAt(st, st.x86_depth, st.x86_smap,
 					st.x86_fp, st.x86_prologue == true)
 				if loN then
@@ -3627,7 +4649,91 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					checkRangeFits(loN, hiN, loN + band, hiN + band,
 						st.stackBufAnno.id, st.x86_depth, st)
 					table.insert(sbRanges, { lo = loN + band, hi = hiN + band,
-						areq = 1, aligns = {}, id = st.stackBufAnno.id })
+						areq = 1, aligns = {}, id = st.stackBufAnno.id,
+						-- Absolute-alignment identity bookkeeping (the xor-toggle
+						-- feature; see the group identity derivation in (d2)):
+						-- the declaring statement's index (for the governing-and
+						-- dataflow) and the statement's band (to recover the
+						-- declaration's UNBANDED — real-byte — range).
+						declIdx = ia, band = band })
+					-- Record the declaration for the short-form resolution:
+					-- clone statements (the subroutine's own text) key per
+					-- clone; the enclosing function's own declarations are the
+					-- direct caller-frame ranges.
+					if st.localClone then
+						local cm = cloneDeclRanges[st.localClone]
+						if not cm then
+							cm = {}
+							cloneDeclRanges[st.localClone] = cm
+						end
+						cm[st.stackBufAnno.id] = { lo = loN, hi = hiN }
+					else
+						ownDeclIds[st.stackBufAnno.id] = true
+					end
+				end
+			end
+		end
+		-- (a0) buffer-interior VALUE leas (Feature A, by-address accesses): a
+		-- `leaq K(%rsp), %reg` whose computed normalized offset lands inside a
+		-- declared buffer's range and whose destination the carrier scan did NOT
+		-- claim (a memory-only-use carrier keeps today's static path — the
+		-- transfer only falls out of the carrier when a use shape it cannot
+		-- legalize forced it to) defines an ordinary web holding the buffer BYTE
+		-- ADDRESS. The rewrite emits it as `leaq disp'(%rsp), %reg` into the
+		-- lowered buffer region (tagged stackBuf, finalized by the transform's
+		-- buffer-base shift); annotated accesses through the web become
+		-- runtime-checked by-address accesses. The escape detector skips these
+		-- leas (they name buffer bytes, not frame slots — the D9 promotion must
+		-- not fire, and the buffer's own region is the lea's real home).
+		-- B2 shared-tail clone statements are included (Feature A in clones,
+		-- the aesni-mb dec8x shape): their lea offsets key into the clone's
+		-- band exactly like every other clone access (+ the statement's band),
+		-- so the banded offset lands inside the clone's own banded declaration
+		-- ranges. The transfer's raw-displacement probe decided carrier-vs-web
+		-- already; this pass re-checks the decision EXACTLY in the banded
+		-- coordinates — a statement whose probe hit but whose banded offset
+		-- misses every declared range stays an ordinary lea (the escape
+		-- detector's business, as today).
+		for _, st in body do
+			if st.kind == "insn" and not st.x86_leaSave
+				and not st.allocaPlace and not st.allocaOwned
+				and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
+				local ops2 = st.operands
+				local d2 = st.x86_depth
+				if not st.b2clone or st.x86StackBufLeaValueComputed then
+				if ops2[1] and ops2[1].kind == "reg" and ops2[1].rc == "gpr"
+					and (ops2[1].name ~= "rbp" or not usesRbp)
+					and ops2[2] and ops2[2].kind == "mem" and ops2[2].base
+					and ops2[2].base.rc == "sp" and not ops2[2].index
+					and not ops2[2].dispSym and type(d2) == "number"
+					and not isDynDepth(d2) and not st.x86_preAnd then
+					local off2 = (ops2[2].dispVal or 0) + D0 - d2
+						+ (st.localClone and -8 or (st.x86_b2band or 0))
+					for _, r in sbRanges do
+						if off2 >= r.lo and off2 < r.hi then
+							st.x86StackBufLeaValue = { off = off2, id = r.id }
+							break
+						end
+					end
+				end
+				end
+			end
+		end
+		-- Groups holding a COMPUTED buffer-address web (the transfer's
+		-- x86StackBufLeaValueComputed fall-out: the lea's uses are not all
+		-- memory-only, so the program computes on the address — the aesni-mb
+		-- dec8x `xorq $0x80, %base` toggle) need the group's ABSOLUTE alignment
+		-- identity preserved (see the (d2) derivation), so record which ranges
+		-- own one.
+		for _, st in body do
+			if st.kind == "insn" and st.x86StackBufLeaValueComputed
+				and st.x86StackBufLeaValue then
+				local off2 = st.x86StackBufLeaValue.off
+				for _, r in sbRanges do
+					if off2 >= r.lo and off2 < r.hi then
+						r.hasComputed = true
+						break
+					end
 				end
 			end
 		end
@@ -3646,8 +4752,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- rbp- and alias-based accesses normalize absolutely at any
 			-- provable depth.)
 			if mem and not mem.index and not mem.dispSym
-				and string.lower(st.mnemonic) ~= "lea"
-				and not st.localClone
+				and x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea"
 				and st.x86_depth ~= nil and not isDynDepth(st.x86_depth)
 				and #sbRanges > 0 then
 				local off, wb = nil, nil
@@ -3656,10 +4761,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- their buffer offsets (and their declarations above) live in
 				-- the band: the same +band shift every other clone access
 				-- gets. Band bases are multiples of 64, so all the alignment
-				-- residues the group placement consumes are preserved.
+				-- residues the group placement consumes are preserved. A
+				-- LOCALCALL clone statement instead keys with the +8
+				-- return-address compensation (the +8 rule) and no band — the
+				-- same keying every other localcall clone access uses.
 				local band = st.x86_b2band or 0
 				if mem.base and mem.base.kind == "reg" and mem.base.rc == "sp" then
-					if d == D0 and band == 0 then off = mem.dispVal or 0
+					if st.localClone then off = (mem.dispVal or 0) + D0 - d - 8
+					elseif d == D0 and band == 0 then off = mem.dispVal or 0
 					else off = (mem.dispVal or 0) + D0 - d + band end
 					if st.x86_preAnd and off ~= nil then
 						-- Pre-`and` rsp traffic keys PRE-and numbering while the
@@ -3693,12 +4802,25 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					off = st.x86_aliasOff
 				end
 				if off == nil and st.stackBufAnno then
-					-- An annotated access that resolves to no stack address at all
-					-- (a heap access or an alias the analysis could not prove):
-					-- never let the annotation silently vanish.
-					error("sarcasm: `stack buffer`-annotated access does not address"
-						.. " the stack through %rsp, %rbp or a live saved-rsp alias"
-						.. " register: " .. (st.raw or st.mnemonic))
+					-- An annotated access that resolves to no stack address at
+					-- all. A SHORT form is the by-ADDRESS mode (Feature A): the
+					-- base register is an ordinary web holding the buffer byte
+					-- address — the access lowers to a runtime bounds check
+					-- against the buffer's lowered range followed by the RAW
+					-- instruction. Phase (b3) below validates the base shape and
+					-- marks it (nothing silently vanishes). A LONG form falls
+					-- through to (b3) as well: the declaration it carries is
+					-- independent of the access's base (it is spelled
+					-- %rsp-relative and resolves from the statement's own depth
+					-- context — phase (a) already registered and frame-checked
+					-- it), so the access may DRIVE on a computed base web: a
+					-- register holding the buffer byte address (materialized by
+					-- a buffer-interior value lea and computed on — the aesni-mb
+					-- dec8x xor-toggle base) lowers to a runtime-checked
+					-- by-address access exactly like the short form. (b3) owns
+					-- the precision: the base must be a general-register web
+					-- TAINTED by a buffer value lea — an arbitrary heap or
+					-- argument pointer under a long form stays rejected there.
 				end
 				if off ~= nil then
 					local fa
@@ -3727,8 +4849,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							-- an explicitly annotated access must sit inside its OWN
 							-- buffer's declared range
 							if st.stackBufAnno then
-								local loN, hiN = resolveBufRangeAt(st, st.x86_depth,
-									st.x86_smap, st.x86_fp, st.x86_prologue == true)
+								local loN, hiN
+								if st.stackBufAnno.short then
+									loN, hiN = resolveShortRangeFor(st)
+								else
+									loN, hiN = resolveBufRangeAt(st, st.x86_depth,
+										st.x86_smap, st.x86_fp, st.x86_prologue == true)
+								end
 								if loN and not (off >= loN + band and off + wb <= hiN + band) then
 									error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
 										.. ")`-annotated access at normalized ["
@@ -3784,11 +4911,332 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				end
 			end
 		end
+		-- (b3) by-ADDRESS annotated accesses (Feature A): an annotated access
+		-- (SHORT form, or LONG form carried on a computed base — see (b)) whose
+		-- base register does not statically resolve to a stack address marks a
+		-- runtime-checked by-address access — the base web holds the buffer byte
+		-- address (materialized by a buffer-interior value lea, computed on,
+		-- stored/reloaded, cmov'd, or — short form only — simply an argument),
+		-- the runtime check validates it against the buffer's lowered range, and
+		-- the ORIGINAL instruction is emitted verbatim with no capability
+		-- machinery.
+		-- Statically enforced here:
+		--   * the base is a general-register web (an FP/SIMD or %rip base has no
+		--     byte address to check; %rsp/%rbp that cannot be proven to address
+		--     the stack have no web at all) — everything else rejects with a
+		--     precise message;
+		--   * a LONG form additionally requires the base web to be TAINTED by a
+		--     buffer value lea (the walk below: the taint seeds at every phase
+		--     (a0) value lea's destination and spreads through every modeled
+		--     GPR definition, never dying — the dec8x xor-toggle base is a
+		--     tainted web three ALU ops past its lea). A long form on a web the
+		--     buffer never touched (an argument or heap pointer) stays rejected
+		--     with the historical message: the declaration names stack bytes,
+		--     and a by-address check against them would silently turn a typo'd
+		--     heap access into a guaranteed runtime trap. A SHORT form keeps
+		--     today's shape (any general-register web — the short form IS the
+		--     by-address mode by declaration);
+		--   * a base that PROVABLY resolves (a live saved-rsp carrier, an
+		--     established frame pointer) takes the existing static paths in (b)
+		--     instead — no duplicate machinery;
+		--   * the access has no index register (an unbounded index cannot ride a
+		--     base-only check; the indexed path (c) covers the static bases);
+		--   * `#! load/store ptr` on buffer memory stays rejected (buffer slots
+		--     cannot hold capabilities);
+		--   * the access width is computable, and the buffer id resolves (a
+		--     canonical entry declared in this function or in the declaring
+		--     subroutine of the clone it sits in) to a lowered group.
+		-- The taint walk (buffer value leas flow through ordinary defs): state
+		-- per statement = the set of register nums possibly holding a buffer
+		-- byte address BEFORE the statement. Over-approximate by design (any
+		-- GPR def unions its reg operands' taints); an over-tainted long-form
+		-- base only moves a rejection to a runtime check — fail-safe, never
+		-- unsound.
+		local bufLeaTaint = {}
+		do
+			local genStmt = {}
+			for i, st in body do
+				if st.kind == "insn" and st.x86StackBufLeaValue then
+					genStmt[i] = st.operands[1]
+				end
+			end
+			if next(genStmt) then
+				local work, inq = {}, {}
+				local firstInsn = nil
+				for i, st in body do
+					if st.kind == "insn" then firstInsn = i break end
+				end
+				if firstInsn then
+					bufLeaTaint[firstInsn] = {}
+					work[1] = firstInsn
+					inq[firstInsn] = true
+					while #work > 0 do
+						local i = table.remove(work)
+						inq[i] = nil
+						local st = body[i]
+						if not (st and st.kind == "insn") then continue end
+						local s = bufLeaTaint[i] or {}
+						local okc, c = pcall(classOf, st)
+						if not (okc and c) then continue end
+						local out = s
+						for _, dd in c.defs do
+							if dd.kind == "reg" and dd.rc == "gpr" then
+								local t = nil
+								for _, uu in (c.uses or {}) do
+									if uu.kind == "reg" and uu.rc == "gpr" and s[uu.num] then
+										t = t or {}
+										t[uu.num] = true
+									end
+								end
+								if out == s then
+									out = {}
+									for k2, v2 in pairs(s) do out[k2] = v2 end
+								end
+								-- the def kills the destination, then re-tains it
+								-- from the operands the def reads
+								out[dd.num] = nil
+								if t then
+									for k2 in t do out[k2] = true end
+								end
+								-- a def whose value derives from a tainted operand
+								-- taints the destination; note the def may also be
+								-- the gen (an a0 lea defines the property directly)
+								if genStmt[i] and genStmt[i].num == dd.num then
+									out[dd.num] = true
+								end
+							end
+						end
+						for _, s2 in successors(i) do
+							local cur = bufLeaTaint[s2]
+							local merged
+							if cur == nil then merged = out
+							else
+								merged = cur
+								local grew = false
+								for k2 in out do
+									if not cur[k2] then
+										if merged == cur then
+											merged = {}
+											for k3, v3 in pairs(cur) do merged[k3] = v3 end
+										end
+										merged[k2] = true
+										grew = true
+									end
+								end
+								if not grew then merged = cur end
+							end
+							if merged ~= cur then
+								bufLeaTaint[s2] = merged
+								if not inq[s2] then
+									inq[s2] = true
+									table.insert(work, s2)
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		-- The masked lowering's scratch register: the same "vector register the
+		-- body never names" discipline the FP-taint scan uses (the vecUsed scan
+		-- below picks the same number, so both agree).
+		local bufVecUsed = {}
+		for _, st in body do
+			if st.kind == "insn" then
+				for _, o in (st.operands or {}) do
+					if o.kind == "reg" and o.rc == "xmm" then
+						local nm = o.name or ""
+						local p3 = string.sub(nm, 1, 3)
+						if p3 == "xmm" or p3 == "ymm" or p3 == "zmm" then
+							bufVecUsed[o.num or 0] = true
+						end
+					end
+				end
+			end
+		end
+		local bufMaskScratch = nil
+		for n = 31, 0, -1 do
+			if not bufVecUsed[n] then bufMaskScratch = n break end
+		end
+		for i3, st in body do
+			if st.kind == "insn" and st.stackBufAnno
+				and st.x86StackBufAccess == nil and st.x86StackBufIdx == nil
+				and not st.x86_preAnd
+				and x86.baseMnemonic(string.lower(st.mnemonic)) ~= "lea" then
+				local mem = nil
+				for _, o in st.operands do if o.kind == "mem" then mem = o end end
+				if mem and not mem.dispSym then
+					if mem.index then
+						-- an INDEXED access whose base did not resolve in (c):
+						-- the base must have been unresolvable (a live carrier
+						-- or %rsp/%rbp base is (c)'s business). By-address with
+						-- an unbounded index cannot be checked.
+						local bn = mem.base and mem.base.kind == "reg"
+							and mem.base.name or "?"
+						local rc = mem.base and mem.base.rc
+						local e2 = st.x86_smap and st.x86_smap[bn] or nil
+						local isStack = (rc == "sp") or (usesRbp and bn == "rbp")
+							or (e2 and not e2.redefined and not e2.slot
+								and not e2.roff and not e2.conflict)
+						if not isStack and rc == "gpr" then
+							error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+								.. ")`-annotated indexed access through %" .. bn
+								.. " cannot be bounds-checked (the index is unbounded"
+								.. " and the base is only known at runtime; use the"
+								.. " indexed form through %rsp, or spell the byte"
+								.. " address through the base register alone): "
+								.. (st.raw or st.mnemonic))
+						end
+						continue
+					end
+					local bn = mem.base and mem.base.kind == "reg" and mem.base.name
+						or nil
+					local rc = mem.base and mem.base.rc
+					if bn == nil and not st.stackBufAnno.short then
+						-- A LONG form on an absolute (base-less) operand: the
+						-- declaration must be carried by an access that at least
+						-- names a register to check; an absolute address is no
+						-- by-address shape (the historical (b) rejection).
+						error("sarcasm: `stack buffer`-annotated access does not address"
+							.. " the stack through %rsp, %rbp or a live saved-rsp alias"
+							.. " register (a long-form declaration must name stack"
+							.. " bytes; use the short form `#! stack buffer ("
+							.. st.stackBufAnno.id .. ")` on an access through a"
+							.. " computed address to bounds-check it at runtime"
+							.. " instead): " .. (st.raw or st.mnemonic))
+					end
+					if bn then
+						local e2 = st.x86_smap and st.x86_smap[bn] or nil
+						local liveCarrier = e2 and not e2.redefined and not e2.slot
+							and not e2.roff and not e2.conflict or nil
+						local isStackBase = (rc == "sp") or (usesRbp and bn == "rbp")
+						if isStackBase then
+							-- A stack base that (b) could not classify: the depth
+							-- or frame-pointer state is unprovable. There is no web
+							-- to check and no static home: reject precisely.
+							if st.stackBufAnno then
+								error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+									.. ")`-annotated access through %" .. bn
+									.. " cannot be proven to address the stack here (the"
+									.. " stack depth or frame pointer is unprovable, so"
+									.. " neither a static home nor a by-address web"
+									.. " exists): " .. (st.raw or st.mnemonic))
+							end
+						elseif rc ~= "gpr" then
+							error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+								.. ")`-annotated access base %" .. bn
+								.. " is not a general register (a by-address buffer"
+								.. " access bounds-checks a byte address held in a"
+								.. " general-register web): " .. (st.raw or st.mnemonic))
+						elseif liveCarrier then
+							-- A provably-resolvable carrier: (b)'s alias path owns
+							-- it (static resolution). Nothing to mark.
+						else
+							-- A LONG form must ride a buffer-tainted web: the
+							-- declaration names stack bytes, so driving it on an
+							-- arbitrary argument/heap pointer stays rejected.
+							if not st.stackBufAnno.short then
+								local t = bufLeaTaint and bufLeaTaint[i3] or nil
+								local tainted = false
+								if t and mem.base and mem.base.kind == "reg" then
+									tainted = t[mem.base.num] and true or false
+								end
+								if not tainted then
+									error("sarcasm: `stack buffer`-annotated access does"
+										.. " not address the stack through %rsp, %rbp or a"
+										.. " live saved-rsp alias register (a long-form"
+										.. " declaration must name stack bytes and must"
+										.. " ride a register computed from a buffer-interior"
+										.. " `lea`; use the short form `#! stack buffer ("
+										.. st.stackBufAnno.id .. ")` on an access through"
+										.. " a computed address to bounds-check it at"
+										.. " runtime instead): " .. (st.raw or st.mnemonic))
+								end
+							end
+							-- the by-address mark
+							local wb, fa = widthOf(st, mem)
+							if not wb then
+								error("sarcasm: cannot determine the access width of a"
+									.. " by-address `stack buffer (" .. st.stackBufAnno.id
+									.. ")` access: " .. (st.raw or st.mnemonic))
+							end
+							if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
+								error("sarcasm: `" .. st.annotation .. "` on a"
+									.. " by-address stack-buffer access is not supported"
+									.. " (buffer slots cannot hold capabilities; loading"
+									.. " from a buffer always yields a null capability): "
+									.. (st.raw or st.mnemonic))
+							end
+							local loN, hiN
+							local band3 = st.x86_b2band or 0
+							if st.stackBufAnno.short then
+								loN, hiN = resolveShortRangeFor(st)
+							else
+								-- The long form resolves from the statement's own
+								-- depth context (its declaration was already
+								-- registered and frame-checked in phase (a)); the
+								-- mark's range keys in the same space the groups
+								-- live in, so band it exactly like the static
+								-- accesses and the clone declarations.
+								loN, hiN = resolveBufRangeAt(st, st.x86_depth,
+									st.x86_smap, st.x86_fp, st.x86_prologue == true)
+								if loN == nil then
+									error("sarcasm: internal error: long-form by-address"
+										.. " access with an unresolvable declaration: "
+										.. (st.raw or st.mnemonic))
+								end
+								loN += band3
+								hiN += band3
+							end
+							local g = nil
+							for _, gr in sbRanges do
+								if loN >= gr.lo and hiN <= gr.hi then g = gr break end
+							end
+							if g == nil then
+								error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+									.. ")` is not declared in this function (a by-address"
+									.. " access checks against the buffer's lowered"
+									.. " range, which a long form in this function or in"
+									.. " the declaring subroutine must provide): "
+									.. (st.raw or st.mnemonic))
+							end
+							local deco = nil
+							for _, o in st.operands do
+								if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
+									deco = o
+								end
+							end
+							local masked = nil
+							if deco then
+								local mnem = string.lower(st.mnemonic)
+								if not (isFpInsn(fp.lookup(mnem), st) and bufMaskScratch
+									and MASKED_STACK_MOVE[mnem]) or mem.bcastN
+									or string.find(deco.deco, "{1to", 1, true) then
+									error("sarcasm: AVX512 mask-register ({k}) by-address"
+										.. " stack-buffer access is not supported for '"
+										.. st.mnemonic .. "' (only the masked vector moves"
+										.. " lower; masked-off lanes may not touch"
+										.. " memory): " .. (st.raw or st.mnemonic))
+								end
+								masked = { num = bufMaskScratch,
+									unal = MASKED_STACK_MOVE[mnem], deco = deco.deco }
+							end
+							st.x86StackBufAddr = { id = st.stackBufAnno.id,
+								reg = bn, dispEff = mem.dispVal or 0,
+								w = wb, write = (st.operands[1] == mem)
+									or x86.isMemRmw(st),
+								areq = (fa and fa > 1) and fa or 1,
+								group = g, lo = loN, hi = hiN, masked = masked }
+						end
+					end
+				end
+			end
+		end
 		-- (c) annotated INDEXED accesses: the bounds-check marks. These need the
 		-- merged group base, which phase 2 assigns; the mark carries the resolved
 		-- range and the access shape, and the rewrite computes the displacement.
 		for _, st in body do
-			if st.kind == "insn" and st.stackBufAnno and not st.localClone
+			if st.kind == "insn" and st.stackBufAnno
 				and string.lower(st.mnemonic) ~= "lea" then
 				local mem = nil
 				for _, o in st.operands do if o.kind == "mem" then mem = o end end
@@ -3807,14 +5255,19 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					local kBase
 					-- Clone statements key into their band's coordinate space
 					-- (matching the declarations and the static classification).
+					-- A LOCALCALL clone statement keys with the +8 return-address
+					-- compensation and no band — the same keying every other
+					-- localcall clone access uses.
 					local band = st.x86_b2band or 0
 					if mem.base and mem.base.kind == "reg" and mem.base.rc == "sp" then
 						-- The frame-base depth keys disp directly; a KNOWN perturbed
 						-- depth keys disp + D0 - d, exactly like the rewrite's slot
 						-- keying, the static-buffer classification, and the rep's
 						-- alias resolution (the aesni CBC inner-frame shape). Clone
-						-- statements add their band.
-						kBase = D0 - d + band
+						-- statements add their band (a localcall clone instead
+						-- subtracts the return-address word).
+						if st.localClone then kBase = D0 - d - 8
+						else kBase = D0 - d + band end
 					elseif mem.base and mem.base.kind == "reg" and mem.base.name == "rbp"
 						and usesRbp and st.x86_fp == "est" then
 						kBase = rbpNorm
@@ -3828,8 +5281,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						end
 						kBase = D0 - e.depth
 					else
-						error("sarcasm: internal error: unresolvable indexed buffer"
-							.. " access base: " .. (st.raw or st.mnemonic))
+						error("sarcasm: `stack buffer`-annotated indexed access through %"
+							.. tostring(mem.base and mem.base.name or "?") .. " is not"
+							.. " supported (the base must be %rsp, %rbp or a live saved-rsp"
+							.. " alias; an unprovable base register cannot bounds-check an"
+							.. " index — use the short form on the same access without the"
+							.. " index, or address the bytes through %rsp): "
+							.. (st.raw or st.mnemonic))
 					end
 					local scale = mem.scale or 1
 					if scale ~= 1 and scale ~= 2 and scale ~= 4 and scale ~= 8 then
@@ -3841,14 +5299,25 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						error("sarcasm: cannot determine the access width of an indexed"
 							.. " buffer access: " .. (st.raw or st.mnemonic))
 					end
-					local loN, hiN = resolveBufRangeAt(st, st.x86_depth, st.x86_smap,
-						st.x86_fp, st.x86_prologue == true)
-					if loN == nil then
-						-- A short form during the driver's resolution-only run
-						-- (the canonical table is not complete yet): skip; the real
-						-- per-function run always resolves (and errors on a
-						-- long-form-less id).
-						continue
+					local loN, hiN
+					if st.stackBufAnno.short then
+						loN, hiN = resolveShortRangeFor(st)
+						if loN == nil then
+							-- A short form during the driver's resolution-only run
+							-- (the canonical table is not complete yet): skip; the real
+							-- per-function run always resolves (and errors on a
+							-- long-form-less id).
+							continue
+						end
+					else
+						loN, hiN = resolveBufRangeAt(st, st.x86_depth, st.x86_smap,
+							st.x86_fp, st.x86_prologue == true)
+						if loN == nil then
+							-- A long form during the driver's resolution-only run whose
+							-- base could not resolve: skip; the real per-function run
+							-- re-resolves (and errors precisely).
+							continue
+						end
 					end
 					-- The resolved range is unbanded; band it to the coordinate
 					-- space the declarations/groups live in (band-invariant for
@@ -3915,9 +5384,101 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				if r.hi > last.hi then last.hi = r.hi end
 				if r.areq > last.areq then last.areq = r.areq end
 				for _, a in r.aligns do table.insert(last.aligns, a) end
+				if r.hasComputed then last.hasComputed = true end
+				if r.declIdx ~= nil then
+					if last.decls == nil then last.decls = {} end
+					table.insert(last.decls, { declIdx = r.declIdx, band = r.band,
+						lo = r.lo, hi = r.hi })
+				end
 			else
 				table.insert(sbGroups, { lo = r.lo, hi = r.hi, areq = r.areq,
-					aligns = { table.unpack(r.aligns) }, base = 0 })
+					aligns = { table.unpack(r.aligns) }, base = 0,
+					hasComputed = r.hasComputed or nil,
+					decls = (r.declIdx ~= nil)
+						and { { declIdx = r.declIdx, band = r.band,
+							lo = r.lo, hi = r.hi } } or nil })
+			end
+		end
+		-- Absolute-alignment identity for COMPUTED-base groups (the xor-toggle
+		-- feature). A buffer whose base web the program computes on (the dec8x
+		-- `xorq $0x80, %base` base flip) keys its arithmetic on ABSOLUTE address
+		-- bits: the input's `and $-N, %rsp` pins rsp mod N, so the input buffer's
+		-- base byte sits at a fixed residue mod N and the toggle's bit-flip lands
+		-- on the buffer's other half deterministically. The output frame must
+		-- reproduce that residue or the flipped base lands outside the lowered
+		-- group and every toggle-shaped access traps on valid input. When the
+		-- declaring statement is governed by a provable `and $-N, %rsp` (the
+		-- andDomOf dataflow: the most recent and on EVERY path, no rsp restore
+		-- since), the buffer base's residue mod N is
+		--     res = (d_and - D0 + o_lo)  (mod N)
+		-- (entry_rsp ≡ d_and mod N because rsp(d_and) = entry_rsp - d_and is the
+		-- and-aligned rsp; a byte's absolute address is entry_rsp - D0 + o for
+		-- normalized offset o — D0 cancels against the entry term), and the
+		-- transform pads the buffer region so the lowered group's base lands on
+		-- exactly that residue (the output rsp is N-aligned too: the identity's
+		-- mod raises the frame's effective alignment). Groups without a computed
+		-- base keep today's placement byte for byte (the enc8x carrier shape has
+		-- no computed web and no identity needs).
+		do
+			-- Governing-and modulus by and depth: `and $-N, %rsp` statements'
+			-- N keyed by their (provable) depth; two different Ns at one depth
+			-- make the residue ambiguous — no identity.
+			local andNByDepth = {}
+			for i, st in body do
+				if st.kind == "insn" and st.x86_midAnd then
+					local dd = depthIn[i]
+					if type(dd) == "number" and st.operands and st.operands[2]
+						and st.operands[2].kind == "imm" then
+						local n = -immVal(st.operands[2])
+						if isStackAlign(n) then
+							if andNByDepth[dd] ~= nil and andNByDepth[dd] ~= n then
+								andNByDepth[dd] = nil
+								andNByDepth[dd .. "_ambig"] = true
+							elseif andNByDepth[dd .. "_ambig"] == nil then
+								andNByDepth[dd] = n
+							end
+						end
+					end
+				end
+			end
+			for _, g in sbGroups do
+				if g.hasComputed and g.decls then
+					local anchor = nil
+					for _, dm in g.decls do
+						local gd = andDomOf[dm.declIdx]
+						local n = (type(gd) == "number") and andNByDepth[gd] or nil
+						if n then
+							local res = ((gd - D0 + (dm.lo - dm.band)) % n + n) % n
+							if anchor == nil then
+								anchor = { res = res, mod = n, lo = dm.lo }
+							else
+								-- cross-check: the members' real-byte deltas must
+								-- match their residue deltas (one and governs all)
+								if n == anchor.mod then
+									local dRes = ((res - anchor.res) % n + n) % n
+									local dLo = ((dm.lo - anchor.lo) % n + n) % n
+									if dRes ~= dLo then
+										error("sarcasm: stack buffer group ["
+											.. tostring(g.lo) .. ", " .. tostring(g.hi)
+											.. ") holds declarations whose absolute"
+											.. " alignment identities disagree (the"
+											.. " xor-toggle residue story is"
+											.. " ambiguous); the buffer cannot be"
+											.. " lowered with a computed base")
+									end
+								else
+									anchor = nil break
+								end
+							end
+						end
+					end
+					if anchor ~= nil then
+						-- re-anchor the residue at the GROUP's low byte
+						g.abs = { res = ((anchor.res - (anchor.lo - g.lo))
+							% anchor.mod + anchor.mod) % anchor.mod,
+							mod = anchor.mod }
+					end
+				end
 			end
 		end
 	end
@@ -4006,6 +5567,32 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					else
 						w = gprStackWidth(m, mem)
 					end
+					-- A full-slot (8-byte) GPR access at exactly an outstanding pushed
+					-- register's save slot is NOT slot traffic: the rewrite's save-slot
+					-- model turns it into an operation on that register's web (a load
+					-- reads the web, a full-width store re-defines it) — no frame bytes
+					-- are touched, so it owns no home and takes no part in the
+					-- pre-/post-`and` intersection check (the poly1305 avx2 dispatch
+					-- restore loads sit pre-and while the vector scratch is post-and;
+					-- they never share bytes with it because they share none with
+					-- anything).
+					local saveAliasOp = false
+					if not isFP and w == 8 then
+						local sv = st.x86_saves
+						if sv and sv ~= "dyn" and #sv > 0 then
+							for _, s in sv do
+								if not (usesRbp and s.name == "rbp") and not s.spill then
+									local sd = D0 - s.depth
+									if off == sd then
+										if not s.redefined or st.operands[1] == mem then
+											saveAliasOp = true
+										end
+										break
+									end
+								end
+							end
+						end
+					end
 					if w then
 						-- B2 band bases are multiples of 64: a banded offset
 						-- (unbiased + base) preserves the input access's
@@ -4060,10 +5647,23 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- value): the access is and-keyed iff the SAVE executed after the
 						-- and (a post-and save parks the rounded rsp); a pre-and save
 						-- parks the unrounded (SysV-keyed) value. A dyn save depth cannot
-						-- be proven either way.
+						-- be proven either way. "Executed after the and" is decided by
+						-- the park SITE's reachedFromAnd fact (the park index the smap
+						-- records), NOT by the parked depth: a post-and `leaq K(%rsp)`
+						-- parks at depth d - K which can sit well ABOVE the and's depth
+						-- (poly1305 avx2's `leaq 0x90(%rsp),%rax` at and-depth 0x128
+						-- parks at 0xb0) while its VALUE is exactly as slack-tainted as
+						-- the surrounding post-and rsp-relative traffic — keying it
+						-- SysV would split one cluster's coordinate systems and reject
+						-- the function.
 						elseif st.x86_aliasOff ~= nil then
 							local e = st.x86_smap and st.x86_smap[mem.base.name]
-							if e and type(e.depth) == "number" and e.depth >= frameAndDepth then
+							local parkPost = e and e.saveIdx ~= nil
+								and parkPostOf(e.saveIdx) or false
+							if parkPost then
+								keyed = "and"
+								andBase = frameAndDepth
+							elseif e and type(e.depth) == "number" and e.depth >= frameAndDepth then
 								keyed = "and"
 							elseif e and type(e.depth) == "number" then
 								keyed = "d0"
@@ -4072,11 +5672,24 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							end
 						-- A direct rsp access at or below the note's depth executes at the
 						-- rounded (post-and) rsp; the access depth cancels in the residue
-						-- identity (the model's off carries disp + D0 - d).
+						-- identity (the model's off carries disp + D0 - d). Pre-and-only
+						-- accesses (Feature 2's new accepts — they were hard-rejected
+						-- before) sit at the SAME depth as the and but never execute
+						-- after it, so they must not take the and-keyed residue: they
+						-- fall to the TRUE-coordinate branch below.
 						elseif mem.base.rc == "sp" and not st.localClone and not st.b2clone
-						and type(st.x86_depth) == "number" and st.x86_depth >= frameAndDepth then
+						and type(st.x86_depth) == "number" and st.x86_depth >= frameAndDepth
+						and not st.x86_preAnd then
 							keyed = "and"
 							andBase = frameAndDepth
+						elseif mem.base.rc == "sp" and not st.localClone
+						and st.x86_preAnd and not st.x86_postAnd
+						and type(st.x86_depth) == "number" then
+							-- Feature 2: a pre-and-only rsp access executes STRICTLY
+							-- before every and on its path — TRUE entry-relative
+							-- coordinates, keyed at the SysV base exactly like
+							-- rbp-relative and pre-and-parked carrier traffic.
+							keyed = "d0"
 						elseif mem.base.rc == "sp" and st.b2clone
 						and type(st.x86_depth) == "number" then
 							-- A B2 clone re-runs the frame setup of the body it clones,
@@ -4086,16 +5699,32 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							-- (same slack identity as the jumper's note); otherwise it
 							-- keeps the historical ambig (SysV-residue) keying.
 							local g = andDomOf[si]
-							if type(g) == "number" and st.x86_depth >= g then
+							if type(g) == "number" and st.x86_depth >= g
+								and not st.x86_preAnd then
 								keyed = "and"
 								andBase = g
+							elseif st.x86_preAnd and not st.x86_postAnd
+								and type(st.x86_depth) == "number" then
+								-- Feature 2 (clone side): a pre-and-only clone access
+								-- keys TRUE (pre-band) coordinates at the SysV base; the
+								-- band's multiple-of-64 base preserves the residue.
+								keyed = "d0"
 							else
 								keyed = "ambig"
 							end
 						else
 							keyed = "ambig"
 						end
-						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq, si = si, keyed = keyed, andBase = andBase })
+						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq, si = si, keyed = keyed, andBase = andBase,
+						dropped = saveAliasOp or st.x86_dropRestore or nil,
+						pre = not saveAliasOp and not st.x86_dropRestore
+							and mem.base.rc == "sp" and st.x86_aliasOff == nil
+							and st.x86_preAnd and not st.x86_postAnd,
+						slack0 = not saveAliasOp and not st.x86_dropRestore
+							and ((mem.base.rc == "sp" and st.x86_aliasOff == nil
+								and st.x86_postAnd)
+							or (st.x86_aliasOff ~= nil and st.x86_aliasSaveIdx ~= nil
+								and parkPostOf(st.x86_aliasSaveIdx) or false)) })
 					end
 				end
 			end
@@ -4104,6 +5733,31 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- Sweep-merge strictly-overlapping intervals into clusters; a cluster is TAINTED
 	-- iff any member is an FP access (this is the aliasing guarantee: a GPR range
 	-- overlapping an FP range joins the cluster and is materialized with it).
+	-- Pre-/post-`and` slot-web intersection (Feature 2's soundness guard): a
+	-- pre-and rsp-relative access keys TRUE entry-relative coordinates while
+	-- every post-and access (rsp-relative, or through a carrier parked after
+	-- the and) keys the and's slack=0 convention — the same modeled byte range
+	-- on the two sides names real addresses a dynamic slack apart, and one
+	-- virtual slot web / materialized cluster cannot hold both. (The input
+	-- program cannot rely on the slack-dependent distance between the two
+	-- sides, so giving them separate homes is always sound; sharing one home
+	-- is not.) Reject any overlap between a pre-and access's range and a
+	-- post-and access's range. Both-TRUE and both-slack0 overlaps keep their
+	-- historical handling (same coordinates: one address, one home).
+	for _, iv in intervals do
+		if not iv.pre then continue end
+		for _, jv in intervals do
+			if jv ~= iv and jv.slack0 and iv.lo < jv.hi and iv.hi > jv.lo then
+				error("sarcasm: stack access before a mid-function `and $-N, %rsp`"
+					.. " overlaps post-and traffic in the modeled frame (pre-and keys"
+					.. " true entry-relative coordinates while post-and keys the and's"
+					.. " slack=0 convention, so one modeled range would name two real"
+					.. " addresses a dynamic slack apart): "
+					.. (body[iv.si].raw or body[iv.si].mnemonic))
+			end
+		end
+	end
+
 	table.sort(intervals, function(x, y) return x.lo < y.lo end)
 	local tainted = {}
 	do
@@ -4113,7 +5767,19 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				if iv.hi > cur.hi then cur.hi = iv.hi end
 				if iv.fp then cur.fp = true end
 				if iv.areq > cur.areq then cur.areq = iv.areq end
-				if iv.keyed ~= cur.keyed or (iv.keyed == "and" and iv.andBase ~= cur.andBase) then
+				-- Memory-neutral members (dropped epilogue restore loads and
+				-- save-slot-model register operations touch no frame bytes) carry no
+				-- coordinate system of their own: they inherit the cluster's keying
+				-- instead of forcing the keyed-mismatch rejection. Their RANGES still
+				-- extend the cluster exactly as before (the placement over-covers
+				-- them, as it always did).
+				if iv.dropped then
+					-- inherits cur's keying
+				elseif cur.dropped then
+					cur.keyed = iv.keyed
+					cur.andBase = iv.andBase
+					cur.dropped = nil
+				elseif iv.keyed ~= cur.keyed or (iv.keyed == "and" and iv.andBase ~= cur.andBase) then
 					-- One cluster, one alignment base: rsp-relative traffic
 					-- under an `and $-N,%rsp` note aligns to the note's base,
 					-- absolute/rbp-relative traffic to the SysV base. A cluster
@@ -4127,7 +5793,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						.. (body[iv.si].raw or body[iv.si].mnemonic))
 				end
 			else
-				cur = { lo = iv.lo, hi = iv.hi, fp = iv.fp, areq = iv.areq, keyed = iv.keyed, andBase = iv.andBase }
+				cur = { lo = iv.lo, hi = iv.hi, fp = iv.fp, areq = iv.areq, keyed = iv.keyed, andBase = iv.andBase, dropped = iv.dropped }
 				table.insert(tainted, cur)
 			end
 		end
@@ -4186,17 +5852,29 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- long comment in x86_64_codegen.luau's expandFpSaves.
 	local usesHiVec = false
 	local usesK = false
+	-- Feature ({k}-masked stack lowering): the highest-numbered vector register
+	-- (zmm31 down) the body never names. The rewrite lowers a supported
+	-- {%kN}-masked stack access into unmasked load / register-masked move /
+	-- unmasked store sequences riding this scratch (mask merge-masking needs the
+	-- old destination/memory value, and vector state has no register allocator —
+	-- every vector operand passes through on its hardware register — so the
+	-- scratch must be a register the program provably never touches). nil when
+	-- all 32 are used: masked stack forms then stay rejected (fail closed).
+	local vecUsed = {}
 	for _, st in body do
 		if st.kind == "insn" then
 			local vb = fp.widestVecBytes(st.operands or {})
 			if vb and (not vecBytes or vb > vecBytes) then vecBytes = vb end
-			if not (usesHiVec and usesK) then
+			do
 				for _, o in (st.operands or {}) do
 					if o.kind == "reg" and o.rc == "xmm" then
 						local nm = o.name or ""
 						local p3 = string.sub(nm, 1, 3)
-						if (p3 == "xmm" or p3 == "ymm" or p3 == "zmm") and (o.num or 0) >= 16 then
-							usesHiVec = true
+						if (p3 == "xmm" or p3 == "ymm" or p3 == "zmm") then
+							vecUsed[o.num or 0] = true
+							if (o.num or 0) >= 16 then
+								usesHiVec = true
+							end
 						elseif string.match(nm, "^k%d$") then
 							usesK = true
 						end
@@ -4204,6 +5882,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				end
 			end
 		end
+	end
+	maskScratchNum = nil
+	for n = 31, 0, -1 do
+		if not vecUsed[n] then maskScratchNum = n break end
 	end
 	-- Force the reservation from an FP entry signature alone (see the sigHasFp
 	-- comment above): 16 bytes per xmm0..xmm15 slot, exactly VEC_SAVE_BYTES below.
@@ -4406,6 +6088,28 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			sbCursor = g.base + (g.hi - g.lo)
 		end
 		sbLayout = { groups = sbGroups, bytes = sbCursor }
+		-- (e2) Finalize the buffer-interior VALUE leas' lowered displacements
+		-- (Feature A): each marked lea emits `leaq disp'(%rsp), %reg` into the
+		-- lowered buffer region at its byte's group-relative position (tagged
+		-- stackBuf, shifted by the transform once the frame base is known), so
+		-- the web's runtime value is exactly the output address of the buffer
+		-- byte the input lea computed — and the by-address checks (which compare
+		-- against the same group base) agree with it by construction.
+		for _, st in body do
+			if st.kind == "insn" and st.x86StackBufLeaValue then
+				local lv = st.x86StackBufLeaValue
+				local g2 = nil
+				for _, gr in sbGroups do
+					if lv.off >= gr.lo and lv.off < gr.hi then g2 = gr break end
+				end
+				if g2 == nil then
+					error("sarcasm: internal error: buffer value lea at normalized "
+						.. tostring(lv.off) .. " has no lowered group: "
+						.. (st.raw or st.mnemonic))
+				end
+				lv.disp = g2.base + (lv.off - g2.lo)
+			end
+		end
 		-- (e) Materialize the defining save of each rep's stack-alias side. The
 		-- save (`mov %rsp, %reg` / `lea K(%rsp), %reg` / a carrier copy) would be
 		-- dropped as a phantom value; an annotated rep CONSUMES the address, so
@@ -4456,6 +6160,135 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				end
 			end
 		end
+		-- (f) Unannotated accesses through buffer-address webs (Feature A). A web
+		-- that provably or possibly holds a buffer byte address (an (a0) value
+		-- lea, propagated through full-width register copies) must not be
+		-- dereferenced WITHOUT the annotation: the web is an ordinary integer
+		-- holding a capability-less stack address, so the ordinary checked path
+		-- would trap at runtime. Reject statically with the buffer named — the
+		-- `#! stack buffer (id)` annotation on the access is the fix (it lowers
+		-- to the runtime-checked by-address mode). A redefinition by ALU drops
+		-- the property (an ordinary web again — the historical unknown-base
+		-- handling applies, and by-address mode accepts any web anyway).
+		do
+			local genStmt = {}
+			for i, st in body do
+				if st.kind == "insn" and st.x86StackBufLeaValue then
+					genStmt[i] = st.operands[1]
+				end
+			end
+			if next(genStmt) then
+				-- state[i] = map (reg num -> buffer id) of registers that
+				-- possibly hold a buffer byte address BEFORE statement i.
+				local state, work, inq = {}, {}, {}
+				local firstInsn = nil
+				for i, st in body do
+					if st.kind == "insn" then firstInsn = i break end
+				end
+				local function union(a, b)
+					local u = {}
+					for k2, v2 in pairs(a) do u[k2] = v2 end
+					for k2, v2 in pairs(b) do u[k2] = v2 end
+					return u
+				end
+				local function sameSet(a, b)
+					for k2 in a do if b[k2] == nil then return false end end
+					for k2 in b do if a[k2] == nil then return false end end
+					return true
+				end
+				if firstInsn then
+					local first = {}
+					work[1] = firstInsn
+					inq[firstInsn] = true
+					state[firstInsn] = first
+					while #work > 0 do
+						local i = table.remove(work)
+						inq[i] = nil
+						local st = body[i]
+						if not (st and st.kind == "insn") then continue end
+						local s = state[i] or {}
+						local okc, c = pcall(classOf, st)
+						if not (okc and c) then continue end
+						local ops2 = st.operands or {}
+						local out = s
+						-- kill: every modeled GPR definition drops the property
+						for _, dd in c.defs do
+							if dd.kind == "reg" and dd.rc == "gpr" and out[dd.num] then
+								if out == s then
+									out = {}
+									for k2, v2 in pairs(s) do out[k2] = v2 end
+								end
+								out[dd.num] = nil
+							end
+						end
+						-- copy: a full-width reg-reg mov propagates the property
+						if x86.baseMnemonic(string.lower(st.mnemonic)) == "mov"
+							and ops2[1] and ops2[1].kind == "reg" and ops2[1].rc == "gpr"
+							and (ops2[1].width == 64 or ops2[1].width == nil)
+							and ops2[2] and ops2[2].kind == "reg" and ops2[2].rc == "gpr"
+							and (ops2[2].width == 64 or ops2[2].width == nil) then
+							local srcId = out[ops2[2].num]
+							if srcId and not out[ops2[1].num] then
+								if out == s then
+									out = {}
+									for k2, v2 in pairs(s) do out[k2] = v2 end
+								end
+								out[ops2[1].num] = srcId
+							end
+						end
+						-- gen: the buffer value lea defines the property
+						local g2 = genStmt[i]
+						if g2 then
+							if out == s then
+								out = {}
+								for k2, v2 in pairs(s) do out[k2] = v2 end
+							end
+							out[g2.num] = st.x86StackBufLeaValue.id
+						end
+						for _, s2 in successors(i) do
+							local cur = state[s2]
+							local merged
+							if cur == nil then
+								merged = out
+							elseif sameSet(cur, out) then
+								merged = cur
+							else
+								merged = union(cur, out)
+							end
+							if merged ~= cur then
+								state[s2] = merged
+								if not inq[s2] then
+									inq[s2] = true
+									table.insert(work, s2)
+								end
+							end
+						end
+					end
+				end
+				-- the rejection walk (an address-taking lea through the web is an
+				-- ordinary value computation — only memory accesses reject)
+				for i, st in body do
+					if st.kind ~= "insn" or st.stackBufAnno then continue end
+					if x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then continue end
+					local s = state[i]
+					if not s or not next(s) then continue end
+					for _, o in (st.operands or {}) do
+						if o.kind == "mem" and o.base and o.base.kind == "reg"
+							and o.base.rc == "gpr" and s[o.base.num] then
+							error("sarcasm: memory access through %" .. o.base.name
+								.. " holds the address of stack buffer '"
+								.. tostring(s[o.base.num]) .. "' (a buffer-interior"
+								.. " `leaq` computed it, and its value is an ordinary"
+								.. " integer here); annotate the access with"
+								.. " `#! stack buffer (" .. tostring(s[o.base.num])
+								.. ")` so it lowers to a runtime-checked raw access,"
+								.. " or redefine the register first: "
+								.. (st.raw or st.mnemonic))
+						end
+					end
+				end
+			end
+		end
 	end
 
 	local fpInfo = {
@@ -4477,6 +6310,45 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			return nil
 		end,
 	}
+	-- B2 shared-tail clone lea carriers (the provable-depth relaxation, clone
+	-- side): a clone statement's frame-interior `leaq K(%rsp), %reg` (0 < K < d
+	-- — the chacha 4x/4xop/8x bodies cloned into each other, each re-running its
+	-- own `leaq 0x100(%rsp),%rcx` behind the cloned dispatch) parks a carrier
+	-- keyed in the clone's BANDED coordinate space (see the banding pass below):
+	-- the clone executes in the jumper's stack context with the jumper's frame
+	-- dead, so its private frame is displaced into the band — the same
+	-- displacement every clone rsp-relative access gets — and the carrier's
+	-- accesses resolve statically to those banded homes (the carrier spelling
+	-- and the rsp-relative spelling of one byte land on one home: the K offset
+	-- cancels between the parked depth and the displacement). Marking the lea
+	-- x86_leaSave also removes it from the escape detector below, which would
+	-- otherwise count it a D9 escape (promoting the whole frame to a region and
+	-- colliding with any declared stack buffer). A carrier use that is NOT a
+	-- legal single-memory-base access still fails closed at the use, exactly
+	-- like every other carrier.
+	for i, st in body do
+		if st.kind == "insn" and st.b2clone and st.x86_leaSave == nil
+			and not st.x86StackBufLeaValue
+			and not st.x86StackBufLeaValueComputed
+			and not (st.allocaPlace or st.allocaOwned)
+			and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
+			local dd = depthIn[i]
+			local ops = st.operands
+			local mem = ops[2]
+			if type(dd) == "number" and not isDynDepth(dd) and (dd ~= D0 or ops[1].name == "rbp")
+				and ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr"
+				and (ops[1].name ~= "rbp" or not usesRbp)
+				and mem and mem.kind == "mem" and mem.base and mem.base.rc == "sp"
+				and not mem.index and not mem.dispSym then
+				local k = mem.dispVal or 0
+				local pk = st.localClone and (k - 8) or k
+				if pk ~= dd and pk > 0 then
+					st.x86_leaSave = true
+				end
+			end
+		end
+	end
+
 	-- Fixed-frame escape detection (D9): does any lea compute an address INSIDE
 	-- the fixed frame that the rewrite could only reject as an escape? (A lea
 	-- into a region, a recognized carrier form — the entry-rsp lea-saves and
@@ -4496,6 +6368,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		if st.kind == "insn" and depthIn[i] ~= nil
 			and not (st.allocaPlace or st.allocaOwned)
 			and not st.x86_leaSave and not isYoloLeaSave(st, depthIn[i])
+			-- A buffer-interior VALUE lea (Feature A by-address) names buffer
+			-- bytes, not frame slots: the buffer's own lowered region is its
+			-- real home, and the D9 promotion must not fire for it.
+			and not st.x86StackBufLeaValue
 			and x86.baseMnemonic(string.lower(st.mnemonic)) == "lea" then
 			local ops = st.operands
 			local mem = ops[2]
@@ -4556,8 +6432,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				local d = st.x86_depth
 				if d ~= nil and not isDynDepth(d) then
 					for _, o in (st.operands or {}) do
-						if o.kind == "mem" and o.base and o.base.rc == "sp"
-							and not o.index and not o.dispSym then
+						if o.kind == "mem" and o.base and o.base.kind == "reg"
+							and not o.index and not o.dispSym
+							and (o.base.rc == "sp" or st.x86_aliasOff ~= nil) then
 							local off = (st.x86_aliasOff ~= nil) and st.x86_aliasOff
 								or ((o.dispVal or 0) + D0 - d + b2band(st))
 							-- Exactly the taint scan's width (pcall: the scan
@@ -4586,6 +6463,142 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 		end
 		frameSize = maxNeed
+	end
+
+	-- Lea-save target window (the provable-depth carrier relaxation): a
+	-- `leaq K(%rsp), %reg` recognized as a carrier ONLY BY the new provable-
+	-- depth case (a frame-interior or above-entry anchor at a perturbed
+	-- provable depth — or any such lea into %rbp when %rbp is not the frame
+	-- pointer) must anchor INSIDE the frame's real extent — the same window
+	-- the escape detector uses for the prologue-depth leas it counts
+	-- (`off >= 0 and off < frameSize`), extended below the frame base by the
+	-- access window's red-zone rule (`min(-128, D0 - d - 128)`, the same
+	-- lower bound the carrier's accesses are bounds-checked against at the
+	-- lea's own depth). A lea anchoring OUTSIDE that window behaves exactly
+	-- as before the relaxation: it is not a carrier, and the rewrite rejects
+	-- it as a frame-address escape (there is no promoted region for a
+	-- perturbed-depth lea to ride). Runs here so `frameSize` is the FINAL
+	-- extent (the B2 band extension above can grow it): a deep anchor inside
+	-- the banded extent is a carrier, matching the banded accesses'
+	-- bounds-checking. The historical forms (K == d: the entry-rsp park;
+	-- K <= 0: the below-rsp anchor) predate the relaxation and keep their
+	-- unconditional recognition — their windows were accepted shapes before.
+	do
+		for i, st in body do
+			if st.kind == "insn" and st.x86_leaSave then
+				local dd = depthIn[i]
+				if type(dd) == "number" and not isDynDepth(dd) then
+					local ops = st.operands
+					local mem = ops[2]
+					if ops[1] and ops[1].kind == "reg" and mem and mem.kind == "mem" then
+						local k = mem.dispVal or 0
+						local pk = st.localClone and (k - 8) or k
+						-- Feature (D0 interior lea-save carriers): the D0 relaxation
+						-- is a "new" form too — its window is decided here, with the
+						-- same interior rule (the lea's normalized offset K must lie
+						-- inside the frame's real extent). The scan guard mirrors
+						-- the fixpoint's `leaD0` conditions exactly.
+						local isD0 = not st.localClone and not st.b2clone
+							and dd == D0 and ops[1].name ~= "rbp"
+							and k > 0 and k ~= dd
+							and leaSaveUsesMemoryOnly(st, i, dd - k)
+						local isNew = not st.localClone
+							and (ops[1].name == "rbp" or isD0
+								or (dd ~= D0 and not (pk == dd or pk <= 0)))
+						if isNew then
+							local ot = k + D0 - dd
+							local otLow = math.min(-128, D0 - dd - 128)
+							if ot < otLow or ot >= frameSize then
+								error("sarcasm: `leaq " .. k .. "(%rsp)` anchors outside the"
+									.. " frame (normalized offset " .. ot .. ", window ["
+									.. otLow .. ", " .. frameSize .. ")) — taking the address"
+									.. " of the stack frame cannot be proven safe: "
+									.. (st.raw or st.mnemonic))
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	-- Containing-granule scan (partial slot access support; see slotGranules):
+	-- record every normalized frame offset whose 8-byte plain GPR stack access
+	-- virtualizes into a slot web (the rewrite's final virtualization). Runs LAST so
+	-- every x86_* mark and the FP-taint clusters (fpInfo) are final. The conditions
+	-- mirror the rewrite's slot path for width-8 GPR accesses; any shape this scan is
+	-- unsure about is left UNMARKED — a false negative keeps the historical per-offset
+	-- web behavior (conservative), while a false positive would misroute a narrow
+	-- access into a web that does not exist, so every excluded shape here is one the
+	-- rewrite does not virtualize.
+	do
+		for _, st in body do
+			if st.kind == "insn" and not st.x86_prologue and not st.localClone
+				and not st.b2clone and st.x86_depth ~= nil
+				and not st.x86_spSave and not st.x86_saveStore and not st.x86_carrierLoad
+				and not st.x86_leaSave and not st.x86_dropRestore
+				and not st.x86_regionCarrier and not st.x86_spRecover
+				and not st.x86StackBufAccess and not st.x86StackBufIdx
+				and not st.x86StackBufRep and not st.x86StackBufLea
+				and not st.x86_preAnd then
+				local bm = x86.baseMnemonic(string.lower(st.mnemonic))
+				-- leas never virtualize (address computation); push/pop spell their
+				-- slot traffic through dedicated rewrite paths (a spill push/pop's
+				-- slot stays outside the granule map — conservative).
+				if bm ~= "lea" and bm ~= "push" and bm ~= "pop" and bm ~= "leave"
+					and bm ~= "cmpxchg8b" and bm ~= "cmpxchg16b" then
+					local mem, memCount = nil, 0
+					for _, o in (st.operands or {}) do
+						if o.kind == "mem" then mem = o; memCount += 1 end
+					end
+					local fpe = fpKnowledge.lookup(string.lower(st.mnemonic))
+					if memCount == 1 and mem and mem.base and mem.base.kind == "reg"
+						and not mem.index and not mem.dispSym and not isFpInsn(fpe, st) then
+						local w = mem.size or gprStackWidth(string.lower(st.mnemonic), mem)
+						if w == 8 then
+							local off
+							local d = st.x86_depth
+							local yoloRead = false
+							if st.x86_aliasOff ~= nil then
+								off = st.x86_aliasOff
+							elseif mem.base.rc == "sp" then
+								-- rsp-relative needs a provable depth (a "dyn" depth cannot
+								-- key a slot; the rewrite rejects those accesses anyway)
+								if not isDynDepth(d) then
+									off = (mem.dispVal or 0) + D0 - d
+									-- a direct entry-time read of an incoming yolo stack
+									-- argument redirects to the argument's slot band, not
+									-- an ordinary frame slot (the rewrite's yolo gate)
+									yoloRead = yoloArgSlotOf(st, "rsp", d) ~= nil
+								end
+							elseif usesRbp and mem.base.name == "rbp" and st.x86_fp == "est" then
+								-- rbp-relative: static regardless of the rsp depth (rbp is
+								-- the frame pointer) — the rewrite's second exception
+								off = rbpNorm + (mem.dispVal or 0)
+							end
+							if off ~= nil and not yoloRead and not regionOf(off, false)
+								and not (fpInfo and fpInfo.lookup(off, 8)) then
+								-- Save-slot overlap (the rewrite's alias model: an access
+								-- overlapping an outstanding pushed save never virtualizes
+								-- into an ordinary web). A "dyn" save state cannot be
+								-- checked here — leave unmarked (conservative).
+								local aliased = false
+								local sv = st.x86_saves
+								if sv ~= nil and sv ~= "dyn" then
+									for _, s in sv do
+										if usesRbp and s.name == "rbp" then continue end
+										if s.spill then continue end
+										local sd = D0 - s.depth
+										if off < sd + 8 and off + 8 > sd then aliased = true break end
+									end
+								end
+								if not aliased then slotGranules[off] = true end
+							end
+						end
+					end
+				end
+			end
+		end
 	end
 
 	-- 5th return: the incoming yolo stack-argument info for the transform (slot
@@ -4802,6 +6815,14 @@ function x86_64_frame.rewrite(st, ctx)
 				.. " `.alloca` directive`): " .. (st.raw or m))
 		end
 		if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then
+			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
+				.. " be proven safe: " .. (st.raw or m))
+		end
+		if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].name == "rbp"
+			and ops[2] and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+			and not ops[2].index and not ops[2].dispSym and (ops[2].dispVal or 0) == 0 then
+			-- `leaq 0(%rsp), %rbp` mid-body: the lea spelling of the rejected
+			-- re-establishment (same proof failure as the mov form above).
 			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
 				.. " be proven safe: " .. (st.raw or m))
 		end
@@ -5044,6 +7065,12 @@ function x86_64_frame.rewrite(st, ctx)
 			.. (st.raw or m))
 	end
 	if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then return end
+	-- `leaq 0(%rsp), %rbp` in the prologue prefix: the lea spelling of the frame-pointer
+	-- establishment (the prefix scan recognized it and set usesRbp/fpDepth from it) —
+	-- dropped like the mov form. Post-prologue ones were handled — and rejected — above.
+	if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].name == "rbp"
+		and ops[2] and ops[2].kind == "mem" and ops[2].base and ops[2].base.rc == "sp"
+		and not ops[2].index and not ops[2].dispSym and (ops[2].dispVal or 0) == 0 then return end
 	if b == "mov" and ops[1] and ops[1].rc == "sp" then
 		if (ops[2] and ops[2].name == "rbp" and usesRbp and st.x86_fp == "est")
 			or st.x86_spRecover then
@@ -5190,6 +7217,15 @@ function x86_64_frame.rewrite(st, ctx)
 	-- width/decorators and emits a slot pseudo-register or a real disp(%rsp).
 	local aliasOff = st.x86_aliasOff
 	if mem and mem.base and not isStackReg(mem.base, usesRbp) and not mem.index and not mem.dispSym then
+		-- A by-ADDRESS stack-buffer access (Feature A): the base is an ordinary
+		-- web (possibly one holding a buffer byte address, possibly any other
+		-- integer/pointer — the transform's runtime check is the whole story).
+		-- Emit the statement untouched: no smap lookup, no conflict rejection,
+		-- no capability decision.
+		if st.x86StackBufAddr then
+			emit(st)
+			return
+		end
 		local e = st.x86_smap and st.x86_smap[mem.base.name]
 		if e and e.conflict then
 			-- A heap-form access with an explicit pointer capability
@@ -5212,6 +7248,11 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		if e and not e.redefined and not e.slot and not e.roff and not e.conflict then
 			if st.x86_dropRestore then return end
+			-- A derived-carrier lea (`leaq K(%carrier), %reg`) rides the carrier
+			-- discipline: dropped like the save itself (the x86_leaSave mark the
+			-- annotation pass computed for it), never reaching the alias/slot
+			-- path below (a lea has no alias slot — aliasSlotOf refuses leas).
+			if st.x86_leaSave and b == "lea" then return end
 			-- A memory access through a frame-anchor carrier that lands inside the
 			-- current anchored region scope (the poly1305 `leaq -88(%rsp), %r11`
 			-- shape): pass it through — the transform redirects it to the region
@@ -5259,24 +7300,90 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		-- A stack memory operand carrying an AVX512 {kN} mask decorator. On HEAP
 		-- accesses the supported masked forms (vector moves, truncating stores,
-		-- expand/compress) now get a mask-aware bounds check from the transform
-		-- (fp.maskedAccessInfo), but on a STACK slot the frame rewrite runs FIRST
-		-- and would virtualize/materialize the operand: a virtualized slot is a
-		-- pseudo-register the masked vector instruction cannot take, and a
-		-- materialized slot would need the mask-aware lane structure accounted
-		-- for in the cluster sizing. Neither is modeled, so reject all {k}-masked
-		-- stack accesses, like the unsupported masked heap forms.
+		-- expand/compress) get a mask-aware bounds check from the transform
+		-- (fp.maskedAccessInfo). A STACK slot is virtualized/materialized HERE,
+		-- before the transform, so the masked instruction cannot ride through —
+		-- but the masked VECTOR-MOVE family (vmovdqu8/16/32/64, vmovdqa32/64,
+		-- vmovups/upd, vmovaps/apd) can be LOWERED exactly: an unmasked full-width
+		-- load of the slot's old bytes, the ORIGINAL register-register masked move
+		-- (merge-masking: k=1 lanes take the new value, k=0 keep the old — {z}
+		-- forms zero them) riding a scratch vector register the body never names,
+		-- and an unmasked full-width store back. The slot's cluster was sized by
+		-- the FULL vector width (fp.accessWidth is mask-blind), so the widened
+		-- footprint is bounds-proven, and the masked-off lanes' bytes are read
+		-- and written back UNCHANGED — memory content is exactly what the masked
+		-- instruction leaves. Every other masked form (expand/compress, truncating
+		-- stores, ALU memory sources) stay rejected.
+		local fpEntry = fp.lookup(m)
+		local maskedStackLower = nil
 		for _, o in ops do
 			if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
-				error("sarcasm: AVX512 mask-register ({k}) stack-frame memory accesses are not"
-					.. " supported (masked-off lanes may not touch memory; use an unmasked or"
-					.. " heap form; cannot prove memory safety): "
-					.. (st.raw or m))
+				if isFpInsn(fpEntry, st) and maskScratchNum
+					and MASKED_STACK_MOVE[m]
+					and not mem.bcastN and not string.find(o.deco, "{1to", 1, true) then
+					maskedStackLower = o
+				else
+					error("sarcasm: AVX512 mask-register ({k}) stack-frame memory accesses are not"
+						.. " supported for '" .. m .. "' (only the masked vector moves lower"
+						.. " here; masked-off lanes may not touch memory; cannot prove memory"
+						.. " safety): "
+						.. (st.raw or m))
+				end
+			end
+		end
+		-- The lowering itself (both emission points below call this): see the gate
+		-- comment above for the exactness argument. `mat` is the materialized
+		-- slot operand (its deco carries the original {kN}{z} decorators — the
+		-- unmasked helper traffic strips them); ops are dest-first; `deco` is the
+		-- mask decorator text (on the memory operand for stores, on the register
+		-- destination for loads — wherever the input spelled it). Returns the
+		-- sequence WITHOUT emitting it, so an indexed buffer access can attach
+		-- its runtime bounds-check mark to the first statement before emission.
+		local function buildMaskedStackLower(mm, mat, sops, smem, mdeco)
+			local unal = MASKED_STACK_MOVE[mm]
+			local isStore = (sops[1] == smem)
+			local vop = isStore and sops[2] or sops[1]
+			local w = (vop.width or 128) // 8
+			local pfx = (w >= 64) and "zmm" or (w >= 32) and "ymm" or "xmm"
+			local scratch = { kind = "reg", rc = "xmm", num = maskScratchNum,
+				width = w * 8, name = pfx .. maskScratchNum }
+			local matU = {}
+			for kk, vv in pairs(mat) do matU[kk] = vv end
+			matU.deco = nil
+			local out = {}
+			-- unmasked full-width traffic of the old/new slot bytes
+			if isStore then
+				-- scratch = old memory; scratch = k ? src : scratch; store scratch
+				table.insert(out, { kind = "insn", mnemonic = unal,
+					operands = { scratch, matU }, raw = st.raw, line = st.line })
+				local dst = {}
+				for kk, vv in pairs(scratch) do dst[kk] = vv end
+				dst.deco = mdeco
+				table.insert(out, { kind = "insn", mnemonic = st.mnemonic,
+					operands = { dst, vop }, raw = st.raw, line = st.line,
+					annotation = st.annotation })
+				table.insert(out, { kind = "insn", mnemonic = unal,
+					operands = { matU, scratch }, raw = st.raw, line = st.line })
+			else
+				-- scratch = full load; dest = k ? scratch : dest (merge) / {z} zeroes
+				table.insert(out, { kind = "insn", mnemonic = unal,
+					operands = { scratch, matU }, raw = st.raw, line = st.line })
+				local dst = {}
+				for kk, vv in pairs(vop) do dst[kk] = vv end
+				dst.deco = mdeco
+				table.insert(out, { kind = "insn", mnemonic = st.mnemonic,
+					operands = { dst, scratch }, raw = st.raw, line = st.line,
+					annotation = st.annotation })
+			end
+			return out
+		end
+		local function emitMaskedStackLower(mm, mat, sops, smem, mdeco)
+			for _, e in buildMaskedStackLower(mm, mat, sops, smem, mdeco) do
+				emit(e)
 			end
 		end
 		-- Memory-neutral hints (prefetch*) need no bounds check and no slot: the real
 		-- stack address is always safe to hint at (a prefetch can never fault).
-		local fpEntry = fp.lookup(m)
 		if fpEntry and fpEntry.noCheck then emit(st); return end
 		-- Region membership is a static fact even at a perturbed/"dyn" depth, so the
 		-- region lookup runs FIRST: an access landing in a fixed alloca region passes
@@ -5331,6 +7438,16 @@ function x86_64_frame.rewrite(st, ctx)
 				error("sarcasm: aligned " .. fa .. "-byte access into a " .. (region.align or 16)
 					.. "-byte-aligned region cannot be proven safe (use the unaligned form): "
 					.. (st.raw or m))
+			end
+			-- A masked form on a REGION access rides the transform's region redirect
+			-- verbatim, whose plain (full-width) check is what proves it — the
+			-- stack-lowering below owns only the virtualized/materialized slots.
+			-- The gate above already rejected every non-lowerable masked form, but
+			-- a lowerable one must not silently lose its mask on the region path.
+			if maskedStackLower then
+				error("sarcasm: AVX512 mask-register ({k}) memory access into a promoted"
+					.. " region is not supported (the region redirect cannot lower the"
+					.. " mask; use an unmasked form): " .. (st.raw or m))
 			end
 			emit(st); return
 		end
@@ -5437,12 +7554,39 @@ function x86_64_frame.rewrite(st, ctx)
 		-- A direct rsp-relative access positioned before a mid-function
 		-- `and $-N, %rsp` keys pre-and numbering, which the and shifts by a
 		-- dynamic slack (alias-carrier, rbp-relative, and yolo-argument reads
-		-- above are absolute and exempt): reject.
-		if st.x86_preAnd and aliasOff == nil and mem.base.rc == "sp" then
-			error("sarcasm: stack access before a mid-function `and $-N, %rsp` cannot"
-				.. " be proven safe (the later alignment shifts rsp by a dynamic slack;"
-				.. " move the access past the and, or address the slot through a saved"
-				.. " stack-pointer register): " .. (st.raw or m))
+		-- above are absolute and exempt). A statement that can ONLY execute
+		-- before the and (preAnd-marked, never reached from one — x86_postAnd
+		-- unset) names a single real address per key on every execution: its
+		-- accesses key TRUE entry-relative coordinates like every other pre-and
+		-- slot, and analyzeFrame's interval check proves no post-and (slack=0-
+		-- keyed) traffic shares those modeled bytes. A statement BOTH able to
+		-- reach an and and reachable from one executes on both sides of the
+		-- and — one key, two slack-dependent addresses — and stays rejected.
+		if st.x86_preAnd and st.x86_postAnd and aliasOff == nil and mem.base.rc == "sp" then
+			error("sarcasm: stack access both before and after a mid-function `and $-N, %rsp`"
+				.. " cannot be proven safe (the access executes on both sides of the and, and"
+				.. " the and shifts rsp by a dynamic slack, so one slot key names two"
+				.. " different real addresses; move the access wholly to one side, or address"
+				.. " the slot through a saved stack-pointer register): " .. (st.raw or m))
+		end
+		-- A buffer-interior VALUE lea (Feature A, by-address accesses): the
+		-- destination web holds the buffer byte ADDRESS — emit it as a real
+		-- `leaq disp'(%rsp), %reg` into the lowered buffer region (tagged
+		-- stackBuf, so the transform's buffer-base shift finalizes it into the
+		-- output-frame address of exactly the byte the input lea computed). The
+		-- web is an ordinary integer web; annotated accesses through it become
+		-- runtime-checked by-address accesses, and value uses (ALU, cmov,
+		-- stores) are ordinary integer arithmetic. (The phase (e2) pass computed
+		-- the group-relative displacement; a value lea never lands in a region —
+		-- a buffer's range and an alloca region's coordinates cannot collide.)
+		if st.x86StackBufLeaValue then
+			local lv = st.x86StackBufLeaValue
+			local mat = { kind = "mem",
+				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
+				scale = 1, dispVal = lv.disp, stackBuf = true }
+			emit({ kind = "insn", mnemonic = "lea", operands = { ops[1], mat },
+				raw = st.raw, line = st.line })
+			return
 		end
 		-- lea of a stack address computes/escapes a pointer into the frame: reject.
 		if b == "lea" then ctx.rejectEscape(st.raw or m) end
@@ -5471,6 +7615,30 @@ function x86_64_frame.rewrite(st, ctx)
 				stackBuf = true, deco = mem.deco, bcastN = mem.bcastN }
 			local newops = {}
 			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			-- Feature (indexed masked stack-buffer lowering): a lowerable masked
+			-- vector move on a REDIRECTED buffer operand lowers exactly like the
+			-- static-slot case — the unmasked full-width old-bytes load, the
+			-- original masked register-register move, and the unmasked store-back
+			-- (loads: the full load, then the masked move into the destination) —
+			-- all riding the redirected `disp'(%rsp,%idx,s)` operand. The runtime
+			-- bounds-check mark rides the FIRST emitted statement (the unmasked
+			-- old-bytes load), so the index is proven in range before ANY byte of
+			-- the sequence executes — an out-of-range index traps without
+			-- touching the buffer, exactly like the unmasked indexed form. The
+			-- scratch register rule holds unchanged (the body never names the
+			-- scratch web), and the masked-off lanes' bytes are read and written
+			-- back unchanged, so the buffer's memory content is exactly what the
+			-- masked instruction leaves. Capabilities never live in buffer
+			-- memory (the scan already rejected the ptr annotations), so the
+			-- index web's pointer-ness is irrelevant here — the bounds check is
+			-- the whole story.
+			if maskedStackLower then
+				local lowered = buildMaskedStackLower(m, mat, ops, mem,
+					maskedStackLower.deco)
+				lowered[1].x86StackBufIdx = bi
+				for _, e in lowered do emit(e) end
+				return
+			end
 			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
 				raw = st.raw, line = st.line, x86StackBufIdx = bi })
 			return
@@ -5748,6 +7916,13 @@ function x86_64_frame.rewrite(st, ctx)
 		-- writes).
 		local lowB = -128
 		if perturbedRsp then lowB = math.min(-128, D0 - d - 128) end
+		-- A stack+offset alias carrier access gets the SAME depth-aware window as
+		-- the direct rsp-relative spelling at this point (the carrier's key names
+		-- the same address — see the transfer's aliasOk window comment). A "dyn"
+		-- or scope depth keeps the historical [-128, frameSize) window.
+		if aliasOff ~= nil and type(d) == "number" then
+			lowB = math.min(lowB, D0 - d - 128)
+		end
 		ctx.checkBounds(off, wb, ops[1] == mem, st.raw, lowB)
 		-- A STATIC stack access whose normalized byte range falls fully inside a
 		-- declared stack-buffer group is lowered into the buffer region: real
@@ -5772,6 +7947,10 @@ function x86_64_frame.rewrite(st, ctx)
 				stackBuf = true, deco = mem.deco, bcastN = mem.bcastN }
 			local newops = {}
 			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			if maskedStackLower then
+				emitMaskedStackLower(m, mat, ops, mem, maskedStackLower.deco)
+				return
+			end
 			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops,
 				raw = st.raw, line = st.line, annotation = st.annotation })
 			return
@@ -5828,14 +8007,18 @@ function x86_64_frame.rewrite(st, ctx)
 			-- AVX512 decorators ({1toN} embedded broadcast) MUST ride along on the
 			-- materialized operand: the slot was sized by the DECORATED access width
 			-- (fp.accessWidth applies bcastN), so dropping the decorator would emit a
-			-- full-width vector access to an element-sized slot. ({kN} masks were
-			-- rejected above, so only broadcast/plain decorators can reach here.)
+			-- full-width vector access to an element-sized slot. ({kN} masks lower
+			-- here — see the gate above and emitMaskedStackLower.)
 			local mat = { kind = "mem",
 				base = { kind = "reg", rc = "sp", num = 4, width = 64, name = "rsp" },
 				scale = 1, dispVal = final, size = wb, frameSlot = true,
 				deco = mem.deco, bcastN = mem.bcastN }
 			local newops = {}
 			for _, o in ops do table.insert(newops, (o == mem) and mat or o) end
+			if maskedStackLower then
+				emitMaskedStackLower(m, mat, ops, mem, maskedStackLower.deco)
+				return
+			end
 			emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = st.annotation })
 			return
 		end
@@ -5853,10 +8036,57 @@ function x86_64_frame.rewrite(st, ctx)
 				.. " slot band (a frame slot there would alias an argument slot; cannot"
 				.. " prove safety): " .. (st.raw or m))
 		end
+		-- Containing-granule routing (partial slot access): a narrow (1/2/4-byte)
+		-- access whose byte range falls inside a granule that (per the analysis's
+		-- slotGranules map) carries 8-byte slot traffic at its 8-byte-aligned base is
+		-- routed to the CONTAINING slot web with a partial-access marker, instead of
+		-- creating a fresh web at its own offset. The marker (x86_slotPartial: the
+		-- sub-offset, the width, and the direction) drives the transform's extract /
+		-- read-modify-write lowering, which makes the virtualized web behave exactly
+		-- like the memory it stands for (a narrow store updates bytes of the enclosing
+		-- qword; a narrow load reads them). Fully-containing only (sub + w <= 8): a
+		-- wider-than-remainder access straddles two granules and keeps the historical
+		-- per-offset web (the pre-existing overlap gap). Aligned (sub == 0) narrow
+		-- traffic that already behaves correctly on the shared web — a load, or a
+		-- 1/2-byte store (a modeled web RMW) — keeps its historical form; only the
+		-- aligned 4-byte STORE is routed (its zero-extending def was the documented
+		-- same-offset gap). Narrow traffic into a NO-granule offset keeps the
+		-- historical per-offset web (unchanged behavior).
+		local partial = nil
+		if wb < 8 and (wb == 1 or wb == 2 or wb == 4) then
+			-- Only a single-memory-operand statement routes: a second (heap) memory
+			-- operand would need the transform's access-check cascade alongside the
+			-- partial-access lowering, and the granule scan only marks single-mem
+			-- statements in the first place. (Two STACK mems never reach here — the
+			-- escape scan rejects them.)
+			local memCount = 0
+			for _, o in ops do if o.kind == "mem" then memCount += 1 end end
+			-- Write direction: the (dest-first) first operand is the memory operand —
+			-- EXCEPT cmp/test (their memory operand is read-only: it feeds the flag
+			-- compare) and the one-operand mul/div family (the memory operand is the
+			-- multiplicand/divisor). Same positional rule as x86_64_codegen.isStoreInsn.
+			local isWrite = ops[1] == mem and b ~= "cmp" and b ~= "test"
+				and not (#ops == 1 and (b == "mul" or b == "imul" or b == "div" or b == "idiv"))
+			if memCount == 1 then
+				local base = off - (off % 8)
+				local sub = off - base
+				-- Aligned (sub == 0) narrow traffic that ALREADY behaves correctly on
+				-- the shared web keeps its historical form: a load reads the low bytes,
+				-- and a 1/2-byte store is modeled as a web RMW (partialRegWrite) whose
+				-- emitted byte/word store preserves the colored register's upper bits.
+				-- Only the aligned 4-byte STORE needs the merge lowering (its
+				-- zero-extending def was the documented same-offset gap).
+				local historical = (sub == 0 and (not isWrite or wb < 4))
+				if slotGranules[base] and sub + wb <= 8 and not historical then
+					partial = { sub = sub, w = wb, write = isWrite }
+					off = base
+				end
+			end
+		end
 		local slot = ctx.slotReg(off, wb * 8)
 		local newops = {}
 		for _, o in ops do table.insert(newops, (o == mem) and slot or o) end
-		emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = emitAnno })
+		emit({ kind = "insn", mnemonic = st.mnemonic, operands = newops, raw = st.raw, line = st.line, annotation = emitAnno, x86_slotPartial = partial })
 		return
 	end
 

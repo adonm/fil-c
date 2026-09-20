@@ -663,4 +663,29 @@ $(INCS):
 	@$(ECHO)
 	$(RM) o/$(MODE)/depend
 
+#─φ─Fil-C: slim yolo libc (see filc/compute-closure.py)───────────────────────
+#
+# The full cosmopolitan.a is overkill for the Fil-C "yolo" layer: only the
+# objects whose symbols the Fil-C runtime (libpizlo.a), the yolo crt chain,
+# the pizlonated user libc, and the pizlonated C++ runtimes can reference
+# ever get resolved from it.  filc/filc-objects.mk is the generated list of
+# exactly those objects; `make m=$(MODE) filcyolo` builds just them (plus the
+# APE bootloader bits and the crt that build_yolocosmo.sh installs) and packs
+# them into o/$(MODE)/filc/libyolocosmo.a.  Member names keep their full
+# paths (-P), so nothing collides the way the flat-named cosmopolitan.a
+# members do.
+include filc/filc-objects.mk
+
+.PHONY: filcyolo
+filcyolo:\
+	o/$(MODE)/ape/ape.lds\
+	o/$(MODE)/ape/ape.o\
+	o/$(MODE)/libc/crt/crt.o\
+	o/$(MODE)/filc/libyolocosmo.a
+
+o/$(MODE)/filc/libyolocosmo.a: $(FILC_YOLO_OBJS)
+	@$(MKDIR) $(@D)
+	$(file >$(TMPDIR)/filc-yolo-objs,$(FILC_YOLO_OBJS))
+	ar rcsD -P $@ @$(TMPDIR)/filc-yolo-objs
+
 -include o/$(MODE)/depend

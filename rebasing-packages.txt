@@ -30,6 +30,7 @@ The deprecated mode:
     -> The source distribution tarball. If you went to libuv's website and downloaded the libuv 1.51.0 source distro, you'd get exactly what wad in that "Initial commit".
     -> Cleaned of any .git nonsense. I remove .gitignore files as well as any other .git* files that alter git's behavior for the given directory.
     -> Ready for building. In the case of autoconf-based source distributions, this means that the `autoconf` or `autoreconf` step is NOT NECESSARY as there is already a `configure` script ready to go.
+    -> IMPORTANT: In the new projeny mode described above, there's no need to remove .git files. I'm just telling you about the deprecated mode here, so you understand how those projects are laid out, if you find one like that.
 
 - Patches necessary to make the project work in Fil-C are applied on top of the initial commit as distinct git commits.
     -> This means that you can work out what is the Fil-C patch to a project by first using `git log .` in the project's directory to find the initial commit and then using `git diff <initial commit hash> .` to find the total Fil-C patch.

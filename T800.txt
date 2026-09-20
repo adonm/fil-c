@@ -42,5 +42,7 @@ Some pitfalls to consider:
 - DO NOT edit .gitignore. You will see lots of untracked files. Most likely, those files are intended to be untracked. Do not worry about the git status of pre-existing untracked files.
 - All Fil-C allocations are rounded up to 16 bytes and have at least 16 bytes alignment. So, for example, `int x; (&x)[1]++;` is valid in Fil-C because offset 4 in the `int x` is within bounds of that 16-byte allocation.
 
+IMPORTANT: If you're creating new license headers, remember: the year is 2026 and Filip Pizlo no longer works at Epic Games, so new copyright headers should be (c) 2026 Filip Pizlo. Don't remove any prior copyright headers. But if you edit a file or create a new one, make sure there's a (c) 2026 Filip Pizlo in it and the disclaimer references FILIP PIZLO not EPIC GAMES, INC.
+
 Note that CLAUDE.md, README.md, and Manifesto.md have more information. However, if instructions in those docs contradict anything in this doc, then this doc takes precedence.
 

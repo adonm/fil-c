@@ -203,12 +203,6 @@ $hasGLIBC = (Pathname.new($pizfix) + "lib" + "libc.so.6666").exist?
 # marker artifact in pizfix/lib.
 $hasCOSMO = (Pathname.new($pizfix) + "lib" + "libyolocosmo.a").exist?
 
-# Sarcasm (the assembler for the .s tests) lives in pizfix/bin when
-# build_sarcasm.sh ran.  It is not part of build_base.sh, and in the cosmo
-# flavor it is optional (the sarcasm tool is itself a cosmo binary, built
-# through minilute), so the .s tests can only run when it is present.
-$hasSarcasm = (Pathname.new($pizfix) + "bin" + "sarcasm").exist?
-
 raise unless system("#{$compilerPrefix}#{$pizfix}/../build/bin/clang -O3 -c -o filc/tests/utils.o filc/tests/utils.c -g")
 
 $testDirectory = Pathname.new("filc/tests")
@@ -246,13 +240,6 @@ end
 # source file, i.e. the thing that decides clang++ versus clang.
 def isCppEntry(entry)
     return Pathname.new(entry).extname == ".cpp"
-end
-
-# Returns true if the given source entry (a Pathname or a String) is a
-# hand-written assembly source file, i.e. the thing that cannot be pizlonated
-# by the compiler and (for the sarcasm tests) needs the sarcasm assembler.
-def isAsmEntry(entry)
-    return Pathname.new(entry).extname == ".s"
 end
 
 $testDirectory.each_entry {
@@ -415,16 +402,6 @@ $testDirectory.each_entry {
     # always goes through the sarcasm assembler, which is optional in the
     # cosmo flavor: the .s tests run there only if sarcasm was built.
     if $hasCOSMO
-        hasAsmSource = false
-        fullPath.each_entry {
-            | entry |
-            next unless isSourceEntry(entry)
-            hasAsmSource = true if isAsmEntry(entry)
-        }
-        if hasAsmSource and not $hasSarcasm
-            puts "Skipping #{testName}, assembly not supported on COSMO"
-            next
-        end
         hasSharedLibrary = false
         cosmoLibraries = manifest["libraries"]
         if cosmoLibraries

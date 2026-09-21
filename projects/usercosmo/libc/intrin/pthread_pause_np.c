@@ -16,9 +16,11 @@
 │ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR             │
 │ PERFORMANCE OF THIS SOFTWARE.                                                │
 ╚─────────────────────────────────────────────────────────────────────────────*/
-#ifdef _MSC_VER
+#if defined(_MSC_VER)
 #include <intrin.h>
-#else
+#elif defined(__x86_64__) || defined(__i386__)
+/* Fil-C port: the xmm header is x86-only (it #errors elsewhere), and its
+   _mm_pause() is only used by the x86 branch below anyway. */
 #include <xmmintrin.h>
 #endif
 

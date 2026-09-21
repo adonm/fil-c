@@ -21,13 +21,26 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-all: libyolounwind.a
+# The unwinder is one portable C file.  Cross builds (FILCARCH=aarch64, from
+# build_yolocosmo.sh) put their artifacts in per-arch file names so they don't
+# collide with the host-arch build; the default (FILCARCH = host) is unchanged.
+FILCARCH ?= $(shell uname -m)
+
+ifneq ($(FILCARCH),$(shell uname -m))
+ARCHSUFFIX = -$(FILCARCH)
+CROSS_TARGET_FLAGS = --target=$(FILCARCH)-linux-gnu
+else
+ARCHSUFFIX =
+CROSS_TARGET_FLAGS =
+endif
+
+all: libyolounwind$(ARCHSUFFIX).a
 
 clean:
-	rm -f libyolounwind.a yolounwind.o
+	rm -f libyolounwind.a libyolounwind$(ARCHSUFFIX).a yolounwind.o yolounwind$(ARCHSUFFIX).o
 
-libyolounwind.a: yolounwind.o
-	ar cr libyolounwind.a yolounwind.o
+libyolounwind$(ARCHSUFFIX).a: yolounwind$(ARCHSUFFIX).o
+	ar cr libyolounwind$(ARCHSUFFIX).a yolounwind$(ARCHSUFFIX).o
 
-yolounwind.o: yolounwind.c
-	clang -c -o yolounwind.o yolounwind.c -O2 -g
+yolounwind$(ARCHSUFFIX).o: yolounwind.c
+	clang $(CROSS_TARGET_FLAGS) -c -o yolounwind$(ARCHSUFFIX).o yolounwind.c -O2 -g

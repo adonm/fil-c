@@ -244,10 +244,16 @@ std::string CUIDOptions::getCUID(StringRef InputFile,
 
 // A pizfix tree is a "cosmo" pizfix (cosmopolitan libc flavored Fil-C) if its
 // lib directory contains libyolocosmo.a, which is the cosmo libc archive.
+// The aarch64 flavor of that archive lives in lib-aarch64 (see
+// build_yolocosmo.sh), so both locations are accepted.
 static bool hasCosmoMarker(StringRef PizfixRoot) {
   SmallString<128> P(PizfixRoot);
   llvm::sys::path::append(P, "lib", "libyolocosmo.a");
-  return llvm::sys::fs::is_regular_file(P);
+  if (llvm::sys::fs::is_regular_file(P))
+    return true;
+  SmallString<128> Q(PizfixRoot);
+  llvm::sys::path::append(Q, "lib-aarch64", "libyolocosmo.a");
+  return llvm::sys::fs::is_regular_file(Q);
 }
 
 Driver::Driver(StringRef ClangExecutable, StringRef TargetTriple,

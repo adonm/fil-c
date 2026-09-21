@@ -33,8 +33,12 @@
 #   pizfix/include/     cosmo public headers (the flavor switch for the driver)
 #
 # All of the build logic lives in projects/usercosmo/filc.mk; this wrapper
-# checks the environment, drives make, and prints the summary.  Force a full
-# rebuild of the libc with `FORCE=1 ./build_usercosmo.sh`.
+# checks the environment, drives make, and prints the summary.  It builds
+# every architecture in COSMOARCHES (default "x86_64 aarch64"): the host
+# architecture installs into pizfix/lib and pizfix/include (the headers are
+# arch-neutral, so only the host build installs them), and the others cross
+# build into pizfix/lib-<arch>.  Force a full rebuild of the libc with
+# `FORCE=1 ./build_usercosmo.sh`.
 
 . libpas/common.sh
 
@@ -43,14 +47,37 @@ set -x
 
 ROOT=$PWD
 
-make -C "$ROOT/projects/usercosmo" -f filc.mk -j "$NCPU" install \
-    PIZFIX="$ROOT/pizfix" \
-    FILC_CLANG="$ROOT/build/bin/clang"
+COSMOARCHES=${COSMOARCHES:-"x86_64 aarch64"}
+
+for COSMOARCH in $COSMOARCHES
+do
+    if test "x$COSMOARCH" = "x$(uname -m)"
+    then
+        BUILDDIR=o-filc
+    else
+        BUILDDIR=o-filc-$COSMOARCH
+    fi
+    make -C "$ROOT/projects/usercosmo" -f filc.mk -j "$NCPU" install \
+        PIZFIX="$ROOT/pizfix" \
+        FILC_CLANG="$ROOT/build/bin/clang" \
+        FILCARCH="$COSMOARCH" \
+        FILC_BUILDDIR="$BUILDDIR"
+done
 
 echo ""
 echo "usercosmo build complete:"
-echo "  libc.a  = $(ls -la "$ROOT/pizfix/lib/libc.a" | awk '{print $5}') bytes, $(ar t "$ROOT/pizfix/lib/libc.a" | wc -l) members"
-echo "  crt1.o  = yolo cosmo crt + yolo glue"
-echo "  headers = $ROOT/pizfix/include (cosmo flavor)"
+for COSMOARCH in $COSMOARCHES
+do
+    if test "x$COSMOARCH" = "xx86_64"
+    then
+        LIB="$ROOT/pizfix/lib"
+    else
+        LIB="$ROOT/pizfix/lib-$COSMOARCH"
+    fi
+    echo "  [$COSMOARCH] libc.a = $(ls -la "$LIB/libc.a" | awk '{print $5}') bytes, $(ar t "$LIB/libc.a" | wc -l) members"
+    echo "  [$COSMOARCH] crt1.o = yolo cosmo crt + yolo glue"
+done
+echo "  headers = $ROOT/pizfix/include (cosmo flavor, arch-neutral)"
 echo ""
 echo "Try: build/bin/clang -o /tmp/cosmohello /tmp/hello.c && /tmp/cosmohello"
+echo "     build/bin/clang --target=aarch64-linux-gnu -o /tmp/cosmohello-arm /tmp/hello.c"

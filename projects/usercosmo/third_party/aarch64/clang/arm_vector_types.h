@@ -315,31 +315,48 @@ typedef struct float64x2x4_t {
 } float64x2x4_t;
 
 #endif
+/* Fil-C port: guard the bf16 vectors with the same feature test upstream
+   uses; Fil-C has no bfloat16_t, and every bf16 intrinsic is compiled out of
+   the vendored arm_neon.h anyway. */
+#if defined(__ARM_FEATURE_BF16)
 typedef __attribute__((neon_vector_type(4))) bfloat16_t bfloat16x4_t;
 typedef __attribute__((neon_vector_type(8))) bfloat16_t bfloat16x8_t;
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x4x2_t {
   bfloat16x4_t val[2];
 } bfloat16x4x2_t;
+#endif
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x8x2_t {
   bfloat16x8_t val[2];
 } bfloat16x8x2_t;
+#endif
+#endif
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x4x3_t {
   bfloat16x4_t val[3];
 } bfloat16x4x3_t;
+#endif
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x8x3_t {
   bfloat16x8_t val[3];
 } bfloat16x8x3_t;
+#endif
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x4x4_t {
   bfloat16x4_t val[4];
 } bfloat16x4x4_t;
+#endif
 
+#if defined(__ARM_FEATURE_BF16)
 typedef struct bfloat16x8x4_t {
   bfloat16x8_t val[4];
 } bfloat16x8x4_t;
+#endif
 
 #endif // __ARM_NEON_TYPES_H

@@ -62,6 +62,16 @@ dontinstrument textstartup void __set_tls(struct CosmoTib *tib) {
 #elif defined(__aarch64__)
   register long x28 asm("x28") = (long)tib;
   asm volatile("" : "+r"(x28));
+  /* Fil-C port: ELF TLS on aarch64 addresses the thread pointer through
+     tpidr_el0 (the local-exec model every __thread variable compiled by a
+     standard toolchain uses), while cosmo's own code reads the TIB from the
+     x28 register.  They are two views of the same slot (see the TLS memory
+     layout diagram in libc/runtime/enable_tls.c: x28/%tpidr_el0 sit right
+     after the TIB, which is exactly where __adj_tls() left tib), so mirror
+     x28 into the kernel register; without this, tpidr_el0 stays 0 on Linux
+     and any __thread access segfaults.  New threads get the same treatment
+     in libc/runtime/clone.c. */
+  __asm__ volatile("msr\t tpidr_el0, %0" : : "r"((long)tib) : "memory");
 #else
 #error "unsupported architecture"
 #endif

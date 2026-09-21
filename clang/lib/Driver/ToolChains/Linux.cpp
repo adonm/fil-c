@@ -688,7 +688,19 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
         P = A->getValue();
       } else {
         SmallString<128> Path(D.PizfixRoot);
-        llvm::sys::path::append(Path, "os-include");
+        if (getTriple().getArch() == llvm::Triple::aarch64) {
+          // The kernel headers (os-include's linux/asm/asm-generic) are
+          // per-architecture.  build_yolocosmo.sh installs the aarch64
+          // variant of os-include from the cross toolchain's headers; if it
+          // is missing, fall back to the cross toolchain's directory, which
+          // carries the same tree.
+          llvm::sys::path::append(Path, "os-include-aarch64");
+          if (!llvm::sys::fs::is_directory(Path)) {
+            Path = "/usr/aarch64-linux-gnu/include";
+          }
+        } else {
+          llvm::sys::path::append(Path, "os-include");
+        }
         P = std::string(Path);
       }
       addSystemInclude(DriverArgs, CC1Args, P);

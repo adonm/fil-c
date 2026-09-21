@@ -18,13 +18,30 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include <fenv.h>
 
+/* clang has no __builtin_aarch64_{get,set}_fpcr, so read/write the FPCR
+   with plain MRS/MSR asm (Fil-C compiles this fine; it is how the compiler
+   runtime itself accesses FPCR). */
+#if defined(__aarch64__)
+#define COSMO_GET_FPCR()                                  \
+  ({                                                      \
+    unsigned __fpcr;                                      \
+    __asm__ volatile("mrs\t%0, fpcr" : "=r"(__fpcr));   \
+    __fpcr;                                               \
+  })
+#define COSMO_SET_FPCR(v)                                 \
+  do {                                                    \
+    unsigned __fpcr = (v);                                \
+    __asm__ volatile("msr\tfpcr, %0" : : "r"(__fpcr));  \
+  } while (0)
+#endif
+
 int fegetexcept(void) {
 #ifdef __x86_64__
   unsigned short int exc;
   asm("fstcw %0" : "=m"(*&exc));
   return ~exc & FE_ALL_EXCEPT;
 #elifdef __aarch64__
-  unsigned fpcr = __builtin_aarch64_get_fpcr();
+  unsigned fpcr = COSMO_GET_FPCR();
   return (fpcr >> 8) & FE_ALL_EXCEPT;
 #else
 #error "unsupported architecture"

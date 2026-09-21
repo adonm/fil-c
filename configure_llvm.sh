@@ -34,10 +34,27 @@ set -x
 # build_cxx.sh, so that changing runtimes-only options (like whether the
 # runtimes are built against musl or glibc) never forces LLVM to be rebuilt.
 
+# The compiler builds the backend of the host architecture plus the backend
+# of the other supported Fil-C architecture, so that one Fil-C clang can
+# cross-build both arches (e.g. the aarch64 flavor of the cosmo build, see
+# build_yolocosmo.sh).
+case "$LLVMARCH" in
+    X86)
+        LLVMTARGETS="X86;AArch64"
+        ;;
+    AArch64)
+        LLVMTARGETS="AArch64;X86"
+        ;;
+    *)
+        LLVMTARGETS="$LLVMARCH"
+        ;;
+esac
+
 export CMAKEOPTIONS="-S ../llvm -B . -G Ninja -DLLVM_ENABLE_PROJECTS=clang
+
     -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLLVM_ENABLE_ASSERTIONS=ON
     -DLLVM_ENABLE_LLD=ON
-    -DLLVM_TARGETS_TO_BUILD=$LLVMARCH
+    -DLLVM_TARGETS_TO_BUILD=$LLVMTARGETS
     -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF
     -DLLVM_ENABLE_LIBPFM=OFF -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_ZSTD=OFF
     -DLLVM_ENABLE_CURL=OFF -DLLVM_ENABLE_HTTPLIB=OFF

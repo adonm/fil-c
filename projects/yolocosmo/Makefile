@@ -674,12 +674,31 @@ $(INCS):
 # them into o/$(MODE)/filc/libyolocosmo.a.  Member names keep their full
 # paths (-P), so nothing collides the way the flat-named cosmopolitan.a
 # members do.
+ifeq ($(ARCH),aarch64)
+include filc/filc-objects-aarch64.mk
+else
 include filc/filc-objects.mk
+endif
+
+# The APE bootloader bits differ per architecture: x86_64 links ape.o (the
+# MZ/PE/Mach-O header blobs that ape.S emits, which ape.lds lays out and
+# apelink locates via the ape_pe/ape_macho symbols), while aarch64 links no
+# such object - its linker script is ape/aarch64.lds, which carries no APE
+# header data at all, because on aarch64 it is apelink itself that generates
+# the PE/Mach-O headers (see tool/build/apelink.c; dce.h folds Windows/Metal
+# away on non-x86_64, so nothing on aarch64 ever needs ape_pe).
+ifeq ($(ARCH),aarch64)
+FILC_YOLO_APE_LDS = o/$(MODE)/ape/aarch64.lds
+FILC_YOLO_APE_OBJS =
+else
+FILC_YOLO_APE_LDS = o/$(MODE)/ape/ape.lds
+FILC_YOLO_APE_OBJS = o/$(MODE)/ape/ape.o
+endif
 
 .PHONY: filcyolo
 filcyolo:\
-	o/$(MODE)/ape/ape.lds\
-	o/$(MODE)/ape/ape.o\
+	$(FILC_YOLO_APE_LDS)\
+	$(FILC_YOLO_APE_OBJS)\
 	o/$(MODE)/libc/crt/crt.o\
 	o/$(MODE)/filc/libyolocosmo.a
 
@@ -697,13 +716,17 @@ o/$(MODE)/filc/libyolocosmo.a: $(FILC_YOLO_OBJS)
 # driver finds them:
 #
 #   o/x86_64/ape/ape.elf                     -> pizfix/lib/ape-x86_64.elf
-#                                               (the APE loader that apelink
-#                                               embeds; built in the plain
-#                                               x86_64 mode, exactly like
-#                                               cosmo's own tool/cosmocc/
+#                                               (the x86_64 APE loader that
+#                                               apelink embeds; built in the
+#                                               plain x86_64 mode, exactly
+#                                               like cosmo's own tool/cosmocc/
 #                                               package.sh ships it, because
 #                                               the loader has to run on every
 #                                               OS, not just Linux)
+#   o/aarch64/ape/ape.elf                    -> pizfix/lib-aarch64/ape-aarch64.elf
+#                                               (the aarch64 APE loader; same
+#                                               story, built in the plain
+#                                               aarch64 mode)
 #   o/x86_64-optlinux/tool/build/apelink.dbg -> pizfix/libexec/apelink
 #   o/x86_64-optlinux/tool/build/pecheck.dbg -> pizfix/libexec/pecheck
 #   ape/ape-m1.c                             -> pizfix/libexec/ape-m1.c
@@ -718,13 +741,10 @@ o/$(MODE)/filc/libyolocosmo.a: $(FILC_YOLO_OBJS)
 # make in the x86_64 modes; running that concurrently with a filcyolo build
 # for the same mode would race on o/x86_64-optlinux.
 #
-# When the aarch64 Fil-C cosmo port lands, add o/aarch64/ape/ape.elf to the
-# recipe below, install it as pizfix/lib/ape-aarch64.elf, and teach the
-# driver's APE post-link step (tools::gnutools::Linker::ConstructJob) about
-# the aarch64 loader; apelink takes one -l per loader.
 .PHONY: filcapetools
 filcapetools:
 	$(MAKE) m=x86_64 o/x86_64/ape/ape.elf
+	$(MAKE) m=aarch64 o/aarch64/ape/ape.elf
 	$(MAKE) m=x86_64-optlinux o/x86_64-optlinux/tool/build/apelink.dbg o/x86_64-optlinux/tool/build/pecheck.dbg
 
 -include o/$(MODE)/depend

@@ -18,6 +18,37 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/runtime/fenv.h"
 
+/* clang has no __builtin_aarch64_{get,set}_fpcr, so read/write the FPCR
+   with plain MRS/MSR asm (this is how the compiler runtime itself accesses
+   FPCR; GCC gets to keep its builtins). */
+#if defined(__aarch64__) && !defined(COSMO_GET_FPCR)
+#define COSMO_GET_FPCR()                                  \
+  ({                                                      \
+    unsigned __fpcr;                                      \
+    __asm__ volatile("mrs\t%0, fpcr" : "=r"(__fpcr));   \
+    __fpcr;                                               \
+  })
+#define COSMO_SET_FPCR(v)                                 \
+  do {                                                    \
+    unsigned __fpcr = (v);                                \
+    __asm__ volatile("msr\tfpcr, %0" : : "r"(__fpcr));  \
+  } while (0)
+#endif
+
+#if defined(__aarch64__) && !defined(COSMO_GET_FPSR)
+#define COSMO_GET_FPSR()                                  \
+  ({                                                      \
+    unsigned __fpsr;                                      \
+    __asm__ volatile("mrs\t%0, fpsr" : "=r"(__fpsr));   \
+    __fpsr;                                               \
+  })
+#define COSMO_SET_FPSR(v)                                 \
+  do {                                                    \
+    unsigned __fpsr = (v);                                \
+    __asm__ volatile("msr\tfpsr, %0" : : "r"(__fpsr));  \
+  } while (0)
+#endif
+
 /**
  * Enables floating point exception trapping, e.g.
  *
@@ -78,12 +109,12 @@ int feenableexcept(int excepts) {
 
 #elif defined(__aarch64__)
 
-  unsigned fpcr = __builtin_aarch64_get_fpcr();
+  unsigned fpcr = COSMO_GET_FPCR();
   unsigned want = excepts << 8;
   unsigned fpcr2 = fpcr | want;
   if (fpcr != fpcr2) {
-    __builtin_aarch64_set_fpcr(fpcr2);
-    fpcr2 = __builtin_aarch64_get_fpsr();
+    COSMO_SET_FPCR(fpcr2);
+    fpcr2 = COSMO_GET_FPSR();
     if ((fpcr2 & want) != want)
       return -1;  // not supported by cpu
   }

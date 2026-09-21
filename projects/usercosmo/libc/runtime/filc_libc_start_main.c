@@ -82,7 +82,11 @@ static void filc_setup_main_thread(void) {
 }
 
 static void filc_init_globals(char **argv, char **envp, size_t *auxv) {
+  /* cpuid feature tables only exist on x86 (kCpuids feeds x86feature.h and
+     the __cpu_model machinery; aarch64 has no cpuid instruction). */
+#if defined(__x86_64__)
   __filc_init_cpuids();
+#endif
   /* Cosmo's globals exist twice in the final binary: the plain copies that
      the yolo boot initialized (crt.S + _init blobs), and these pizlonated
      copies that only pizlonated code can see.  Re-derive the pizlonated ones

@@ -69,6 +69,11 @@ regenerate it when cosmo or the runtime changes what gets referenced.
 Usage (from anywhere):
 
     python3 projects/yolocosmo/filc/compute-closure.py [--mode x86_64-ape]
+
+The mode name selects the architecture too (like the cosmo Makefile does):
+a mode containing "aarch64" computes filc-objects-aarch64.mk from the
+pizfix/lib-aarch64 consumers; everything else computes filc-objects.mk from
+the pizfix/lib consumers.
 """
 
 import argparse
@@ -220,8 +225,19 @@ def main():
                         help="cosmo build mode whose o/ tree to scan")
     parser.add_argument("--output", default=None,
                         help="where to write the make fragment "
-                             "(default: projects/yolocosmo/filc/filc-objects.mk)")
+                             "(default: projects/yolocosmo/filc/"
+                             "filc-objects.mk, or "
+                             "projects/yolocosmo/filc/filc-objects-aarch64.mk "
+                             "for an aarch64 mode)")
     args = parser.parse_args()
+
+    # The architecture follows the mode name, exactly like the cosmo
+    # Makefile's ARCH derivation (any mode containing "aarch64" is aarch64).
+    arch = "aarch64" if "aarch64" in args.mode else "x86_64"
+
+    # The pizfix tree keeps one lib directory per target architecture ("lib"
+    # for x86_64 and "lib-aarch64" for aarch64); the headers are shared.
+    libdir = "lib-aarch64" if arch == "aarch64" else "lib"
 
     odir = os.path.join(REPO, "projects", "yolocosmo", "o", args.mode)
     pizfix = os.path.join(REPO, "pizfix")
@@ -279,41 +295,54 @@ def main():
                                  " ".join(sorted(unresolved_members)[:10])))
 
     # ── 2. the consumers whose undefined symbols seed the closure ───────────
+    # The C++ runtime archives are required on x86_64 (the flavor is fully
+    # built there); on aarch64 they may not exist yet (libc++ for aarch64 is
+    # optional), in which case the closure is computed without them and has
+    # to be regenerated once they exist.
     seed_archives = [
-        os.path.join(pizfix, "lib", "libpizlo.a"),
-        os.path.join(pizfix, "lib", "libc.a"),
-        os.path.join(pizfix, "lib", "libc++.a"),
-        os.path.join(pizfix, "lib", "libc++abi.a"),
-        os.path.join(pizfix, "lib", "libc++experimental.a"),
+        os.path.join(pizfix, libdir, "libpizlo.a"),
+        os.path.join(pizfix, libdir, "libc.a"),
     ]
+    optional_cxx_archives = [
+        os.path.join(pizfix, libdir, "libc++.a"),
+        os.path.join(pizfix, libdir, "libc++abi.a"),
+        os.path.join(pizfix, libdir, "libc++experimental.a"),
+    ]
+    required_cxx = arch == "x86_64"
 
     # Fil-C binaries can also link static libraries that were compiled by the
     # host toolchain (i.e. un-pizlonated C/C++ code whose references to plain
     # libc symbols resolve from -lyolocosmo).  Today that is exactly one
     # thing: the vendored luau inside minilute (see build_minilute.sh), which
-    # build_base.sh builds in the cosmo flavor too.  Its references to math/
-    # string/stdlib entry points are why entries like libc/tinymath/log10.o
-    # are in this list even though nothing pizlonated calls them.
-    seed_archives += sorted(
-        glob.glob(os.path.join(REPO, "projects", "lute-1.0.0", "extern",
-                               "luau", "build", "release", "*.a")))
+    # build_base.sh builds in the cosmo flavor too - and only for the host
+    # architecture (x86_64); there is no aarch64 minilute build.  Its
+    # references to math/string/stdlib entry points are why entries like
+    # libc/tinymath/log10.o are in the x86_64 list even though nothing
+    # pizlonated calls them.
+    if arch == "x86_64":
+        seed_archives += sorted(
+            glob.glob(os.path.join(REPO, "projects", "lute-1.0.0", "extern",
+                                   "luau", "build", "release", "*.a")))
     seed_objects = [
-        os.path.join(pizfix, "lib", "crt1.o"),
-        os.path.join(pizfix, "lib", "cosmo-crt.o"),
-        os.path.join(pizfix, "lib", "ape.o"),
-        os.path.join(pizfix, "lib", "crtbegin.o"),
-        os.path.join(pizfix, "lib", "crtend.o"),
-        os.path.join(pizfix, "lib", "filc_crt.o"),
-        os.path.join(pizfix, "lib", "filc_mincrt.o"),
-        os.path.join(pizfix, "lib", "yologlue.o"),
-        os.path.join(pizfix, "lib", "libm.a"),
+        os.path.join(pizfix, libdir, "crt1.o"),
+        os.path.join(pizfix, libdir, "cosmo-crt.o"),
+        os.path.join(pizfix, libdir, "crtbegin.o"),
+        os.path.join(pizfix, libdir, "crtend.o"),
+        os.path.join(pizfix, libdir, "filc_crt.o"),
+        os.path.join(pizfix, libdir, "filc_mincrt.o"),
+        os.path.join(pizfix, libdir, "yologlue.o"),
+        os.path.join(pizfix, libdir, "libm.a"),
     ]
+    # x86_64 additionally links pizfix/lib/ape.o (the APE header blobs from
+    # ape.S); aarch64 links no such object (see the Makefile's filcyolo).
+    if arch == "x86_64":
+        seed_objects.append(os.path.join(pizfix, "lib", "ape.o"))
     # libyolort.a and libyolounwind.a are providers: they sit in the same
     # --start-group as -lyolocosmo and are re-scanned after every cosmo pull,
     # so a cosmo member may reference their symbols freely.
     provider_archives = [
-        os.path.join(pizfix, "lib", "libyolort.a"),
-        os.path.join(pizfix, "lib", "libyolounwind.a"),
+        os.path.join(pizfix, libdir, "libyolort.a"),
+        os.path.join(pizfix, libdir, "libyolounwind.a"),
     ]
 
     undefined = set()
@@ -334,6 +363,21 @@ def main():
         for obj in nm_archive(path):
             undefined |= obj.undefined
             defined_elsewhere |= obj.defined
+    cxx_seeded = []
+    for path in optional_cxx_archives:
+        if not os.path.exists(path):
+            if required_cxx:
+                die("missing %s; build the cosmo flavor of pizfix first"
+                    % path)
+            continue
+        cxx_seeded.append(path)
+        for obj in nm_archive(path):
+            undefined |= obj.undefined
+            defined_elsewhere |= obj.defined
+    if cxx_seeded and len(cxx_seeded) < len(optional_cxx_archives):
+        print("  note: only %d of the %d C++ runtime seed archives were "
+              "found; regenerate the closure once they all exist"
+              % (len(cxx_seeded), len(optional_cxx_archives)))
     for path in seed_objects:
         if not os.path.exists(path):
             continue
@@ -341,14 +385,17 @@ def main():
         undefined |= obj.undefined
         defined_elsewhere |= obj.defined
 
-    # The ape.lds linker script also references symbols of its own, in its
-    # header arithmetic: CHURN(WinMain) hashes the Windows PE entry point
-    # into the APE UUID, so every cosmo-mode link requires WinMain to be
-    # defined even though no object references it.  (EfiMain is only read
-    # under DEFINED(EfiMain), so it stays optional.)  Seed it so that the
-    # pull loop pulls libc/runtime/winmain.greg.o from the archive exactly
-    # like ld does when it scans -lyolocosmo after the linker script.
-    undefined |= {"WinMain"}
+    # The x86_64 ape.lds linker script also references symbols of its own,
+    # in its header arithmetic: CHURN(WinMain) hashes the Windows PE entry
+    # point into the APE UUID, so every x86_64 cosmo-mode link requires
+    # WinMain to be defined even though no object references it.  (EfiMain is
+    # only read under DEFINED(EfiMain), so it stays optional.)  Seed it so
+    # that the pull loop pulls libc/runtime/winmain.greg.o from the archive
+    # exactly like ld does when it scans -lyolocosmo after the linker script.
+    # The aarch64 aarch64.lds has no such arithmetic (apelink generates the
+    # headers), so it needs no WinMain seed.
+    if arch == "x86_64":
+        undefined |= {"WinMain"}
 
     # The seed archives' own definitions satisfy their mutual references, but
     # (crucially) they do NOT provide symbols for cosmo members: libc.a is
@@ -359,6 +406,17 @@ def main():
     # symbols they themselves define (which are also re-seeded as undefined by
     # other members anyway).
     undefined -= defined_elsewhere
+
+    # Members that must never be pulled, per architecture (each with a
+    # reason).  On aarch64 cosmo's own outline-atomic routines collide with
+    # the ones compiler-rt's builtins provide (libyolort.a), which the
+    # Fil-C-generated code calls directly; compiler-rt wins, cosmo's copy is
+    # dead weight, and leaving both in makes every link fail with duplicate
+    # __aarch64_cas*/swp* definitions.
+    excludes = {
+        "aarch64": {"libc/intrin/aarch64/atomics.o"},
+        "x86_64": set(),
+    }[arch]
 
     # ── 3+4. pull cosmo members to fixpoint ─────────────────────────────────
     # `undefined` holds every symbol that the seeded consumers reference and
@@ -376,6 +434,10 @@ def main():
         progress = False
         for idx, member in enumerate(members):
             if idx in pulled_idx:
+                continue
+            paths = member_to_paths[idx]
+            if paths and any(os.path.relpath(x, odir) in excludes
+                             for x in paths):
                 continue
             if member.defined & undefined:
                 pulled_idx.add(idx)
@@ -470,7 +532,8 @@ def main():
         lines.append("\to/$(MODE)/%s%s" % (rel(path),
                                            " \\" if i < len(objs) - 1 else ""))
     out_path = args.output or os.path.join(
-        REPO, "projects", "yolocosmo", "filc", "filc-objects.mk")
+        REPO, "projects", "yolocosmo", "filc",
+        "filc-objects-aarch64.mk" if arch == "aarch64" else "filc-objects.mk")
     with open(out_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     print("")

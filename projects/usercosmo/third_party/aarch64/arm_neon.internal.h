@@ -1,6 +1,14 @@
 #if defined(__aarch64__) && !(__ASSEMBLER__ + __LINKER__ + 0)
 #ifndef _AARCH64_NEON_H_
 #define _AARCH64_NEON_H_
+#if defined(__clang__) && !defined(__chibicc__)
+/* Fil-C port: the definitions below use GCC's builtin vector types
+   (__Int8x8_t and friends), which LLVM-based compilers do not have.  clang
+   gets its own complete set of NEON types and intrinsics from the vendored
+   clang arm_neon.h (the same header cosmo's isystem arm_neon.h wraps), so
+   just forward there. */
+#include "third_party/aarch64/clang/arm_neon.h"
+#else
 #pragma GCC push_options
 #pragma GCC target ("+nothing+simd")
 #pragma GCC aarch64 "arm_neon.h"
@@ -24461,5 +24469,6 @@ vaddq_p128 (poly128_t __a, poly128_t __b)
 #undef __aarch64_vdupq_laneq_u16
 #undef __aarch64_vdupq_laneq_u32
 #undef __aarch64_vdupq_laneq_u64
+#endif /* __clang__ && !__chibicc__ */
 #endif
 #endif

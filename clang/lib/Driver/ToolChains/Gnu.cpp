@@ -45,6 +45,19 @@ using namespace llvm::opt;
 using tools::addMultilibFlag;
 using tools::addPathIfExists;
 
+// Fil-C cosmo mode: the pizfix tree keeps one lib directory per supported
+// target architecture, since the cosmo CRT objects, linker scripts, APE
+// loaders, and libc archives are all per-architecture, while the headers
+// (pizfix/include, pizfix/stdfil-include, pizfix/yolo-include) are shared
+// between the arches.  Everything that resolves a cosmo-flavor artifact out
+// of the pizfix tree (the CRT objects and linker script here, the APE
+// loader below) has to go through this.
+static StringRef GetCosmoLibDir(const llvm::Triple &Triple) {
+  if (Triple.getArch() == llvm::Triple::aarch64)
+    return "lib-aarch64";
+  return "lib";
+}
+
 static bool forwardToGCC(const Option &O) {
   // LinkerInput options have been forwarded. Don't duplicate.
   if (O.hasFlag(options::LinkerInput))
@@ -559,29 +572,40 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // warns and ships the ELF.
   //
   // This is only done for cosmo-mode executable links: -shared is rejected
-  // in cosmo mode (see above) and -r links are not executables.  It is also
-  // x86_64-only for now, since pizfix only ships the x86_64 APE loader
-  // (pizfix/lib/ape-x86_64.elf).  When the aarch64 Fil-C cosmo port ships a
-  // pizfix/lib/ape-aarch64.elf loader, turning the x86_64 check above into
-  // an arch switch brings APEs to that port.
+  // in cosmo mode (see above) and -r links are not executables.  Both
+  // supported target architectures get APEs: x86_64 embeds the x86_64 loader
+  // (pizfix/lib/ape-x86_64.elf) and aarch64 embeds the aarch64 loader
+  // (pizfix/lib-aarch64/ape-aarch64.elf).  On aarch64 apelink also gets
+  // -M <pizfix>/libexec/ape-m1.c, the Apple-silicon loader source, which
+  // apelink only accepts when the input is a native arm64 (aarch64 ELF)
+  // image - which is exactly what an aarch64 cosmo-mode link produces - and
+  // which lets the APE run natively on arm64 macOS (xcode compiles the
+  // source on the fly).  A future fat APE (both arches in one file) is a
+  // separate task: apelink takes one -l per input ELF, so the seam is to
+  // grow a second -l here plus a second link job.
+  bool IsCosmoAArch64 =
+      IsCosmo && ToolChain.getArch() == llvm::Triple::aarch64;
+  const char *APEM1Path = nullptr;
   const char *APELinkPath = nullptr;
   const char *APELoaderPath = nullptr;
   const char *ELFOutputFilename = Output.getFilename();
   const char *APEOutputFilename = nullptr;
-  if (IsCosmo && ToolChain.getArch() == llvm::Triple::x86_64 &&
+  if (IsCosmo &&
+      (ToolChain.getArch() == llvm::Triple::x86_64 || IsCosmoAArch64) &&
       !Args.hasArg(options::OPT_shared) && !Args.hasArg(options::OPT_r)) {
     // Resolve the APE tooling locations the same way the cosmo CRT objects
     // above are: --filc-crt-path overrides the pizfix lib directory, else
-    // it is <pizfix>/lib.  The tools (apelink and the Apple-silicon loader
-    // source ape-m1.c) live in the libexec directory that sits next to the
-    // lib directory.
+    // it is <pizfix>/lib (or <pizfix>/lib-aarch64 for aarch64 targets, see
+    // GetCosmoLibDir below).  The tools (apelink and the Apple-silicon
+    // loader source ape-m1.c) live in the libexec directory that sits next
+    // to the lib directory.
     SmallString<128> LibDir;
     if (Arg *A = Args.getLastArg(options::OPT_filc_crt_path)) {
       A->claim();
       LibDir = A->getValue();
     } else if (D.HasPizfix) {
       LibDir = D.PizfixRoot;
-      llvm::sys::path::append(LibDir, "lib");
+      llvm::sys::path::append(LibDir, GetCosmoLibDir(ToolChain.getTriple()));
     } else if (D.HasOptfil) {
       LibDir = "/opt/fil/lib";
     } else {
@@ -590,26 +614,26 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     SmallString<128> LibexecDir(LibDir);
     llvm::sys::path::remove_filename(LibexecDir);
     llvm::sys::path::append(LibexecDir, "libexec");
-    llvm::sys::path::append(LibDir, "ape-x86_64.elf");
+    llvm::sys::path::append(LibDir, IsCosmoAArch64 ? "ape-aarch64.elf"
+                                                   : "ape-x86_64.elf");
     llvm::sys::path::append(LibexecDir, "apelink");
 
     APELoaderPath = Args.MakeArgString(LibDir);
     APELinkPath = Args.MakeArgString(LibexecDir);
-
-    // Note: apelink also takes a -M <pizfix>/libexec/ape-m1.c flag, which
-    // embeds the Apple-silicon loader source so that APEs can run natively
-    // on arm64 macOS.  That source is only ever used for a native arm64
-    // (aarch64 ELF) input, which cosmo mode cannot produce yet, and apelink
-    // refuses -M without one, so the flag is not passed until the aarch64
-    // Fil-C cosmo port lands (at which point this also grows a second -l
-    // for pizfix/lib/ape-aarch64.elf and an aarch64 case in the arch switch
-    // above).
+    if (IsCosmoAArch64) {
+      SmallString<128> M1(LibexecDir);
+      llvm::sys::path::remove_filename(M1);
+      llvm::sys::path::append(M1, "ape-m1.c");
+      APEM1Path = Args.MakeArgString(M1);
+    }
 
     const char *Missing = nullptr;
     if (!llvm::sys::fs::can_execute(APELinkPath))
       Missing = APELinkPath;
     else if (!llvm::sys::fs::exists(APELoaderPath))
       Missing = APELoaderPath;
+    else if (APEM1Path && !llvm::sys::fs::exists(APEM1Path))
+      Missing = APEM1Path;
     if (Missing) {
       if (Args.hasArg(options::OPT_filc_ape)) {
         D.Diag(diag::err_drv_filc_ape_tool_missing)
@@ -739,7 +763,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         BasePath = A->getValue();
       } else {
         SmallString<128> P(ToolChain.getDriver().PizfixRoot);
-        llvm::sys::path::append(P, "lib");
+        llvm::sys::path::append(P, GetCosmoLibDir(ToolChain.getTriple()));
         BasePath = std::string(P);
       }
       SmallString<128> FullPath(BasePath);
@@ -785,8 +809,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       if (IsCosmo) {
         // Cosmo mode has no crti.o; instead the APE header object goes right
         // after the CRT.  Cosmo runs constructors straight out of
-        // __init_array, so it has no use for the .init/.fini prologue objects.
-        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("ape.o")));
+        // __init_array, so it has no use for the .init/.fini prologue
+        // objects.  Only x86_64 has an APE header object: on aarch64 the
+        // linker script (aarch64.lds) carries no APE header data, and it is
+        // apelink that generates the PE/Mach-O headers (cosmocc does the
+        // same: CRT="$LIB/crt.o" with no ape object for aarch64).
+        if (!IsCosmoAArch64)
+          CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("ape.o")));
       } else
         CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("crti.o")));
     }
@@ -824,11 +853,14 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back(Args.MakeArgString(P));
       if (IsCosmo) {
         // The cosmo linker script has to be seen before any archive (-l or
-        // .a) is scanned: the symbol expressions in ape.lds must be in the
-        // undefined set at that point or ld fails with undefined
-        // WinMain/_tss_end errors.  Plain objects before it are fine.
+        // .a) is scanned: the symbol expressions in the x86_64 ape.lds must
+        // be in the undefined set at that point or ld fails with undefined
+        // WinMain/_tss_end errors.  Plain objects before it are fine.  The
+        // aarch64 script is aarch64.lds (cosmo's own name for it; it has no
+        // such symbol arithmetic).
         CmdArgs.push_back("-T");
-        CmdArgs.push_back(Args.MakeArgString(GetYoloLibPath("ape.lds")));
+        CmdArgs.push_back(Args.MakeArgString(
+            GetYoloLibPath(IsCosmoAArch64 ? "aarch64.lds" : "ape.lds")));
       }
     }
 
@@ -850,7 +882,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       BasePath = A->getValue();
     } else {
       SmallString<128> P(ToolChain.getDriver().PizfixRoot);
-      llvm::sys::path::append(P, "lib");
+      llvm::sys::path::append(P, GetCosmoLibDir(ToolChain.getTriple()));
       BasePath = std::string(P);
     }
 
@@ -1132,6 +1164,21 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   Args.addAllArgs(CmdArgs, {options::OPT_T, options::OPT_t});
 
   const char *Exec = Args.MakeArgString(ToolChain.GetLinkerPath());
+  // Fil-C cosmo mode: an aarch64 link needs a linker with an aarch64linux
+  // emulation, which the default GNU ld on an x86_64 host does not have.
+  // When the user did not choose a linker, pick one that can handle the
+  // target: the GNU aarch64 cross linker first (cosmo's own aarch64
+  // toolchain links with GNU ld, and its APE machinery expects the segment
+  // layout that produces), then lld.  x86_64 cosmo links keep using whatever
+  // the toolchain default is.
+  if (IsCosmoAArch64 && !Args.getLastArg(options::OPT_fuse_ld_EQ) &&
+      !Args.getLastArg(options::OPT_ld_path_EQ)) {
+    std::string Candidate = ToolChain.GetProgramPath("aarch64-linux-gnu-ld");
+    if (!llvm::sys::fs::can_execute(Candidate))
+      Candidate = ToolChain.GetProgramPath("ld.lld");
+    if (llvm::sys::fs::can_execute(Candidate))
+      Exec = Args.MakeArgString(Candidate);
+  }
   C.addCommand(std::make_unique<Command>(JA, *this,
                                          ResponseFileSupport::AtFileCurCP(),
                                          Exec, CmdArgs, Inputs, Output));
@@ -1148,6 +1195,13 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     APELinkArgs.push_back("-1");
     APELinkArgs.push_back("-l");
     APELinkArgs.push_back(APELoaderPath);
+    if (APEM1Path) {
+      // aarch64 APEs embed the Apple-silicon loader source (see above);
+      // apelink requires the input to be a native aarch64 image, which it
+      // is for an aarch64 cosmo-mode link.
+      APELinkArgs.push_back("-M");
+      APELinkArgs.push_back(APEM1Path);
+    }
     APELinkArgs.push_back("-o");
     APELinkArgs.push_back(APEOutputFilename);
     APELinkArgs.push_back(ELFOutputFilename);

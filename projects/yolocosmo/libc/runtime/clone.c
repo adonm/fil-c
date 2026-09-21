@@ -373,6 +373,8 @@ wontreturn dontinstrument static void FreebsdThreadMain(void *p) {
   struct CloneArgs *wt = p;
 #ifdef __aarch64__
   asm volatile("mov\tx28,%0" : /* no outputs */ : "r"(wt->tls));
+  /* Fil-C port: keep tpidr_el0 in sync with x28 (see set_tls.c); */
+  asm volatile("msr\t tpidr_el0, %0" : : "r"(wt->tls) : "memory");
 #elif defined(__x86_64__)
   sys_set_tls(AMD64_SET_GSBASE, wt->tls);
 #endif
@@ -466,6 +468,8 @@ dontinstrument static void *SiliconThreadMain(void *arg) {
   atomic_int *ctid = wt->ctid;
   int tid = atomic_load_explicit(ctid, memory_order_relaxed);
   asm volatile("mov\tx28,%0" : /* no outputs */ : "r"(wt->tls));
+  /* Fil-C port: keep tpidr_el0 in sync with x28 (see set_tls.c); */
+  asm volatile("msr\t tpidr_el0, %0" : : "r"(wt->tls) : "memory");
   __stack_call(wt->arg, tid, 0, 0, wt->func, wt->sp);
   atomic_store_explicit(ctid, 0, memory_order_release);
   ulock_wake(UL_COMPARE_AND_WAIT | ULF_WAKE_ALL, ctid, 0);

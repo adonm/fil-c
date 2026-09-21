@@ -120,10 +120,14 @@
 #ifndef __ASSEMBLER__
 COSMOPOLITAN_C_START_
 
-#if defined(__GNUC__) && defined(__aarch64__) && !defined(__cplusplus)
+#if defined(__GNUC__) && defined(__aarch64__) && !defined(__cplusplus) && \
+	!defined(__FILC__)
 /* this header is included by 700+ files; therefore we */
 /* hand-roll &__get_tls()->tib_errno to avoid #include */
 /* cosmopolitan uses x28 as the tls register b/c apple */
+/* Fil-C port: the raw asm computes a pointer, which the Fil-Pizlonator
+   refuses to let inline asm return, and pizlonated code takes the plain
+   __errno_location() path below instead. */
 #define errno                                       \
   (*__extension__({                                 \
     errno_t *__ep;                                  \

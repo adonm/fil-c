@@ -77,6 +77,11 @@ static errno_t pthread_getname_impl(struct PosixThread *pt, char *name,
     return 0;
 
   } else if (IsNetbsd() || IsOpenbsd()) {
+#if defined(__x86_64__)
+    /* Fil-C port: this branch is compiled out on aarch64 anyway
+       (SupportsNetbsd()/SupportsOpenbsd() are 0 there), but LLVM still
+       validates the x86-only asm below while generating dead code, so
+       compile it only where it can ever run. */
     int ax;
     char cf;
     long dx, si;
@@ -104,6 +109,7 @@ static errno_t pthread_getname_impl(struct PosixThread *pt, char *name,
     } else {
       return __errno_host2linux(ax);
     }
+#endif
 
   } else {
     return ENOSYS;

@@ -30,12 +30,15 @@
 # curated subset of cosmo's C sources with build/bin/clang (which pizlonates
 # everything), producing:
 #
-#   pizfix/lib/libc.a   the pizlonated cosmo libc (static)
+#   pizfix/lib/libc.a   the pizlonated cosmo libc (static); cross builds
+#                       (FILCARCH=aarch64) install the same set of artifacts
+#                       into pizfix/lib-aarch64 instead
 #   pizfix/lib/libm.a   an empty archive so that -lm resolves (cosmo folds
 #                       all of libm into libc.a)
 #   pizfix/lib/crt1.o   the process entry object (yolo cosmo crt + yolo glue)
 #   pizfix/include/     cosmo public headers (the flavor switch for the
-#                       driver)
+#                       driver; only the host-arch build installs them since
+#                       cosmo's headers are arch-neutral)
 #
 # This makefile is driven by build_usercosmo.sh, which runs:
 #
@@ -63,17 +66,43 @@
 COSMO := $(CURDIR)
 ROOT := $(abspath $(COSMO)/../..)
 
-# Target architecture (defaults to the host).  Only x86_64 has a Fil-C cosmo
-# port today; see ARCH_CFLAGS below.
+# Target architecture (defaults to the host).  x86_64 is the host build and
+# installs into pizfix/lib; aarch64 is a cross build and installs into
+# pizfix/lib-aarch64 (see LIBDIR below).
 FILCARCH ?= $(shell uname -m)
 
 ifeq ($(FILCARCH),x86_64)
+TARGET_FLAG =
 ARCH_CFLAGS = -march=x86-64 -mavx
+LIBDIR = $(PIZFIX)/lib
+else ifeq ($(FILCARCH),aarch64)
+TARGET_FLAG = --target=aarch64-linux-gnu
+# Cosmo's aarch64 conventions (see build/definitions.mk and the cosmocross
+# wrapper): char is signed, x18 is the platform register, and x28 holds the
+# cosmo TIB.  -ffixed-x28 is required here even though the pizlonated libc
+# mostly avoids the cosmo TLS machinery: some pizlonated sources inline
+# __get_tls() (which reads x28 on aarch64), and without the fix LLVM is free
+# to reuse x28 as scratch inside the same function - the read then sees
+# garbage (this crashes inside __mmap_impl).
+ARCH_CFLAGS = -fsigned-char -ffixed-x18 -ffixed-x28
+LIBDIR = $(PIZFIX)/lib-aarch64
+# x86-only raw asm (the metal BIOS I/O port readers in pc.internal.h, the
+# serial console, and amd64 crash dumping); metal is an x86-only concept
+# (see libc/dce.h: SupportsMetal() is 0 on aarch64).
+AARCH64_EXCLUDE_FILES = \
+	libc/calls/metalfile.c \
+	libc/calls/openat-metal.c \
+	libc/calls/poll-metal.c \
+	libc/calls/readv-serial.c \
+	libc/calls/writev-serial.c \
+	libc/intrin/directmap-metal.c \
+	libc/intrin/munmap-metal.c \
+	libc/log/oncrash_amd64.c \
+	libc/runtime/efimain.greg.c \
+	libc/runtime/metalprintf.greg.c \
+	libc/sysv/sysv.c
 else
-# No aarch64 Fil-C cosmo port yet.  Leave the ISA flags empty so a cross
-# build gets the compiler baseline; add -mcpu/-march knobs here when the
-# aarch64 yolo libc lands.
-ARCH_CFLAGS =
+$(error unsupported FILCARCH "$(FILCARCH)")
 endif
 
 # Where the objects and generated sources go.  Cross builds should override
@@ -104,7 +133,7 @@ COSMO_INC = \
  -isystem $(CLANG_RES) \
  -include $(COSMO)/libc/integral/normalize.inc
 
-CFLAGS = -O2 -g -std=gnu23 \
+CFLAGS = $(TARGET_FLAG) -O2 -g -std=gnu23 \
  -DSUPPORT_VECTOR=1 -D_COSMO_SOURCE -DNDEBUG -DMODE=\"filc\" \
  $(ARCH_CFLAGS) \
  -fno-omit-frame-pointer -fno-stack-protector -fwrapv \
@@ -118,7 +147,7 @@ CFLAGS = -O2 -g -std=gnu23 \
 # symbols land unmangled as pizlonated_<name>.
 CCXX = libc/str/iswlower.cc libc/str/iswupper.cc libc/str/iswseparator.cc
 
-CXXFLAGS = -O2 -g -std=gnu++20 \
+CXXFLAGS = $(TARGET_FLAG) -O2 -g -std=gnu++20 \
  -DSUPPORT_VECTOR=1 -D_COSMO_SOURCE -DNDEBUG -DMODE=\"filc\" \
  $(ARCH_CFLAGS) \
  -fno-omit-frame-pointer -fno-stack-protector -fwrapv \
@@ -154,7 +183,7 @@ SHIM_DEPS = \
 
 $(BUILD)/.shims.stamp: $(SHIM_DEPS)
 	@mkdir -p $(BUILD)
-	python3 $(COSMO)/filc/gen_shims.py $(BUILD)/shims.c $(BUILD)/consts.c
+	FILCARCH=$(FILCARCH) python3 $(COSMO)/filc/gen_shims.py $(BUILD)/shims.c $(BUILD)/consts.c
 	@touch $@
 
 $(BUILD)/generated/shims.o: $(BUILD)/.shims.stamp | check-env
@@ -234,6 +263,13 @@ GEN_OBJS = \
 #                         raw `syscall` inline asm without shims
 #                         (islinux.c: __is_linux_2_6_23 has a C replacement in
 #                         libc/calls/filc_islinux.c)
+#
+#    aarch64-only exclusions (AARCH64_EXCLUDE_FILES below, see the aarch64
+#    branch of ARCH_CFLAGS): the metal/BIOS layer (pc.internal.h's raw I/O
+#    port asm; metal is x86-only per libc/dce.h), the amd64 crash reporter,
+#    the x86 cpuid table bootstrap, the EFI entrypoint, and libc/sysv/sysv.c
+#    (global register variables on x0-x5, which LLVM rejects; it compiles to
+#    zero symbols on x86_64 anyway).
 #      mman.greg.c        bare-metal page-table code with module asm
 # ─────────────────────────────────────────────────────────────────────────────
 EXCLUDE_DIRS = libc/testbed libc/irq libc/dsp libc/vga libc/x8664
@@ -385,13 +421,15 @@ EXCLUDE_FILES = \
 	libc/dlopen/dlclose.c \
 	libc/dlopen/dlsym.c
 
+AARCH64_EXCLUDE_FILES ?=
+
 # third_party trees that are part of the v1 library
 THIRD_PARTY_DIRS = third_party/nsync third_party/gdtoa third_party/tz
 
 # core libc
 SRCS_C = $(shell cd $(COSMO) && find libc -name '*.c' | LC_ALL=C sort)
 SRCS_C := $(filter-out $(addsuffix /%,$(EXCLUDE_DIRS)),$(SRCS_C))
-SRCS_C := $(filter-out $(EXCLUDE_FILES),$(SRCS_C))
+SRCS_C := $(filter-out $(EXCLUDE_FILES) $(AARCH64_EXCLUDE_FILES),$(SRCS_C))
 # tool directories that require the cosmo build machinery / yolo-only
 SRCS_C := $(filter-out libc/sysv/calls/% libc/crt/%,$(SRCS_C))
 # third_party
@@ -483,17 +521,17 @@ $(BUILD)/%.cc.o: %.cc $(FORCE_PREREQ) | check-env
 # ─────────────────────────────────────────────────────────────────────────────
 LIBC_A_OBJS = $(sort $(patsubst $(BUILD)/%,%,$(OBJS) $(CCXX_OBJS) $(GEN_OBJS)))
 
-$(PIZFIX)/lib/libc.a: $(OBJS) $(CCXX_OBJS) $(GEN_OBJS) | check-env
-	@mkdir -p $(PIZFIX)/lib
+$(LIBDIR)/libc.a: $(OBJS) $(CCXX_OBJS) $(GEN_OBJS) | check-env
+	@mkdir -p $(LIBDIR)
 	@rm -f $@
-	cd $(BUILD) && ar crs $(PIZFIX)/lib/libc.a $(LIBC_A_OBJS)
+	cd $(BUILD) && ar crs $(LIBDIR)/libc.a $(LIBC_A_OBJS)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 5b. libm.a: cosmo folds all of libm into libc.a, but portable programs (and
 #     the test suite) link with -lm.  musl's flavor ships a real libm.a; give
 #     the cosmo flavor an empty one so that -lm resolves.
 # ─────────────────────────────────────────────────────────────────────────────
-$(PIZFIX)/lib/libm.a: $(PIZFIX)/lib/libc.a
+$(LIBDIR)/libm.a: $(LIBDIR)/libc.a
 	@rm -f $@
 	ar crs $@
 
@@ -510,17 +548,26 @@ $(PIZFIX)/lib/libm.a: $(PIZFIX)/lib/libc.a
 #    would pizlonate it into pizlonated_* symbols, and the whole point is to
 #    provide plain ones for the yolo side.
 # ─────────────────────────────────────────────────────────────────────────────
+# The glue is plain (un-pizlonated) aarch64/x86_64 code, so it is compiled by
+# the plain host clang, with --target for cross builds.  The -r fusion of
+# yolo objects needs a linker with an emulation for the target architecture:
+# the host GNU ld is x86_64-only, so cross builds use the aarch64 GNU ld that
+# ships in cosmo's .cosmocc toolchain (the same one that links the yolo libc).
+YOLOGLUECC = clang $(if $(filter aarch64,$(FILCARCH)),--target=aarch64-linux-gnu,)
+AARCH64_LD := $(firstword $(wildcard $(ROOT)/projects/yolocosmo/.cosmocc/*/bin/aarch64-linux-cosmo-ld))
+LD_FUSE = $(if $(filter aarch64,$(FILCARCH)),$(AARCH64_LD),ld)
+
 $(BUILD)/yologlue.o: $(COSMO)/filc/yologlue.c $(FORCE_PREREQ) | check-env
 	@mkdir -p $(dir $@)
-	clang -c -o $@ $(COSMO)/filc/yologlue.c \
+	$(YOLOGLUECC) -c -o $@ $(COSMO)/filc/yologlue.c \
 	    -nostdinc -isystem $(PIZFIX)/yolo-include \
 	    -include $(PIZFIX)/yolo-include/normalize.inc -D__COSMOPOLITAN__ \
 	    -w
 
-$(BUILD)/crt1.fused.o: $(PIZFIX)/lib/cosmo-crt.o $(BUILD)/yologlue.o | check-env
-	ld -r -o $@ $(PIZFIX)/lib/cosmo-crt.o $(BUILD)/yologlue.o
+$(BUILD)/crt1.fused.o: $(LIBDIR)/cosmo-crt.o $(BUILD)/yologlue.o | check-env
+	$(LD_FUSE) -r -o $@ $(LIBDIR)/cosmo-crt.o $(BUILD)/yologlue.o
 
-$(PIZFIX)/lib/crt1.o: $(BUILD)/crt1.fused.o | check-env
+$(LIBDIR)/crt1.o: $(BUILD)/crt1.fused.o | check-env
 	cp -f $< $@
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -564,14 +611,23 @@ install-headers: | check-env
 check-env:
 	@test -x "$(FILC_CLANG)" || { \
 	    echo "error: $(FILC_CLANG) not found; build the Fil-C compiler first" >&2; exit 1; }
-	@test -e "$(PIZFIX)/lib/libyolocosmo.a" || { \
-	    echo "error: pizfix/lib/libyolocosmo.a missing; run ./build_yolocosmo.sh first" >&2; exit 1; }
-	@test -e "$(PIZFIX)/lib/libpizlo.a" -a ! -e "$(PIZFIX)/lib/libpizlo.so" || { \
-	    echo "error: pizfix/lib/libpizlo.a is not the cosmo-mode build;" >&2; \
-	    echo "       run ./build_yolocosmo.sh && (cd libpas && ./clean.sh && ./build.sh)" >&2; \
+	@test -e "$(LIBDIR)/libyolocosmo.a" || { \
+	    echo "error: $(LIBDIR)/libyolocosmo.a missing; run ./build_yolocosmo.sh first" >&2; exit 1; }
+	@test -e "$(LIBDIR)/libpizlo.a" -a ! -e "$(LIBDIR)/libpizlo.so" || { \
+	    echo "error: $(LIBDIR)/libpizlo.a is not the cosmo-mode build;" >&2; \
+	    echo "       run ./build_yolocosmo.sh && (cd libpas && make FILCARCH=$(FILCARCH) ...)" >&2; \
 	    exit 1; }
 	@mkdir -p $(BUILD)
 	@rm -f $(BUILD)/compile-failures.txt
 	@: > $(BUILD)/compile-errors.log
 
-all install: check-env $(PIZFIX)/lib/libc.a $(PIZFIX)/lib/libm.a $(PIZFIX)/lib/crt1.o install-headers
+ifneq ($(FILCARCH),$(shell uname -m))
+# A cross build shares pizfix/include with the host build (cosmo's headers
+# are arch-neutral, see build_usercosmo.sh), so the headers only get
+# (re)installed by the host-arch build.
+INSTALL_TARGETS = $(LIBDIR)/libc.a $(LIBDIR)/libm.a $(LIBDIR)/crt1.o
+else
+INSTALL_TARGETS = $(LIBDIR)/libc.a $(LIBDIR)/libm.a $(LIBDIR)/crt1.o install-headers
+endif
+
+all install: check-env $(INSTALL_TARGETS)

@@ -18,6 +18,23 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/runtime/fenv.h"
 
+/* clang has no __builtin_aarch64_{get,set}_fpcr, so read/write the FPCR
+   with plain MRS/MSR asm (this is how the compiler runtime itself accesses
+   FPCR; GCC gets to keep its builtins). */
+#if defined(__aarch64__) && !defined(COSMO_GET_FPCR)
+#define COSMO_GET_FPCR()                                  \
+  ({                                                      \
+    unsigned __fpcr;                                      \
+    __asm__ volatile("mrs\t%0, fpcr" : "=r"(__fpcr));   \
+    __fpcr;                                               \
+  })
+#define COSMO_SET_FPCR(v)                                 \
+  do {                                                    \
+    unsigned __fpcr = (v);                                \
+    __asm__ volatile("msr\tfpcr, %0" : : "r"(__fpcr));  \
+  } while (0)
+#endif
+
 /**
  * Disables floating point exception trapping, e.g.
  *
@@ -80,10 +97,10 @@ int fedisableexcept(int excepts) {
 
   unsigned fpcr;
   unsigned fpcr2;
-  fpcr = __builtin_aarch64_get_fpcr();
+  fpcr = COSMO_GET_FPCR();
   fpcr2 = fpcr & ~(excepts << 8);
   if (fpcr != fpcr2)
-    __builtin_aarch64_set_fpcr(fpcr2);
+    COSMO_SET_FPCR(fpcr2);
   return (fpcr >> 8) & FE_ALL_EXCEPT;
 
 #else

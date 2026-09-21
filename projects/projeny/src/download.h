@@ -105,24 +105,47 @@ struct BatchPackageResult {
 // use: stderr, the "projeny: download progress: " prefix, bare '\r'
 // termination, no ANSI escapes, no backspaces, no padding, no isatty
 // checks — a terminal redraws the line in place while a log keeps every
-// line. The line carries one single-token entry per IN-FLIGHT transfer, in
-// the order those transfers' "downloading '<name>' from '<url>'"
-// announcements printed, so the line correlates with the announcements:
-//   <entry> = "N%"  — the transfer's whole-percent, clamped to 100 (only a
-//                     server lying about its Content-Length could exceed it)
-//           | "?"   — the transfer's total size is unknown (no
-//                     Content-Length); "?" instead of a byte count keeps
-//                     every entry a single greppable token
+// line. The line covers the pass's ROSTER: every package the pass has
+// announced so far, one single-token entry per package, in
+// first-announcement order — position N always corresponds to the Nth
+// "downloading '<name>' from '<url>'" announcement. The roster NEVER
+// shrinks during a pass (the entry count only ever grows): a package joins
+// when its announcement prints and stays listed until the pass ends, a
+// completed transfer remaining at "100%" — entries that vanished or
+// shifted positions mid-stream would make the numbers uninterpretable, and
+// a shrinking '\r'-redrawn line would leave stale residue on the terminal
+// (the line is never padded, so it only redraws over its own previous
+// width). Every entry is honest — a percent or a byte count, never "?":
+//   <entry> = "N%"    — the package's current transfer reports a total
+//                       size (Content-Length): its whole-percent, clamped
+//                       to 0..100 (only a server lying about its
+//                       Content-Length could exceed it); "0%" once the
+//                       transfer is connected but has received no bytes
+//                       yet, "100%" once it completes
+//           | <bytes> — the total size is unknown (no Content-Length):
+//                       the bytes received so far in compact human units,
+//                       "<n>B" below 1 KiB and one decimal (a zero
+//                       fraction is dropped) in KiB/MiB/GiB above it
+//                       ("0B", "65535B", "1.4KiB", "37KiB", "1.2MiB")
+//           | "0B"    — the package holds neither a live transfer nor a
+//                       completed one (a failed attempt awaiting its next
+//                       candidate URL, or a package whose candidate URLs
+//                       are exhausted): attempts start from zero bytes and
+//                       nothing of a failed attempt is kept, so there are
+//                       no bytes of this package to report
 // Re-renders are throttled, mirroring try_download's two-gate rule: at most
 // one line per scheduler loop iteration, and only when BOTH at least 200ms
-// passed since the last render AND something visible changed (some
-// in-flight transfer's whole-percent grew, or >= 64 KiB arrived for an
-// unknown-total transfer). When a round completes (every package
-// transferred or out of candidate URLs) exactly one closing line lists
-// EVERY package that round announced, in first-announcement order: "100%"
-// for a package holding a completed transfer, "?" for one that never
-// finished one (a hash mismatch still reads "100%" — the transfer itself
-// completed; the mismatch is the hash pass's report). The closing line ends
+// passed since the last render AND some entry's rendered string changed.
+// A package's re-render baseline resets with its transfer state at every
+// attempt start (to the fresh attempt's "0B"), so a new attempt re-renders
+// from its own early percents/bytes and the line never keeps a dead
+// attempt's stale, higher-than-actual state on display. When a round
+// completes (every package transferred or out of candidate URLs) exactly
+// one closing line lists EVERY package that round announced, in
+// first-announcement order (the same roster): "100%" for a package holding
+// a completed transfer — including one whose total size was unknown;
+// completing is what the closing line reports — and "0B" for one that
+// never finished one. The closing line ends
 // the progress sequence with a newline after its '\r': a terminal keeps the
 // final state visible on its own line (the following
 // "downloaded ... (N bytes); blake3 hash verified" notes print below it,

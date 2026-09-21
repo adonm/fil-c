@@ -33,7 +33,6 @@
 #include "blake3/blake3.h"
 #include <curl/curl.h>
 
-#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
@@ -150,20 +149,51 @@ int batch_whole_percent(curl_off_t now, curl_off_t total)
     return pct;
 }
 
+// Compact human byte count for one batch progress entry whose total size is
+// unknown: "<n>B" below 1 KiB, else the count in KiB/MiB/GiB with one
+// decimal, dropping a zero fraction ("1.4KiB", "37KiB", "1.2MiB"). Pure
+// integer math (the decimal truncates, never rounds), so the token is
+// monotone in the byte count and deterministic on every platform. A
+// transfer that has received nothing yet renders "0B". Never "?": an
+// unknown total still leaves an honest bytes-so-far to report, and a single
+// greppable token per entry keeps the combined line grep-friendly.
+std::string batch_byte_token(curl_off_t now)
+{
+    unsigned long long v = now > 0 ? (unsigned long long)now : 0ULL;
+    if (v < 1024)
+        return std::to_string(v) + "B";
+    static const char* const units[] = {"KiB", "MiB", "GiB"};
+    unsigned long long unit = 1024;
+    int u = 0;
+    while (u < 2 && v >= unit * 1024) {
+        unit *= 1024;
+        ++u;
+    }
+    std::string out = std::to_string(v / unit);
+    unsigned long long tenths = (v % unit) * 10 / unit;
+    if (tenths > 0) {
+        out += '.';
+        out += static_cast<char>('0' + tenths);
+    }
+    return out + units[u];
+}
+
 // One combined batch progress line, printed exactly like try_download's
 // single-transfer lines (stderr, the "projeny: download progress: " prefix,
 // bare '\r' termination — no ANSI escapes, no backspaces, no padding, no
 // isatty checks — so a terminal redraws the line in place while a log keeps
 // every line) and serialized by g_output_mutex like every other output.
-// `entries` holds one single token per transfer: the transfer's
-// whole-percent ("N%"), or "?" when its total size is unknown. "?" (rather
-// than a byte count) keeps every entry one greppable token, so the line
-// stays grep-friendly and correlates 1:1 with the "downloading '<name>'
-// from '<url>'" announcements in print order. The round's closing line is
-// printed with closing=true: it ends the progress sequence with a newline
-// after the '\r', so a terminal keeps the final state visible on its own
-// line instead of letting the hash-phase reports overwrite it, and a log's
-// line structure stays intact (the next "downloaded"/"failed to
+// `entries` holds one single-token entry per package of the pass's roster
+// in first-announcement order: the package's whole-percent ("N%") when its
+// transfer knows its total size, its compact byte count ("37KiB") when it
+// does not, or "0B" while it holds neither a live transfer nor a completed
+// one — never "?", so every entry stays a single greppable token that
+// correlates 1:1 with the "downloading '<name>' from '<url>'" announcements
+// (entry N is the Nth announcement). The round's closing line is printed
+// with closing=true: it ends the progress sequence with a newline after
+// the '\r', so a terminal keeps the final state visible on its own line
+// instead of letting the hash-phase reports overwrite it, and a log's line
+// structure stays intact (the next "downloaded"/"failed to
 // obtain"/"retrying" line starts at column 0).
 void print_batch_progress_line(const std::vector<std::string>& entries,
                                bool closing)
@@ -261,6 +291,32 @@ int batch_xferinfo_cb(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
     return 0;
 }
 
+// The single-token progress entry for one package of the pass's roster.
+// Every entry is honest — a percent or a byte count, never "?":
+//   - a package holding a completed transfer reads "100%" (even when that
+//     transfer's total size was unknown: completing is what the entry
+//     reports, and the byte count is in the "downloaded '<name>' (<N>
+//     bytes)" note);
+//   - a package with a live transfer reads its whole-percent ("N%") when
+//     the transfer reports a total size, else the compact byte count of
+//     what has arrived so far ("0B" until the first bytes land);
+//   - a package with neither — a failed attempt awaiting its next
+//     candidate URL, or a package whose candidate URLs are exhausted —
+//     reads "0B": attempts start from zero bytes and nothing of a failed
+//     attempt is kept, so there are no bytes of this package to report.
+std::string batch_entry_token(const BatchWork& w)
+{
+    if (w.transferred)
+        return "100%";
+    if (w.handle != nullptr) {
+        if (w.xfer_total > 0)
+            return std::to_string(batch_whole_percent(w.xfer_now,
+                                                      w.xfer_total)) + "%";
+        return batch_byte_token(w.xfer_now);
+    }
+    return "0B";
+}
+
 // One phase-1 scheduler run over work: fills the curl_jobs budget with at
 // most one easy handle per package (packages with transferred-but-unverified
 // bytes, verified packages, and exhausted packages are skipped), pumping the
@@ -280,25 +336,20 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
     // Combined progress-line bookkeeping, all touched on this (calling)
     // thread: the xferinfo callbacks write the per-package counts (fired
     // inside curl_multi_perform below, still on this thread) and the loop
-    // renders from them under g_output_mutex. announce_seq stamps each
-    // attempt's "downloading" announcement; cur_seq[i] holds the stamp of
-    // the announcement that started package i's current (or last) attempt,
-    // so in-flight entries render in the order their "downloading" lines
-    // printed. announce_order lists each package the first time a pass
-    // announces it, so the closing line can list every announced package in
-    // announcement order. rendered_pct/rendered_bytes hold the last
-    // rendered state per package (the re-render throttle's baseline);
-    // start_transfer resets them per attempt, alongside the transfer state
-    // itself, because every attempt starts from zero bytes and must never
-    // be gated by what a previous attempt last rendered. last_render_ns is
-    // the steady-clock time (ns) of the last render (0 = never, so the
-    // first due render is not delayed).
-    unsigned long announce_seq = 0;
-    std::vector<unsigned long> cur_seq(work.size(), 0);
+    // renders from them under g_output_mutex. announce_order lists each
+    // package the first time this pass announces it — the pass's ROSTER,
+    // which only ever grows and whose positions are the announcement
+    // positions: entry N of every line (in-flight and closing alike) is
+    // the Nth "downloading" announcement. rendered_entry holds the last
+    // rendered entry token per package (the re-render throttle's
+    // baseline); start_transfer resets it per attempt, alongside the
+    // transfer state itself, because every attempt starts from zero bytes
+    // and must never be gated by what a previous attempt last rendered.
+    // last_render_ns is the steady-clock time (ns) of the last render
+    // (0 = never, so the first due render is not delayed).
     std::vector<bool> announced_once(work.size(), false);
     std::vector<size_t> announce_order;
-    std::vector<int> rendered_pct(work.size(), -1);
-    std::vector<curl_off_t> rendered_bytes(work.size(), 0);
+    std::vector<std::string> rendered_entry(work.size());
     long long last_render_ns = 0;
 
     // Internal-error escape: detach and free everything still in flight so
@@ -323,17 +374,22 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
         w.curl_err[0] = 0;
         w.xfer_now = 0;
         w.xfer_total = -1;
-        // The re-render baselines reset with the transfer state: a new
-        // attempt starts from zero bytes, so the previous attempt's
-        // last-rendered percent (or byte count) must not gate this one's
-        // renders — otherwise the combined progress line would keep the
-        // dead attempt's stale, higher-than-actual percentage on display
-        // until the new attempt climbed past it.
-        rendered_pct[i] = -1;
-        rendered_bytes[i] = 0;
-        cur_seq[i] = announce_seq++;
+        // The re-render baseline resets with the transfer state: a new
+        // attempt starts from zero bytes with an unknown total, so its
+        // baseline is the fresh-attempt entry ("0B"). The previous
+        // attempt's last-rendered percent (or byte count) must not gate
+        // this one's renders — otherwise the combined progress line would
+        // keep the dead attempt's stale, higher-than-actual percentage on
+        // display until the new attempt climbed past it — and the restart
+        // itself is not a visible change: the entry moves off "0B" only
+        // when the new attempt actually receives bytes (or learns its
+        // total), so the line re-renders from the new attempt's own early
+        // percentages.
+        rendered_entry[i] = batch_entry_token(w);
         if (!announced_once[i]) {
             announced_once[i] = true;
+            // First announcement of this pass: the package joins the
+            // roster here and stays in it until the pass ends.
             announce_order.push_back(i);
         }
         note("downloading '" + w.spec->name + "' from '" + url + "'");
@@ -439,50 +495,34 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
         }
         // Combined progress line: at most one per scheduler loop iteration,
         // and only when BOTH re-render gates pass — at least 200ms since
-        // the last render, and something visible changed (some in-flight
-        // transfer's whole-percent grew, or >= 64 KiB arrived for an
-        // unknown-total transfer). The entries cover the in-flight
-        // transfers only, in the order their "downloading" lines printed
-        // (cur_seq); the closing line after the loop reports the round's
-        // final state deterministically.
+        // the last render, and some entry's rendered string changed. The
+        // entries cover the ROSTER — every package this pass has announced
+        // so far, in first-announcement order — so the entry count only
+        // ever grows (a queued package joins when its announcement prints)
+        // and a completed transfer stays listed at "100%" instead of
+        // disappearing and shifting the entries left; a shrinking
+        // '\r'-redrawn line would leave stale residue on the terminal. The
+        // closing line after the loop reports the round's final state
+        // deterministically.
         if (in_flight > 0) {
             long long now_ns =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch())
                     .count();
             bool changed = false;
-            for (const auto& kv : handle_owner) {
-                const BatchWork& w = work[kv.second];
-                if (w.xfer_total > 0) {
-                    if (batch_whole_percent(w.xfer_now, w.xfer_total) >
-                        rendered_pct[kv.second])
-                        changed = true;
-                } else if (w.xfer_now - rendered_bytes[kv.second] >= 65536) {
+            for (size_t i : announce_order) {
+                if (batch_entry_token(work[i]) != rendered_entry[i]) {
                     changed = true;
+                    break;
                 }
             }
             if (changed && now_ns - last_render_ns >= 200000000LL) {
-                std::vector<size_t> order;
-                order.reserve(handle_owner.size());
-                for (const auto& kv : handle_owner)
-                    order.push_back(kv.second);
-                std::sort(order.begin(), order.end(),
-                          [&](size_t a, size_t b) {
-                              return cur_seq[a] < cur_seq[b];
-                          });
                 std::vector<std::string> entries;
-                entries.reserve(order.size());
-                for (size_t i : order) {
-                    const BatchWork& w = work[i];
-                    if (w.xfer_total > 0) {
-                        int pct =
-                            batch_whole_percent(w.xfer_now, w.xfer_total);
-                        rendered_pct[i] = pct;
-                        entries.push_back(std::to_string(pct) + "%");
-                    } else {
-                        rendered_bytes[i] = w.xfer_now;
-                        entries.push_back("?");
-                    }
+                entries.reserve(announce_order.size());
+                for (size_t i : announce_order) {
+                    std::string tok = batch_entry_token(work[i]);
+                    rendered_entry[i] = tok;
+                    entries.push_back(std::move(tok));
                 }
                 print_batch_progress_line(entries, /*closing=*/false);
                 last_render_ns = now_ns;
@@ -502,20 +542,23 @@ void batch_transfer_pass(std::vector<BatchWork>& work,
     }
 
     // The round's closing progress line: exactly one per pass, listing
-    // EVERY package this pass announced (first-announcement order) with
-    // its final state — "100%" for a package holding a completed transfer,
-    // "?" for one that never finished one (its attempts failed before any
-    // bytes arrived, or mid-transfer). Unlike the throttled in-flight
-    // lines this is deterministic, so tests can pin the entry count and
-    // values; a hash mismatch does not change the entry (the transfer
-    // completed — the mismatch is the hash pass's report). The retry pass
-    // runs this function again and prints its own closing line for its
-    // own round. Silent only when the pass announced nothing at all.
+    // EVERY package this pass announced — the same roster the in-flight
+    // lines rendered, in first-announcement order — with its final state:
+    // "100%" for a package holding a completed transfer (including one
+    // whose total size was unknown: completing is what the closing line
+    // reports), "0B" for one that never finished one (its attempts failed
+    // before or mid-transfer, and nothing of a failed attempt is kept).
+    // Unlike the throttled in-flight lines this is deterministic, so tests
+    // can pin the entry count and values; a hash mismatch does not change
+    // the entry (the transfer completed — the mismatch is the hash pass's
+    // report). The retry pass runs this function again and prints its own
+    // closing line for its own round. Silent only when the pass announced
+    // nothing at all.
     if (!announce_order.empty()) {
         std::vector<std::string> entries;
         entries.reserve(announce_order.size());
         for (size_t i : announce_order)
-            entries.push_back(work[i].transferred ? "100%" : "?");
+            entries.push_back(batch_entry_token(work[i]));
         print_batch_progress_line(entries, /*closing=*/true);
     }
     curl_multi_cleanup(multi);

@@ -69,8 +69,8 @@ URL/hash pairs into the current directory, and `projeny erase-setup`
 erases several projects' setup state at once (see
 [Erasing a setup](#erasing-a-setup)). `setup`/`package`/`extract`/`download`
 are controlled with -j/--jobs and -c/--curl-jobs; `erase-setup` takes
--j/--jobs and the --erase-snapshots flag (it has no download phase, so
--c/--curl-jobs is an unknown option there); see
+-j/--jobs plus the --erase-snapshots and --force flags (it has no download
+phase, so -c/--curl-jobs is an unknown option there); see
 [Parallel setup, package, extract, and download](#parallel-setup-package-extract-and-download).
 
 Paths into the work tree may be CWD-relative, absolute, or workdir-relative
@@ -555,14 +555,16 @@ reports `downloaded '<archive>' (<N> bytes); blake3 hash verified`, and
 a failing batch announces `retrying <k> failed download(s): <names>`
 before the retry pass. The whole batch shares ONE combined progress line
 (`projeny: download progress: <e1> <e2> ...`, redrawn in place like the
-single-project line): one single-token entry per in-flight transfer, in
-the order those transfers were announced — the transfer's whole-percent
-(`N%`), or `?` while its total size is unknown (no Content-Length).
-Renders are throttled: at most one per scheduler iteration, only after
-at least 200ms, and only when something visibly changed (a transfer's
-whole-percent grew, or 64 KiB arrived for an unknown total). Each
+single-project line): one single-token entry per package the pass has
+announced so far, in first-announcement order — entry N is the Nth
+announcement, and the roster only ever grows, a completed transfer staying
+listed at `100%`. An entry is the transfer's whole-percent (`N%`) when its
+total size is known, otherwise the bytes received so far in compact units
+(`0B`, `65535B`, `37KiB`, `1.2MiB`) — never `?`. Renders are throttled: at
+most one per scheduler iteration, only after at least 200ms, and only when
+some entry's rendered text changed. Each
 download round closes with one deterministic final progress line listing
-every package it announced — `100%` per transferred package, `?` for one
+every package it announced — `100%` per transferred package, `0B` for one
 that never finished one — on its own line. The per-project phase of a
 parallel command stays silent about snapshots: a `using existing
 snapshot` note belongs to single-project runs only, since in parallel
@@ -589,7 +591,11 @@ finished — exits nonzero.
 for each named project, in parallel (at most `-j/--jobs` threads, default
 the CPU count; options may appear anywhere among the arguments). This is
 DESTRUCTIVE and cannot be undone — the checkout is discarded whole,
-uncommitted changes included:
+uncommitted changes included. Without `--force`, erase-setup refuses to
+erase anything when a project's `status` reports changes a commit would
+fold in (see
+[The no-force check](#the-no-force-check-uncommitted-changes-are-protected-by-default)
+below); with `--force` it erases unconditionally:
 
 - the checkout directory — the workdir named by the `Name:` header, e.g.
   `lua/` for `lua.projeny` — removed recursively, exactly like
@@ -630,12 +636,55 @@ a project with nothing left reports `nothing to erase for '<Name>'`.
 
 The `.projeny` file must be readable and parseable — it names what would
 be deleted — so a missing, garbage, or git-conflicted file fails its own
-project without anything being erased (the other projects still erase).
-Naming one project twice collapses into a single erase with a warning
+project without anything being erased for it. With `--force` the other
+projects still erase; without it, the whole invocation refuses before
+erasing anything (see below). Naming one project twice collapses into a
+single erase with a warning
 (`'a.projeny' is listed more than once; erasing it only once`), keyed on
 the resolved `.projeny` path like every parallel command. There is no
 `-c/--curl-jobs` for erase-setup: it never downloads anything, so that
 spelling is rejected as an unknown option.
+
+### The no-force check: uncommitted changes are protected by default
+
+By itself (without `--force`), erase-setup refuses to erase anything until
+every named project has passed a check: in parallel (subject to
+`-j/--jobs`), each project is asked whether a commit would have anything
+to do — that is, whether `projeny status` reports anything other than
+untracked files. Any `Conflict:`, `Added:`, `Removed:`, `Renamed:`,
+`Modified:`, or `Disappeared:` entry makes the project dirty; untracked
+files alone do not (they are not changes a commit would fold in, and they
+go with the checkout as they always have).
+
+If ANY project is dirty, the whole invocation refuses with one error and
+exit status 1, and NOTHING is erased — not even the clean projects' setup
+state:
+
+```
+projeny: error: refusing to erase 1 of 2 project(s) with uncommitted changes (use --force to erase anyway)
+  'lua.projeny': modified: 'src/luaconf.h'; added: 'notes.txt'
+```
+
+The check is all-or-nothing across the invocation, and each dirty project
+is named in argument order with its changes in status's own vocabulary.
+A project whose state cannot even be assessed refuses the whole
+invocation the same way: a missing, garbage, or git-conflicted `.projeny`
+file (`cannot check 1 of 2 project(s) for uncommitted changes; refusing
+to erase anything (use --force to erase anyway)`), a status file that
+cannot be read or parsed, or a checkout whose archive and its snapshot
+are both missing or unusable — the live diff that would compare the
+checkout against the recorded tree cannot run, and a project that cannot
+be checked is never assumed clean, so even a checkout that happens to be
+clean refuses (erase-setup cannot know it is clean; `--force` is the
+override). A checkout directory that is already gone — or a project with
+no status file — is clean by definition: there is nothing there to
+destroy, so it erases normally (with the usual did-not-exist warnings),
+and the check never renames anything to `.stale` behind the user's back.
+
+`--force` skips the check entirely and restores the unconditional
+erasure: every named project is erased no matter what its status reports
+— the escape hatch for deliberately discarding uncommitted work. It
+combines freely with `--erase-snapshots`.
 
 ## File naming and migration
 

@@ -55,7 +55,8 @@ int usage(const char* arg0, bool err)
             "  package <f.projeny|dir> <output> [...]\n"
             "  extract <f.projeny|dir> <dest> [...]\n"
             "  download <url> <hash> [<url> <hash>...]\n"
-            "  erase-setup <f.projeny|dir> [...] [--erase-snapshots]\n"
+            "  erase-setup <f.projeny|dir> [...] [--erase-snapshots] "
+            "[--force]\n"
             "  freeze-mtime <f.projeny|dir> <filenames...>\n"
             "  unfreeze-mtime <f.projeny|dir> <filenames...>\n"
             "  list-frozen-mtimes <f.projeny|dir>\n"
@@ -64,7 +65,8 @@ int usage(const char* arg0, bool err)
             "  help [command]\n"
             "  options for setup/package/extract/download: -j[--jobs] N, "
             "-c[--curl-jobs] N\n"
-            "  options for erase-setup: -j[--jobs] N, --erase-snapshots\n",
+            "  options for erase-setup: -j[--jobs] N, --erase-snapshots, "
+            "--force\n",
             arg0);
     return err ? 1 : 0;
 }
@@ -215,12 +217,13 @@ int main(int argc, char** argv)
             return cmd_download(rest, jobs, curl_jobs);
         }
         // erase-setup is a parallel-mode command too: -j/--jobs anywhere,
-        // plus the valueless --erase-snapshots flag. It has NO download
-        // phase, so there is nothing for -c/--curl-jobs to control: those
-        // spellings are just unknown options here.
+        // plus the valueless --erase-snapshots and --force flags. It has NO
+        // download phase, so there is nothing for -c/--curl-jobs to
+        // control: those spellings are just unknown options here.
         if (cmd == "erase-setup") {
             int jobs = default_jobs();
             bool erase_snapshots = false;
+            bool force = false;
             std::vector<std::string> rest;
             for (size_t i = 1; i < args.size(); ++i) {
                 const std::string& tok = args[i];
@@ -235,6 +238,8 @@ int main(int argc, char** argv)
                     jobs = parse_jobs_value("--jobs", tok.substr(7));
                 } else if (tok == "--erase-snapshots") {
                     erase_snapshots = true;
+                } else if (tok == "--force") {
+                    force = true;
                 } else if (tok.size() > 2 && starts_with(tok, "-c") &&
                            looks_like_jobs_value(tok.substr(2))) {
                     // The attached-value spelling of -c: name the option,
@@ -248,7 +253,7 @@ int main(int argc, char** argv)
             }
             if (rest.empty())
                 return usage(arg0.c_str(), true);
-            return cmd_erase_setup_multi(rest, jobs, erase_snapshots);
+            return cmd_erase_setup_multi(rest, jobs, erase_snapshots, force);
         }
         if (cmd == "commit") {
             if (args.size() != 2)

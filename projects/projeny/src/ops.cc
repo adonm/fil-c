@@ -382,7 +382,17 @@ const std::map<std::string, PlannedPackage>* g_multi_plan = nullptr;
 // Serializes the unplanned-package fallback download (a conflicted —
 // therefore unparseable — .projeny file whose package the batch never
 // covered): never two concurrent downloads of the same package, even for
-// packages the planning phase could not see.
+// packages the planning phase could not see. erase-setup's no-force check
+// phase takes the same mutex around its snapshot-materializing step (inside
+// compute_live_diff): it runs with no batch plan at all, so every
+// materialization there (a URL re-download, a classic archive copied into
+// a missing snapshot) is a "fallback" in this sense. The mutex serializes
+// materializations; it does not pin a snapshot's bytes — checked projects
+// sharing an archive basename while disagreeing on its expected hashes
+// re-materialize the same snapshot path in turn, each write an atomic
+// temp+rename outside the other's critical section, so a settled snapshot
+// can still change under a concurrent reader (fail-closed; see the
+// comment in compute_live_diff).
 std::mutex g_fallback_download_mu;
 
 // The sequential download loop shared by the legacy single-project path and
@@ -3281,6 +3291,270 @@ int cmd_rebase(const std::string& projeny_arg, const std::string& new_tarball)
     return 0;
 }
 
+namespace {
+
+// What a `projeny status`-equivalent computation reports for one project,
+// factored into the two halves cmd_status prints so the erase-setup check
+// phase (cmd_erase_setup_multi) can reuse exactly the same semantics — its
+// definition of "would a commit have anything to do" is "status reports
+// anything other than untracked files":
+//
+//   read_recorded_status — the status file's recorded state (the
+//                          Conflict:/Added:/Removed:/Renamed: entries) plus
+//                          the workdir the status records, with status's
+//                          exact Name-fallback rule. PURE: it only parses
+//                          files and stats directories; nothing on disk is
+//                          renamed, written, or downloaded.
+//
+//   compute_live_diff    — status's live-diff section: materialize the
+//                          archive the status records (snapshot first,
+//                          exactly like status), build the expected tree,
+//                          and diff it against the workdir. This half has
+//                          the side effects: a legacy undotted snapshot is
+//                          renamed into its dotted form, a classic archive
+//                          is copied into a missing snapshot, and a URL
+//                          snapshot that is missing or matches no URL:
+//                          hash is re-downloaded. It also prints status's
+//                          "(continuing ...)" warnings when the snapshot
+//                          cannot be settled.
+//
+// What is deliberately NOT shared: cmd_status's workdir-missing branch.
+// It calls disregard_stale_state, which RENAMES the status file and the
+// snapshots to '<name>.stale' names — a mutation that only makes sense for
+// the informational command, and one the check phase must never perform
+// (erase-setup reports a missing workdir as "did not exist" and would
+// otherwise see its own warning change). cmd_status therefore runs that
+// branch itself; the check phase treats a missing workdir as clean (there
+// is nothing to destroy) without touching the status machinery at all.
+
+struct RecordedStatus {
+    StatusData st;           // the recorded entries, from the status file
+    ProjenyFile emb;         // the embedded .projeny copy the status records
+    std::string workdir;     // the workdir the status records (with the
+                             // current-Name fallback applied)
+    std::string cur_archive; // the CURRENT .projeny file's Archive: (empty
+                             // when that file is unreadable, conflicted, or
+                             // invalid) — used only by status's stale-state
+                             // bookkeeping
+};
+
+RecordedStatus read_recorded_status(const std::string& pdir,
+                                    const std::string& projeny_arg,
+                                    const std::string& statusfile)
+{
+    RecordedStatus rec;
+    rec.st = StatusData::parse(statusfile);
+
+    // The embedded .projeny copy names the tree the status file records; the
+    // workdir lives at its Name, falling back to the current .projeny Name's
+    // dir when only that one exists (Name may have changed since the last
+    // setup/commit).
+    rec.emb = ProjenyFile::parse_bytes(
+        rec.st.embedded, "embedded copy in '" + statusfile + "'");
+    rec.workdir = join_path(pdir, rec.emb.name);
+    {
+        std::string cur_raw;
+        if (try_read_file_bytes(projeny_arg, &cur_raw) &&
+            !projeny_has_conflict_markers(cur_raw) &&
+            validate_projeny_bytes(cur_raw).empty()) {
+            ProjenyFile curpf =
+                ProjenyFile::parse_bytes(cur_raw, "'" + projeny_arg + "'");
+            rec.cur_archive = curpf.archive;
+            std::string curdir = join_path(pdir, curpf.name);
+            if (!is_dir(rec.workdir) && is_dir(curdir))
+                rec.workdir = curdir;
+        }
+    }
+    return rec;
+}
+
+// The live half: modified files, disappeared files (in the expected tree
+// but missing on disk and not marked removed/rename-source), and untracked
+// files (on disk but in neither the expected tree nor the pending
+// added/rename-destination sets). Pending ops themselves stay on their
+// Added:/Removed:/Renamed: lines (the recorded half) and are not repeated
+// here. `ran` is false — and every list empty — when the diff could not
+// run: a missing workdir, or no usable archive.
+struct LiveDiff {
+    bool ran = false;
+    std::vector<std::string> modified, disappeared, untracked;
+};
+
+LiveDiff compute_live_diff(const std::string& pdir, const StatusData& st,
+                           const ProjenyFile& emb,
+                           const std::string& workdir,
+                           const std::string& statusfile)
+{
+    LiveDiff live;
+    if (!is_dir(workdir))
+        return live; // nothing to diff; cmd_status runs its stale branch
+
+    // Snapshot-aware and fully tolerant: prefer the snapshot (the
+    // byte-exact copy of what the last setup actually used, which
+    // survives git deleting the archive), fall back to the archive
+    // itself (checkouts set up before snapshots existed — and copy it
+    // into the snapshot, best effort, so the next run finds one), and
+    // skip the live-diff section entirely when neither exists.
+    // URL-based projects never have a checked-in archive: their
+    // snapshot is the verified download cache. Always route it through
+    // try_ensure_url_snapshot — the spec gives status no exception, so
+    // an existing snapshot is hash-verified too (no network while it
+    // matches any URL: hash), and a missing one is fetched. Status
+    // stays informational, so a failed download or verification only
+    // warns and skips the live-diff section (exactly like the classic
+    // missing-archive case below).
+    std::string archive_path = join_path(pdir, emb.archive);
+    // The snapshot-materialization step is the only part of the live diff
+    // that mutates shared state, so it alone runs under
+    // g_fallback_download_mu (see its comment): two concurrent checkers
+    // sharing an archive whose snapshot is missing must never materialize
+    // (download/copy) it twice, and the loser of the race re-checks the
+    // snapshot the winner just wrote — under the same mutex. The heavy rest
+    // of the diff (untar + patch + the recursive byte-compare) only reads
+    // the workdir and the checker's own scratch tree, and for projects that
+    // AGREE on the archive's content a snapshot that has settled is never
+    // rewritten (materialization writes one only when it is missing or
+    // matches no URL: hash, and a hash one worker verified another worker
+    // verifies identically), so it runs in parallel. Projects that DISAGREE
+    // — two checked projects sharing an archive basename while expecting
+    // different hashes for it — share one snapshot path, and a losing
+    // worker's post-settlement re-materialization (write_file_bytes'
+    // atomic temp+rename, outside the winner's critical section) can swap
+    // the snapshot bytes under the winner's unlocked build_tree_from_patch/
+    // tar read. That race is fail-closed: the winner's diff then reports
+    // spurious modifications (a dirty refusal) or its tar/patch dies on the
+    // unexpected bytes — never a wrong erase, never silent data loss — so
+    // it is tolerated rather than locked out. The lock is never nested with
+    // try_ensure_url_snapshot's own multi-mode locking: that only engages
+    // when g_multi_plan is set, which neither caller (cmd_status, the
+    // erase-setup check phase) ever is.
+    if (emb.is_url_based()) {
+        std::string got, err;
+        std::lock_guard<std::mutex> lk(g_fallback_download_mu);
+        // announce_skip = false: status is informational and must print
+        // nothing extra on a healthy (snapshot-matching) checkout.
+        if (try_ensure_url_snapshot(pdir, emb, &got, &err, false))
+            archive_path = got;
+        else {
+            warn(err + " (continuing without the live diff)");
+            return live;
+        }
+    } else {
+        std::lock_guard<std::mutex> lk(g_fallback_download_mu);
+        migrate_snapshot(archive_path);
+        std::string snap = snapshot_path_for(archive_path);
+        if (path_exists(snap)) {
+            archive_path = snap;
+        } else if (path_exists(archive_path)) {
+            // Copy-on-fallback, best effort: status must never hard-fail
+            // just because the snapshot cannot be written.
+            std::string err;
+            if (try_copy_file_bytes(archive_path, snap, &err))
+                archive_path = snap;
+            else
+                warn("could not create snapshot '" + snap +
+                     "' from archive '" + archive_path + "': " + err +
+                     " (continuing)");
+        } else {
+            return live;
+        }
+    }
+    TempDir tmp(scratch_parent_for(pdir), "projeny-status-");
+    std::string Etree = build_tree_from_patch(
+        tmp, archive_path, emb.origname, emb.name, emb.patch,
+        "embedded patch in '" + statusfile + "'");
+
+    struct Entry {
+        int kind = 0; // 0=regular, 1=symlink, 2=other
+        std::string content; // regular: bytes; symlink: target
+        bool exec = false;
+    };
+    std::function<void(const std::string&, const std::string&,
+                       std::map<std::string, Entry>&)>
+        collect = [&](const std::string& root, const std::string& rel,
+                      std::map<std::string, Entry>& out) {
+            std::string full = rel.empty() ? root : join_path(root, rel);
+            struct stat lst;
+            if (lstat(full.c_str(), &lst) != 0)
+                return; // raced deletion; diff will catch it next time
+            if (S_ISDIR(lst.st_mode)) {
+                for (const std::string& name : list_dir_names(full)) {
+                    std::string child =
+                        rel.empty() ? name : rel + "/" + name;
+                    if (vcs_is_scratch_rel(child))
+                        continue;
+                    collect(root, child, out);
+                }
+                return;
+            }
+            if (vcs_is_scratch_rel(rel))
+                return;
+            Entry e;
+            if (S_ISLNK(lst.st_mode)) {
+                e.kind = 1;
+                e.content = read_link_target(full);
+            } else if (S_ISREG(lst.st_mode)) {
+                e.kind = 0;
+                e.exec = (lst.st_mode & 0111) != 0;
+                std::string data;
+                if (try_read_file_bytes(full, &data))
+                    e.content = data;
+            } else {
+                e.kind = 2;
+            }
+            out[rel] = e;
+        };
+    std::map<std::string, Entry> emap, wmap;
+    collect(Etree, "", emap);
+    collect(workdir, "", wmap);
+
+    auto covered_by = [](const std::vector<std::string>& lst,
+                         const std::string& rel) -> bool {
+        for (auto& k : lst) {
+            if (k.empty())
+                continue;
+            if (rel == k)
+                return true;
+            if (rel.size() > k.size() && rel.compare(0, k.size(), k) == 0 &&
+                rel[k.size()] == '/')
+                return true;
+        }
+        return false;
+    };
+    std::vector<std::string> rm_cover = st.removed;
+    std::vector<std::string> add_cover = st.added;
+    for (auto& rn : st.renamed) {
+        rm_cover.push_back(rn.first);
+        add_cover.push_back(rn.second);
+    }
+    for (auto& kv : emap) {
+        auto it = wmap.find(kv.first);
+        if (it == wmap.end()) {
+            if (!covered_by(rm_cover, kv.first))
+                live.disappeared.push_back(kv.first);
+        } else {
+            const Entry& a = kv.second;
+            const Entry& b = it->second;
+            bool same = (a.kind == b.kind && a.content == b.content &&
+                         a.exec == b.exec);
+            if (!same && !covered_by(rm_cover, kv.first))
+                live.modified.push_back(kv.first);
+        }
+    }
+    for (auto& kv : wmap) {
+        if (emap.find(kv.first) == emap.end() &&
+            !covered_by(add_cover, kv.first))
+            live.untracked.push_back(kv.first);
+    }
+    sort_unique(&live.modified);
+    sort_unique(&live.disappeared);
+    sort_unique(&live.untracked);
+    live.ran = true;
+    return live;
+}
+
+} // namespace
+
 int cmd_status(const std::string& projeny_arg)
 {
     std::string pj = resolve_projeny_path(projeny_arg, "status");
@@ -3290,202 +3564,48 @@ int cmd_status(const std::string& projeny_arg)
                ctx.projeny_arg.c_str());
         return 1;
     }
-    StatusData st = StatusData::parse(ctx.statusfile);
+    RecordedStatus rec =
+        read_recorded_status(ctx.pdir, ctx.projeny_arg, ctx.statusfile);
 
-    // The embedded .projeny copy names the tree the status file records; the
-    // workdir lives at its Name, falling back to the current .projeny Name's
-    // dir when only that one exists (Name may have changed since the last
-    // setup/commit).
-    ProjenyFile emb = ProjenyFile::parse_bytes(
-        st.embedded, "embedded copy in '" + ctx.statusfile + "'");
-    std::string workdir = join_path(ctx.pdir, emb.name);
-    std::string cur_archive;
-    {
-        std::string cur_raw;
-        if (try_read_file_bytes(ctx.projeny_arg, &cur_raw) &&
-            !projeny_has_conflict_markers(cur_raw) &&
-            validate_projeny_bytes(cur_raw).empty()) {
-            ProjenyFile curpf =
-                ProjenyFile::parse_bytes(cur_raw, "'" + ctx.projeny_arg + "'");
-            cur_archive = curpf.archive;
-            std::string curdir = join_path(ctx.pdir, curpf.name);
-            if (!is_dir(workdir) && is_dir(curdir))
-                workdir = curdir;
-        }
-    }
-    if (!is_dir(workdir)) {
+    if (!is_dir(rec.workdir)) {
         // The checkout directory is gone: the status file and the archive
         // snapshots are stale state from the removed checkout. Disregard
         // them (warn + rename to '<name>.stale', '.stale2', ...), report the
         // recorded state below, and skip the live diff (nothing to diff).
+        // This renames files on purpose — which is exactly why it lives
+        // here and not in the shared computation (see RecordedStatus
+        // above): erase-setup's check phase reuses the computation without
+        // ever staling anything.
         std::vector<std::string> archives;
-        archives.push_back(emb.archive);
-        if (!cur_archive.empty() && cur_archive != emb.archive)
-            archives.push_back(cur_archive);
+        archives.push_back(rec.emb.archive);
+        if (!rec.cur_archive.empty() && rec.cur_archive != rec.emb.archive)
+            archives.push_back(rec.cur_archive);
         disregard_stale_state(ctx, archives);
     }
 
-    printf("Status: %s\n", st.status.c_str());
-    for (auto& c : st.conflicts)
+    printf("Status: %s\n", rec.st.status.c_str());
+    for (auto& c : rec.st.conflicts)
         printf("Conflict: %s\n", c.c_str());
-    for (auto& a : st.added)
+    for (auto& a : rec.st.added)
         printf("Added: %s\n", a.c_str());
-    for (auto& r : st.removed)
+    for (auto& r : rec.st.removed)
         printf("Removed: %s\n", r.c_str());
-    for (auto& rn : st.renamed)
+    for (auto& rn : rec.st.renamed)
         printf("Renamed: %s -> %s\n", rn.first.c_str(), rn.second.c_str());
 
     // Live workdir state vs the expected tree (base archive + embedded
-    // patch): modified files, disappeared files (in the expected tree but
-    // missing on disk and not marked removed/rename-source), and untracked
-    // files (on disk but in neither the expected tree nor the pending
-    // added/rename-destination sets). Pending ops themselves stay on their
-    // Added:/Removed:/Renamed: lines above and are not repeated here.
-    do {
-        if (!is_dir(workdir))
-            break;
-        // Snapshot-aware and fully tolerant: prefer the snapshot (the
-        // byte-exact copy of what the last setup actually used, which
-        // survives git deleting the archive), fall back to the archive
-        // itself (checkouts set up before snapshots existed — and copy it
-        // into the snapshot, best effort, so the next run finds one), and
-        // skip the live-diff section entirely when neither exists.
-        // URL-based projects never have a checked-in archive: their
-        // snapshot is the verified download cache. Always route it through
-        // try_ensure_url_snapshot — the spec gives status no exception, so
-        // an existing snapshot is hash-verified too (no network while it
-        // matches any URL: hash), and a missing one is fetched. Status
-        // stays informational, so a failed download or verification only
-        // warns and skips the live-diff section (exactly like the classic
-        // missing-archive case below).
-        std::string archive_path = join_path(ctx.pdir, emb.archive);
-        if (emb.is_url_based()) {
-            std::string got, err;
-            // announce_skip = false: status is informational and must print
-            // nothing extra on a healthy (snapshot-matching) checkout.
-            if (try_ensure_url_snapshot(ctx.pdir, emb, &got, &err, false))
-                archive_path = got;
-            else {
-                warn(err + " (continuing without the live diff)");
-                break;
-            }
-        } else {
-            migrate_snapshot(archive_path);
-            std::string snap = snapshot_path_for(archive_path);
-            if (path_exists(snap)) {
-                archive_path = snap;
-            } else if (path_exists(archive_path)) {
-                // Copy-on-fallback, best effort: status must never hard-fail
-                // just because the snapshot cannot be written.
-                std::string err;
-                if (try_copy_file_bytes(archive_path, snap, &err))
-                    archive_path = snap;
-                else
-                    warn("could not create snapshot '" + snap +
-                         "' from archive '" + archive_path + "': " + err +
-                         " (continuing)");
-            } else {
-                break;
-            }
-        }
-        TempDir tmp(scratch_parent_for(ctx.pdir), "projeny-status-");
-        std::string Etree = build_tree_from_patch(
-            tmp, archive_path, emb.origname, emb.name, emb.patch,
-            "embedded patch in '" + ctx.statusfile + "'");
-
-        struct Entry {
-            int kind = 0; // 0=regular, 1=symlink, 2=other
-            std::string content; // regular: bytes; symlink: target
-            bool exec = false;
-        };
-        std::function<void(const std::string&, const std::string&,
-                           std::map<std::string, Entry>&)>
-            collect = [&](const std::string& root, const std::string& rel,
-                          std::map<std::string, Entry>& out) {
-                std::string full = rel.empty() ? root : join_path(root, rel);
-                struct stat lst;
-                if (lstat(full.c_str(), &lst) != 0)
-                    return; // raced deletion; diff will catch it next time
-                if (S_ISDIR(lst.st_mode)) {
-                    for (const std::string& name : list_dir_names(full)) {
-                        std::string child =
-                            rel.empty() ? name : rel + "/" + name;
-                        if (vcs_is_scratch_rel(child))
-                            continue;
-                        collect(root, child, out);
-                    }
-                    return;
-                }
-                if (vcs_is_scratch_rel(rel))
-                    return;
-                Entry e;
-                if (S_ISLNK(lst.st_mode)) {
-                    e.kind = 1;
-                    e.content = read_link_target(full);
-                } else if (S_ISREG(lst.st_mode)) {
-                    e.kind = 0;
-                    e.exec = (lst.st_mode & 0111) != 0;
-                    std::string data;
-                    if (try_read_file_bytes(full, &data))
-                        e.content = data;
-                } else {
-                    e.kind = 2;
-                }
-                out[rel] = e;
-            };
-        std::map<std::string, Entry> emap, wmap;
-        collect(Etree, "", emap);
-        collect(workdir, "", wmap);
-
-        auto covered_by = [](const std::vector<std::string>& lst,
-                             const std::string& rel) -> bool {
-            for (auto& k : lst) {
-                if (k.empty())
-                    continue;
-                if (rel == k)
-                    return true;
-                if (rel.size() > k.size() && rel.compare(0, k.size(), k) == 0 &&
-                    rel[k.size()] == '/')
-                    return true;
-            }
-            return false;
-        };
-        std::vector<std::string> rm_cover = st.removed;
-        std::vector<std::string> add_cover = st.added;
-        for (auto& rn : st.renamed) {
-            rm_cover.push_back(rn.first);
-            add_cover.push_back(rn.second);
-        }
-        std::vector<std::string> modified, disappeared, untracked;
-        for (auto& kv : emap) {
-            auto it = wmap.find(kv.first);
-            if (it == wmap.end()) {
-                if (!covered_by(rm_cover, kv.first))
-                    disappeared.push_back(kv.first);
-            } else {
-                const Entry& a = kv.second;
-                const Entry& b = it->second;
-                bool same = (a.kind == b.kind && a.content == b.content &&
-                             a.exec == b.exec);
-                if (!same && !covered_by(rm_cover, kv.first))
-                    modified.push_back(kv.first);
-            }
-        }
-        for (auto& kv : wmap) {
-            if (emap.find(kv.first) == emap.end() &&
-                !covered_by(add_cover, kv.first))
-                untracked.push_back(kv.first);
-        }
-        sort_unique(&modified);
-        sort_unique(&disappeared);
-        sort_unique(&untracked);
-        for (auto& m : modified)
-            printf("Modified: %s\n", m.c_str());
-        for (auto& d : disappeared)
-            printf("Disappeared: %s\n", d.c_str());
-        for (auto& u : untracked)
-            printf("Untracked: %s\n", u.c_str());
-    } while (0);
+    // patch): modified files, disappeared files, and untracked files.
+    // compute_live_diff is the exact section status has always run here
+    // (see the comment above it), including its snapshot materialization
+    // and its "(continuing ...)" warnings.
+    LiveDiff live = compute_live_diff(ctx.pdir, rec.st, rec.emb, rec.workdir,
+                                      ctx.statusfile);
+    for (auto& m : live.modified)
+        printf("Modified: %s\n", m.c_str());
+    for (auto& d : live.disappeared)
+        printf("Disappeared: %s\n", d.c_str());
+    for (auto& u : live.untracked)
+        printf("Untracked: %s\n", u.c_str());
     return 0;
 }
 
@@ -4428,6 +4548,45 @@ int cmd_extract_multi(
 // path, fails that project, and the remaining deletions still run (spec:
 // "try to finish the rest of the deletion"). A run with failures ends with
 // the standard one-line summary and exit 1, after every project finished.
+//
+// Without --force, NOTHING is erased before every project has passed a
+// check phase: in parallel (subject to -j), each project is asked whether a
+// commit would have anything to do — i.e. whether `projeny status` reports
+// anything other than untracked files (recorded Conflict:/Added:/Removed:/
+// Renamed: entries, or live-diff Modified:/Disappeared: files; untracked
+// files alone are fine to blow away). The check reuses the exact machinery
+// status uses, factored into read_recorded_status (pure) and
+// compute_live_diff (the snapshot-materializing half; see the comment above
+// them) — with two guards the informational command does not need:
+//
+//   - a missing workdir (or a status file under neither name) is clean and
+//     never reaches the status machinery at all: status's workdir-missing
+//     branch renames files (disregard_stale_state), which an erase check
+//     must not do;
+//   - compute_live_diff materializes its snapshot under
+//     g_fallback_download_mu, so several checked projects sharing an
+//     archive whose snapshot is missing can never materialize (download/
+//     copy) it twice concurrently — only that step serializes; the untar,
+//     patch, and byte-compare run in parallel subject to -j. Serialization
+//     covers materialization only: it does not pin the snapshot's bytes.
+//     Checked projects sharing an archive basename while disagreeing on
+//     its expected hashes re-materialize the same snapshot path in turn,
+//     and a loser's post-settlement write (atomic temp+rename) can swap
+//     the bytes under a winner's unlocked tree build — fail-closed (see
+//     the comment in compute_live_diff), never a wrong erase.
+//
+// All-clean runs proceed to the erase phase byte-identically to --force.
+// Any dirty project refuses the WHOLE invocation — one die() report, exit
+// 1, nothing erased (not even the clean projects' state). A project whose
+// state cannot even be assessed (unreadable or unparseable .projeny —
+// caught by the main-thread parse — a status computation that dies, e.g.
+// a corrupt status file, or a live diff that cannot run because the
+// archive and its snapshot are both missing or unusable) refuses the whole
+// invocation the same way: the .projeny file names what would be deleted,
+// and the status machinery names what would be lost, so a check that
+// cannot run means erase-setup cannot know what it is about to destroy.
+// A project that cannot be checked is never judged clean: fail closed,
+// with --force as the only override.
 
 namespace {
 
@@ -4607,10 +4766,111 @@ int erase_one_project(const ErasePlan& p)
     return 0;
 }
 
+// One project's no-force dirtiness assessment.
+struct EraseCheck {
+    bool failed = false; // the status machinery died, or the live diff could
+                         // not run: nothing about the checkout can be assumed
+    bool dirty = false;  // status reports something a commit would fold in
+    std::string error;   // failed: the canonical error text. For a check that
+                         // died this was already printed by die() under this
+                         // project's label; for a live diff that could not
+                         // run nothing was printed and this text is the only
+                         // explanation (it appears in the refusal bullet).
+    // dirty: every change a commit would fold in, as "kind: 'path'"
+    // fragments in status's own vocabulary and print order (Conflict:,
+    // Added:, Removed:, Renamed:, Modified:, Disappeared: — untracked files
+    // are deliberately absent: they are not changes a commit would make).
+    std::vector<std::string> changes;
+};
+
+// Assess one project for the check phase: would a commit have anything to
+// do, i.e. does `projeny status` report anything other than untracked
+// files? Read-only for the project's bookkeeping (the live-diff half may
+// materialize a missing snapshot, exactly like status), and it never runs
+// status's stale-state renaming. Dies (like status does) on a corrupt or
+// unreadable status file, embedded copy, or patch — and records a check
+// failure when the live diff cannot run at all (the snapshot the status
+// records is missing or unusable, so the expected tree cannot be built) —
+// the caller turns both into a whole-invocation refusal.
+void assess_erase_check(const ErasePlan& p, const std::string& abs,
+                        EraseCheck* out)
+{
+    // No status file under either name: nothing is tracked, so there is
+    // nothing a commit could fold in — clean, without running the status
+    // machinery. (resolve_ctx would rename a legacy form into place here;
+    // the check only READS whichever form exists, leaving both for the
+    // erase phase to delete under both names, as it always has.)
+    std::string pdir = dirname_of(abs);
+    std::string statusfile = p.status;
+    if (!path_exists(statusfile)) {
+        if (!path_exists(p.legacy_status))
+            return;
+        statusfile = p.legacy_status;
+    }
+    // Recorded state: pure (parse + stat only).
+    RecordedStatus rec = read_recorded_status(pdir, abs, statusfile);
+    // The checkout is gone: there is nothing to destroy, so there is
+    // nothing to protect — clean (the erase phase will warn the workdir
+    // missing). This deliberately skips the recorded entries too: status's
+    // own missing-workdir branch treats them as stale state, and the erase
+    // phase never runs the status machinery on a missing workdir.
+    if (!is_dir(rec.workdir))
+        return;
+    // The live-diff half: materializes the snapshot the status records and
+    // diffs the expected tree against the workdir. The checks run in
+    // parallel subject to -j: compute_live_diff serializes only its
+    // snapshot-materialization step internally (see the comment there) —
+    // the one part that must never race across projects sharing an
+    // archive — while the untar/patch/byte-compare runs concurrently. That
+    // serialization does not pin a shared snapshot's bytes for projects
+    // that disagree on the archive's hashes; the worst case is fail-closed
+    // (see the comment in compute_live_diff).
+    LiveDiff live = compute_live_diff(pdir, rec.st, rec.emb, rec.workdir,
+                                      statusfile);
+    // The workdir is there, but the expected tree could not be built: the
+    // snapshot the status records is missing or unusable (for a classic
+    // project the checked-in archive is gone too, so it cannot be copied
+    // back; for a URL project no URL could be downloaded or verified).
+    // NOTHING is known about the checkout — the unassessable dirtiness the
+    // compute above hides behind empty lists — so this project is never
+    // clean: fail closed, like a check that died. The recorded entries
+    // would still describe dirt, but the refusal needs none of it: the
+    // unverifiable refusal (below) fires before the dirty one and erases
+    // just as nothing.
+    if (!live.ran) {
+        out->failed = true;
+        out->error =
+            "cannot verify the checkout against its archive (the archive "
+            "and its snapshot are missing or unusable); it cannot be "
+            "checked for uncommitted changes";
+        return;
+    }
+    // Dirtiness: any recorded pending op or conflict, or any live-diff
+    // entry that is not "untracked".
+    if (rec.st.conflicts.empty() && rec.st.added.empty() &&
+        rec.st.removed.empty() && rec.st.renamed.empty() &&
+        live.modified.empty() && live.disappeared.empty())
+        return;
+    out->dirty = true;
+    for (const std::string& c : rec.st.conflicts)
+        out->changes.push_back("conflict: '" + c + "'");
+    for (const std::string& a : rec.st.added)
+        out->changes.push_back("added: '" + a + "'");
+    for (const std::string& r : rec.st.removed)
+        out->changes.push_back("removed: '" + r + "'");
+    for (const auto& rn : rec.st.renamed)
+        out->changes.push_back("renamed: '" + rn.first + "' -> '" +
+                               rn.second + "'");
+    for (const std::string& m : live.modified)
+        out->changes.push_back("modified: '" + m + "'");
+    for (const std::string& d : live.disappeared)
+        out->changes.push_back("disappeared: '" + d + "'");
+}
+
 } // namespace
 
 int cmd_erase_setup_multi(const std::vector<std::string>& projeny_args,
-                          int jobs, bool erase_snapshots)
+                          int jobs, bool erase_snapshots, bool force)
 {
     // 1. Resolve + dedupe, exactly like the other parallel commands: two
     // spellings of one .projeny file must never erase twice (and never
@@ -4686,9 +4946,99 @@ int cmd_erase_setup_multi(const std::vector<std::string>& projeny_args,
         }
     }
 
-    // 3. Per-project phase: every project on its own thread (at most
+    // 3. Check phase (only without --force): assess every project in
+    // parallel (subject to -j) BEFORE anything is erased, so a dirty or
+    // unverifiable project refuses the whole invocation. With --force the
+    // check is skipped entirely: the erase below is then the historical
+    // unconditional behavior.
+    if (!force) {
+        // 3a. A project whose .projeny cannot be read or parsed (the
+        // main-thread parse above recorded the canonical error) cannot be
+        // assessed at all — refuse before any check runs. The refusal
+        // carries each failure verbatim; nothing has been erased and
+        // nothing will be.
+        std::vector<std::string> broken;
+        for (size_t i = 0; i < projects.size(); ++i) {
+            if (plans[i].error.empty())
+                continue;
+            broken.push_back("'" + labels[i] + "': " + plans[i].error);
+        }
+        if (!broken.empty())
+            die("cannot check " + std::to_string(broken.size()) + " of " +
+                    std::to_string(projects.size()) +
+                    " project(s) for uncommitted changes; refusing to erase "
+                    "anything (use --force to erase anyway)",
+                bullet_list(broken));
+
+        // 3b. The parallel check: one worker per project, labeled so a
+        // failure's canonical die() report names the project. A check that
+        // dies records the failure instead of failing the pool: erase-setup
+        // refuses as a whole after every check finished (the checks are
+        // read-only apart from status's snapshot materialization, so
+        // letting them all run to completion is safe).
+        std::vector<EraseCheck> checks(projects.size());
+        run_parallel(jobs, projects.size(), [&](size_t i) {
+            set_output_label(labels[i]);
+            try {
+                assess_erase_check(plans[i], projects[i].abs, &checks[i]);
+            } catch (const ProjenyFatalError& e) {
+                // die() already printed the labeled report; do not repeat
+                // it here — the refusal below names the project again.
+                checks[i].failed = true;
+                checks[i].error = e.message();
+            }
+            set_output_label("");
+        });
+
+        // 3c. A check that died (corrupt status file, unbuildable patch,
+        // ...) or could not run at all (the archive and its snapshot are
+        // missing or unusable, so the expected tree cannot be built) means
+        // erase-setup cannot know what it would destroy: refuse the whole
+        // invocation, listing every such project.
+        std::vector<std::string> unverifiable;
+        for (size_t i = 0; i < projects.size(); ++i) {
+            if (!checks[i].failed)
+                continue;
+            unverifiable.push_back("'" + labels[i] + "': " + checks[i].error);
+        }
+        if (!unverifiable.empty())
+            die("cannot check " + std::to_string(unverifiable.size()) +
+                    " of " + std::to_string(projects.size()) +
+                    " project(s) for uncommitted changes; refusing to erase "
+                    "anything (use --force to erase anyway)",
+                bullet_list(unverifiable));
+
+        // 3d. Any dirty project refuses everything: erase NOTHING (not
+        // even the clean projects' state), after every check finished, so
+        // the all-or-nothing guarantee holds no matter which worker finished
+        // first. The bullet list names each dirty project in argument order
+        // with its changes in status's own vocabulary.
+        size_t ndirty = 0;
+        std::vector<std::string> dirty;
+        for (size_t i = 0; i < projects.size(); ++i) {
+            if (!checks[i].dirty)
+                continue;
+            ++ndirty;
+            std::string line = "'" + labels[i] + "': ";
+            for (size_t k = 0; k < checks[i].changes.size(); ++k) {
+                if (k > 0)
+                    line += "; ";
+                line += checks[i].changes[k];
+            }
+            dirty.push_back(line);
+        }
+        if (ndirty > 0)
+            die("refusing to erase " + std::to_string(ndirty) + " of " +
+                    std::to_string(projects.size()) +
+                    " project(s) with uncommitted changes (use --force to "
+                    "erase anyway)",
+                bullet_list(dirty));
+    }
+
+    // 4. Per-project phase: every project on its own thread (at most
     // `jobs` at a time), labeled so its warnings, errors, and notes name
-    // the project.
+    // the project. Without --force this only runs when EVERY project
+    // passed the check phase above.
     std::vector<int> rcs(projects.size(), 0);
     run_parallel(jobs, projects.size(), [&](size_t i) {
         set_output_label(labels[i]);
@@ -4704,7 +5054,7 @@ int cmd_erase_setup_multi(const std::vector<std::string>& projeny_args,
         set_output_label("");
     });
 
-    // 4. Exit code: nonzero when any project failed, with one summary line
+    // 5. Exit code: nonzero when any project failed, with one summary line
     // after every worker joined. Success prints nothing extra.
     size_t failed = 0;
     std::string failed_labels;
@@ -5180,7 +5530,8 @@ int cmd_help(const std::string& arg0)
            "\n"
            "  options for setup/package/extract/download: -j[--jobs] N, "
            "-c[--curl-jobs] N\n"
-           "  options for erase-setup: -j[--jobs] N, --erase-snapshots\n"
+           "  options for erase-setup: -j[--jobs] N, --erase-snapshots, "
+           "--force\n"
            "  setup/package/extract/erase-setup take several projects (parallel);\n"
            "  download takes <url> <hash> pairs.\n"
            "\n"
@@ -5790,7 +6141,8 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
         return 0;
     }
     if (topic == "erase-setup") {
-        printf("%s erase-setup <f.projeny|dir> [...] [--erase-snapshots]\n"
+        printf("%s erase-setup <f.projeny|dir> [...] [--erase-snapshots] "
+               "[--force]\n"
                "\n"
                "Delete everything a `setup` created for the named projects:\n"
                "the checkout directory (the workdir named by the Name:\n"
@@ -5801,6 +6153,36 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "any uncommitted changes in the checkout are discarded along\n"
                "with it. The .projeny file itself, the checked-in Archive:\n"
                "tarball, and everything else next to them are left alone.\n"
+               "\n"
+               "Without --force, nothing is erased until every named\n"
+               "project has passed a check: in parallel (subject to\n"
+               "-j/--jobs), each project is asked whether a commit would\n"
+               "have anything to do — that is, whether `projeny status`\n"
+               "reports anything other than untracked files (Conflict:,\n"
+               "Added:, Removed:, Renamed:, Modified:, or Disappeared:\n"
+               "entries; untracked files alone are fine to blow away). If\n"
+               "ANY project is dirty, the whole invocation refuses with one\n"
+               "error and exit status 1, naming each dirty project and its\n"
+               "changes — and NOTHING is erased, not even the clean\n"
+               "projects' setup state (`refusing to erase 1 of 2\n"
+               "project(s) with uncommitted changes (use --force to erase\n"
+               "anyway)`). A project whose state cannot even be assessed\n"
+               "— a missing or unparseable .projeny file, a status file\n"
+               "that cannot be read, or a checkout whose archive and its\n"
+               "snapshot are both missing or unusable, so the live diff\n"
+               "that would compare the checkout against the recorded tree\n"
+               "cannot run — refuses the whole invocation the same way\n"
+               "(a checkout that happens to be clean refuses too: erase-\n"
+               "setup cannot know it is clean; --force is the override).\n"
+               "A project whose checkout directory is already gone, or\n"
+               "that has no status file, is clean by definition: there is\n"
+               "nothing there to destroy, so it erases normally (with the\n"
+               "usual did-not-exist warnings).\n"
+               "\n"
+               "With --force, the check is skipped and erase-setup behaves\n"
+               "unconditionally: every named project is erased no matter\n"
+               "what its status reports — that is the escape hatch for\n"
+               "deliberately discarding uncommitted work.\n"
                "\n"
                "Each named project is erased independently, on at most\n"
                "-j/--jobs threads (default the CPU count; -j0 and non-\n"
@@ -5836,14 +6218,17 @@ int cmd_help_topic(const std::string& arg0, const std::string& topic)
                "a rebase left behind, say) survives, and the checked-in\n"
                "tarball itself is never touched. The next setup then\n"
                "re-downloads (URL: projects) or unpacks from the checked-in\n"
-               "tarball (Archive: projects).\n"
+               "tarball (Archive: projects). --force combines freely with\n"
+               "--erase-snapshots.\n"
                "\n"
                "The .projeny file must be readable and parseable — it names\n"
                "what would be deleted, so a missing, garbage, or\n"
                "git-conflicted file fails its own project without anything\n"
-               "being erased (the other projects still erase). Naming one\n"
-               "project twice collapses into a single erase with a warning,\n"
-               "keyed on the resolved .projeny path.\n"
+               "being erased for it (the other projects still erase). With\n"
+               "--force that means the other projects erase; without it,\n"
+               "the whole invocation refuses before erasing anything.\n"
+               "Naming one project twice collapses into a single erase with\n"
+               "a warning, keyed on the resolved .projeny path.\n"
                "\n"
                "Like every project-taking command, the <f.projeny> argument\n"
                "may also be the workdir or another directory holding exactly\n"

@@ -43,11 +43,23 @@
 # parallel conflicted-file fallback (two conflicted .projeny files
 # sharing one archive download exactly once outside the empty-plan batch
 # phase, deterministically across repeated rounds), and the batch's
-# combined download progress line (one single-token whole-percent-or-"?"
-# entry per in-flight transfer, closed by one deterministic final line
+# combined download progress line (one single-token entry per announced
+# package — a whole-percent or a compact byte count, never "?" — in a
+# roster that only ever grows, closed by one deterministic final line
 # listing every package of the round) alongside the multi-mode silence of
 # the per-project snapshot phase ("using existing snapshot" notes stay
-# single-project-only).
+# single-project-only). The erase-setup sections cover the checkout + both
+# status-name deletion, --erase-snapshots (exact snapshot only), the
+# parallel batch form (already-erased checkouts, a deletion that fails its
+# project but not the rest, unparseable and nonexistent .projeny files,
+# the dir argument form, the option surface, the legacy undotted status
+# file), and the no-force check phase: without --force erase-setup first
+# checks every project in parallel (subject to -j) and refuses the whole
+# invocation — erasing nothing — when any project's status reports
+# anything a commit would fold in (modified, disappeared, pending
+# added/removed/renamed, conflicts; untracked files alone erase happily),
+# or when a project's state cannot be assessed at all; --force restores
+# the unconditional erasure.
 #
 # Bash is required (process substitution in the status-copy comparisons
 # below); /bin/sh (dash) cannot run this suite.
@@ -12357,12 +12369,17 @@ done
 # each tarball big enough to make progress visible (the 220 fixture: 2 MiB
 # of incompressible payload), set up in one parallel `projeny setup`. The
 # batch download phase then reports ONE combined progress line
-# ("projeny: download progress: <e1> <e2> ..."): one single-token entry per
-# in-flight transfer — the transfer's whole-percent ("N%") or "?" when its
-# total size is unknown — re-rendered only when >= 200ms passed AND
-# something visibly changed, and closed by exactly one deterministic final
-# line listing every package of the round in announcement order, "100%" per
-# transferred package. The per-project phase that follows must be SILENT
+# ("projeny: download progress: <e1> <e2> ...") over the pass's ROSTER:
+# one single-token entry per package announced so far, in
+# first-announcement order — entry N is the Nth "downloading" announcement,
+# and the roster only ever grows (a completed transfer stays listed at
+# "100%"), so positions never shift. Each entry is a whole-percent ("N%")
+# or a compact byte count ("NB" below 1 KiB, else one-decimal
+# KiB/MiB/GiB) — never "?". Re-renders fire only when >= 200ms passed AND
+# some entry's rendered string changed, and the round closes with exactly
+# one deterministic final line listing every package of the round in
+# announcement order, "100%" per transferred package. The per-project
+# phase that follows must be SILENT
 # about snapshots: "using existing snapshot" lines right after the batch's
 # own download report would read like an error (the snapshot exists because
 # the batch just wrote it); that note belongs to single-project runs only.
@@ -12387,6 +12404,10 @@ progress_lines() {
     # terminators turned into newlines (one line per '\r').
     printf '%s' "$1" | tr '\r' '\n' | grep '^projeny: download progress:'
 }
+# One combined-progress-line entry token: a whole-percent ("N%") or a
+# compact byte count ("NB" below 1 KiB, else one-decimal KiB/MiB/GiB —
+# never "?"). Always used inside a group; the alternation binds loosely.
+ptok='[0-9]+%|[0-9]+(\.[0-9])?(KiB|MiB|GiB)|[0-9]+B'
 T242R="$ROOT/t242r"
 mkdir -p "$T242R"
 cp "$T242/pa.projeny" "$T242/pb.projeny" "$T242/pc.projeny" \
@@ -12413,12 +12434,25 @@ else
     fail "the batch download reports progress lines" \
          "got $nprog 'projeny: download progress:' lines (out: $out)"
 fi
-nfmt="$(progress_lines "$out" | grep -Ec '^projeny: download progress: (\?|[0-9]+%)( (\?|[0-9]+%))*$')"
+nfmt="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))*$")"
 if [ "$nfmt" -eq "$nprog" ]; then
-    ok "every progress line is the prefix plus one single-token entry per transfer"
+    ok "every progress line is the prefix plus one single-token entry per package"
 else
-    fail "every progress line is the prefix plus one single-token entry per transfer" \
-         "$nfmt of $nprog lines matched 'projeny: download progress: (?|N%)...'"
+    fail "every progress line is the prefix plus one single-token entry per package" \
+         "$nfmt of $nprog lines matched 'projeny: download progress: (N%|bytes)...'"
+fi
+nwide="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))( ($ptok))$")"
+if [ "$nwide" -eq "$nprog" ]; then
+    ok "every progress line carries the stable three-package roster"
+else
+    fail "every progress line carries the stable three-package roster" \
+         "$nwide of $nprog lines had exactly three entries (out: $out)"
+fi
+if progress_lines "$out" | grep -q '?'; then
+    fail "no progress line ever prints a '?'" \
+         "a progress line carried a useless '?' entry (out: $out)"
+else
+    ok "no progress line ever prints a '?'"
 fi
 if progress_lines "$out" | grep -q '://'; then
     fail "progress lines never repeat a URL" \
@@ -12476,12 +12510,13 @@ else
          "got $ndl downloading lines (out: $out)"
 fi
 nprog="$(progress_lines "$out" | wc -l)"
-nfmt="$(progress_lines "$out" | grep -Ec '^projeny: download progress: (\?|[0-9]+%)( (\?|[0-9]+%))*$')"
-if [ "$nprog" -ge 1 ] && [ "$nfmt" -eq "$nprog" ]; then
-    ok "the pre-seeded setup still reports well-formed progress lines"
+nfmt="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))*$")"
+nwide="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))$")"
+if [ "$nprog" -ge 1 ] && [ "$nfmt" -eq "$nprog" ] && [ "$nwide" -eq "$nprog" ]; then
+    ok "the pre-seeded setup still reports well-formed two-entry progress lines"
 else
-    fail "the pre-seeded setup still reports well-formed progress lines" \
-         "$nprog lines, $nfmt well-formed (out: $out)"
+    fail "the pre-seeded setup still reports well-formed two-entry progress lines" \
+         "$nprog lines, $nfmt well-formed, $nwide two-entry (out: $out)"
 fi
 lastp="$(progress_lines "$out" | tail -1)"
 if [ "$lastp" = "projeny: download progress: 100% 100%" ]; then
@@ -12506,11 +12541,16 @@ fi
 
 # An unknown transfer total (no Content-Length, the 220b one-file HTTP/1.0
 # server, slowed to one 64 KiB chunk per 20ms so the transfer stays in
-# flight across scheduler iterations) renders the documented "?" entry
-# while in flight, and its round still closes at "100%" for every
-# transferred package. Paired with a file:// package, which completes
-# inside the first scheduler iteration, so every in-flight line carries the
-# unknown-total transfer's "?" entry.
+# flight across scheduler iterations) renders the compact byte count of
+# what has arrived so far while in flight — growing "<n>B"/"<n.n>UNIT"
+# tokens, never "?" — and its round still closes at "100%" for every
+# transferred package: completing is what the closing line reports, no
+# Content-Length required. Paired with a file:// package, which completes
+# inside the first scheduler iteration and then stays listed at "100%".
+# The roster follows the announcements, and specs sort by archive basename
+# (fast-1.0.tar.gz announces before slow-1.0.tar.gz), so every in-flight
+# line is the completed package's "100%" followed by the unknown-total
+# transfer's byte entry.
 T242U="$ROOT/t242u"
 mkdir -p "$T242U"
 mkdir -p "$T242U/slow-1.0"
@@ -12587,14 +12627,28 @@ else
         fail "the unknown-total batch reports in-flight and closing lines" \
              "got $nprog progress lines (out: $out)"
     fi
-    nq="$(progress_lines "$out" | head -n -1 | \
-          grep -Ec '^projeny: download progress: (.* )?\?( .*)?$')"
     ninf="$(progress_lines "$out" | head -n -1 | wc -l)"
-    if [ "$ninf" -ge 1 ] && [ "$nq" -eq "$ninf" ]; then
-        ok "every in-flight line carries the unknown-total transfer's '?' entry"
+    nby="$(progress_lines "$out" | head -n -1 | \
+          grep -Ec '^projeny: download progress: ([0-9]+%) ([0-9]+(\.[0-9])?(B|KiB|MiB|GiB))$')"
+    if [ "$ninf" -ge 1 ] && [ "$nby" -eq "$ninf" ]; then
+        ok "every in-flight line carries the unknown-total transfer's byte entry"
     else
-        fail "every in-flight line carries the unknown-total transfer's '?' entry" \
-             "$nq of $ninf in-flight lines carried a '?' entry (out: $out)"
+        fail "every in-flight line carries the unknown-total transfer's byte entry" \
+             "$nby of $ninf in-flight lines carried a byte entry (out: $out)"
+    fi
+    ndtok="$(progress_lines "$out" | head -n -1 | \
+            sed 's/^projeny: download progress: .* //' | sort -u | wc -l)"
+    if [ "$ndtok" -ge 2 ]; then
+        ok "the unknown-total entry grows through byte tokens ($ndtok distinct)"
+    else
+        fail "the unknown-total entry grows through byte tokens" \
+             "only $ndtok distinct byte token(s) over $ninf in-flight lines (out: $out)"
+    fi
+    if progress_lines "$out" | grep -q '?'; then
+        fail "the unknown-total round never prints a '?'" \
+             "a progress line carried a useless '?' entry (out: $out)"
+    else
+        ok "the unknown-total round never prints a '?'"
     fi
     lastp="$(progress_lines "$out" | tail -1)"
     if [ "$lastp" = "projeny: download progress: 100% 100%" ]; then
@@ -12657,8 +12711,9 @@ esac
 # inherits the combined progress line: well-formed entries, one final line
 # listing every package of the round. With a good pair named to sort FIRST
 # and a nonexistent URL named to sort LAST, the round-0 closing line pins
-# the announcement order ("100% ?") and the retry pass prints its own
-# closing line ("?") for the package it re-attempted.
+# the announcement order ("100% 0B" — the failed package never received a
+# byte and has no total, so it closes at "0B", never "?") and the retry
+# pass prints its own closing line ("0B") for the package it re-attempted.
 T244="$ROOT/t244"
 mkdir -p "$T244"
 cp "$T242/pa-1.0.tar.gz" "$T244/aa-good-1.0.tar.gz"
@@ -12676,7 +12731,7 @@ else
     fail "the two-pair download exits 0" "exit=$rc out: $out"
 fi
 nprog="$(progress_lines "$out" | wc -l)"
-nfmt="$(progress_lines "$out" | grep -Ec '^projeny: download progress: (\?|[0-9]+%)( (\?|[0-9]+%))*$')"
+nfmt="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))*$")"
 if [ "$nprog" -ge 1 ] && [ "$nfmt" -eq "$nprog" ]; then
     ok "the download command reports well-formed progress lines"
 else
@@ -12708,14 +12763,14 @@ else
     fail "the download with one nonexistent URL exits nonzero" "out: $out"
 fi
 secondlast="$(progress_lines "$out" | tail -2 | head -1)"
-if [ "$secondlast" = "projeny: download progress: 100% ?" ]; then
+if [ "$secondlast" = "projeny: download progress: 100% 0B" ]; then
     ok "the round-0 closing line lists every package in announcement order"
 else
     fail "the round-0 closing line lists every package in announcement order" \
          "round-0 line: $secondlast"
 fi
 lastp="$(progress_lines "$out" | tail -1)"
-if [ "$lastp" = "projeny: download progress: ?" ]; then
+if [ "$lastp" = "projeny: download progress: 0B" ]; then
     ok "the retry pass prints its own closing line for its own round"
 else
     fail "the retry pass prints its own closing line for its own round" \
@@ -12727,7 +12782,12 @@ fi
 # Name: plus the .<f>.projeny.status file. The .projeny file, the tarball,
 # and the archive snapshot stay (the snapshot only goes with
 # --erase-snapshots, see 247). Running it AGAIN warns that nothing was
-# there and still exits 0: missing things are never errors.
+# there and still exits 0: missing things are never errors. No --force is
+# given anywhere in this section: the freshly set up project is clean (its
+# status reports nothing but what setup wrote, and only untracked-free
+# nothing at that), so the no-force check passes it and the erase runs
+# exactly as it always has; the second run's checkout is gone, which the
+# check treats as clean too (there is nothing left to destroy).
 T245="$ROOT/t245"
 mkdir -p "$T245"
 cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T245/"
@@ -12810,11 +12870,13 @@ case "$out" in
     ;;
 esac
 
-# --------- 246. setup after erase-setup is a fresh checkout, not a merge
-# erase-setup discards the checkout whole, uncommitted changes included, so
-# the next setup starts from the tarball: a plain fresh-setup line (no
-# "(no local changes)" re-setup wording, no merged: lines) and the local
-# edit is gone.
+# --------- 246. with --force, erase-setup discards uncommitted edits and
+# the next setup is a fresh checkout, not a merge
+# erase-setup --force discards the checkout whole, uncommitted changes
+# included (the README edit below makes the project dirty, so without
+# --force this erase would be refused — see 259), so the next setup starts
+# from the tarball: a plain fresh-setup line (no "(no local changes)"
+# re-setup wording, no merged: lines) and the local edit is gone.
 T246="$ROOT/t246"
 mkdir -p "$T246"
 cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T246/"
@@ -12823,8 +12885,8 @@ run_in "$T246" expect_ok "the fresh-again fixture sets up" "$PROJENY" \
 printf 'a local uncommitted edit\n' >> "$T246/fakea/README"
 expect_file_contains "the local edit is in the workdir" "$T246/fakea/README" \
     "a local uncommitted edit"
-run_in "$T246" expect_ok "erase-setup of the edited checkout exits 0" \
-    "$PROJENY" erase-setup a.projeny
+run_in "$T246" expect_ok "erase-setup --force of the edited checkout exits 0" \
+    "$PROJENY" erase-setup a.projeny --force
 if [ ! -e "$T246/fakea" ]; then
     ok "the edited checkout is gone"
 else
@@ -13003,7 +13065,11 @@ fi
 # --------- 249. parallel erase-setup with one already-erased project
 # `erase-setup a.projeny b.projeny c.projeny -j2` erases the three projects
 # on the parallel machinery; the project whose checkout was already removed
-# only warns about it, every status file goes, and the run exits 0.
+# only warns about it, every status file goes, and the run exits 0. No
+# --force is given: the check phase passes the batch because fakeb and
+# fakec are fresh clean checkouts and fakea has no workdir — a missing
+# checkout is clean by definition (there is nothing left to destroy), so
+# the erase phase still warns and deletes the status file.
 T249="$ROOT/t249"
 mkdir -p "$T249"
 cp "$T222/a.projeny" "$T222/b.projeny" "$T222/c.projeny" \
@@ -13095,7 +13161,10 @@ fi
 # That project fails (exit 1, an error naming the path), its checkout is
 # STILL erased ("try to finish the rest of the deletion"), the other
 # project in the same invocation is fully erased, and the summary line
-# lists the failed label.
+# lists the failed label. This is the --force path: the no-force check
+# would refuse the whole invocation before erasing anything (the status
+# file cannot even be READ through a directory — see the variant at the
+# end of this section), and only --force reaches the deletions.
 T251="$ROOT/t251"
 mkdir -p "$T251"
 cp "$T222/a.projeny" "$T222/c.projeny" "$T222/fake-1.0.tar.gz" "$T251/"
@@ -13104,7 +13173,7 @@ run_in "$T251" expect_ok "the failure fixture sets up" "$PROJENY" \
 rm -f "$T251/.a.projeny.status"
 mkdir "$T251/.a.projeny.status"
 printf 'blocker\n' > "$T251/.a.projeny.status/inner"
-out="$(run_in "$T251" "$PROJENY" erase-setup a.projeny c.projeny 2>&1)"
+out="$(run_in "$T251" "$PROJENY" erase-setup a.projeny c.projeny --force 2>&1)"
 rc=$?
 if [ $rc -eq 1 ]; then
     ok "the erase-setup with an undeletable status path exits 1"
@@ -13146,16 +13215,71 @@ case "$out" in
     fail "the summary line lists the failed label" "out: $out"
     ;;
 esac
+# The no-force variant of the same fixture: without --force the check phase
+# runs first, and it cannot even READ the status "file" (it is a directory),
+# so the whole invocation refuses before erasing anything — the undeletable
+# status directory, BOTH checkouts, and BOTH status files survive, and the
+# refusal carries the canonical cannot-read report as a bullet.
+T251N="$ROOT/t251-noforce"
+mkdir -p "$T251N"
+cp "$T222/a.projeny" "$T222/c.projeny" "$T222/fake-1.0.tar.gz" "$T251N/"
+run_in "$T251N" expect_ok "the no-force failure fixture sets up" "$PROJENY" \
+    setup a.projeny c.projeny
+rm -f "$T251N/.a.projeny.status"
+mkdir "$T251N/.a.projeny.status"
+printf 'blocker\n' > "$T251N/.a.projeny.status/inner"
+out="$(run_in "$T251N" "$PROJENY" erase-setup a.projeny c.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup over an unreadable status exits 1"
+else
+    fail "the no-force erase-setup over an unreadable status exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"cannot check 1 of 2 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the no-force refusal names the check it could not run"
+    ;;
+*)
+    fail "the no-force refusal names the check it could not run" "out: $out"
+    ;;
+esac
+T251NP="$(cd "$T251N" && pwd -P)"
+nread="$(printf '%s\n' "$out" | \
+    grep -cF "  'a.projeny': cannot read file '$T251NP/.a.projeny.status': Is a directory")"
+if [ "$nread" -eq 1 ]; then
+    ok "the refusal bullet names the project and the unreadable status"
+else
+    fail "the refusal bullet names the project and the unreadable status" \
+         "got $nread matching lines (out: $out)"
+fi
+if [ -d "$T251N/.a.projeny.status" ] && \
+   [ -f "$T251N/.a.projeny.status/inner" ] && \
+   [ -d "$T251N/fakea" ] && [ -d "$T251N/fakec" ] && \
+   [ -f "$T251N/.c.projeny.status" ]; then
+    ok "the no-force refusal erased nothing at all"
+else
+    fail "the no-force refusal erased nothing at all" \
+         "ls: $(ls -A "$T251N" 2>&1)"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c 'erased setup state for')" -eq 0 ]; then
+    ok "the no-force refusal prints no erased-setup-state notes"
+else
+    fail "the no-force refusal prints no erased-setup-state notes" "out: $out"
+fi
 
-# --------- 252. an unparseable .projeny fails only its own project
+# --------- 252. an unparseable .projeny fails only its own project (--force)
 # The .projeny file names what would be deleted, so a garbage file fails
 # its own project with the canonical parse error (nothing erased for it)
-# while the healthy projects erase.
+# while the healthy projects erase. This is the --force path; without
+# --force the unparseable project refuses the WHOLE invocation before
+# anything is erased (see the variant at the end of this section).
 T252="$ROOT/t252"
 mkdir -p "$T252"
 cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T252/"
 printf 'this is not a projeny file\n' > "$T252/bad.projeny"
-out="$(run_in "$T252" "$PROJENY" erase-setup a.projeny bad.projeny 2>&1)"
+out="$(run_in "$T252" "$PROJENY" erase-setup a.projeny bad.projeny --force 2>&1)"
 rc=$?
 if [ $rc -eq 1 ]; then
     ok "the erase-setup with an unparseable project exits 1"
@@ -13199,13 +13323,64 @@ case "$out" in
     fail "the summary line lists the unparseable project" "out: $out"
     ;;
 esac
+# The no-force variant of the same fixture: without --force the garbage
+# .projeny cannot be assessed, so the WHOLE invocation refuses before
+# erasing anything — the healthy project keeps its checkout and status file,
+# the refusal headline counts the unassessable project, and its bullet is
+# the canonical parse error (no labeled per-project report and no summary
+# line: the erase phase never ran).
+T252N="$ROOT/t252-noforce"
+mkdir -p "$T252N"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T252N/"
+printf 'this is not a projeny file\n' > "$T252N/bad.projeny"
+run_in "$T252N" expect_ok "the no-force garbage fixture sets up" "$PROJENY" \
+    setup a.projeny
+out="$(run_in "$T252N" "$PROJENY" erase-setup a.projeny bad.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup with an unparseable project exits 1"
+else
+    fail "the no-force erase-setup with an unparseable project exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"cannot check 1 of 2 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the no-force refusal counts the unassessable project"
+    ;;
+*)
+    fail "the no-force refusal counts the unassessable project" "out: $out"
+    ;;
+esac
+T252NP="$(cd "$T252N" && pwd -P)"
+nbad="$(printf '%s\n' "$out" | \
+    grep -cF "  'bad.projeny': file '$T252NP/bad.projeny' is missing a required header")"
+if [ "$nbad" -eq 1 ]; then
+    ok "the refusal bullet is the canonical parse error for bad.projeny"
+else
+    fail "the refusal bullet is the canonical parse error for bad.projeny" \
+         "got $nbad matching lines (out: $out)"
+fi
+if [ -d "$T252N/fakea" ] && [ -f "$T252N/.a.projeny.status" ]; then
+    ok "the healthy project's setup state survived the no-force refusal"
+else
+    fail "the healthy project's setup state survived the no-force refusal" \
+         "ls: $(ls -A "$T252N" 2>&1)"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c 'erased setup state for')" -eq 0 ]; then
+    ok "the no-force garbage refusal prints no erased-setup-state notes"
+else
+    fail "the no-force garbage refusal prints no erased-setup-state notes" \
+         "out: $out"
+fi
 
 # --------- 253. erase-setup options
 # -j/--jobs in every spelling (anywhere among the arguments), the
-# --erase-snapshots flag after the args, the rejections (-c/--curl-jobs has
-# no meaning without a download phase, --erase-snapshots takes no value,
-# -j0 is refused, no project is a usage error), and duplicate arguments
-# collapsing into one erase with a warning.
+# --erase-snapshots and --force flags in any position and combined, the
+# rejections (-c/--curl-jobs has no meaning without a download phase,
+# --erase-snapshots takes no value, --force is erase-setup-only and unknown
+# for every other command, -j0 is refused, no project is a usage error),
+# and duplicate arguments collapsing into one erase with a warning.
 T253="$ROOT/t253"
 optidx253=0
 for optform in "-j1" "-j100" "--jobs=2" "--jobs 2"; do
@@ -13235,6 +13410,54 @@ else
     fail "the flag after the args deleted the snapshot" \
          "ls: $(ls -A "$T253S" 2>&1)"
 fi
+# --force is erase-setup's second valueless flag: accepted anywhere among
+# the arguments (like every erase-setup option), combinable with
+# --erase-snapshots, and an unknown option for every other command.
+T253F="$ROOT/t253-force"
+mkdir -p "$T253F"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T253F/"
+run_in "$T253F" expect_ok "the --force option fixture sets up" "$PROJENY" \
+    setup a.projeny
+run_in "$T253F" expect_ok "erase-setup accepts --force before the args" \
+    "$PROJENY" erase-setup --force a.projeny
+if [ ! -e "$T253F/fakea" ] && [ ! -e "$T253F/.a.projeny.status" ]; then
+    ok "erase-setup with --force erased the clean project"
+else
+    fail "erase-setup with --force erased the clean project" \
+         "ls: $(ls -A "$T253F" 2>&1)"
+fi
+run_in "$T253F" expect_ok "the --force + --erase-snapshots fixture sets up" \
+    "$PROJENY" setup a.projeny
+run_in "$T253F" expect_ok "erase-setup accepts --force with --erase-snapshots" \
+    "$PROJENY" erase-setup a.projeny --force --erase-snapshots
+if [ ! -e "$T253F/fakea" ] && [ ! -e "$T253F/.a.projeny.status" ] && \
+   [ ! -e "$T253F/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "--force combines with --erase-snapshots"
+else
+    fail "--force combines with --erase-snapshots" \
+         "ls: $(ls -A "$T253F" 2>&1)"
+fi
+run_in "$T253F" expect_ok "the --force rejection fixture sets up" "$PROJENY" \
+    setup a.projeny
+run_in "$T253F" expect_fail "--force is an unknown option for setup" \
+    "$PROJENY" setup a.projeny --force
+out="$(run_in "$T253F" "$PROJENY" setup a.projeny --force 2>&1)"
+case "$out" in
+*"unknown option '--force'"*)
+    ok "the setup --force error names the option"
+    ;;
+*)
+    fail "the setup --force error names the option" "out: $out"
+    ;;
+esac
+if [ -d "$T253F/fakea" ]; then
+    ok "the refused setup --force left the checkout alone"
+else
+    fail "the refused setup --force left the checkout alone" \
+         "ls: $(ls -A "$T253F" 2>&1)"
+fi
+run_in "$T253F" expect_fail "--force is an unknown option for commit" \
+    "$PROJENY" commit a.projeny --force
 T253B="$ROOT/t253bad"
 mkdir -p "$T253B"
 cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T253B/"
@@ -13325,9 +13548,9 @@ fi
 # --------- 255. the intra-pass retry re-renders progress from scratch
 # When a package's first candidate URL delivers bytes and then dies
 # mid-transfer, the scheduler starts its next candidate URL in the SAME
-# pass (no retry pass). The re-render throttle's per-attempt baselines
-# (last rendered whole-percent for a known total, last rendered byte count
-# for an unknown one) reset with the transfer state itself, so the new
+# pass (no retry pass). The re-render throttle's per-attempt baseline (the
+# package's last rendered entry token, reset to the fresh attempt's own
+# "0B" state) resets with the transfer state itself, so the new
 # attempt re-renders from ITS OWN early percentages: the combined progress
 # line must never keep the dead attempt's stale, higher-than-actual
 # percentage on display while the retry is still young. The fixture runs
@@ -13663,7 +13886,10 @@ fi
 # BEFORE anything is deleted: a checkout directory and status files a real
 # project of that name would have had survive untouched, the run exits 1
 # after the rest of the invocation finished, and the summary lists only the
-# bad label. (The genuinely-unreadable-file variant of the same message is
+# bad label. These are the --force runs (see the no-force variants at the
+# end of this section: without --force the whole invocation refuses before
+# the erase phase runs, so there is no per-project summary line at all).
+# (The genuinely-unreadable-file variant of the same message is
 # not portable here: this suite runs as root, and root reads chmod 000
 # files, so only the missing-file spelling is exercised.)
 T257="$ROOT/t257"
@@ -13671,7 +13897,7 @@ mkdir -p "$T257/ghost"
 printf 'keep me\n' > "$T257/ghost/keepme"
 printf 'pre-existing\n' > "$T257/.ghost.projeny.status"
 printf 'pre-existing\n' > "$T257/ghost.projeny.status"
-out="$(run_in "$T257" "$PROJENY" erase-setup ghost.projeny 2>&1)"
+out="$(run_in "$T257" "$PROJENY" erase-setup ghost.projeny --force 2>&1)"
 rc=$?
 if [ $rc -eq 1 ]; then
     ok "the erase-setup of a nonexistent project exits 1"
@@ -13734,7 +13960,7 @@ mkdir -p "$T257M/ghost"
 printf 'keep me\n' > "$T257M/ghost/keepme"
 printf 'pre-existing\n' > "$T257M/.ghost.projeny.status"
 T257MP="$(cd "$T257M" && pwd -P)"
-out="$(run_in "$T257M" "$PROJENY" erase-setup ghost.projeny a.projeny 2>&1)"
+out="$(run_in "$T257M" "$PROJENY" erase-setup ghost.projeny a.projeny --force 2>&1)"
 rc=$?
 if [ $rc -eq 1 ]; then
     ok "the mixed erase-setup with one bad path exits 1"
@@ -13771,6 +13997,1050 @@ if [ "$nread" -eq 1 ]; then
 else
     fail "the mixed run reports the bad path once" \
          "got $nread matching lines (out: $out)"
+fi
+# The no-force variants: a .projeny that cannot be read cannot be assessed
+# for uncommitted changes, so without --force the WHOLE invocation refuses
+# before the erase phase runs — one unlabeled die report (no per-project
+# labels, no summary line), nothing erased anywhere.
+T257N="$ROOT/t257-noforce"
+mkdir -p "$T257N/ghost"
+printf 'keep me\n' > "$T257N/ghost/keepme"
+printf 'pre-existing\n' > "$T257N/.ghost.projeny.status"
+out="$(run_in "$T257N" "$PROJENY" erase-setup ghost.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup of a nonexistent project exits 1"
+else
+    fail "the no-force erase-setup of a nonexistent project exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"cannot check 1 of 1 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the no-force nonexistent-project refusal is the whole report"
+    ;;
+*)
+    fail "the no-force nonexistent-project refusal is the whole report" \
+         "out: $out"
+    ;;
+esac
+T257NP="$(cd "$T257N" && pwd -P)"
+nread="$(printf '%s\n' "$out" | \
+    grep -cF "  'ghost.projeny': cannot read '$T257NP/ghost.projeny' (missing?); refusing to erase anything for it (the .projeny file names what would be deleted)")"
+if [ "$nread" -eq 1 ]; then
+    ok "the no-force refusal bullet is the canonical cannot-read error"
+else
+    fail "the no-force refusal bullet is the canonical cannot-read error" \
+         "got $nread matching lines (out: $out)"
+fi
+if [ -d "$T257N/ghost" ] && \
+   [ "$(cat "$T257N/.ghost.projeny.status" 2>/dev/null)" = "pre-existing" ] && \
+   [ "$(printf '%s\n' "$out" | grep -c 'erase-setup(s) failed')" -eq 0 ]; then
+    ok "the no-force nonexistent-project refusal erased nothing and has no summary"
+else
+    fail "the no-force nonexistent-project refusal erased nothing and has no summary" \
+         "ls: $(ls -A "$T257N" 2>&1) out: $out"
+fi
+T257NM="$ROOT/t257-noforce-mix"
+mkdir -p "$T257NM"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T257NM/"
+run_in "$T257NM" expect_ok "the no-force mixed fixture sets up" "$PROJENY" \
+    setup a.projeny
+mkdir -p "$T257NM/ghost"
+printf 'pre-existing\n' > "$T257NM/.ghost.projeny.status"
+out="$(run_in "$T257NM" "$PROJENY" erase-setup ghost.projeny a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force mixed erase-setup with one bad path exits 1"
+else
+    fail "the no-force mixed erase-setup with one bad path exits 1" \
+         "exit=$rc out: $out"
+fi
+if [ -d "$T257NM/fakea" ] && [ -f "$T257NM/.a.projeny.status" ] && \
+   [ -f "$T257NM/.ghost.projeny.status" ]; then
+    ok "the no-force mixed run erased nothing, healthy project included"
+else
+    fail "the no-force mixed run erased nothing, healthy project included" \
+         "ls: $(ls -A "$T257NM" 2>&1)"
+fi
+case "$out" in
+*"cannot check 1 of 2 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the no-force mixed refusal counts the bad project of two"
+    ;;
+*)
+    fail "the no-force mixed refusal counts the bad project of two" \
+         "out: $out"
+    ;;
+esac
+
+# --------- 258. combined progress line: unknown-total and known-total together
+# The batch line's two entry forms side by side in ONE roster: a package
+# whose server sends NO Content-Length (its entry is the compact byte count
+# of what has arrived so far) and a package whose server declares an honest
+# Content-Length and drips slowly (its entry moves through whole percents).
+# Both are announced up front (two packages, default curl jobs), so the
+# roster is [unknown, known] — first-announcement order, which here is the
+# .projeny argument order — on every line from the first render through the
+# closing line: every in-flight line carries BOTH entries in that order
+# ("<bytes> <pct>"), the byte tokens grow, the percents climb, and no "?"
+# appears anywhere in the progress output.
+T258="$ROOT/t258"
+mkdir -p "$T258"
+for n258 in uk wk; do
+    mkdir -p "$T258/$n258-1.0"
+    printf 'hello %s\n' "$n258" > "$T258/$n258-1.0/README"
+    dd if=/dev/urandom of="$T258/$n258-1.0/blob" bs=65536 count=32 2>/dev/null
+    (cd "$T258" && tar -czf "$n258-1.0.tar.gz" "$n258-1.0" && rm -rf "$n258-1.0")
+done
+hu258="$("$PROJENY" hash "$T258/uk-1.0.tar.gz")"
+hw258="$("$PROJENY" hash "$T258/wk-1.0.tar.gz")"
+cat > "$T258/serv.py" <<'PYEOF'
+import socket, sys, time
+
+# mode "unknown": NO Content-Length; drip the whole file one 64 KiB chunk
+#                per 50ms, so the transfer's total stays unknown and the
+#                download stays in flight across many scheduler iterations.
+# mode "slow":   honest Content-Length; drip the first 6 64 KiB chunks (one
+#                per 250ms) so early whole-percents render, then send the
+#                rest at full speed.
+mode, path, portfile = sys.argv[1], sys.argv[2], sys.argv[3]
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+open(portfile, "w").write(str(s.getsockname()[1]))
+while True:
+    c, _ = s.accept()
+    try:
+        c.recv(65536)  # the GET; one connection per transfer
+        with open(path, "rb") as f:
+            body = f.read()
+        if mode == "unknown":
+            c.sendall(b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n")
+            pos = 0
+            while pos < len(body):
+                c.sendall(body[pos:pos + 65536])
+                pos += 65536
+                time.sleep(0.05)
+        else:
+            c.sendall(b"HTTP/1.0 200 OK\r\nContent-Length: "
+                      + str(len(body)).encode() + b"\r\n"
+                      b"Connection: close\r\n\r\n")
+            for k in range(6):
+                c.sendall(body[k * 65536:(k + 1) * 65536])
+                time.sleep(0.25)
+            c.sendall(body[6 * 65536:])
+    except OSError:
+        pass
+    finally:
+        c.close()
+PYEOF
+python3 "$T258/serv.py" unknown "$T258/uk-1.0.tar.gz" "$T258/port1" &
+srv1=$!
+python3 "$T258/serv.py" slow "$T258/wk-1.0.tar.gz" "$T258/port2" &
+srv2=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    if [ -s "$T258/port1" ] && [ -s "$T258/port2" ]; then break; fi
+    sleep 0.05
+done
+p258u="$(cat "$T258/port1" 2>/dev/null)"
+p258k="$(cat "$T258/port2" 2>/dev/null)"
+if [ -z "$p258u" ] || [ -z "$p258k" ]; then
+    kill "$srv1" "$srv2" 2>/dev/null
+    wait "$srv1" "$srv2" 2>/dev/null
+    fail "the mixed-total fixture servers start" "port file never appeared"
+else
+    T258D="$ROOT/t258-run"
+    mkdir -p "$T258D"
+    printf 'URL: http://127.0.0.1:%s/uk-1.0.tar.gz %s\nOrigname: uk-1.0\nName: fakeuk\n\n    Unknown total.\n\n' \
+        "$p258u" "$hu258" > "$T258D/unknown.projeny"
+    printf 'URL: http://127.0.0.1:%s/wk-1.0.tar.gz %s\nOrigname: wk-1.0\nName: fakewk\n\n    Known total.\n\n' \
+        "$p258k" "$hw258" > "$T258D/known.projeny"
+    out="$(run_in "$T258D" "$PROJENY" setup unknown.projeny known.projeny 2>&1)"
+    rc=$?
+    kill "$srv1" "$srv2" 2>/dev/null
+    wait "$srv1" "$srv2" 2>/dev/null
+    if [ $rc -eq 0 ]; then
+        ok "the mixed-total batch setup exits 0"
+    else
+        fail "the mixed-total batch setup exits 0" "exit=$rc out: $out"
+    fi
+    # The unknown-total package is the first argument, so its announcement
+    # — and therefore its roster position — is first.
+    first="$(printf '%s\n' "$out" | grep "^projeny: downloading '.*' from '" | head -1)"
+    case "$first" in
+    *"from 'http://127.0.0.1:$p258u/"*)
+        ok "the unknown-total package is announced (and rostered) first"
+        ;;
+    *)
+        fail "the unknown-total package is announced (and rostered) first" \
+             "first announcement: $first"
+        ;;
+    esac
+    nprog="$(progress_lines "$out" | wc -l)"
+    if [ "$nprog" -ge 3 ]; then
+        ok "the mixed-total batch reports several progress lines ($nprog)"
+    else
+        fail "the mixed-total batch reports several progress lines" \
+             "got $nprog progress lines (out: $out)"
+    fi
+    nfmt="$(progress_lines "$out" | grep -Ec "^projeny: download progress: ($ptok)( ($ptok))*$")"
+    if [ "$nfmt" -eq "$nprog" ]; then
+        ok "every mixed-total progress line is well-formed"
+    else
+        fail "every mixed-total progress line is well-formed" \
+             "$nfmt of $nprog lines well-formed (out: $out)"
+    fi
+    # Every in-flight line carries BOTH roster entries in announcement
+    # order: the unknown-total transfer's byte token, then the
+    # known-total transfer's whole-percent. The FIRST in-flight render is
+    # exempt: the known-total transfer's total arrives with its response
+    # headers, and under load that first progress tick can land after the
+    # first render (whose other entry already changed), so that one line
+    # can honestly read "0B" for the known-total package.
+    ninf="$(progress_lines "$out" | head -n -1 | tail -n +2 | wc -l)"
+    nboth="$(progress_lines "$out" | head -n -1 | tail -n +2 | \
+            grep -Ec '^projeny: download progress: ([0-9]+(\.[0-9])?(B|KiB|MiB|GiB)) ([0-9]+%)$')"
+    if [ "$ninf" -ge 2 ] && [ "$nboth" -eq "$ninf" ]; then
+        ok "every in-flight line carries both entries in announcement order"
+    else
+        fail "every in-flight line carries both entries in announcement order" \
+             "$nboth of $ninf in-flight lines were '<bytes> <pct>' (out: $out)"
+    fi
+    ndtok="$(progress_lines "$out" | head -n -1 | \
+            sed 's/^projeny: download progress: //; s/ .*$//' | sort -u | wc -l)"
+    if [ "$ndtok" -ge 2 ]; then
+        ok "the unknown-total entry grows through byte tokens ($ndtok distinct)"
+    else
+        fail "the unknown-total entry grows through byte tokens" \
+             "only $ndtok distinct byte token(s) (out: $out)"
+    fi
+    npct="$(progress_lines "$out" | head -n -1 | \
+           sed 's/^projeny: download progress: .* //; s/%$//' | sort -n -u | wc -l)"
+    if [ "$npct" -ge 2 ]; then
+        ok "the known-total entry moves through percents ($npct distinct)"
+    else
+        fail "the known-total entry moves through percents" \
+             "only $npct distinct percent value(s) (out: $out)"
+    fi
+    if progress_lines "$out" | grep -q '?'; then
+        fail "no '?' appears anywhere in the mixed-total progress output" \
+             "a progress line carried a '?' (out: $out)"
+    else
+        ok "no '?' appears anywhere in the mixed-total progress output"
+    fi
+    lastp="$(progress_lines "$out" | tail -1)"
+    if [ "$lastp" = "projeny: download progress: 100% 100%" ]; then
+        ok "the mixed-total round closes at 100% per package"
+    else
+        fail "the mixed-total round closes at 100% per package" \
+             "final line: $lastp"
+    fi
+    if cmp -s "$T258D/.uk-1.0.tar.gz.snapshot" "$T258/uk-1.0.tar.gz" && \
+       cmp -s "$T258D/.wk-1.0.tar.gz.snapshot" "$T258/wk-1.0.tar.gz"; then
+        ok "both mixed-total downloads are byte-exact"
+    else
+        fail "both mixed-total downloads are byte-exact" \
+             "a snapshot differs from its served file"
+    fi
+fi
+
+# --------- 259. without --force, erase-setup refuses a modified checkout
+# erase-setup destroys the checkout, so without --force it first checks —
+# in parallel, subject to -j — that every project's status reports nothing
+# a commit would fold in. A modified tracked file is exactly such a change:
+# the whole invocation refuses with one error naming the project and the
+# file, and NOTHING is erased (workdir, status file, and snapshot all
+# stay). A tracked file deleted by hand (never `projeny rm`-ed) shows up as
+# Disappeared: in status and refuses the same way.
+T259="$ROOT/t259"
+mkdir -p "$T259"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T259/"
+run_in "$T259" expect_ok "the modified-checkout fixture sets up" "$PROJENY" \
+    setup a.projeny
+printf 'an uncommitted edit\n' >> "$T259/fakea/README"
+out="$(run_in "$T259" "$PROJENY" erase-setup a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup of a modified checkout exits 1"
+else
+    fail "the no-force erase-setup of a modified checkout exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"projeny: error: refusing to erase 1 of 1 project(s) with uncommitted " | \
+*"changes (use --force to erase anyway)"*)
+    ok "the refusal is one die-style error with the --force hint"
+    ;;
+*)
+    fail "the refusal is one die-style error with the --force hint" \
+         "out: $out"
+    ;;
+esac
+case "$out" in
+*"'a.projeny': modified: 'README'"*)
+    ok "the refusal bullet names the project and the modified file"
+    ;;
+*)
+    fail "the refusal bullet names the project and the modified file" \
+         "out: $out"
+    ;;
+esac
+if [ -d "$T259/fakea" ] && \
+   [ -f "$T259/.a.projeny.status" ] && \
+   [ -f "$T259/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the refused run left the workdir, status file, and snapshot alone"
+else
+    fail "the refused run left the workdir, status file, and snapshot alone" \
+         "ls: $(ls -A "$T259" 2>&1)"
+fi
+if grep -q "an uncommitted edit" "$T259/fakea/README" 2>/dev/null; then
+    ok "the uncommitted edit itself is untouched by the refusal"
+else
+    fail "the uncommitted edit itself is untouched by the refusal" \
+         "README: $(cat "$T259/fakea/README" 2>&1)"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c 'erased setup state for')" -eq 0 ]; then
+    ok "the refusal prints no erased-setup-state notes"
+else
+    fail "the refusal prints no erased-setup-state notes" "out: $out"
+fi
+# Same fixture, now with the README restored and a tracked file deleted by
+# hand: status reports Disappeared:, which is a change a commit would fold
+# in (the deletion would land in the patch), so the refusal names it.
+printf 'hello v1\n' > "$T259/fakea/README"
+rm "$T259/fakea/src/a.c"
+out="$(run_in "$T259" "$PROJENY" erase-setup a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup of a disappeared-file checkout exits 1"
+else
+    fail "the no-force erase-setup of a disappeared-file checkout exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"'a.projeny': disappeared: 'src/a.c'"*)
+    ok "the refusal bullet names the disappeared file"
+    ;;
+*)
+    fail "the refusal bullet names the disappeared file" "out: $out"
+    ;;
+esac
+if [ -d "$T259/fakea" ] && [ -f "$T259/.a.projeny.status" ]; then
+    ok "the disappeared-file refusal still erased nothing"
+else
+    fail "the disappeared-file refusal still erased nothing" \
+         "ls: $(ls -A "$T259" 2>&1)"
+fi
+
+# --------- 260. untracked files alone do not block a no-force erase-setup
+# The check's definition of dirty is "status reports anything other than
+# untracked files", so a checkout whose only difference from the expected
+# tree is untracked files (never added, never committed) is erased happily
+# without --force — uncommitted untracked content goes with the checkout,
+# exactly as the erasure always has.
+T260="$ROOT/t260"
+mkdir -p "$T260"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T260/"
+run_in "$T260" expect_ok "the untracked fixture sets up" "$PROJENY" \
+    setup a.projeny
+printf 'scratch notes\n' > "$T260/fakea/notes.txt"
+mkdir -p "$T260/fakea/scratch/deep"
+printf 'deeper\n' > "$T260/fakea/scratch/deep/blob"
+out="$(run_in "$T260" "$PROJENY" status a.projeny 2>&1)"
+case "$out" in
+*"Untracked: notes.txt"*)
+    ok "status reports the untracked file"
+    ;;
+*)
+    fail "status reports the untracked file" "out: $out"
+    ;;
+esac
+out="$(run_in "$T260" "$PROJENY" erase-setup a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the untracked-only no-force erase-setup exits 0"
+else
+    fail "the untracked-only no-force erase-setup exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"erased setup state for 'fakea' (checkout 'fakea', status '.a.projeny.status')"*)
+    ok "the untracked-only erase reports the same note as always"
+    ;;
+*)
+    fail "the untracked-only erase reports the same note as always" \
+         "out: $out"
+    ;;
+esac
+if [ ! -e "$T260/fakea" ] && [ ! -e "$T260/.a.projeny.status" ]; then
+    ok "the untracked-only erase removed the checkout and status file"
+else
+    fail "the untracked-only erase removed the checkout and status file" \
+         "ls: $(ls -A "$T260" 2>&1)"
+fi
+
+# --------- 261. pending add/rm/mv refuse a no-force erase-setup
+# Pending operations are recorded in the status file the moment `projeny
+# add`, `rm`, or `mv` runs — a commit would fold each of them into the
+# patch, so each makes the project dirty and the no-force check refuses.
+# Every refusal leaves the workdir and status file in place; --force erases
+# all three.
+T261="$ROOT/t261"
+mkdir -p "$T261"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/c.projeny" \
+   "$T222/fake-1.0.tar.gz" "$T261/"
+run_in "$T261" expect_ok "the pending-ops fixture sets up" "$PROJENY" \
+    setup a.projeny b.projeny c.projeny
+printf 'not yet committed\n' > "$T261/fakea/notes.txt"
+run_in "$T261" expect_ok "the fixture marks a file as added" "$PROJENY" \
+    add a.projeny fakea/notes.txt
+run_in "$T261" expect_ok "the fixture marks a file as removed" "$PROJENY" \
+    rm b.projeny fakeb/README
+run_in "$T261" expect_ok "the fixture marks a file as renamed" "$PROJENY" \
+    mv c.projeny fakec/src/a.c fakec/src/renamed.c
+for name in a b c; do
+    out="$(run_in "$T261" "$PROJENY" erase-setup $name.projeny 2>&1)"
+    rc=$?
+    if [ $rc -eq 1 ]; then
+        ok "the no-force erase-setup of the pending-$name project exits 1"
+    else
+        fail "the no-force erase-setup of the pending-$name project exits 1" \
+             "exit=$rc out: $out"
+    fi
+    if [ -d "$T261/fake$name" ] && [ -f "$T261/.$name.projeny.status" ]; then
+        ok "the pending-$name refusal leaves the workdir and status file"
+    else
+        fail "the pending-$name refusal leaves the workdir and status file" \
+             "ls: $(ls -A "$T261" 2>&1)"
+    fi
+    if [ "$(printf '%s\n' "$out" | grep -c 'erased setup state for')" -eq 0 ]
+    then
+        ok "the pending-$name refusal erases nothing"
+    else
+        fail "the pending-$name refusal erases nothing" "out: $out"
+    fi
+done
+out="$(run_in "$T261" "$PROJENY" erase-setup a.projeny 2>&1)"
+case "$out" in
+*"'a.projeny': added: 'notes.txt'"*)
+    ok "the pending-add refusal names the added file"
+    ;;
+*)
+    fail "the pending-add refusal names the added file" "out: $out"
+    ;;
+esac
+out="$(run_in "$T261" "$PROJENY" erase-setup b.projeny 2>&1)"
+case "$out" in
+*"'b.projeny': removed: 'README'"*)
+    ok "the pending-rm refusal names the removed file"
+    ;;
+*)
+    fail "the pending-rm refusal names the removed file" "out: $out"
+    ;;
+esac
+out="$(run_in "$T261" "$PROJENY" erase-setup c.projeny 2>&1)"
+case "$out" in
+*"'c.projeny': renamed: 'src/a.c' -> 'src/renamed.c'"*)
+    ok "the pending-mv refusal names both sides of the rename"
+    ;;
+*)
+    fail "the pending-mv refusal names both sides of the rename" "out: $out"
+    ;;
+esac
+out="$(run_in "$T261" "$PROJENY" erase-setup a.projeny b.projeny c.projeny \
+    --force 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the --force erase of the three pending-op projects exits 0"
+else
+    fail "the --force erase of the three pending-op projects exits 0" \
+         "exit=$rc out: $out"
+fi
+nexpect="$(printf '%s\n' "$out" | grep -c 'erased setup state for')"
+if [ "$nexpect" -eq 3 ]; then
+    ok "--force erased all three pending-op projects"
+else
+    fail "--force erased all three pending-op projects" \
+         "got $nexpect notes (out: $out)"
+fi
+if [ ! -e "$T261/fakea" ] && [ ! -e "$T261/fakeb" ] && \
+   [ ! -e "$T261/fakec" ] && [ ! -e "$T261/.a.projeny.status" ] && \
+   [ ! -e "$T261/.b.projeny.status" ] && \
+   [ ! -e "$T261/.c.projeny.status" ]; then
+    ok "--force left no setup state behind"
+else
+    fail "--force left no setup state behind" "ls: $(ls -A "$T261" 2>&1)"
+fi
+
+# --------- 262. a conflicted checkout refuses a no-force erase-setup
+# Conflicts are recorded as Conflict: entries in the status file until
+# `resolve`d, and a commit is refused while any remain — so the no-force
+# check treats them as work a commit would have to finish. The conflict is
+# produced by the same dance section 4 uses: a local edit committed and
+# re-set-up, an uncommitted edit on top, and an upstream commit changing
+# the same region.
+T262="$ROOT/t262"
+make_tarballs "$T262" fake
+write_projeny "$T262" fake 1.0 fake
+run_in "$T262" expect_ok "the conflict fixture sets up" "$PROJENY" \
+    setup fake.projeny
+sed -i 's/^int beta = 1;$/int beta = 10;/' "$T262/fake/src/a.c"
+run_in "$T262" expect_ok "the conflict fixture commits the local edit" \
+    "$PROJENY" commit fake.projeny
+cp "$T262/fake.projeny" "$ROOT/t262-local.projeny"
+rm -rf "$T262/fake" "$T262/.fake.projeny.status"
+cp "$ROOT/t262-local.projeny" "$T262/fake.projeny"
+run_in "$T262" expect_ok "the conflict fixture re-setups the local state" \
+    "$PROJENY" setup fake.projeny
+sed -i 's/^int beta = 10;$/int beta = 999;/' "$T262/fake/src/a.c"
+T262U="$ROOT/t262up"
+mkdir -p "$T262U"
+cp "$T262/fake-1.0.tar.gz" "$T262U/"
+cp "$ROOT/t262-local.projeny" "$T262U/fake.projeny"
+run_in "$T262U" expect_ok "the upstream side of the conflict sets up" \
+    "$PROJENY" setup fake.projeny
+sed -i 's/^int beta = 10;$/int beta = 555;/' "$T262U/fake/src/a.c"
+run_in "$T262U" expect_ok "the upstream side commits its edit" "$PROJENY" \
+    commit fake.projeny
+cp "$T262U/fake.projeny" "$T262/fake.projeny"
+run_in "$T262" expect_fail "the conflicting setup merge exits nonzero" \
+    "$PROJENY" setup fake.projeny
+expect_file_contains "the conflict fixture has a Conflict: entry" \
+    "$T262/.fake.projeny.status" "Conflict: src/a.c"
+out="$(run_in "$T262" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup of a conflicted checkout exits 1"
+else
+    fail "the no-force erase-setup of a conflicted checkout exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"'fake.projeny': conflict: 'src/a.c'"*)
+    ok "the refusal bullet names the conflicted file"
+    ;;
+*)
+    fail "the refusal bullet names the conflicted file" "out: $out"
+    ;;
+esac
+if [ -d "$T262/fake" ] && [ -f "$T262/.fake.projeny.status" ]; then
+    ok "the conflicted refusal leaves the workdir and status file"
+else
+    fail "the conflicted refusal leaves the workdir and status file" \
+         "ls: $(ls -A "$T262" 2>&1)"
+fi
+if grep -q "<<<<<<<" "$T262/fake/src/a.c"; then
+    ok "the conflict markers themselves survive the refusal"
+else
+    fail "the conflict markers themselves survive the refusal" \
+         "src/a.c: $(cat "$T262/fake/src/a.c" 2>&1)"
+fi
+
+# --------- 263. one dirty project refuses the whole batch, clean included
+# The no-force check is all-or-nothing across the invocation: with one
+# dirty project and one clean one, NOTHING is erased — the clean project's
+# workdir and status file stay too — and the refusal bullet list names only
+# the dirty project. The same invocation with --force erases both.
+T263="$ROOT/t263"
+mkdir -p "$T263"
+cp "$T222/a.projeny" "$T222/b.projeny" "$T222/fake-1.0.tar.gz" "$T263/"
+run_in "$T263" expect_ok "the mixed-dirtiness fixture sets up" "$PROJENY" \
+    setup a.projeny b.projeny
+printf 'an uncommitted edit\n' >> "$T263/fakea/README"
+out="$(run_in "$T263" "$PROJENY" erase-setup a.projeny b.projeny -j2 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the mixed batch with one dirty project exits 1"
+else
+    fail "the mixed batch with one dirty project exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"projeny: error: refusing to erase 1 of 2 project(s) with uncommitted " | \
+*"changes (use --force to erase anyway)"*)
+    ok "the mixed refusal counts the dirty project of two"
+    ;;
+*)
+    fail "the mixed refusal counts the dirty project of two" "out: $out"
+    ;;
+esac
+nbullets="$(printf '%s\n' "$out" | grep -c '^  ')"
+if [ "$nbullets" -eq 1 ]; then
+    ok "the mixed refusal has exactly one bullet"
+else
+    fail "the mixed refusal has exactly one bullet" \
+         "got $nbullets bullets (out: $out)"
+fi
+case "$out" in
+*"'a.projeny': modified: 'README'"*)
+    ok "the mixed refusal names only the dirty project"
+    ;;
+*)
+    fail "the mixed refusal names only the dirty project" "out: $out"
+    ;;
+esac
+if [ -d "$T263/fakea" ] && [ -f "$T263/.a.projeny.status" ] && \
+   [ -d "$T263/fakeb" ] && [ -f "$T263/.b.projeny.status" ]; then
+    ok "the mixed refusal erased nothing, clean project included"
+else
+    fail "the mixed refusal erased nothing, clean project included" \
+         "ls: $(ls -A "$T263" 2>&1)"
+fi
+out="$(run_in "$T263" "$PROJENY" erase-setup a.projeny b.projeny -j2 --force 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the same mixed batch with --force exits 0"
+else
+    fail "the same mixed batch with --force exits 0" "exit=$rc out: $out"
+fi
+if [ ! -e "$T263/fakea" ] && [ ! -e "$T263/.a.projeny.status" ] && \
+   [ ! -e "$T263/fakeb" ] && [ ! -e "$T263/.b.projeny.status" ]; then
+    ok "the --force mixed batch erased both projects"
+else
+    fail "the --force mixed batch erased both projects" \
+         "ls: $(ls -A "$T263" 2>&1)"
+fi
+
+# --------- 264. a missing checkout is clean without --force
+# The no-force check's first rule: a workdir that is gone means there is
+# nothing to destroy, so the project is clean no matter what the status
+# file recorded — the erase phase proceeds and warns the workdir missing,
+# exactly as it always has (the check never runs the status machinery on a
+# missing workdir, so nothing is renamed to .stale behind the user's back).
+T264="$ROOT/t264"
+mkdir -p "$T264"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T264/"
+run_in "$T264" expect_ok "the missing-checkout fixture sets up" "$PROJENY" \
+    setup a.projeny
+rm -rf "$T264/fakea"
+out="$(run_in "$T264" "$PROJENY" erase-setup a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the no-force erase-setup of a missing checkout exits 0"
+else
+    fail "the no-force erase-setup of a missing checkout exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"'fakea' did not exist; nothing to erase"*)
+    ok "the erase warns the checkout was missing"
+    ;;
+*)
+    fail "the erase warns the checkout was missing" "out: $out"
+    ;;
+esac
+if [ ! -e "$T264/.a.projeny.status" ] && [ ! -e "$T264/fakea" ]; then
+    ok "the status file still went"
+else
+    fail "the status file still went" "ls: $(ls -A "$T264" 2>&1)"
+fi
+nstale="$(printf '%s' "$(ls -A "$T264")" | grep -c 'stale')"
+if [ "$nstale" -eq 0 ]; then
+    ok "the check left no .stale renames behind"
+else
+    fail "the check left no .stale renames behind" \
+         "ls: $(ls -A "$T264" 2>&1)"
+fi
+
+# --------- 265. --force erases a dirty project, snapshots included
+# --force is the escape hatch: the check is skipped entirely and a dirty
+# project is erased no matter what its status reports. Combined with
+# --erase-snapshots even the snapshot goes, so the next setup re-downloads.
+T265="$ROOT/t265"
+mkdir -p "$T265"
+cp "$T222/a.projeny" "$T222/fake-1.0.tar.gz" "$T265/"
+run_in "$T265" expect_ok "the force-dirty fixture sets up" "$PROJENY" \
+    setup a.projeny
+printf 'an uncommitted edit\n' >> "$T265/fakea/README"
+out="$(run_in "$T265" "$PROJENY" erase-setup a.projeny --force 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the --force erase of a dirty project exits 0"
+else
+    fail "the --force erase of a dirty project exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"erased setup state for 'fakea' (checkout 'fakea', status '.a.projeny.status')"*)
+    ok "the --force erase reports the usual note"
+    ;;
+*)
+    fail "the --force erase reports the usual note" "out: $out"
+    ;;
+esac
+if [ ! -e "$T265/fakea" ] && [ ! -e "$T265/.a.projeny.status" ] && \
+   [ -f "$T265/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the dirty checkout and status went but the snapshot stayed"
+else
+    fail "the dirty checkout and status went but the snapshot stayed" \
+         "ls: $(ls -A "$T265" 2>&1)"
+fi
+out="$(run_in "$T265" "$PROJENY" setup a.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the setup after the --force erase of the dirty project exits 0"
+else
+    fail "the setup after the --force erase of the dirty project exits 0" \
+         "exit=$rc out: $out"
+fi
+if [ "$(cat "$T265/fakea/README" 2>/dev/null)" = "hello v1" ]; then
+    ok "the re-setup checked out the pristine file"
+else
+    fail "the re-setup checked out the pristine file" \
+         "README: $(cat "$T265/fakea/README" 2>&1)"
+fi
+printf 'another uncommitted edit\n' >> "$T265/fakea/README"
+run_in "$T265" expect_ok "erase-setup --force --erase-snapshots exits 0" \
+    "$PROJENY" erase-setup a.projeny --force --erase-snapshots
+if [ ! -e "$T265/fakea" ] && [ ! -e "$T265/.a.projeny.status" ] && \
+   [ ! -e "$T265/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "--force with --erase-snapshots erased the snapshot too"
+else
+    fail "--force with --erase-snapshots erased the snapshot too" \
+         "ls: $(ls -A "$T265" 2>&1)"
+fi
+
+# --------- 266. a deleted archive and snapshot refuse a no-force erase-setup
+# The reported fail-open hole: when BOTH the checked-in tarball and its
+# .snapshot are gone, the check phase cannot build the expected tree, so the
+# live diff cannot run and NOTHING is known about the checkout. A project
+# whose state cannot be assessed is never clean — the whole invocation
+# refuses (the unverifiable refusal, exit 1, same shape as a check that
+# died) and nothing is erased, down to the byte; --force erases anyway.
+# Beside the unverifiable project stands a healthy one, to pin the
+# all-or-nothing guarantee: the healthy project's setup state survives the
+# refusal too, and the bullet list names only the project that could not be
+# checked.
+T266="$ROOT/t266"
+make_tarballs "$T266" fake
+# Two Archive:-based projects (write_projeny names the file after the stem,
+# so the a/b pair is spelled out here): a.projeny -> fakea from fake-1.0,
+# b.projeny -> fakeb from fake-2.0, same format write_projeny emits.
+printf 'Archive: fake-1.0.tar.gz\nOrigname: fake-1.0\nName: fakea\n\n    Fake project a for projeny tests.\n\n' \
+    > "$T266/a.projeny"
+printf 'Archive: fake-2.0.tar.gz\nOrigname: fake-2.0\nName: fakeb\n\n    Fake project b for projeny tests.\n\n' \
+    > "$T266/b.projeny"
+run_in "$T266" expect_ok "the unassessable-archive fixture sets up" "$PROJENY" \
+    setup a.projeny b.projeny
+if [ -f "$T266/fake-1.0.tar.gz" ] && [ -f "$T266/.fake-1.0.tar.gz.snapshot" ] \
+   && [ -f "$T266/fake-2.0.tar.gz" ] && \
+   [ -f "$T266/.fake-2.0.tar.gz.snapshot" ]; then
+    ok "the fixture has both archives and both snapshots"
+else
+    fail "the fixture has both archives and both snapshots" \
+         "ls: $(ls -A "$T266" 2>&1)"
+fi
+printf 'an uncommitted edit\n' >> "$T266/fakea/README"
+if grep -q "uncommitted edit" "$T266/fakea/README"; then
+    ok "the fixture has an uncommitted edit in the checkout"
+else
+    fail "the fixture has an uncommitted edit in the checkout" \
+         "README: $(cat "$T266/fakea/README" 2>&1)"
+fi
+rm "$T266/fake-1.0.tar.gz" "$T266/.fake-1.0.tar.gz.snapshot"
+if [ ! -e "$T266/fake-1.0.tar.gz" ] && \
+   [ ! -e "$T266/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the archive and its snapshot are gone"
+else
+    fail "the archive and its snapshot are gone" "ls: $(ls -A "$T266" 2>&1)"
+fi
+cp -a "$T266" "$ROOT/t266keep"
+out="$(run_in "$T266" "$PROJENY" erase-setup a.projeny b.projeny -j2 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup over a deleted archive+snapshot exits 1"
+else
+    fail "the no-force erase-setup over a deleted archive+snapshot exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"cannot check 1 of 2 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the refusal counts the unverifiable project of two"
+    ;;
+*)
+    fail "the refusal counts the unverifiable project of two" "out: $out"
+    ;;
+esac
+nbullets="$(printf '%s\n' "$out" | grep -c '^  ')"
+if [ "$nbullets" -eq 1 ]; then
+    ok "the refusal has exactly one bullet"
+else
+    fail "the refusal has exactly one bullet" \
+         "got $nbullets bullets (out: $out)"
+fi
+nver="$(printf '%s\n' "$out" | grep -cF \
+    "  'a.projeny': cannot verify the checkout against its archive (the archive and its snapshot are missing or unusable); it cannot be checked for uncommitted changes")"
+if [ "$nver" -eq 1 ]; then
+    ok "the refusal bullet says why the checkout cannot be checked"
+else
+    fail "the refusal bullet says why the checkout cannot be checked" \
+         "got $nver matching lines (out: $out)"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c 'erased setup state for')" -eq 0 ]
+then
+    ok "the unverifiable refusal erases nothing"
+else
+    fail "the unverifiable refusal erases nothing" "out: $out"
+fi
+if diff -r "$T266" "$ROOT/t266keep" >/dev/null 2>&1; then
+    ok "the refusal leaves every remaining file byte-identical"
+else
+    fail "the refusal leaves every remaining file byte-identical" \
+         "$(diff -r "$T266" "$ROOT/t266keep" 2>&1 | head -5)"
+fi
+if grep -q "uncommitted edit" "$T266/fakea/README"; then
+    ok "the uncommitted edit survives the refusal"
+else
+    fail "the uncommitted edit survives the refusal" \
+         "README: $(cat "$T266/fakea/README" 2>&1)"
+fi
+out="$(run_in "$T266" "$PROJENY" erase-setup a.projeny b.projeny -j2 --force \
+    2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the same state with --force exits 0"
+else
+    fail "the same state with --force exits 0" "exit=$rc out: $out"
+fi
+nexpect="$(printf '%s\n' "$out" | grep -c 'erased setup state for')"
+if [ "$nexpect" -eq 2 ]; then
+    ok "--force erased both projects despite the deleted archive"
+else
+    fail "--force erased both projects despite the deleted archive" \
+         "got $nexpect notes (out: $out)"
+fi
+if [ ! -e "$T266/fakea" ] && [ ! -e "$T266/.a.projeny.status" ] && \
+   [ ! -e "$T266/fakeb" ] && [ ! -e "$T266/.b.projeny.status" ]; then
+    ok "--force left no setup state behind"
+else
+    fail "--force left no setup state behind" "ls: $(ls -A "$T266" 2>&1)"
+fi
+
+# --------- 267. the URL variant refuses the same way when the source is gone
+# A URL:-based project has no checked-in tarball: its snapshot is the
+# download cache. Delete the snapshot AND the file:// source tarball and the
+# check phase cannot materialize the archive even by re-downloading — the
+# same fail-closed refusal, exit 1, nothing erased; --force erases anyway.
+# The download failure still warns status's "(continuing without the live
+# diff)" line first, exactly as status has always done.
+T267="$ROOT/t267"
+make_tarballs "$T267" fake
+h267="$("$PROJENY" hash "$T267/fake-1.0.tar.gz")"
+printf 'URL: file://%s/fake-1.0.tar.gz %s\nOrigname: fake-1.0\nName: fake\n\n    URL project with nowhere to re-download from.\n\n' \
+    "$T267" "$h267" > "$T267/fake.projeny"
+run_in "$T267" expect_ok "the unassessable-URL fixture sets up" "$PROJENY" \
+    setup fake.projeny
+if [ -f "$T267/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the URL fixture has a snapshot"
+else
+    fail "the URL fixture has a snapshot" "ls: $(ls -A "$T267" 2>&1)"
+fi
+printf 'an uncommitted edit\n' >> "$T267/fake/README"
+rm "$T267/.fake-1.0.tar.gz.snapshot" "$T267/fake-1.0.tar.gz"
+if [ ! -e "$T267/.fake-1.0.tar.gz.snapshot" ] && \
+   [ ! -e "$T267/fake-1.0.tar.gz" ]; then
+    ok "the URL snapshot and its source tarball are gone"
+else
+    fail "the URL snapshot and its source tarball are gone" \
+         "ls: $(ls -A "$T267" 2>&1)"
+fi
+cp -a "$T267" "$ROOT/t267keep"
+out="$(run_in "$T267" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup over an unreachable URL source exits 1"
+else
+    fail "the no-force erase-setup over an unreachable URL source exits 1" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"cannot check 1 of 1 project(s) for uncommitted changes; refusing to " | \
+*"erase anything (use --force to erase anyway)"*)
+    ok "the URL-variant refusal counts the unverifiable project"
+    ;;
+*)
+    fail "the URL-variant refusal counts the unverifiable project" \
+         "out: $out"
+    ;;
+esac
+nver="$(printf '%s\n' "$out" | grep -cF \
+    "  'fake.projeny': cannot verify the checkout against its archive (the archive and its snapshot are missing or unusable); it cannot be checked for uncommitted changes")"
+if [ "$nver" -eq 1 ]; then
+    ok "the URL-variant refusal bullet says why the checkout cannot be checked"
+else
+    fail "the URL-variant refusal bullet says why the checkout cannot be checked" \
+         "got $nver matching lines (out: $out)"
+fi
+ncont="$(printf '%s\n' "$out" | grep -cF '(continuing without the live diff)')"
+if [ "$ncont" -eq 1 ]; then
+    ok "the failed download still warns before the refusal"
+else
+    fail "the failed download still warns before the refusal" \
+         "got $ncont matching lines (out: $out)"
+fi
+if diff -r "$T267" "$ROOT/t267keep" >/dev/null 2>&1; then
+    ok "the URL-variant refusal leaves every remaining file byte-identical"
+else
+    fail "the URL-variant refusal leaves every remaining file byte-identical" \
+         "$(diff -r "$T267" "$ROOT/t267keep" 2>&1 | head -5)"
+fi
+if grep -q "uncommitted edit" "$T267/fake/README"; then
+    ok "the URL checkout's uncommitted edit survives the refusal"
+else
+    fail "the URL checkout's uncommitted edit survives the refusal" \
+         "README: $(cat "$T267/fake/README" 2>&1)"
+fi
+out="$(run_in "$T267" "$PROJENY" erase-setup fake.projeny --force 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the URL variant with --force exits 0"
+else
+    fail "the URL variant with --force exits 0" "exit=$rc out: $out"
+fi
+if [ ! -e "$T267/fake" ] && [ ! -e "$T267/.fake.projeny.status" ]; then
+    ok "--force erased the URL project's setup state"
+else
+    fail "--force erased the URL project's setup state" \
+         "ls: $(ls -A "$T267" 2>&1)"
+fi
+
+# --------- 268. fail closed even when the checkout happens to be clean
+# The refusal is not about dirtiness — it is about knowability: a CLEAN
+# checkout whose archive and snapshot are both gone refuses too, because
+# erase-setup cannot know it is clean. Restoring the tarball makes the check
+# runnable again (the copy-on-fallback re-materializes the snapshot) and the
+# same no-force erase then proceeds, so the conservatism is recoverable and
+# never a wedge.
+T268="$ROOT/t268"
+make_tarballs "$T268" fake
+write_projeny "$T268" fake 1.0 fake
+run_in "$T268" expect_ok "the clean-unassessable fixture sets up" "$PROJENY" \
+    setup fake.projeny
+mkdir -p "$ROOT/t268keep"
+cp "$T268/fake-1.0.tar.gz" "$ROOT/t268keep/fake-1.0.tar.gz"
+rm "$T268/fake-1.0.tar.gz" "$T268/.fake-1.0.tar.gz.snapshot"
+out="$(run_in "$T268" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase-setup of a clean but unverifiable checkout exits 1"
+else
+    fail "the no-force erase-setup of a clean but unverifiable checkout exits 1" \
+         "exit=$rc out: $out"
+fi
+nver="$(printf '%s\n' "$out" | grep -cF \
+    "  'fake.projeny': cannot verify the checkout against its archive (the archive and its snapshot are missing or unusable); it cannot be checked for uncommitted changes")"
+if [ "$nver" -eq 1 ]; then
+    ok "the clean-unverifiable refusal carries the same bullet"
+else
+    fail "the clean-unverifiable refusal carries the same bullet" \
+         "got $nver matching lines (out: $out)"
+fi
+if [ -d "$T268/fake" ] && [ -f "$T268/.fake.projeny.status" ]; then
+    ok "the clean-unverifiable refusal erased nothing"
+else
+    fail "the clean-unverifiable refusal erased nothing" \
+         "ls: $(ls -A "$T268" 2>&1)"
+fi
+cp "$ROOT/t268keep/fake-1.0.tar.gz" "$T268/fake-1.0.tar.gz"
+out="$(run_in "$T268" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "restoring the tarball makes the same no-force erase exit 0"
+else
+    fail "restoring the tarball makes the same no-force erase exit 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"erased setup state for 'fake' (checkout 'fake', status '.fake.projeny.status')"*)
+    ok "the recovered erase reports the usual note"
+    ;;
+*)
+    fail "the recovered erase reports the usual note" "out: $out"
+    ;;
+esac
+if [ ! -e "$T268/fake" ] && [ ! -e "$T268/.fake.projeny.status" ]; then
+    ok "the recovered erase removed the checkout and status file"
+else
+    fail "the recovered erase removed the checkout and status file" \
+         "ls: $(ls -A "$T268" 2>&1)"
+fi
+if [ -f "$T268/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the check phase recreated the snapshot before erasing"
+else
+    fail "the check phase recreated the snapshot before erasing" \
+         "ls: $(ls -A "$T268" 2>&1)"
+fi
+
+# --------- 269. regression guard: healthy projects behave exactly as before
+# With the archive and snapshot intact the check runs, so a clean project
+# still erases without --force (exit 0, the usual note, snapshot kept), and
+# a dirty one still refuses in status's own vocabulary — the new fail-closed
+# path must never shadow or reword the ordinary dirtiness refusal.
+T269="$ROOT/t269"
+make_tarballs "$T269" fake
+write_projeny "$T269" fake 1.0 fake
+run_in "$T269" expect_ok "the healthy fixture sets up" "$PROJENY" \
+    setup fake.projeny
+out="$(run_in "$T269" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the no-force erase of a healthy clean project exits 0"
+else
+    fail "the no-force erase of a healthy clean project exits 0" \
+         "exit=$rc out: $out"
+fi
+case "$out" in
+*"erased setup state for 'fake' (checkout 'fake', status '.fake.projeny.status')"*)
+    ok "the healthy erase reports the usual note"
+    ;;
+*)
+    fail "the healthy erase reports the usual note" "out: $out"
+    ;;
+esac
+if [ ! -e "$T269/fake" ] && [ ! -e "$T269/.fake.projeny.status" ] && \
+   [ -f "$T269/fake-1.0.tar.gz" ] && \
+   [ -f "$T269/.fake-1.0.tar.gz.snapshot" ]; then
+    ok "the healthy erase took the checkout and status but kept the archive"
+else
+    fail "the healthy erase took the checkout and status but kept the archive" \
+         "ls: $(ls -A "$T269" 2>&1)"
+fi
+write_projeny "$T269" fake 1.0 fake
+run_in "$T269" expect_ok "the healthy-dirty fixture sets up" "$PROJENY" \
+    setup fake.projeny
+printf 'an uncommitted edit\n' >> "$T269/fake/README"
+out="$(run_in "$T269" "$PROJENY" erase-setup fake.projeny 2>&1)"
+rc=$?
+if [ $rc -eq 1 ]; then
+    ok "the no-force erase of a healthy dirty project exits 1"
+else
+    fail "the no-force erase of a healthy dirty project exits 1" \
+         "exit=$rc out: $out"
+fi
+nmod="$(printf '%s\n' "$out" | grep -cF "  'fake.projeny': modified: 'README'")"
+if [ "$nmod" -eq 1 ]; then
+    ok "the dirty refusal still names the modified file"
+else
+    fail "the dirty refusal still names the modified file" \
+         "got $nmod matching lines (out: $out)"
+fi
+nver="$(printf '%s\n' "$out" | grep -c 'cannot verify the checkout')"
+if [ "$nver" -eq 0 ]; then
+    ok "the dirty refusal is not reworded into the unverifiable one"
+else
+    fail "the dirty refusal is not reworded into the unverifiable one" \
+         "got $nver matching lines (out: $out)"
+fi
+out="$(run_in "$T269" "$PROJENY" erase-setup fake.projeny --force 2>&1)"
+rc=$?
+if [ $rc -eq 0 ]; then
+    ok "the healthy dirty project still erases with --force"
+else
+    fail "the healthy dirty project still erases with --force" \
+         "exit=$rc out: $out"
 fi
 
 # ------------------------------------------------------------- summary

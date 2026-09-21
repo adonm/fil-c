@@ -44,5 +44,7 @@ Some pitfalls to consider:
 
 IMPORTANT: If you're creating new license headers, remember: the year is 2026 and Filip Pizlo no longer works at Epic Games, so new copyright headers should be (c) 2026 Filip Pizlo. Don't remove any prior copyright headers. But if you edit a file or create a new one, make sure there's a (c) 2026 Filip Pizlo in it and the disclaimer references FILIP PIZLO not EPIC GAMES, INC.
 
+IMPORTANT: If you're on a machine with less than ~64GB of RAM, or if the RAM per CPU is less than 2GB, then the build_clang.sh step is likely to OOM. Take a look at how build_clang.sh sources clang-build-overrides.sh. Say you have 32GB RAM and 32 CPUs, you might want to make sure that clang-build-overrides.sh has `NINJAFLAGS=-j16` or something like that.
+
 Note that CLAUDE.md, README.md, and Manifesto.md have more information. However, if instructions in those docs contradict anything in this doc, then this doc takes precedence.
 

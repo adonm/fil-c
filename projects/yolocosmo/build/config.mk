@@ -109,6 +109,28 @@ CONFIG_CPPFLAGS += -DNDEBUG -DSYSDEBUG -DSUPPORT_VECTOR=1
 CONFIG_CCFLAGS += -O3 -fmerge-all-constants
 CONFIG_TARGET_ARCH ?= -mavx
 endif
+
+# Fil-C APE Mode
+#
+#   - `make MODE=x86_64-ape`
+#
+# The same optimizations as x86_64-optlinux, but with the full OS support
+# vector (255 = Linux+metal+Windows+XNU+all the BSDs) so that the APE header
+# machinery compiles in: ape.S only emits the PE, Mach-O, and BSD blobs (and
+# libc only defines WinMain) when the support vector says those OSes are
+# supported, and without them apelink refuses to build an APE ("elf image
+# needs to define `ape_pe'").  This is the mode of the yolo libc and the APE
+# bootloader bits that build_yolocosmo.sh installs into pizfix, and it is
+# what lets the Fil-C clang driver turn every cosmo-mode link into a real
+# APE (apelink -V -1).  The pizlonated libc above it stays Linux-only for
+# now (see projects/usercosmo/filc.mk: SUPPORT_VECTOR=1 folds away the raw
+# asm and Win32 branches that Fil-C cannot compile).
+ifeq ($(MODE), x86_64-ape)
+TLSCC =
+CONFIG_CPPFLAGS += -DNDEBUG -DSYSDEBUG -DSUPPORT_VECTOR=255
+CONFIG_CCFLAGS += -O3 -fmerge-all-constants
+CONFIG_TARGET_ARCH ?= -mavx
+endif
 ifeq ($(MODE), aarch64-optlinux)
 CONFIG_CPPFLAGS += -DNDEBUG -DSYSDEBUG -DSUPPORT_VECTOR=1
 CONFIG_CCFLAGS += -O3 -fmerge-all-constants

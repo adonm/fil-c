@@ -10,6 +10,15 @@
 # resolved from the yolo side, so it is not built.
 
 FILC_YOLO_OBJS = \
+	o/$(MODE)/libc/vga/rlinit-init-vga.o \
+	o/$(MODE)/libc/vga/rlinit-vesa.o \
+	o/$(MODE)/libc/vga/readv-vga.o \
+	o/$(MODE)/libc/vga/tty-graph.o \
+	o/$(MODE)/libc/vga/tty-klog.greg.o \
+	o/$(MODE)/libc/vga/tty.greg.o \
+	o/$(MODE)/libc/vga/vga-font-default.o \
+	o/$(MODE)/libc/vga/vga-init.greg.o \
+	o/$(MODE)/libc/vga/writev-vga.o \
 	o/$(MODE)/third_party/musl/towctrans.o \
 	o/$(MODE)/third_party/zlib/adler32.o \
 	o/$(MODE)/third_party/zlib/adler32_simd.o \
@@ -22,37 +31,62 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/third_party/zlib/inftrees.o \
 	o/$(MODE)/third_party/zlib/notice.o \
 	o/$(MODE)/third_party/zlib/zutil.o \
+	o/$(MODE)/libc/sock/accept-nt.o \
 	o/$(MODE)/libc/sock/accept.o \
 	o/$(MODE)/libc/sock/accept4-sysv.o \
 	o/$(MODE)/libc/sock/accept4.o \
+	o/$(MODE)/libc/sock/bind-nt.o \
 	o/$(MODE)/libc/sock/bind-sysv.o \
 	o/$(MODE)/libc/sock/bind.o \
+	o/$(MODE)/libc/sock/closesocket-nt.o \
+	o/$(MODE)/libc/sock/connect-nt.o \
 	o/$(MODE)/libc/sock/connect-sysv.o \
 	o/$(MODE)/libc/sock/connect.o \
+	o/$(MODE)/libc/sock/fixsunpath.o \
 	o/$(MODE)/libc/sock/fixupnewsockfd.o \
 	o/$(MODE)/libc/sock/getsockname.o \
+	o/$(MODE)/libc/sock/getsockopt-nt.o \
 	o/$(MODE)/libc/sock/getsockopt.o \
 	o/$(MODE)/libc/sock/inet_ntop.o \
+	o/$(MODE)/libc/sock/iovec2nt.o \
+	o/$(MODE)/libc/sock/kntwsadata.o \
+	o/$(MODE)/libc/sock/listen-nt.o \
 	o/$(MODE)/libc/sock/listen.o \
+	o/$(MODE)/libc/sock/recv-nt.o \
+	o/$(MODE)/libc/sock/recvfrom-nt.o \
 	o/$(MODE)/libc/sock/recvfrom.o \
 	o/$(MODE)/libc/sock/recvmsg.o \
+	o/$(MODE)/libc/sock/send-nt.o \
 	o/$(MODE)/libc/sock/sendfile.o \
 	o/$(MODE)/libc/sock/sendmsg.o \
+	o/$(MODE)/libc/sock/sendto-nt.o \
 	o/$(MODE)/libc/sock/sendto.o \
+	o/$(MODE)/libc/sock/setsockopt-nt.o \
 	o/$(MODE)/libc/sock/setsockopt.o \
+	o/$(MODE)/libc/sock/shutdown-nt.o \
 	o/$(MODE)/libc/sock/shutdown.o \
 	o/$(MODE)/libc/sock/sockaddr.o \
+	o/$(MODE)/libc/sock/sockaddr2bsd.o \
+	o/$(MODE)/libc/sock/sockaddr2linux.o \
 	o/$(MODE)/libc/sock/sockdebug.o \
+	o/$(MODE)/libc/sock/socket-nt.o \
 	o/$(MODE)/libc/sock/socket-sysv.o \
 	o/$(MODE)/libc/sock/socket.o \
+	o/$(MODE)/libc/sock/socketpair-nt.o \
 	o/$(MODE)/libc/sock/socketpair-sysv.o \
 	o/$(MODE)/libc/sock/socketpair.o \
+	o/$(MODE)/libc/sock/unfixsunpath.o \
+	o/$(MODE)/libc/sock/winsockblock.o \
+	o/$(MODE)/libc/sock/wsaid.o \
+	o/$(MODE)/libc/sock/sys_sendfile_freebsd.o \
+	o/$(MODE)/libc/sock/sys_sendfile_xnu.o \
 	o/$(MODE)/libc/log/addr2linepath.o \
 	o/$(MODE)/libc/dlopen/dlopen.o \
 	o/$(MODE)/libc/dlopen/stubs.o \
 	o/$(MODE)/libc/thread/alarm.o \
 	o/$(MODE)/libc/thread/futex_calls.o \
 	o/$(MODE)/libc/thread/getitimer.o \
+	o/$(MODE)/libc/thread/itimer.o \
 	o/$(MODE)/libc/thread/mktls.o \
 	o/$(MODE)/libc/thread/pthread_atfork.o \
 	o/$(MODE)/libc/thread/pthread_attr_destroy.o \
@@ -63,6 +97,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/thread/pthread_cond_broadcast.o \
 	o/$(MODE)/libc/thread/pthread_cond_destroy.o \
 	o/$(MODE)/libc/thread/pthread_cond_init.o \
+	o/$(MODE)/libc/thread/pthread_cond_signal.o \
 	o/$(MODE)/libc/thread/pthread_cond_timedwait.o \
 	o/$(MODE)/libc/thread/pthread_cond_wait.o \
 	o/$(MODE)/libc/thread/pthread_create.o \
@@ -73,6 +108,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/thread/pthread_mutex_destroy.o \
 	o/$(MODE)/libc/thread/pthread_reschedule.o \
 	o/$(MODE)/libc/thread/pthread_self.o \
+	o/$(MODE)/libc/thread/pthread_setschedparam_freebsd.o \
 	o/$(MODE)/libc/thread/pthread_sigmask.o \
 	o/$(MODE)/libc/thread/pthread_zombify.o \
 	o/$(MODE)/libc/thread/setitimer.o \
@@ -111,23 +147,36 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/third_party/libunwind/UnwindRegistersRestore.o \
 	o/$(MODE)/third_party/libunwind/UnwindRegistersSave.o \
 	o/$(MODE)/libc/proc/vfork.o \
+	o/$(MODE)/libc/proc/vforkjmp.o \
+	o/$(MODE)/libc/proc/describefds.o \
+	o/$(MODE)/libc/proc/execve-nt.o \
 	o/$(MODE)/libc/proc/execve-sysv.o \
 	o/$(MODE)/libc/proc/execve.o \
 	o/$(MODE)/libc/proc/fexecve.o \
+	o/$(MODE)/libc/proc/fork-nt.o \
 	o/$(MODE)/libc/proc/fork-sysv.o \
 	o/$(MODE)/libc/proc/fork.o \
+	o/$(MODE)/libc/proc/getppid-nt.o \
 	o/$(MODE)/libc/proc/getppid.o \
+	o/$(MODE)/libc/proc/getpriority-nt.o \
 	o/$(MODE)/libc/proc/getpriority.o \
+	o/$(MODE)/libc/proc/getrusage-nt.o \
 	o/$(MODE)/libc/proc/getrusage-sysv.o \
 	o/$(MODE)/libc/proc/getrusage.o \
+	o/$(MODE)/libc/proc/handle.o \
 	o/$(MODE)/libc/proc/hasvfork.o \
+	o/$(MODE)/libc/proc/kill-nt.o \
 	o/$(MODE)/libc/proc/kill.o \
 	o/$(MODE)/libc/proc/posix_spawn.o \
 	o/$(MODE)/libc/proc/posix_spawnp.o \
+	o/$(MODE)/libc/proc/proc.o \
 	o/$(MODE)/libc/proc/sched_getaffinity.o \
 	o/$(MODE)/libc/proc/sched_setaffinity.o \
+	o/$(MODE)/libc/proc/setpriority-nt.o \
 	o/$(MODE)/libc/proc/setpriority.o \
 	o/$(MODE)/libc/proc/times.o \
+	o/$(MODE)/libc/proc/vfork-nt.o \
+	o/$(MODE)/libc/proc/wait4-nt.o \
 	o/$(MODE)/libc/proc/wait4-sysv.o \
 	o/$(MODE)/libc/proc/wait4.o \
 	o/$(MODE)/libc/proc/waitpid.o \
@@ -162,6 +211,8 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/third_party/dlmalloc/dlmalloc.o \
 	o/$(MODE)/third_party/dlmalloc/dlmalloc_abort.o \
 	o/$(MODE)/libc/runtime/clone-linux.o \
+	o/$(MODE)/libc/runtime/clone-openbsd.o \
+	o/$(MODE)/libc/runtime/clone-xnu.o \
 	o/$(MODE)/libc/runtime/cosmo.o \
 	o/$(MODE)/libc/runtime/init.o \
 	o/$(MODE)/libc/runtime/clone.o \
@@ -172,15 +223,19 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/runtime/fpathconf.o \
 	o/$(MODE)/libc/runtime/getargmax.o \
 	o/$(MODE)/libc/runtime/getavphyspages.o \
+	o/$(MODE)/libc/runtime/getdosargv.o \
+	o/$(MODE)/libc/runtime/getdosenviron.o \
 	o/$(MODE)/libc/runtime/getphyspages.o \
 	o/$(MODE)/libc/runtime/getsymbol.o \
 	o/$(MODE)/libc/runtime/getsymboltable.o \
+	o/$(MODE)/libc/runtime/getsysctl.o \
 	o/$(MODE)/libc/runtime/inflate.o \
 	o/$(MODE)/libc/runtime/interceptflag.greg.o \
 	o/$(MODE)/libc/runtime/opensymboltable.greg.o \
 	o/$(MODE)/libc/runtime/set_tls.o \
 	o/$(MODE)/libc/runtime/straceinit.greg.o \
 	o/$(MODE)/libc/runtime/sysconf.o \
+	o/$(MODE)/libc/runtime/winmain.greg.o \
 	o/$(MODE)/libc/runtime/zipos-access.o \
 	o/$(MODE)/libc/runtime/zipos-close.o \
 	o/$(MODE)/libc/runtime/zipos-find.o \
@@ -201,38 +256,51 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/third_party/nsync/mu.o \
 	o/$(MODE)/third_party/nsync/mu_semaphore.o \
 	o/$(MODE)/third_party/nsync/mu_semaphore_futex.o \
+	o/$(MODE)/third_party/nsync/mu_semaphore_sem.o \
 	o/$(MODE)/third_party/nsync/notice.o \
 	o/$(MODE)/third_party/nsync/panic.o \
 	o/$(MODE)/third_party/nsync/time.o \
 	o/$(MODE)/libc/elf/iself64binary.o \
 	o/$(MODE)/libc/calls/metalfile_init.o \
+	o/$(MODE)/libc/calls/netbsdtramp.o \
 	o/$(MODE)/libc/calls/program_executable_name_init.o \
 	o/$(MODE)/libc/calls/CPU_COUNT.o \
 	o/$(MODE)/libc/calls/abort.o \
 	o/$(MODE)/libc/calls/access.o \
 	o/$(MODE)/libc/calls/arc4random.o \
+	o/$(MODE)/libc/calls/chdir-nt.o \
 	o/$(MODE)/libc/calls/chdir.o \
 	o/$(MODE)/libc/calls/chmod.o \
 	o/$(MODE)/libc/calls/chown.o \
 	o/$(MODE)/libc/calls/chroot.o \
 	o/$(MODE)/libc/calls/clktck.o \
 	o/$(MODE)/libc/calls/clock_getres.o \
+	o/$(MODE)/libc/calls/clock_nanosleep-nt.o \
+	o/$(MODE)/libc/calls/clock_nanosleep-openbsd.o \
 	o/$(MODE)/libc/calls/clock_nanosleep-sys.o \
+	o/$(MODE)/libc/calls/clock_nanosleep-xnu.o \
 	o/$(MODE)/libc/calls/clock_nanosleep.o \
 	o/$(MODE)/libc/calls/clock_settime.o \
 	o/$(MODE)/libc/calls/close.o \
 	o/$(MODE)/libc/calls/commandv.o \
 	o/$(MODE)/libc/calls/copy_file_range.o \
 	o/$(MODE)/libc/calls/creat.o \
+	o/$(MODE)/libc/calls/createfileflags.o \
+	o/$(MODE)/libc/calls/createpipename.o \
+	o/$(MODE)/libc/calls/dup-nt.o \
 	o/$(MODE)/libc/calls/dup.o \
 	o/$(MODE)/libc/calls/dup2.o \
 	o/$(MODE)/libc/calls/dup3-sysv.o \
 	o/$(MODE)/libc/calls/dup3.o \
 	o/$(MODE)/libc/calls/eaccess.o \
+	o/$(MODE)/libc/calls/faccessat-nt.o \
 	o/$(MODE)/libc/calls/faccessat.o \
+	o/$(MODE)/libc/calls/fchdir-nt.o \
 	o/$(MODE)/libc/calls/fchdir.o \
+	o/$(MODE)/libc/calls/fchmod-nt.o \
 	o/$(MODE)/libc/calls/fchmod.o \
 	o/$(MODE)/libc/calls/fchmodat-linux.o \
+	o/$(MODE)/libc/calls/fchmodat-nt.o \
 	o/$(MODE)/libc/calls/fchmodat.o \
 	o/$(MODE)/libc/calls/fchown.o \
 	o/$(MODE)/libc/calls/fchownat.o \
@@ -245,23 +313,35 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/fcntl_misc.o \
 	o/$(MODE)/libc/calls/fcntl_setfd.o \
 	o/$(MODE)/libc/calls/fcntl_setfl.o \
+	o/$(MODE)/libc/calls/fdatasync-nt.o \
 	o/$(MODE)/libc/calls/fdatasync.o \
 	o/$(MODE)/libc/calls/finddebugbinary.o \
+	o/$(MODE)/libc/calls/fixenotdir.o \
+	o/$(MODE)/libc/calls/fixenotdir2.o \
 	o/$(MODE)/libc/calls/fixupnewfd.o \
+	o/$(MODE)/libc/calls/flock-nt.o \
 	o/$(MODE)/libc/calls/flock.o \
+	o/$(MODE)/libc/calls/flocks.o \
+	o/$(MODE)/libc/calls/fstat-metal.o \
+	o/$(MODE)/libc/calls/fstat-nt.o \
 	o/$(MODE)/libc/calls/fstat-sysv.o \
 	o/$(MODE)/libc/calls/fstat.o \
+	o/$(MODE)/libc/calls/fstatat-nt.o \
 	o/$(MODE)/libc/calls/fstatat-sysv.o \
 	o/$(MODE)/libc/calls/fstatat.o \
+	o/$(MODE)/libc/calls/fstatfs-nt.o \
 	o/$(MODE)/libc/calls/fstatfs.o \
 	o/$(MODE)/libc/calls/fstatvfs.o \
 	o/$(MODE)/libc/calls/fsync-fake.o \
+	o/$(MODE)/libc/calls/fsync-xnu.o \
 	o/$(MODE)/libc/calls/fsync.o \
+	o/$(MODE)/libc/calls/ftruncate-nt.o \
 	o/$(MODE)/libc/calls/ftruncate.o \
 	o/$(MODE)/libc/calls/futimens.o \
 	o/$(MODE)/libc/calls/futimes.o \
 	o/$(MODE)/libc/calls/futimesat.o \
 	o/$(MODE)/libc/calls/getcpucount.o \
+	o/$(MODE)/libc/calls/getcurrentdirectory.o \
 	o/$(MODE)/libc/calls/getcwd.o \
 	o/$(MODE)/libc/calls/getdomainname-linux.o \
 	o/$(MODE)/libc/calls/getdomainname.o \
@@ -269,20 +349,26 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/getentropy.o \
 	o/$(MODE)/libc/calls/geteuid.o \
 	o/$(MODE)/libc/calls/getgroups.o \
+	o/$(MODE)/libc/calls/gethostname-bsd.o \
 	o/$(MODE)/libc/calls/gethostname-linux.o \
+	o/$(MODE)/libc/calls/gethostname-nt.o \
 	o/$(MODE)/libc/calls/gethostname.o \
+	o/$(MODE)/libc/calls/getloadavg-nt.o \
 	o/$(MODE)/libc/calls/getpgid.o \
 	o/$(MODE)/libc/calls/getpgrp.o \
 	o/$(MODE)/libc/calls/getprogramexecutablename.greg.o \
+	o/$(MODE)/libc/calls/getrandom-metal.o \
 	o/$(MODE)/libc/calls/getrandom.o \
 	o/$(MODE)/libc/calls/getresgid.o \
 	o/$(MODE)/libc/calls/getresuid.o \
 	o/$(MODE)/libc/calls/getrlimit.o \
 	o/$(MODE)/libc/calls/getsid.o \
 	o/$(MODE)/libc/calls/gettimeofday.o \
+	o/$(MODE)/libc/calls/getuid-nt.o \
 	o/$(MODE)/libc/calls/getuid.o \
 	o/$(MODE)/libc/calls/ioctl.o \
 	o/$(MODE)/libc/calls/isapemagic.o \
+	o/$(MODE)/libc/calls/isatty-nt.o \
 	o/$(MODE)/libc/calls/isatty.o \
 	o/$(MODE)/libc/calls/isevilpath.o \
 	o/$(MODE)/libc/calls/islinux.o \
@@ -291,7 +377,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/lchown.o \
 	o/$(MODE)/libc/calls/libc_internal_signals.o \
 	o/$(MODE)/libc/calls/link.o \
+	o/$(MODE)/libc/calls/linkat-nt.o \
 	o/$(MODE)/libc/calls/linkat.o \
+	o/$(MODE)/libc/calls/lseek-nt.o \
 	o/$(MODE)/libc/calls/lseek.o \
 	o/$(MODE)/libc/calls/lutimes.o \
 	o/$(MODE)/libc/calls/madvise.o \
@@ -300,26 +388,40 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/metalfile.o \
 	o/$(MODE)/libc/calls/mincore.o \
 	o/$(MODE)/libc/calls/mkdir.o \
+	o/$(MODE)/libc/calls/mkdirat-nt.o \
 	o/$(MODE)/libc/calls/mkdirat.o \
 	o/$(MODE)/libc/calls/mknod.o \
+	o/$(MODE)/libc/calls/mkntcmdline.o \
+	o/$(MODE)/libc/calls/mkntenvblock.o \
+	o/$(MODE)/libc/calls/mkntpath.o \
 	o/$(MODE)/libc/calls/mkostemp.o \
+	o/$(MODE)/libc/calls/mkunixpath.o \
 	o/$(MODE)/libc/calls/mlock.o \
 	o/$(MODE)/libc/calls/mount.o \
+	o/$(MODE)/libc/calls/mungentpath.o \
 	o/$(MODE)/libc/calls/munlock.o \
 	o/$(MODE)/libc/calls/nanosleep.o \
 	o/$(MODE)/libc/calls/nosync.o \
+	o/$(MODE)/libc/calls/ntspawn.o \
+	o/$(MODE)/libc/calls/open-nt.o \
 	o/$(MODE)/libc/calls/open.o \
+	o/$(MODE)/libc/calls/openat-metal.o \
 	o/$(MODE)/libc/calls/openat-sysv.o \
 	o/$(MODE)/libc/calls/openat.o \
 	o/$(MODE)/libc/calls/openatemp.o \
+	o/$(MODE)/libc/calls/park.o \
+	o/$(MODE)/libc/calls/pause-nt.o \
 	o/$(MODE)/libc/calls/pause.o \
+	o/$(MODE)/libc/calls/pipe-nt.o \
 	o/$(MODE)/libc/calls/pipe-sysv.o \
 	o/$(MODE)/libc/calls/pipe.o \
 	o/$(MODE)/libc/calls/pipe2-sysv.o \
 	o/$(MODE)/libc/calls/pipe2.o \
 	o/$(MODE)/libc/calls/pledge-linux.o \
+	o/$(MODE)/libc/calls/poll-nt.o \
 	o/$(MODE)/libc/calls/poll-sysv.o \
 	o/$(MODE)/libc/calls/poll.o \
+	o/$(MODE)/libc/calls/posix_fadvise-nt.o \
 	o/$(MODE)/libc/calls/posix_fadvise.o \
 	o/$(MODE)/libc/calls/ppoll.o \
 	o/$(MODE)/libc/calls/prctl.o \
@@ -329,26 +431,40 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/pwrite.o \
 	o/$(MODE)/libc/calls/pwritev.o \
 	o/$(MODE)/libc/calls/raise.o \
+	o/$(MODE)/libc/calls/read-nt.o \
 	o/$(MODE)/libc/calls/read.o \
 	o/$(MODE)/libc/calls/readlink.o \
+	o/$(MODE)/libc/calls/readlinkat-nt.o \
 	o/$(MODE)/libc/calls/readlinkat.o \
+	o/$(MODE)/libc/calls/readntsym.o \
+	o/$(MODE)/libc/calls/readv-metal.o \
+	o/$(MODE)/libc/calls/readv-nt.o \
+	o/$(MODE)/libc/calls/readv-serial.o \
 	o/$(MODE)/libc/calls/readv.o \
+	o/$(MODE)/libc/calls/readwrite-nt.o \
 	o/$(MODE)/libc/calls/reboot.o \
 	o/$(MODE)/libc/calls/releasefd.o \
 	o/$(MODE)/libc/calls/rename.o \
+	o/$(MODE)/libc/calls/renameat-nt.o \
 	o/$(MODE)/libc/calls/renameat.o \
+	o/$(MODE)/libc/calls/restrict.o \
 	o/$(MODE)/libc/calls/rmdir.o \
 	o/$(MODE)/libc/calls/rusage2linux.o \
+	o/$(MODE)/libc/calls/rusage_add.o \
 	o/$(MODE)/libc/calls/sched_get_priority_max.o \
 	o/$(MODE)/libc/calls/sched_get_priority_min.o \
 	o/$(MODE)/libc/calls/sched_getcpu.o \
+	o/$(MODE)/libc/calls/sched_getscheduler-netbsd.o \
 	o/$(MODE)/libc/calls/sched_rr_get_interval.o \
 	o/$(MODE)/libc/calls/sched_setparam.o \
 	o/$(MODE)/libc/calls/sched_setscheduler.o \
 	o/$(MODE)/libc/calls/secure_getenv.o \
+	o/$(MODE)/libc/calls/select-nt.o \
 	o/$(MODE)/libc/calls/select.o \
+	o/$(MODE)/libc/calls/setcurrentdirectory.o \
 	o/$(MODE)/libc/calls/setegid.o \
 	o/$(MODE)/libc/calls/seteuid.o \
+	o/$(MODE)/libc/calls/setfl.o \
 	o/$(MODE)/libc/calls/setfsgid.o \
 	o/$(MODE)/libc/calls/setfsuid.o \
 	o/$(MODE)/libc/calls/setgid.o \
@@ -365,50 +481,97 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/shard.o \
 	o/$(MODE)/libc/calls/sigaction.o \
 	o/$(MODE)/libc/calls/sigaltstack.o \
+	o/$(MODE)/libc/calls/sigcheck.o \
+	o/$(MODE)/libc/calls/sigenter-freebsd.o \
 	o/$(MODE)/libc/calls/sigenter-linux.o \
+	o/$(MODE)/libc/calls/sigenter-netbsd.o \
+	o/$(MODE)/libc/calls/sigenter-openbsd.o \
+	o/$(MODE)/libc/calls/sigenter-xnu.o \
 	o/$(MODE)/libc/calls/siginfo2cosmo.o \
 	o/$(MODE)/libc/calls/signal.o \
 	o/$(MODE)/libc/calls/sigpending.o \
 	o/$(MODE)/libc/calls/sigsuspend.o \
+	o/$(MODE)/libc/calls/sigtimedwait-nt.o \
 	o/$(MODE)/libc/calls/sigtimedwait.o \
 	o/$(MODE)/libc/calls/sigwait.o \
 	o/$(MODE)/libc/calls/splice.o \
 	o/$(MODE)/libc/calls/stat.o \
 	o/$(MODE)/libc/calls/stat2cosmo.o \
+	o/$(MODE)/libc/calls/statfs-nt.o \
 	o/$(MODE)/libc/calls/statfs.o \
 	o/$(MODE)/libc/calls/statfs2cosmo.o \
 	o/$(MODE)/libc/calls/statfs2statvfs.o \
 	o/$(MODE)/libc/calls/statvfs.o \
 	o/$(MODE)/libc/calls/symlink.o \
+	o/$(MODE)/libc/calls/symlinkat-nt.o \
 	o/$(MODE)/libc/calls/symlinkat.o \
+	o/$(MODE)/libc/calls/sync-nt.o \
 	o/$(MODE)/libc/calls/sync.o \
 	o/$(MODE)/libc/calls/syncfs.o \
 	o/$(MODE)/libc/calls/sysctl.o \
+	o/$(MODE)/libc/calls/sysinfo-nt.o \
 	o/$(MODE)/libc/calls/sysinfo.o \
+	o/$(MODE)/libc/calls/tcgetwinsize-nt.o \
 	o/$(MODE)/libc/calls/tcgetwinsize.o \
+	o/$(MODE)/libc/calls/tcsetwinsize-nt.o \
 	o/$(MODE)/libc/calls/tcsetwinsize.o \
 	o/$(MODE)/libc/calls/time.o \
 	o/$(MODE)/libc/calls/timespec_real.o \
+	o/$(MODE)/libc/calls/timeval_real.o \
 	o/$(MODE)/libc/calls/tinyprint.o \
 	o/$(MODE)/libc/calls/tmpdir.o \
+	o/$(MODE)/libc/calls/truncate-nt.o \
 	o/$(MODE)/libc/calls/truncate.o \
 	o/$(MODE)/libc/calls/umask.o \
 	o/$(MODE)/libc/calls/uname.o \
 	o/$(MODE)/libc/calls/unlink.o \
+	o/$(MODE)/libc/calls/unlinkat-nt.o \
 	o/$(MODE)/libc/calls/unlinkat.o \
 	o/$(MODE)/libc/calls/usleep.o \
 	o/$(MODE)/libc/calls/utimens.o \
+	o/$(MODE)/libc/calls/utimensat-nt.o \
 	o/$(MODE)/libc/calls/utimensat-old.o \
 	o/$(MODE)/libc/calls/utimensat-sysv.o \
 	o/$(MODE)/libc/calls/utimensat.o \
 	o/$(MODE)/libc/calls/utimes.o \
+	o/$(MODE)/libc/calls/winexec.o \
+	o/$(MODE)/libc/calls/write-nt.o \
 	o/$(MODE)/libc/calls/write.o \
+	o/$(MODE)/libc/calls/writev-metal.o \
+	o/$(MODE)/libc/calls/writev-nt.o \
+	o/$(MODE)/libc/calls/writev-serial.o \
 	o/$(MODE)/libc/calls/writev.o \
 	o/$(MODE)/libc/calls/xoflags.o \
 	o/$(MODE)/libc/calls/yolo_syscall_wrappers.o \
+	o/$(MODE)/libc/nt/winmm/timeBeginPeriod.o \
+	o/$(MODE)/libc/nt/psapi/EnumProcesses.o \
+	o/$(MODE)/libc/nt/psapi/GetProcessMemoryInfo.o \
+	o/$(MODE)/libc/nt/PowrProf/SetSuspendState.o \
+	o/$(MODE)/libc/nt/ntdll/NtQueryInformationProcess.o \
+	o/$(MODE)/libc/nt/ntdll/NtQueryVolumeInformationFile.o \
+	o/$(MODE)/libc/nt/ntdllimport.o \
+	o/$(MODE)/libc/nt/iphlpapi/GetAdaptersAddresses.o \
+	o/$(MODE)/libc/nt/advapi32/AccessCheck.o \
+	o/$(MODE)/libc/nt/advapi32/AddAce.o \
+	o/$(MODE)/libc/nt/advapi32/AllocateAndInitializeSid.o \
+	o/$(MODE)/libc/nt/advapi32/DuplicateToken.o \
+	o/$(MODE)/libc/nt/advapi32/EqualSid.o \
+	o/$(MODE)/libc/nt/advapi32/FreeSid.o \
+	o/$(MODE)/libc/nt/advapi32/GetAce.o \
+	o/$(MODE)/libc/nt/advapi32/GetAclInformation.o \
+	o/$(MODE)/libc/nt/advapi32/GetFileSecurityW.o \
+	o/$(MODE)/libc/nt/advapi32/GetSecurityInfo.o \
+	o/$(MODE)/libc/nt/advapi32/GetUserNameW.o \
+	o/$(MODE)/libc/nt/advapi32/InitializeAcl.o \
+	o/$(MODE)/libc/nt/advapi32/InitiateShutdownW.o \
+	o/$(MODE)/libc/nt/advapi32/MapGenericMask.o \
+	o/$(MODE)/libc/nt/advapi32/OpenProcessToken.o \
+	o/$(MODE)/libc/nt/advapi32/SetEntriesInAclW.o \
+	o/$(MODE)/libc/nt/advapi32/SetSecurityInfo.o \
 	o/$(MODE)/libc/fmt/basename.o \
 	o/$(MODE)/libc/fmt/itoa64fixed16.greg.o \
 	o/$(MODE)/libc/fmt/itoa64radix16.greg.o \
+	o/$(MODE)/libc/fmt/unbing.o \
 	o/$(MODE)/libc/tinymath/acos.o \
 	o/$(MODE)/libc/tinymath/acosl.o \
 	o/$(MODE)/libc/tinymath/asin.o \
@@ -467,6 +630,11 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/str/getzipeocd.o \
 	o/$(MODE)/libc/str/getziplfilecompressedsize.o \
 	o/$(MODE)/libc/str/getziplfileuncompressedsize.o \
+	o/$(MODE)/libc/str/iscntrl.o \
+	o/$(MODE)/libc/str/isdigit.o \
+	o/$(MODE)/libc/str/isgraph.o \
+	o/$(MODE)/libc/str/isspace.o \
+	o/$(MODE)/libc/str/isutf8.o \
 	o/$(MODE)/libc/str/isxdigit.o \
 	o/$(MODE)/libc/str/iszipeocd32.o \
 	o/$(MODE)/libc/str/iszipeocd64.o \
@@ -479,6 +647,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/str/opensort.o \
 	o/$(MODE)/libc/str/qsort.o \
 	o/$(MODE)/libc/str/smoothsort.o \
+	o/$(MODE)/libc/str/startswith.o \
 	o/$(MODE)/libc/str/strcasecmp.o \
 	o/$(MODE)/libc/str/strlcat.o \
 	o/$(MODE)/libc/str/strlcpy.o \
@@ -496,6 +665,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/third_party/compiler_rt/logbl.o \
 	o/$(MODE)/libc/intrin/cosmo_futex_thunk.o \
 	o/$(MODE)/libc/intrin/fenv.o \
+	o/$(MODE)/libc/intrin/getcontext.o \
 	o/$(MODE)/libc/intrin/getcpuidbrand.o \
 	o/$(MODE)/libc/intrin/kclocknames.o \
 	o/$(MODE)/libc/intrin/kipoptnames.o \
@@ -505,26 +675,44 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/maps_init.o \
 	o/$(MODE)/libc/intrin/nocolor_init.o \
 	o/$(MODE)/libc/intrin/pagesize_init.o \
+	o/$(MODE)/libc/intrin/restore.o \
 	o/$(MODE)/libc/intrin/rseq.o \
+	o/$(MODE)/libc/intrin/stackcall.o \
 	o/$(MODE)/libc/intrin/sys_sched_yield.o \
 	o/$(MODE)/libc/intrin/sys_set_tls.o \
+	o/$(MODE)/libc/intrin/tailcontext.o \
 	o/$(MODE)/libc/intrin/__getauxval.o \
 	o/$(MODE)/libc/intrin/__getenv.o \
 	o/$(MODE)/libc/intrin/armopt.o \
 	o/$(MODE)/libc/intrin/atexit.o \
 	o/$(MODE)/libc/intrin/bzero.o \
+	o/$(MODE)/libc/intrin/checkcancel.o \
 	o/$(MODE)/libc/intrin/chromium.o \
+	o/$(MODE)/libc/intrin/clock_gettime-freebsd.o \
+	o/$(MODE)/libc/intrin/clock_gettime-mono.o \
+	o/$(MODE)/libc/intrin/clock_gettime-nt.o \
 	o/$(MODE)/libc/intrin/clock_gettime-sysv.o \
+	o/$(MODE)/libc/intrin/clock_gettime-xnu.o \
 	o/$(MODE)/libc/intrin/clock_gettime.o \
+	o/$(MODE)/libc/intrin/clock_gettime_monotonic_nt.o \
 	o/$(MODE)/libc/intrin/cosmo_futex.o \
 	o/$(MODE)/libc/intrin/cosmo_once.o \
 	o/$(MODE)/libc/intrin/count.o \
 	o/$(MODE)/libc/intrin/crash.o \
+	o/$(MODE)/libc/intrin/createdirectory.o \
+	o/$(MODE)/libc/intrin/createfile.o \
+	o/$(MODE)/libc/intrin/createfilemapping.o \
+	o/$(MODE)/libc/intrin/createnamedpipe.o \
+	o/$(MODE)/libc/intrin/createprocess.o \
+	o/$(MODE)/libc/intrin/createsymboliclink.o \
+	o/$(MODE)/libc/intrin/createthread.o \
+	o/$(MODE)/libc/intrin/cursor.o \
 	o/$(MODE)/libc/intrin/cxaatexit.o \
 	o/$(MODE)/libc/intrin/cxablocks.o \
 	o/$(MODE)/libc/intrin/cxafinalize.o \
 	o/$(MODE)/libc/intrin/cxalock.o \
 	o/$(MODE)/libc/intrin/deadlock.o \
+	o/$(MODE)/libc/intrin/deletefile.o \
 	o/$(MODE)/libc/intrin/demangle.o \
 	o/$(MODE)/libc/intrin/describebacktrace.o \
 	o/$(MODE)/libc/intrin/describeclockname.o \
@@ -576,8 +764,11 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/describewhence.o \
 	o/$(MODE)/libc/intrin/describewhichprio.o \
 	o/$(MODE)/libc/intrin/describewinsize.o \
+	o/$(MODE)/libc/intrin/deviceiocontrol.o \
+	o/$(MODE)/libc/intrin/directmap-metal.o \
 	o/$(MODE)/libc/intrin/dll.o \
 	o/$(MODE)/libc/intrin/dlopen.o \
+	o/$(MODE)/libc/intrin/event.o \
 	o/$(MODE)/libc/intrin/exit.o \
 	o/$(MODE)/libc/intrin/exit1.greg.o \
 	o/$(MODE)/libc/intrin/fblibm.o \
@@ -588,6 +779,8 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/feholdexcept.o \
 	o/$(MODE)/libc/intrin/feupdateenv.o \
 	o/$(MODE)/libc/intrin/fltrounds.o \
+	o/$(MODE)/libc/intrin/flushfilebuffers.o \
+	o/$(MODE)/libc/intrin/flushviewoffile.o \
 	o/$(MODE)/libc/intrin/fmaxl.o \
 	o/$(MODE)/libc/intrin/fnv.o \
 	o/$(MODE)/libc/intrin/folibm.o \
@@ -596,48 +789,67 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/formatoctal32.o \
 	o/$(MODE)/libc/intrin/ftrace.o \
 	o/$(MODE)/libc/intrin/getauxval.o \
+	o/$(MODE)/libc/intrin/getcosmosdrive.o \
 	o/$(MODE)/libc/intrin/getcpuidemulator.o \
 	o/$(MODE)/libc/intrin/getenv.o \
+	o/$(MODE)/libc/intrin/getexitcodeprocess.o \
+	o/$(MODE)/libc/intrin/getfileattributes.o \
 	o/$(MODE)/libc/intrin/getmainstack.o \
 	o/$(MODE)/libc/intrin/getminsigstksz.o \
 	o/$(MODE)/libc/intrin/getpid.o \
+	o/$(MODE)/libc/intrin/getpriorityclass.o \
 	o/$(MODE)/libc/intrin/getsafesize.greg.o \
 	o/$(MODE)/libc/intrin/gettid.o \
+	o/$(MODE)/libc/intrin/isalpha.o \
 	o/$(MODE)/libc/intrin/iscall.o \
 	o/$(MODE)/libc/intrin/isgenuineblink.o \
 	o/$(MODE)/libc/intrin/isqemu.o \
 	o/$(MODE)/libc/intrin/isthreaded.o \
 	o/$(MODE)/libc/intrin/isworker.o \
 	o/$(MODE)/libc/intrin/iswsl.o \
+	o/$(MODE)/libc/intrin/itimer.o \
+	o/$(MODE)/libc/intrin/itoa16.o \
 	o/$(MODE)/libc/intrin/kisdangerous.o \
 	o/$(MODE)/libc/intrin/klog.o \
+	o/$(MODE)/libc/intrin/kntisinheritable.greg.o \
+	o/$(MODE)/libc/intrin/kntstdio.o \
 	o/$(MODE)/libc/intrin/kprintf.greg.o \
 	o/$(MODE)/libc/intrin/kstarttsc.o \
 	o/$(MODE)/libc/intrin/linux2mask.o \
 	o/$(MODE)/libc/intrin/linux2sig.o \
 	o/$(MODE)/libc/intrin/localtime_lock.o \
+	o/$(MODE)/libc/intrin/lockfileex.o \
 	o/$(MODE)/libc/intrin/mapanon.o \
 	o/$(MODE)/libc/intrin/maps.o \
+	o/$(MODE)/libc/intrin/mapshared.o \
+	o/$(MODE)/libc/intrin/mapviewoffileex.o \
 	o/$(MODE)/libc/intrin/mask2linux.o \
 	o/$(MODE)/libc/intrin/memchr.o \
 	o/$(MODE)/libc/intrin/memcmp.o \
 	o/$(MODE)/libc/intrin/memmove.o \
 	o/$(MODE)/libc/intrin/memrchr.o \
 	o/$(MODE)/libc/intrin/memset.o \
+	o/$(MODE)/libc/intrin/mman.greg.o \
 	o/$(MODE)/libc/intrin/mmap.o \
+	o/$(MODE)/libc/intrin/movefileex.o \
 	o/$(MODE)/libc/intrin/mprotect-sysv.o \
 	o/$(MODE)/libc/intrin/mprotect.o \
+	o/$(MODE)/libc/intrin/msync-nt.o \
 	o/$(MODE)/libc/intrin/msync.o \
+	o/$(MODE)/libc/intrin/munmap-metal.o \
 	o/$(MODE)/libc/intrin/munmap-sysv.o \
 	o/$(MODE)/libc/intrin/musl.o \
 	o/$(MODE)/libc/intrin/nocolor.o \
 	o/$(MODE)/libc/intrin/nomultics.o \
 	o/$(MODE)/libc/intrin/oldstack.o \
+	o/$(MODE)/libc/intrin/openprocess.o \
 	o/$(MODE)/libc/intrin/pagesize.o \
 	o/$(MODE)/libc/intrin/permalloc.o \
 	o/$(MODE)/libc/intrin/personality.o \
+	o/$(MODE)/libc/intrin/posix_madvise-nt.o \
 	o/$(MODE)/libc/intrin/posix_madvise.o \
 	o/$(MODE)/libc/intrin/promises.o \
+	o/$(MODE)/libc/intrin/prot2nt.greg.o \
 	o/$(MODE)/libc/intrin/pthread_cleanup_pop.o \
 	o/$(MODE)/libc/intrin/pthread_cleanup_push.o \
 	o/$(MODE)/libc/intrin/pthread_cleanup_unwind.o \
@@ -648,32 +860,43 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/pthread_mutex_unlock.o \
 	o/$(MODE)/libc/intrin/pthread_mutex_wipe_np.o \
 	o/$(MODE)/libc/intrin/pthread_orphan_np.o \
+	o/$(MODE)/libc/intrin/pthread_pause_np.o \
 	o/$(MODE)/libc/intrin/pthread_rwlock_rdlock.o \
 	o/$(MODE)/libc/intrin/pthread_rwlock_unlock.o \
 	o/$(MODE)/libc/intrin/pthread_rwlock_wrlock.o \
 	o/$(MODE)/libc/intrin/pthread_setcancelstate.o \
 	o/$(MODE)/libc/intrin/pthread_static.o \
+	o/$(MODE)/libc/intrin/pthread_syshand.o \
 	o/$(MODE)/libc/intrin/pthread_tid.o \
 	o/$(MODE)/libc/intrin/pthread_yield_np.o \
 	o/$(MODE)/libc/intrin/pthreadlist.o \
 	o/$(MODE)/libc/intrin/pthreadlock.o \
 	o/$(MODE)/libc/intrin/rand64.o \
+	o/$(MODE)/libc/intrin/removedirectory.o \
+	o/$(MODE)/libc/intrin/reopenfile.o \
 	o/$(MODE)/libc/intrin/reservefd.o \
+	o/$(MODE)/libc/intrin/rlimit.o \
 	o/$(MODE)/libc/intrin/rlimitstack.o \
 	o/$(MODE)/libc/intrin/runlevel.o \
 	o/$(MODE)/libc/intrin/scalbn.o \
 	o/$(MODE)/libc/intrin/scalbnl.o \
+	o/$(MODE)/libc/intrin/setpriorityclass.o \
+	o/$(MODE)/libc/intrin/sig.o \
 	o/$(MODE)/libc/intrin/sig2linux.o \
 	o/$(MODE)/libc/intrin/sigaddset.o \
 	o/$(MODE)/libc/intrin/sigblock.o \
 	o/$(MODE)/libc/intrin/sigcountset.o \
+	o/$(MODE)/libc/intrin/sigcrashsig.o \
 	o/$(MODE)/libc/intrin/sigdelset.o \
 	o/$(MODE)/libc/intrin/sigemptyset.o \
 	o/$(MODE)/libc/intrin/sigfillset.o \
 	o/$(MODE)/libc/intrin/sigisemptyset.o \
 	o/$(MODE)/libc/intrin/sigismember.o \
+	o/$(MODE)/libc/intrin/sigproc.o \
+	o/$(MODE)/libc/intrin/sigprocmask-nt.o \
 	o/$(MODE)/libc/intrin/sigprocmask-sysv.o \
 	o/$(MODE)/libc/intrin/sigprocmask.o \
+	o/$(MODE)/libc/intrin/sigvar.o \
 	o/$(MODE)/libc/intrin/sizefmt.o \
 	o/$(MODE)/libc/intrin/stack.o \
 	o/$(MODE)/libc/intrin/stdio.o \
@@ -689,26 +912,61 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/intrin/strerror.o \
 	o/$(MODE)/libc/intrin/strerror_r.o \
 	o/$(MODE)/libc/intrin/strlen.o \
+	o/$(MODE)/libc/intrin/strlen16.o \
 	o/$(MODE)/libc/intrin/strncmp.o \
 	o/$(MODE)/libc/intrin/strnlen.o \
 	o/$(MODE)/libc/intrin/strrchr.o \
 	o/$(MODE)/libc/intrin/strsignal.o \
 	o/$(MODE)/libc/intrin/sys_gettid.greg.o \
+	o/$(MODE)/libc/intrin/sys_umtx_timedwait_uint.o \
+	o/$(MODE)/libc/intrin/terminateprocess.o \
+	o/$(MODE)/libc/intrin/terminatethisprocess.o \
 	o/$(MODE)/libc/intrin/timespec_add.o \
 	o/$(MODE)/libc/intrin/timespec_cmp.o \
 	o/$(MODE)/libc/intrin/timespec_frommicros.o \
 	o/$(MODE)/libc/intrin/timespec_frommillis.o \
+	o/$(MODE)/libc/intrin/timespec_fromnanos.o \
 	o/$(MODE)/libc/intrin/timespec_sub.o \
+	o/$(MODE)/libc/intrin/timespec_subz.o \
+	o/$(MODE)/libc/intrin/timespec_tomicros.o \
 	o/$(MODE)/libc/intrin/timespec_tomillis.o \
 	o/$(MODE)/libc/intrin/timespec_totimeval.o \
+	o/$(MODE)/libc/intrin/timespectowindowstime.o \
+	o/$(MODE)/libc/intrin/timeval_add.o \
+	o/$(MODE)/libc/intrin/timeval_cmp.o \
+	o/$(MODE)/libc/intrin/timeval_frommillis.o \
+	o/$(MODE)/libc/intrin/timeval_sub.o \
+	o/$(MODE)/libc/intrin/timeval_subz.o \
+	o/$(MODE)/libc/intrin/timeval_tomillis.o \
 	o/$(MODE)/libc/intrin/timeval_toseconds.o \
 	o/$(MODE)/libc/intrin/tpenc.o \
+	o/$(MODE)/libc/intrin/tprecode16to8.o \
+	o/$(MODE)/libc/intrin/tprecode8to16.o \
 	o/$(MODE)/libc/intrin/tree.o \
+	o/$(MODE)/libc/intrin/ucontext.o \
 	o/$(MODE)/libc/intrin/udivmodti4.o \
+	o/$(MODE)/libc/intrin/ulock.o \
 	o/$(MODE)/libc/intrin/unleaf.o \
+	o/$(MODE)/libc/intrin/unlockfileex.o \
+	o/$(MODE)/libc/intrin/unmapviewoffile.o \
+	o/$(MODE)/libc/intrin/unsetenv.o \
 	o/$(MODE)/libc/intrin/vdsofunc.o \
+	o/$(MODE)/libc/intrin/virtualalloc.o \
+	o/$(MODE)/libc/intrin/virtualallocex.o \
+	o/$(MODE)/libc/intrin/virtualprotect.o \
+	o/$(MODE)/libc/intrin/virtualprotectex.o \
+	o/$(MODE)/libc/intrin/waitforsingleobject.o \
 	o/$(MODE)/libc/intrin/windowsdurationtotimespec.o \
+	o/$(MODE)/libc/intrin/windowsdurationtotimeval.o \
 	o/$(MODE)/libc/intrin/windowstimetotimespec.o \
+	o/$(MODE)/libc/intrin/winerr.o \
+	o/$(MODE)/libc/intrin/winsockerr.o \
+	o/$(MODE)/libc/intrin/wintlsinit.o \
+	o/$(MODE)/libc/intrin/writeprocessmemory.o \
+	o/$(MODE)/libc/intrin/wsagetoverlappedresult.o \
+	o/$(MODE)/libc/intrin/wsarecv.o \
+	o/$(MODE)/libc/intrin/wsarecvfrom.o \
+	o/$(MODE)/libc/intrin/wsawaitformultipleevents.o \
 	o/$(MODE)/libc/sysv/calls/__sys_accept.o \
 	o/$(MODE)/libc/sysv/calls/__sys_accept4.o \
 	o/$(MODE)/libc/sysv/calls/__sys_bind.o \
@@ -728,6 +986,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/__sys_mprotect.o \
 	o/$(MODE)/libc/sysv/calls/__sys_munmap.o \
 	o/$(MODE)/libc/sysv/calls/__sys_openat.o \
+	o/$(MODE)/libc/sysv/calls/__sys_openat_nc.o \
 	o/$(MODE)/libc/sysv/calls/__sys_pipe.o \
 	o/$(MODE)/libc/sysv/calls/__sys_pipe2.o \
 	o/$(MODE)/libc/sysv/calls/__sys_poll.o \
@@ -739,6 +998,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_acct.o \
 	o/$(MODE)/libc/sysv/calls/sys_adjtimex.o \
 	o/$(MODE)/libc/sysv/calls/sys_arch_prctl.o \
+	o/$(MODE)/libc/sysv/calls/sys_bsdthread_register.o \
 	o/$(MODE)/libc/sysv/calls/sys_chdir.o \
 	o/$(MODE)/libc/sysv/calls/sys_chroot.o \
 	o/$(MODE)/libc/sysv/calls/sys_clock_adjtime.o \
@@ -766,6 +1026,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_fchown.o \
 	o/$(MODE)/libc/sysv/calls/sys_fchownat.o \
 	o/$(MODE)/libc/sysv/calls/sys_fdatasync.o \
+	o/$(MODE)/libc/sysv/calls/sys_fexecve.o \
 	o/$(MODE)/libc/sysv/calls/sys_fgetxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_flistxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_flock.o \
@@ -776,6 +1037,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_ftruncate.o \
 	o/$(MODE)/libc/sysv/calls/sys_futex.o \
 	o/$(MODE)/libc/sysv/calls/sys_futex_cp.o \
+	o/$(MODE)/libc/sysv/calls/sys_futimens.o \
 	o/$(MODE)/libc/sysv/calls/sys_futimes.o \
 	o/$(MODE)/libc/sysv/calls/sys_getcwd.o \
 	o/$(MODE)/libc/sysv/calls/sys_getdents.o \
@@ -830,6 +1092,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_munlock.o \
 	o/$(MODE)/libc/sysv/calls/sys_munlockall.o \
 	o/$(MODE)/libc/sysv/calls/sys_name_to_handle_at.o \
+	o/$(MODE)/libc/sysv/calls/sys_nanosleep.o \
 	o/$(MODE)/libc/sysv/calls/sys_open_by_handle_at.o \
 	o/$(MODE)/libc/sysv/calls/sys_personality.o \
 	o/$(MODE)/libc/sysv/calls/sys_ppoll.o \
@@ -848,15 +1111,21 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_remap_file_pages.o \
 	o/$(MODE)/libc/sysv/calls/sys_removexattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_renameat.o \
+	o/$(MODE)/libc/sysv/calls/sys_rtprio_thread.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_get_priority_max.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_get_priority_min.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_getaffinity.o \
+	o/$(MODE)/libc/sysv/calls/sys_sched_getparam.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_getscheduler.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_rr_get_interval.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setaffinity.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setparam.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setscheduler.o \
 	o/$(MODE)/libc/sysv/calls/sys_select.o \
+	o/$(MODE)/libc/sysv/calls/sys_sem_init.o \
+	o/$(MODE)/libc/sysv/calls/sys_sem_post.o \
+	o/$(MODE)/libc/sysv/calls/sys_sem_timedwait.o \
+	o/$(MODE)/libc/sysv/calls/sys_sem_wait.o \
 	o/$(MODE)/libc/sysv/calls/sys_semctl.o \
 	o/$(MODE)/libc/sysv/calls/sys_semget.o \
 	o/$(MODE)/libc/sysv/calls/sys_semop.o \
@@ -885,6 +1154,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_settimeofday.o \
 	o/$(MODE)/libc/sysv/calls/sys_setuid.o \
 	o/$(MODE)/libc/sysv/calls/sys_setxattr.o \
+	o/$(MODE)/libc/sysv/calls/sys_shm_open.o \
 	o/$(MODE)/libc/sysv/calls/sys_shmat.o \
 	o/$(MODE)/libc/sysv/calls/sys_shmctl.o \
 	o/$(MODE)/libc/sysv/calls/sys_shmdt.o \
@@ -924,7 +1194,13 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_waitid.o \
 	o/$(MODE)/libc/sysv/calls/sys_write.o \
 	o/$(MODE)/libc/sysv/calls/sys_writev.o \
+	o/$(MODE)/libc/sysv/errno-bsd.o \
 	o/$(MODE)/libc/sysv/errno.o \
+	o/$(MODE)/libc/sysv/errno-freebsd.o \
+	o/$(MODE)/libc/sysv/errno-netbsd.o \
+	o/$(MODE)/libc/sysv/errno-openbsd.o \
+	o/$(MODE)/libc/sysv/errno-windows.o \
+	o/$(MODE)/libc/sysv/errno-xnu.o \
 	o/$(MODE)/libc/sysv/enosys.o \
 	o/$(MODE)/libc/sysv/sysret.o \
 	o/$(MODE)/libc/sysv/linret.o \
@@ -937,7 +1213,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/syslib.o \
 	o/$(MODE)/libc/sysv/restorert.o \
 	o/$(MODE)/libc/sysv/syscall2.o \
+	o/$(MODE)/libc/sysv/syscall3.o \
 	o/$(MODE)/libc/sysv/systemfive.o \
+	o/$(MODE)/libc/sysv/tlsasm.o \
 	o/$(MODE)/libc/sysv/consts/AF_INET6.o \
 	o/$(MODE)/libc/sysv/consts/AT_CLKTCK.o \
 	o/$(MODE)/libc/sysv/consts/AT_EACCESS.o \
@@ -948,6 +1226,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/AT_SECURE.o \
 	o/$(MODE)/libc/sysv/consts/AT_SYMLINK_NOFOLLOW.o \
 	o/$(MODE)/libc/sysv/consts/AT_SYSINFO_EHDR.o \
+	o/$(MODE)/libc/sysv/consts/AT_TIMEKEEP.o \
 	o/$(MODE)/libc/sysv/consts/BUS_MCEERR_AO.o \
 	o/$(MODE)/libc/sysv/consts/BUS_MCEERR_AR.o \
 	o/$(MODE)/libc/sysv/consts/BUS_OOMERR.o \
@@ -959,6 +1238,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/CLOCK_REALTIME.o \
 	o/$(MODE)/libc/sysv/consts/CLOCK_REALTIME_COARSE.o \
 	o/$(MODE)/libc/sysv/consts/CLOCK_THREAD_CPUTIME_ID.o \
+	o/$(MODE)/libc/sysv/consts/FIONBIO.o \
 	o/$(MODE)/libc/sysv/consts/FIONREAD.o \
 	o/$(MODE)/libc/sysv/consts/FPE_FLTDIV.o \
 	o/$(MODE)/libc/sysv/consts/FPE_FLTINV.o \
@@ -972,6 +1252,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/FUTEX_WAKE.o \
 	o/$(MODE)/libc/sysv/consts/F_RDLCK.o \
 	o/$(MODE)/libc/sysv/consts/F_WRLCK.o \
+	o/$(MODE)/libc/sysv/consts/IFF_MULTICAST.o \
+	o/$(MODE)/libc/sysv/consts/IFF_POINTOPOINT.o \
+	o/$(MODE)/libc/sysv/consts/IFF_RUNNING.o \
 	o/$(MODE)/libc/sysv/consts/ILL_ILLADR.o \
 	o/$(MODE)/libc/sysv/consts/ILL_ILLOPN.o \
 	o/$(MODE)/libc/sysv/consts/ILL_ILLTRP.o \
@@ -1009,6 +1292,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/MAP_CONCEAL.o \
 	o/$(MODE)/libc/sysv/consts/MAP_FIXED_NOREPLACE.o \
 	o/$(MODE)/libc/sysv/consts/MAP_HUGETLB.o \
+	o/$(MODE)/libc/sysv/consts/MAP_JIT.o \
 	o/$(MODE)/libc/sysv/consts/MAP_LOCKED.o \
 	o/$(MODE)/libc/sysv/consts/MAP_NONBLOCK.o \
 	o/$(MODE)/libc/sysv/consts/MAP_NORESERVE.o \
@@ -1035,7 +1319,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/POLLWRBAND.o \
 	o/$(MODE)/libc/sysv/consts/POLLWRNORM.o \
 	o/$(MODE)/libc/sysv/consts/PROT_GUARD.o \
+	o/$(MODE)/libc/sysv/consts/RUSAGE_BOTH.o \
 	o/$(MODE)/libc/sysv/consts/RUSAGE_CHILDREN.o \
+	o/$(MODE)/libc/sysv/consts/RUSAGE_THREAD.o \
 	o/$(MODE)/libc/sysv/consts/SA_NOCLDSTOP.o \
 	o/$(MODE)/libc/sysv/consts/SA_NOCLDWAIT.o \
 	o/$(MODE)/libc/sysv/consts/SA_NODEFER.o \
@@ -1051,6 +1337,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/SCHED_RESET_ON_FORK.o \
 	o/$(MODE)/libc/sysv/consts/SCHED_RR.o \
 	o/$(MODE)/libc/sysv/consts/SEGV_PKUERR.o \
+	o/$(MODE)/libc/sysv/consts/SHM_ANON.o \
 	o/$(MODE)/libc/sysv/consts/SIG_BLOCK.o \
 	o/$(MODE)/libc/sysv/consts/SIG_SETMASK.o \
 	o/$(MODE)/libc/sysv/consts/SIG_UNBLOCK.o \
@@ -1058,6 +1345,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/SIOCGIFBRDADDR.o \
 	o/$(MODE)/libc/sysv/consts/SIOCGIFCONF.o \
 	o/$(MODE)/libc/sysv/consts/SIOCGIFDSTADDR.o \
+	o/$(MODE)/libc/sysv/consts/SIOCGIFFLAGS.o \
 	o/$(MODE)/libc/sysv/consts/SIOCGIFNETMASK.o \
 	o/$(MODE)/libc/sysv/consts/SI_ASYNCNL.o \
 	o/$(MODE)/libc/sysv/consts/SI_KERNEL.o \
@@ -1123,6 +1411,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/_ARG_MAX.o \
 	o/$(MODE)/libc/sysv/consts/_MINSIGSTKSZ.o \
 	o/$(MODE)/libc/sysv/consts/_NSIG.o \
+	o/$(MODE)/libc/sysv/consts/_POSIX_VDISABLE.o \
 	o/$(MODE)/libc/sysv/consts/__NR_clock_gettime.o \
 	o/$(MODE)/libc/sysv/consts/__NR_close.o \
 	o/$(MODE)/libc/sysv/consts/__NR_exit.o \
@@ -1133,35 +1422,205 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/consts/__NR_openat.o \
 	o/$(MODE)/libc/sysv/consts/__NR_sched_yield.o \
 	o/$(MODE)/libc/sysv/consts/__NR_set_tls.o \
+	o/$(MODE)/libc/sysv/consts/__NR_sigaction.o \
 	o/$(MODE)/libc/sysv/consts/__NR_vfork.o \
 	o/$(MODE)/libc/sysv/consts/__NR_write.o \
+	o/$(MODE)/libc/sysv/errfuns/e2big.o \
 	o/$(MODE)/libc/sysv/errfuns/eacces.o \
 	o/$(MODE)/libc/sysv/errfuns/eafnosupport.o \
+	o/$(MODE)/libc/sysv/errfuns/eagain.o \
+	o/$(MODE)/libc/sysv/errfuns/ealready.o \
 	o/$(MODE)/libc/sysv/errfuns/ebadf.o \
 	o/$(MODE)/libc/sysv/errfuns/ecanceled.o \
+	o/$(MODE)/libc/sysv/errfuns/echild.o \
 	o/$(MODE)/libc/sysv/errfuns/eexist.o \
 	o/$(MODE)/libc/sysv/errfuns/efault.o \
+	o/$(MODE)/libc/sysv/errfuns/efbig.o \
 	o/$(MODE)/libc/sysv/errfuns/eilseq.o \
+	o/$(MODE)/libc/sysv/errfuns/einprogress.o \
+	o/$(MODE)/libc/sysv/errfuns/eintr.o \
 	o/$(MODE)/libc/sysv/errfuns/einval.o \
 	o/$(MODE)/libc/sysv/errfuns/eio.o \
+	o/$(MODE)/libc/sysv/errfuns/eisconn.o \
 	o/$(MODE)/libc/sysv/errfuns/eisdir.o \
+	o/$(MODE)/libc/sysv/errfuns/eloop.o \
 	o/$(MODE)/libc/sysv/errfuns/emfile.o \
 	o/$(MODE)/libc/sysv/errfuns/enametoolong.o \
 	o/$(MODE)/libc/sysv/errfuns/enoent.o \
 	o/$(MODE)/libc/sysv/errfuns/enoexec.o \
+	o/$(MODE)/libc/sysv/errfuns/enolink.o \
 	o/$(MODE)/libc/sysv/errfuns/enomem.o \
 	o/$(MODE)/libc/sysv/errfuns/enoprotoopt.o \
 	o/$(MODE)/libc/sysv/errfuns/enospc.o \
 	o/$(MODE)/libc/sysv/errfuns/enotdir.o \
+	o/$(MODE)/libc/sysv/errfuns/enotempty.o \
 	o/$(MODE)/libc/sysv/errfuns/enotsock.o \
 	o/$(MODE)/libc/sysv/errfuns/enotsup.o \
 	o/$(MODE)/libc/sysv/errfuns/enotty.o \
 	o/$(MODE)/libc/sysv/errfuns/eopnotsupp.o \
 	o/$(MODE)/libc/sysv/errfuns/eoverflow.o \
 	o/$(MODE)/libc/sysv/errfuns/eperm.o \
+	o/$(MODE)/libc/sysv/errfuns/epfnosupport.o \
+	o/$(MODE)/libc/sysv/errfuns/epipe.o \
 	o/$(MODE)/libc/sysv/errfuns/erange.o \
 	o/$(MODE)/libc/sysv/errfuns/erofs.o \
+	o/$(MODE)/libc/sysv/errfuns/espipe.o \
+	o/$(MODE)/libc/sysv/errfuns/esrch.o \
+	o/$(MODE)/libc/sysv/errfuns/etimedout.o \
+	o/$(MODE)/libc/sysv/errfuns/etxtbsy.o \
 	o/$(MODE)/libc/sysv/errfuns/exdev.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAAccept.o \
+	o/$(MODE)/libc/nt/ws2_32/WSACleanup.o \
+	o/$(MODE)/libc/nt/ws2_32/WSACloseEvent.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAConnect.o \
+	o/$(MODE)/libc/nt/ws2_32/WSACreateEvent.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAGetLastError.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAGetOverlappedResult.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAIoctl.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAPoll.o \
+	o/$(MODE)/libc/nt/ws2_32/WSARecv.o \
+	o/$(MODE)/libc/nt/ws2_32/WSARecvFrom.o \
+	o/$(MODE)/libc/nt/ws2_32/WSASend.o \
+	o/$(MODE)/libc/nt/ws2_32/WSASendTo.o \
+	o/$(MODE)/libc/nt/ws2_32/WSASocketW.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAStartup.o \
+	o/$(MODE)/libc/nt/ws2_32/WSAWaitForMultipleEvents.o \
+	o/$(MODE)/libc/nt/ws2_32/bind.o \
+	o/$(MODE)/libc/nt/ws2_32/closesocket.o \
+	o/$(MODE)/libc/nt/ws2_32/getpeername.o \
+	o/$(MODE)/libc/nt/ws2_32/getsockname.o \
+	o/$(MODE)/libc/nt/ws2_32/getsockopt.o \
+	o/$(MODE)/libc/nt/ws2_32/ioctlsocket.o \
+	o/$(MODE)/libc/nt/ws2_32/listen.o \
+	o/$(MODE)/libc/nt/ws2_32/select.o \
+	o/$(MODE)/libc/nt/ws2_32/setsockopt.o \
+	o/$(MODE)/libc/nt/ws2_32/shutdown.o \
+	o/$(MODE)/libc/nt/API-MS-Win-Core-Synch-l1-2-0/WaitOnAddress.o \
+	o/$(MODE)/libc/nt/API-MS-Win-Core-Synch-l1-2-0/WakeByAddressAll.o \
+	o/$(MODE)/libc/nt/API-MS-Win-Core-Synch-l1-2-0/WakeByAddressSingle.o \
+	o/$(MODE)/libc/nt/API-MS-Win-Core-Realtime-l1-1-1/QueryInterruptTimePrecise.o \
+	o/$(MODE)/libc/nt/API-MS-Win-Core-Realtime-l1-1-1/QueryUnbiasedInterruptTimePrecise.o \
+	o/$(MODE)/libc/nt/BCryptPrimitives/ProcessPrng.o \
+	o/$(MODE)/libc/nt/kernel32/AddVectoredExceptionHandler.o \
+	o/$(MODE)/libc/nt/kernel32/CancelIoEx.o \
+	o/$(MODE)/libc/nt/kernel32/CloseHandle.o \
+	o/$(MODE)/libc/nt/kernel32/CreateDirectoryW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateEventW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateFileMappingW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateFileW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateHardLinkW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateNamedPipeW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateProcessW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateSymbolicLinkW.o \
+	o/$(MODE)/libc/nt/kernel32/CreateThread.o \
+	o/$(MODE)/libc/nt/kernel32/CreateWaitableTimerW.o \
+	o/$(MODE)/libc/nt/kernel32/DeleteFileW.o \
+	o/$(MODE)/libc/nt/kernel32/DeleteProcThreadAttributeList.o \
+	o/$(MODE)/libc/nt/kernel32/DeviceIoControl.o \
+	o/$(MODE)/libc/nt/kernel32/DuplicateHandle.o \
+	o/$(MODE)/libc/nt/kernel32/ExitThread.o \
+	o/$(MODE)/libc/nt/kernel32/FlushConsoleInputBuffer.o \
+	o/$(MODE)/libc/nt/kernel32/FlushFileBuffers.o \
+	o/$(MODE)/libc/nt/kernel32/FlushViewOfFile.o \
+	o/$(MODE)/libc/nt/kernel32/FreeEnvironmentStringsW.o \
+	o/$(MODE)/libc/nt/kernel32/FreeLibrary.o \
+	o/$(MODE)/libc/nt/kernel32/GetCommandLineW.o \
+	o/$(MODE)/libc/nt/kernel32/GetComputerNameExW.o \
+	o/$(MODE)/libc/nt/kernel32/GetConsoleMode.o \
+	o/$(MODE)/libc/nt/kernel32/GetConsoleScreenBufferInfoEx.o \
+	o/$(MODE)/libc/nt/kernel32/GetCurrentDirectoryW.o \
+	o/$(MODE)/libc/nt/kernel32/GetCurrentProcessId.o \
+	o/$(MODE)/libc/nt/kernel32/GetCurrentProcessorNumberEx.o \
+	o/$(MODE)/libc/nt/kernel32/GetCurrentThread.o \
+	o/$(MODE)/libc/nt/kernel32/GetCurrentThreadId.o \
+	o/$(MODE)/libc/nt/kernel32/GetEnvironmentStringsW.o \
+	o/$(MODE)/libc/nt/kernel32/GetEnvironmentVariableW.o \
+	o/$(MODE)/libc/nt/kernel32/GetExitCodeProcess.o \
+	o/$(MODE)/libc/nt/kernel32/GetFileAttributesW.o \
+	o/$(MODE)/libc/nt/kernel32/GetFileInformationByHandle.o \
+	o/$(MODE)/libc/nt/kernel32/GetFileInformationByHandleEx.o \
+	o/$(MODE)/libc/nt/kernel32/GetFileType.o \
+	o/$(MODE)/libc/nt/kernel32/GetFinalPathNameByHandleW.o \
+	o/$(MODE)/libc/nt/kernel32/GetLastError.o \
+	o/$(MODE)/libc/nt/kernel32/GetLogicalDrives.o \
+	o/$(MODE)/libc/nt/kernel32/GetMaximumProcessorCount.o \
+	o/$(MODE)/libc/nt/kernel32/GetModuleFileNameW.o \
+	o/$(MODE)/libc/nt/kernel32/GetModuleHandleA.o \
+	o/$(MODE)/libc/nt/kernel32/GetNumberOfConsoleInputEvents.o \
+	o/$(MODE)/libc/nt/kernel32/GetOverlappedResult.o \
+	o/$(MODE)/libc/nt/kernel32/GetPriorityClass.o \
+	o/$(MODE)/libc/nt/kernel32/GetProcAddress.o \
+	o/$(MODE)/libc/nt/kernel32/GetProcessAffinityMask.o \
+	o/$(MODE)/libc/nt/kernel32/GetProcessHeap.o \
+	o/$(MODE)/libc/nt/kernel32/GetProcessIoCounters.o \
+	o/$(MODE)/libc/nt/kernel32/GetProcessTimes.o \
+	o/$(MODE)/libc/nt/kernel32/GetStdHandle.o \
+	o/$(MODE)/libc/nt/kernel32/GetSystemInfo.o \
+	o/$(MODE)/libc/nt/kernel32/GetSystemTimeAsFileTime.o \
+	o/$(MODE)/libc/nt/kernel32/GetSystemTimePreciseAsFileTime.o \
+	o/$(MODE)/libc/nt/kernel32/GetSystemTimes.o \
+	o/$(MODE)/libc/nt/kernel32/GetTempPathW.o \
+	o/$(MODE)/libc/nt/kernel32/GetThreadContext.o \
+	o/$(MODE)/libc/nt/kernel32/GetThreadTimes.o \
+	o/$(MODE)/libc/nt/kernel32/GetTickCount64.o \
+	o/$(MODE)/libc/nt/kernel32/GetVolumeInformationByHandleW.o \
+	o/$(MODE)/libc/nt/kernel32/GlobalMemoryStatusEx.o \
+	o/$(MODE)/libc/nt/kernel32/HeapAlloc.o \
+	o/$(MODE)/libc/nt/kernel32/HeapFree.o \
+	o/$(MODE)/libc/nt/kernel32/HeapReAlloc.o \
+	o/$(MODE)/libc/nt/kernel32/InitializeProcThreadAttributeList.o \
+	o/$(MODE)/libc/nt/kernel32/LoadLibraryW.o \
+	o/$(MODE)/libc/nt/kernel32/LocalAlloc.o \
+	o/$(MODE)/libc/nt/kernel32/LocalFree.o \
+	o/$(MODE)/libc/nt/kernel32/LockFileEx.o \
+	o/$(MODE)/libc/nt/kernel32/MapViewOfFileEx.o \
+	o/$(MODE)/libc/nt/kernel32/MoveFileExW.o \
+	o/$(MODE)/libc/nt/kernel32/OpenProcess.o \
+	o/$(MODE)/libc/nt/kernel32/PeekNamedPipe.o \
+	o/$(MODE)/libc/nt/kernel32/PrefetchVirtualMemory.o \
+	o/$(MODE)/libc/nt/kernel32/QueryUnbiasedInterruptTime.o \
+	o/$(MODE)/libc/nt/kernel32/ReOpenFile.o \
+	o/$(MODE)/libc/nt/kernel32/ReadConsoleInputW.o \
+	o/$(MODE)/libc/nt/kernel32/ReadFile.o \
+	o/$(MODE)/libc/nt/kernel32/RemoveDirectoryW.o \
+	o/$(MODE)/libc/nt/kernel32/ResetEvent.o \
+	o/$(MODE)/libc/nt/kernel32/ResumeThread.o \
+	o/$(MODE)/libc/nt/kernel32/SetConsoleCP.o \
+	o/$(MODE)/libc/nt/kernel32/SetConsoleCtrlHandler.o \
+	o/$(MODE)/libc/nt/kernel32/SetConsoleMode.o \
+	o/$(MODE)/libc/nt/kernel32/SetConsoleOutputCP.o \
+	o/$(MODE)/libc/nt/kernel32/SetConsoleScreenBufferSize.o \
+	o/$(MODE)/libc/nt/kernel32/SetEndOfFile.o \
+	o/$(MODE)/libc/nt/kernel32/SetEnvironmentVariableW.o \
+	o/$(MODE)/libc/nt/kernel32/SetEvent.o \
+	o/$(MODE)/libc/nt/kernel32/SetFileAttributesW.o \
+	o/$(MODE)/libc/nt/kernel32/SetFileInformationByHandle.o \
+	o/$(MODE)/libc/nt/kernel32/SetFilePointerEx.o \
+	o/$(MODE)/libc/nt/kernel32/SetFileTime.o \
+	o/$(MODE)/libc/nt/kernel32/SetLastError.o \
+	o/$(MODE)/libc/nt/kernel32/SetPriorityClass.o \
+	o/$(MODE)/libc/nt/kernel32/SetProcessAffinityMask.o \
+	o/$(MODE)/libc/nt/kernel32/SetStdHandle.o \
+	o/$(MODE)/libc/nt/kernel32/SetThreadContext.o \
+	o/$(MODE)/libc/nt/kernel32/SetWaitableTimer.o \
+	o/$(MODE)/libc/nt/kernel32/SleepEx.o \
+	o/$(MODE)/libc/nt/kernel32/SuspendThread.o \
+	o/$(MODE)/libc/nt/kernel32/TerminateProcess.o \
+	o/$(MODE)/libc/nt/kernel32/TerminateThread.o \
+	o/$(MODE)/libc/nt/kernel32/TlsAlloc.o \
+	o/$(MODE)/libc/nt/kernel32/UnlockFileEx.o \
+	o/$(MODE)/libc/nt/kernel32/UnmapViewOfFile.o \
+	o/$(MODE)/libc/nt/kernel32/UpdateProcThreadAttribute.o \
+	o/$(MODE)/libc/nt/kernel32/VirtualAllocEx.o \
+	o/$(MODE)/libc/nt/kernel32/VirtualFree.o \
+	o/$(MODE)/libc/nt/kernel32/VirtualLock.o \
+	o/$(MODE)/libc/nt/kernel32/VirtualProtectEx.o \
+	o/$(MODE)/libc/nt/kernel32/VirtualUnlock.o \
+	o/$(MODE)/libc/nt/kernel32/WaitForMultipleObjects.o \
+	o/$(MODE)/libc/nt/kernel32/WaitForSingleObject.o \
+	o/$(MODE)/libc/nt/kernel32/WriteFile.o \
+	o/$(MODE)/libc/nt/kernel32/WriteProcessMemory.o \
+	o/$(MODE)/libc/nt/sysv2nt.o \
 	o/$(MODE)/libc/nexgen32e/argc.o \
 	o/$(MODE)/libc/nexgen32e/argv.o \
 	o/$(MODE)/libc/nexgen32e/auxv.o \

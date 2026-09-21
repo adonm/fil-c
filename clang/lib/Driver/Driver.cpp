@@ -1532,6 +1532,13 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
       HasCosmo = true;
   }
 
+  // --filc-ape is consumed by the cosmo-mode link job (see
+  // tools::gnutools::Linker::ConstructJob); claim it up front so that
+  // invocations that never reach a cosmo-mode link (like compile-only ones)
+  // do not get an unused-argument warning.
+  if (Arg *A = Args.getLastArg(options::OPT_filc_ape))
+    A->claim();
+
   // Check for missing include directories.
   if (!Diags.isIgnored(diag::warn_missing_include_dirs, SourceLocation())) {
     for (auto IncludeDir : Args.getAllArgValues(options::OPT_I_Group)) {

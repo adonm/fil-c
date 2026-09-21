@@ -538,6 +538,105 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       ToolChain.getTriple().hasEnvironment() ||
       (ToolChain.getTriple().getVendor() != llvm::Triple::MipsTechnologies);
 
+  // Fil-C cosmo mode: after the link below, cosmo's apelink tool turns the
+  // freshly linked static ELF into an "actually portable executable" (APE).
+  // apelink embeds the APE loader (and the Apple-silicon loader source) and
+  // rewrites the file so that the "MZqFpD" magic comes first, which makes the
+  // program runnable on Windows x86_64, macOS, the *BSDs, and Linux (on
+  // Linux the kernel runs the ELF directly if binfmt_misc is registered, and
+  // otherwise the shell's ENOEXEC fallback executes the embedded shell
+  // stub).
+  //
+  // The default contract keeps both artifacts: the ELF that the link below
+  // produced stays at the requested output path (the kernel needs the ELF
+  // header at offset zero, and the test suite and pizfix tooling exec it
+  // directly), and the APE is written next to it as <output>.com.  The
+  // --filc-ape option inverts this for people who want the APE to be the
+  // main artifact: <output> becomes the APE and the ELF is kept as
+  // <output>.dbg.  If the APE tooling is missing from the pizfix tree (a
+  // half-installed tree), --filc-ape fails the link, since asking for APE
+  // semantics and not getting them would be a lie; the default mode just
+  // warns and ships the ELF.
+  //
+  // This is only done for cosmo-mode executable links: -shared is rejected
+  // in cosmo mode (see above) and -r links are not executables.  It is also
+  // x86_64-only for now, since pizfix only ships the x86_64 APE loader
+  // (pizfix/lib/ape-x86_64.elf).  When the aarch64 Fil-C cosmo port ships a
+  // pizfix/lib/ape-aarch64.elf loader, turning the x86_64 check above into
+  // an arch switch brings APEs to that port.
+  const char *APELinkPath = nullptr;
+  const char *APELoaderPath = nullptr;
+  const char *ELFOutputFilename = Output.getFilename();
+  const char *APEOutputFilename = nullptr;
+  if (IsCosmo && ToolChain.getArch() == llvm::Triple::x86_64 &&
+      !Args.hasArg(options::OPT_shared) && !Args.hasArg(options::OPT_r)) {
+    // Resolve the APE tooling locations the same way the cosmo CRT objects
+    // above are: --filc-crt-path overrides the pizfix lib directory, else
+    // it is <pizfix>/lib.  The tools (apelink and the Apple-silicon loader
+    // source ape-m1.c) live in the libexec directory that sits next to the
+    // lib directory.
+    SmallString<128> LibDir;
+    if (Arg *A = Args.getLastArg(options::OPT_filc_crt_path)) {
+      A->claim();
+      LibDir = A->getValue();
+    } else if (D.HasPizfix) {
+      LibDir = D.PizfixRoot;
+      llvm::sys::path::append(LibDir, "lib");
+    } else if (D.HasOptfil) {
+      LibDir = "/opt/fil/lib";
+    } else {
+      LibDir = "/usr/lib";
+    }
+    SmallString<128> LibexecDir(LibDir);
+    llvm::sys::path::remove_filename(LibexecDir);
+    llvm::sys::path::append(LibexecDir, "libexec");
+    llvm::sys::path::append(LibDir, "ape-x86_64.elf");
+    llvm::sys::path::append(LibexecDir, "apelink");
+
+    APELoaderPath = Args.MakeArgString(LibDir);
+    APELinkPath = Args.MakeArgString(LibexecDir);
+
+    // Note: apelink also takes a -M <pizfix>/libexec/ape-m1.c flag, which
+    // embeds the Apple-silicon loader source so that APEs can run natively
+    // on arm64 macOS.  That source is only ever used for a native arm64
+    // (aarch64 ELF) input, which cosmo mode cannot produce yet, and apelink
+    // refuses -M without one, so the flag is not passed until the aarch64
+    // Fil-C cosmo port lands (at which point this also grows a second -l
+    // for pizfix/lib/ape-aarch64.elf and an aarch64 case in the arch switch
+    // above).
+
+    const char *Missing = nullptr;
+    if (!llvm::sys::fs::can_execute(APELinkPath))
+      Missing = APELinkPath;
+    else if (!llvm::sys::fs::exists(APELoaderPath))
+      Missing = APELoaderPath;
+    if (Missing) {
+      if (Args.hasArg(options::OPT_filc_ape)) {
+        D.Diag(diag::err_drv_filc_ape_tool_missing)
+            << Output.getFilename() << Missing;
+        return;
+      }
+      // Half-installed pizfix tree: degrade to shipping just the ELF.
+      D.Diag(diag::warn_drv_filc_ape_tool_missing)
+          << Output.getFilename() << Missing;
+    } else {
+      if (Args.hasArg(options::OPT_filc_ape)) {
+        // The APE takes the requested output path and the ELF is kept
+        // alongside it as <output>.dbg.
+        SmallString<128> P(Output.getFilename());
+        P += ".dbg";
+        ELFOutputFilename = Args.MakeArgString(P);
+        APEOutputFilename = Output.getFilename();
+      } else {
+        // The ELF takes the requested output path and the APE is kept
+        // alongside it as <output>.com.
+        SmallString<128> P(Output.getFilename());
+        P += ".com";
+        APEOutputFilename = Args.MakeArgString(P);
+      }
+    }
+  }
+
   ArgStringList CmdArgs;
 
   // Silence warning for "clang -g foo.o -o foo"
@@ -627,7 +726,10 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   CmdArgs.push_back("-o");
-  CmdArgs.push_back(Output.getFilename());
+  // In cosmo mode with APE tooling this is either the requested output path
+  // (default: the APE goes to <output>.com) or <output>.dbg (--filc-ape: the
+  // APE takes the requested output path).
+  CmdArgs.push_back(ELFOutputFilename);
 
   auto GetYoloLibPath = [&] (const StringRef str) -> std::string {
     if (ToolChain.getDriver().HasPizfix) {
@@ -1033,6 +1135,32 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   C.addCommand(std::make_unique<Command>(JA, *this,
                                          ResponseFileSupport::AtFileCurCP(),
                                          Exec, CmdArgs, Inputs, Output));
+
+  if (APEOutputFilename) {
+    // Post-link step: run apelink on the ELF produced above.  Commands run
+    // in the order they are added, so this sees the linked ELF, and if the
+    // link itself fails this command is skipped along with the rest of the
+    // failed job (both commands belong to the same JobAction).
+    ArgStringList APELinkArgs;
+    // -V -1 = the APE claims support for every OS (Linux, metal, Windows,
+    // XNU, and the BSDs), which is what cosmocc does by default.
+    APELinkArgs.push_back("-V");
+    APELinkArgs.push_back("-1");
+    APELinkArgs.push_back("-l");
+    APELinkArgs.push_back(APELoaderPath);
+    APELinkArgs.push_back("-o");
+    APELinkArgs.push_back(APEOutputFilename);
+    APELinkArgs.push_back(ELFOutputFilename);
+
+    InputInfo ELFInput(Output.getType(), ELFOutputFilename,
+                       Output.getBaseInput());
+    InputInfo APEOutput(types::TY_Image, APEOutputFilename,
+                        Output.getBaseInput());
+    C.addCommand(std::make_unique<Command>(JA, *this,
+                                           ResponseFileSupport::None(),
+                                           APELinkPath, APELinkArgs, ELFInput,
+                                           APEOutput));
+  }
 }
 
 void tools::gnutools::Assembler::ConstructJob(Compilation &C,

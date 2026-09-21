@@ -855,6 +855,9 @@ def filc_include : Joined<["--"], "filc-include=">, Flags<[NoXarchOption]>,
 def filc_cosmo : Flag<["--"], "filc-cosmo">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Force Fil-C cosmopolitan libc mode (static, non-PIE executables linked with cosmo CRT, ape.lds, and libyolocosmo.a)">;
+def filc_ape : Flag<["--"], "filc-ape">, Flags<[NoXarchOption]>,
+  Visibility<[ClangOption]>,
+  HelpText<"In cosmo mode, make the requested output file the APE (runnable on Windows x86_64/macOS/BSD/Linux) and keep the statically-linked ELF as <output>.dbg.  By default the ELF takes the requested output path and the APE is written next to it as <output>.com">;
 def yolo_assembler : Flag<["-"], "yolo-assembler">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Use the built-in YOLO assembler for .s inputs instead of sarcasm">;

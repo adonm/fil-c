@@ -61,14 +61,14 @@ so everything else in cosmopolitan.a is dead weight.  This script:
      did (counts, sizes, per-tree breakdown, unresolved/conflicting symbols).
 
 The script must be run from a tree that has a complete cosmo build (i.e. after
-`make m=x86_64-optlinux toolchain` in projects/yolocosmo and a full cosmo
+`make m=x86_64-ape toolchain` in projects/yolocosmo and a full cosmo
 flavor build of pizfix).  It never has to be run by hand: the checked-in
 filc-objects.mk is the source of truth for the build; this tool exists to
 regenerate it when cosmo or the runtime changes what gets referenced.
 
 Usage (from anywhere):
 
-    python3 projects/yolocosmo/filc/compute-closure.py [--mode x86_64-optlinux]
+    python3 projects/yolocosmo/filc/compute-closure.py [--mode x86_64-ape]
 """
 
 import argparse
@@ -216,7 +216,7 @@ def nm_objects_parallel(paths):
 def main():
     parser = argparse.ArgumentParser(
         description="Regenerate filc/filc-objects.mk (see the docstring).")
-    parser.add_argument("--mode", default="x86_64-optlinux",
+    parser.add_argument("--mode", default="x86_64-ape",
                         help="cosmo build mode whose o/ tree to scan")
     parser.add_argument("--output", default=None,
                         help="where to write the make fragment "
@@ -340,6 +340,15 @@ def main():
         obj = nm_object(path)
         undefined |= obj.undefined
         defined_elsewhere |= obj.defined
+
+    # The ape.lds linker script also references symbols of its own, in its
+    # header arithmetic: CHURN(WinMain) hashes the Windows PE entry point
+    # into the APE UUID, so every cosmo-mode link requires WinMain to be
+    # defined even though no object references it.  (EfiMain is only read
+    # under DEFINED(EfiMain), so it stays optional.)  Seed it so that the
+    # pull loop pulls libc/runtime/winmain.greg.o from the archive exactly
+    # like ld does when it scans -lyolocosmo after the linker script.
+    undefined |= {"WinMain"}
 
     # The seed archives' own definitions satisfy their mutual references, but
     # (crucially) they do NOT provide symbols for cosmo members: libc.a is

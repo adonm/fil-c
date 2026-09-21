@@ -199,6 +199,11 @@ def err_drv_filc_cosmo_requires_pizfix : Error<
   "'--filc-cosmo' requires a Fil-C pizfix directory (point at one with '--filc-resource-dir=')">;
 def err_drv_filc_cosmo_not_linkable : Error<
   "'%0' is not supported in Fil-C cosmopolitan libc mode (cosmo programs are static, non-PIE executables with no dynamic linker)">;
+def err_drv_filc_ape_tool_missing : Error<
+  "cannot build an APE for '%0': Fil-C APE tooling is missing (%1 is not installed in the pizfix tree)">;
+def warn_drv_filc_ape_tool_missing : Warning<
+  "not building an APE for '%0': Fil-C APE tooling is missing (%1 is not installed in the pizfix tree)">,
+  InGroup<DiagGroup<"filc-ape">>;
 def err_drv_invalid_Xarch_argument_with_args : Error<
   "invalid Xarch argument: '%0', options requiring arguments are unsupported">;
 def err_drv_Xopenmp_target_missing_triple : Error<

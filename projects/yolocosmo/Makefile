@@ -688,4 +688,43 @@ o/$(MODE)/filc/libyolocosmo.a: $(FILC_YOLO_OBJS)
 	$(file >$(TMPDIR)/filc-yolo-objs,$(FILC_YOLO_OBJS))
 	ar rcsD -P $@ @$(TMPDIR)/filc-yolo-objs
 
+#─φ─Fil-C: APE linker tooling─────────────────────────────────────────────────
+#
+# The Fil-C clang driver runs cosmo's apelink tool as a post-link step for
+# every cosmo-mode executable link, so that every cosmo-mode program also
+# exists as an APE that runs on Windows x86_64, macOS, the *BSDs, and Linux.
+# build_yolocosmo.sh installs these artifacts into the pizfix tree, where the
+# driver finds them:
+#
+#   o/x86_64/ape/ape.elf                     -> pizfix/lib/ape-x86_64.elf
+#                                               (the APE loader that apelink
+#                                               embeds; built in the plain
+#                                               x86_64 mode, exactly like
+#                                               cosmo's own tool/cosmocc/
+#                                               package.sh ships it, because
+#                                               the loader has to run on every
+#                                               OS, not just Linux)
+#   o/x86_64-optlinux/tool/build/apelink.dbg -> pizfix/libexec/apelink
+#   o/x86_64-optlinux/tool/build/pecheck.dbg -> pizfix/libexec/pecheck
+#   ape/ape-m1.c                             -> pizfix/libexec/ape-m1.c
+#
+# The tools only ever run on the Linux build host, so they are built in the
+# Linux-only x86_64-optlinux mode.  Unlike filcyolo they are full-blown cosmo
+# programs, so building them compiles the whole cosmopolitan libc for that
+# mode; that cost is paid once and the build is incremental afterwards.
+#
+# This is a separate target from filcyolo, and it must be invoked by its own
+# make run (as build_yolocosmo.sh does), because it recursively re-invokes
+# make in the x86_64 modes; running that concurrently with a filcyolo build
+# for the same mode would race on o/x86_64-optlinux.
+#
+# When the aarch64 Fil-C cosmo port lands, add o/aarch64/ape/ape.elf to the
+# recipe below, install it as pizfix/lib/ape-aarch64.elf, and teach the
+# driver's APE post-link step (tools::gnutools::Linker::ConstructJob) about
+# the aarch64 loader; apelink takes one -l per loader.
+.PHONY: filcapetools
+filcapetools:
+	$(MAKE) m=x86_64 o/x86_64/ape/ape.elf
+	$(MAKE) m=x86_64-optlinux o/x86_64-optlinux/tool/build/apelink.dbg o/x86_64-optlinux/tool/build/pecheck.dbg
+
 -include o/$(MODE)/depend

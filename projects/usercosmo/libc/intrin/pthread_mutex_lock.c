@@ -180,7 +180,12 @@ dontinline static errno_t pthread_mutex_lock_impl(pthread_mutex_t *mutex,
       if (!is_trylock) {
         // common case no. 2
         // - recursive private nsync mutex lock
-        mutex->_lock = pthread_mutex_lock_recursive_nsync;
+        // Fil-C: this slot is read racily by the fast path in
+        // pthread_mutex_lock() below, so publish it atomically. Under Fil-C
+        // a pointer in memory is a (pointer, capability) pair and a torn
+        // pair would be a safety violation rather than a benign race.
+        __atomic_store_n(&mutex->_lock, pthread_mutex_lock_recursive_nsync,
+                         __ATOMIC_RELEASE);
         return pthread_mutex_lock_recursive_nsync(mutex);
       } else {
         return pthread_mutex_trylock_recursive_nsync(mutex);
@@ -224,7 +229,10 @@ dontinline static errno_t pthread_mutex_lock_impl(pthread_mutex_t *mutex,
           // common case no. 1
           // - non-debug non-xnu normal private nsync lock
           // - non-debug non-xnu default private nsync lock
-          mutex->_lock = pthread_mutex_lock_nsync;
+          // Fil-C: publish atomically; see the comment at the other _lock
+          // store above.
+          __atomic_store_n(&mutex->_lock, pthread_mutex_lock_nsync,
+                           __ATOMIC_RELEASE);
         return pthread_mutex_lock_normal_success(mutex, word);
       } else {
         if (_weaken(nsync_mu_trylock)((nsync_mu *)mutex->_nsync))
@@ -323,8 +331,21 @@ dontinline static errno_t pthread_mutex_lock_impl(pthread_mutex_t *mutex,
 errno_t pthread_mutex_lock(pthread_mutex_t *mutex) {
   errno_t err;
   FORBIDDEN_IN_POSIX_SPAWN;
-  if (LIKELY(mutex->_lock)) {
-    err = mutex->_lock(mutex);
+  // Fil-C: `_lock` is lazily published by pthread_mutex_lock_impl() while
+  // holding the mutex, but this fast path reads it without holding it. For
+  // a plain pointer that benign data race is harmless, but under Fil-C a
+  // pointer in memory is a (pointer, capability) pair stored as two words.
+  // Tearing that pair (new pointer with a stale null capability) would be
+  // reported as "cannot access pointer with null object" when calling
+  // through the slot. Loading the slot atomically (the stores above are
+  // atomic as well) makes the pair race impossible: the atomic load reads
+  // the data word before the capability word, while the atomic store
+  // publishes the capability word before the data word, with fences in
+  // between on architectures that need them.
+  __typeof__(mutex->_lock) lock_fn =
+      __atomic_load_n(&mutex->_lock, __ATOMIC_ACQUIRE);
+  if (LIKELY(lock_fn)) {
+    err = lock_fn(mutex);
   } else {
     err = pthread_mutex_lock_impl(mutex, false);
   }

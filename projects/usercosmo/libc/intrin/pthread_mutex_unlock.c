@@ -132,7 +132,11 @@ dontinline static errno_t pthread_mutex_unlock_impl(pthread_mutex_t *mutex) {
     if (_weaken(nsync_mu_unlock) &&
         MUTEX_PSHARED(word) == PTHREAD_PROCESS_PRIVATE) {
       if (!IsModeDbg())
-        mutex->_unlock = pthread_mutex_unlock_recursive_nsync;
+        // Fil-C: publish atomically; see the comment in pthread_mutex_lock()
+        // for why the `_lock`/`_unlock` dispatch slots must never be written
+        // with a non-atomic store.
+        __atomic_store_n(&mutex->_unlock, pthread_mutex_unlock_recursive_nsync,
+                         __ATOMIC_RELEASE);
       return pthread_mutex_unlock_recursive_nsync(mutex);
     } else {
       return pthread_mutex_unlock_recursive(mutex, word);
@@ -153,7 +157,9 @@ dontinline static errno_t pthread_mutex_unlock_impl(pthread_mutex_t *mutex) {
       if (MUTEX_TYPE(word) == PTHREAD_MUTEX_ERRORCHECK || IsModeDbg()) {
         __deadlock_untrack(mutex);
       } else {
-        mutex->_unlock = pthread_mutex_unlock_nsync;
+        // Fil-C: publish atomically; see the comment in pthread_mutex_lock().
+        __atomic_store_n(&mutex->_unlock, pthread_mutex_unlock_nsync,
+                         __ATOMIC_RELEASE);
       }
       return 0;
     }
@@ -182,8 +188,11 @@ errno_t pthread_mutex_unlock(pthread_mutex_t *mutex) {
   errno_t err;
   FORBIDDEN_IN_POSIX_SPAWN;
   LOCKTRACE("pthread_mutex_unlock(%t) → ...", mutex);
-  if (LIKELY(mutex->_unlock)) {
-    err = mutex->_unlock(mutex);
+  // Fil-C: load atomically; see the comment in pthread_mutex_lock().
+  __typeof__(mutex->_unlock) unlock_fn =
+      __atomic_load_n(&mutex->_unlock, __ATOMIC_ACQUIRE);
+  if (LIKELY(unlock_fn)) {
+    err = unlock_fn(mutex);
   } else {
     err = pthread_mutex_unlock_impl(mutex);
   }

@@ -858,6 +858,12 @@ def filc_cosmo : Flag<["--"], "filc-cosmo">, Flags<[NoXarchOption]>,
 def filc_ape : Flag<["--"], "filc-ape">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"In cosmo mode, make the requested output file the APE (runnable on Windows x86_64/macOS/BSD/Linux) and keep the statically-linked ELF as <output>.dbg.  By default the ELF takes the requested output path and the APE is written next to it as <output>.com">;
+def filc_fat_ape : Flag<["--"], "filc-fat-ape">, Flags<[NoXarchOption]>,
+  Visibility<[ClangOption]>,
+  HelpText<"In cosmo mode for an x86_64 target, also build for aarch64 (cosmocc-style double link) and merge both images into one fat APE at <output> that runs on x86_64 and aarch64, on Linux/Windows/macOS/BSD.  The x86_64 ELF is kept as <output>.com.dbg and the aarch64 ELF as <output>.aarch64.elf.  Requires source inputs">;
+def filc_no_ape : Flag<["--"], "filc-no-ape">, Flags<[NoXarchOption, HelpHidden]>,
+  Visibility<[ClangOption]>,
+  HelpText<"Internal: skip the APE post-link step in cosmo mode (used by the nested aarch64 link that --filc-fat-ape spawns)">;
 def yolo_assembler : Flag<["-"], "yolo-assembler">, Flags<[NoXarchOption]>,
   Visibility<[ClangOption]>,
   HelpText<"Use the built-in YOLO assembler for .s inputs instead of sarcasm">;

@@ -1541,8 +1541,15 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   // --filc-ape is consumed by the cosmo-mode link job (see
   // tools::gnutools::Linker::ConstructJob); claim it up front so that
   // invocations that never reach a cosmo-mode link (like compile-only ones)
-  // do not get an unused-argument warning.
+  // do not get an unused-argument warning.  --filc-fat-ape is consumed there
+  // too (it turns a cosmo-mode link into a fat x86_64+aarch64 APE build) and
+  // --filc-no-ape is the internal suppressor that the fat mode's nested
+  // aarch64 link passes so it does not emit an APE of its own; claim both.
   if (Arg *A = Args.getLastArg(options::OPT_filc_ape))
+    A->claim();
+  if (Arg *A = Args.getLastArg(options::OPT_filc_fat_ape))
+    A->claim();
+  if (Arg *A = Args.getLastArg(options::OPT_filc_no_ape))
     A->claim();
 
   // Check for missing include directories.

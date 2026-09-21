@@ -100,7 +100,8 @@ AARCH64_EXCLUDE_FILES = \
 	libc/log/oncrash_amd64.c \
 	libc/runtime/efimain.greg.c \
 	libc/runtime/metalprintf.greg.c \
-	libc/sysv/sysv.c
+	libc/sysv/sysv.c \
+	libc/nexgen32e/argv2.c
 else
 $(error unsupported FILCARCH "$(FILCARCH)")
 endif

@@ -107,6 +107,52 @@ cmake -S runtimes -B runtimes-build -G Ninja \
 (cd runtimes-build && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
 
 ./install-cxx-$OS.sh
+
+# The aarch64 flavor of the C++ runtime, when the aarch64 cosmo tree exists
+# (build_yolocosmo.sh installs pizfix/lib-aarch64/libyolocosmo.a).  Mirrors
+# the host build above, with --target=aarch64-linux-gnu and a separate build
+# tree so nothing collides; cosmo mode is static-only here too.
+if test -e pizfix/lib-aarch64/libyolocosmo.a
+then
+    rm -rf runtimes-build-aarch64
+    mkdir -p runtimes-build-aarch64
+
+    cmake -S runtimes -B runtimes-build-aarch64 -G Ninja \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DCMAKE_C_COMPILER=$PWD/build/bin/clang \
+        -DCMAKE_CXX_COMPILER=$PWD/build/bin/clang++ \
+        -DCMAKE_ASM_COMPILER=$PWD/build/bin/clang \
+        -DCMAKE_C_COMPILER_WORKS=ON \
+        -DCMAKE_CXX_COMPILER_WORKS=ON \
+        -DCMAKE_ASM_COMPILER_WORKS=ON \
+        -DCMAKE_C_FLAGS=--target=aarch64-linux-gnu \
+        -DCMAKE_CXX_FLAGS=--target=aarch64-linux-gnu \
+        -DCMAKE_ASM_FLAGS=--target=aarch64-linux-gnu \
+        -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
+        -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-unknown-linux-gnu \
+        -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON \
+        -DLIBCXXABI_HAS_PTHREAD_API=ON -DLIBCXX_ENABLE_EXCEPTIONS=ON \
+        -DLIBCXXABI_ENABLE_EXCEPTIONS=ON -DLIBCXX_HAS_PTHREAD_API=ON \
+        -DLIBCXX_HAS_MUSL_LIBC=OFF -DLIBCXX_HAS_COSMO_LIBC=ON \
+        -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
+        -DLIBCXX_ENABLE_SHARED=OFF -DLIBCXXABI_ENABLE_SHARED=OFF \
+        -DLIBCXX_FORCE_LIBCXXABI=ON \
+        -DLLVM_ENABLE_ASSERTIONS=ON \
+        -DLIBCXX_HARDENING_MODE=extensive \
+        -DLLVM_INCLUDE_TESTS=OFF
+
+    (cd runtimes-build-aarch64 && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
+
+    mkdir -p pizfix/lib-aarch64
+    cp runtimes-build-aarch64/lib/aarch64-unknown-linux-gnu/libc++.a pizfix/lib-aarch64
+    cp runtimes-build-aarch64/lib/aarch64-unknown-linux-gnu/libc++abi.a pizfix/lib-aarch64
+    cp runtimes-build-aarch64/lib/aarch64-unknown-linux-gnu/libc++experimental.a pizfix/lib-aarch64
+    rm -rf build/include/aarch64-unknown-linux-gnu/c++
+    mkdir -p build/include/aarch64-unknown-linux-gnu
+    cp -R runtimes-build-aarch64/include/aarch64-unknown-linux-gnu/c++ \
+        build/include/aarch64-unknown-linux-gnu/c++
+fi
+
 ./fix_clang.sh
 
 

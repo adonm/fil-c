@@ -46,6 +46,8 @@ BASE_HEADERS = [
     "libc/calls/struct/timespec.internal.h",
     "libc/calls/struct/iovec.internal.h",
     "libc/calls/struct/timeval.internal.h",
+    "libc/calls/struct/utsname.h",
+    "libc/calls/struct/utsname-linux.internal.h",
     "libc/calls/struct/sigset.internal.h",
     "libc/calls/struct/statfs.internal.h",
     "libc/calls/struct/rusage.internal.h",
@@ -84,6 +86,23 @@ HAND_MAP = {
     "__sys_gettid": ("*({a0}) = zsys_gettid();\n  return zsys_gettid();", False),
     # getpid returns {ax, dx} in cosmo (dx only matters on XNU).
     "sys_getpid": ("axdx_t r;\n  r.ax = zsys_getpid();\n  r.dx = 0;\n  return r;", False),
+    # cosmo's sys_uname() thunk fills the Linux kernel shape (struct
+    # utsname_linux, 6x65 bytes), while zsys_uname() fills cosmo's public
+    # struct utsname (6xSYS_NMLN).  Go through a full-size temp and copy the
+    # kernel-shaped fields out, so the caller's (smaller) buffer is only
+    # written within its real bounds.
+    "sys_uname": (
+        "struct utsname tmp;\n"
+        "  int rc = zsys_uname(&tmp);\n"
+        "  if (rc) return rc;\n"
+        "  struct utsname_linux *out = (struct utsname_linux *){a0};\n"
+        "  __builtin_memcpy(out->sysname, tmp.sysname, sizeof(out->sysname));\n"
+        "  __builtin_memcpy(out->nodename, tmp.nodename, sizeof(out->nodename));\n"
+        "  __builtin_memcpy(out->release, tmp.release, sizeof(out->release));\n"
+        "  __builtin_memcpy(out->version, tmp.version, sizeof(out->version));\n"
+        "  __builtin_memcpy(out->machine, tmp.machine, sizeof(out->machine));\n"
+        "  __builtin_memcpy(out->domainname, tmp.domainname, sizeof(out->domainname));\n"
+        "  return rc;", False),
     # rt_sigprocmask's extra trailing argument is the sigset size, which the
     # zsys_sigprocmask wrapper doesn't take.
     "__sys_sigprocmask": ("return zsys_sigprocmask({a0}, {a1}, {a2});", False),
@@ -210,6 +229,18 @@ SYNTHETIC_DECLS = {
     # libc/calls/fchmodat.c declares sys_fchmodat2() itself (the chmodxat2
     # syscall, used whenever fchmodat() gets a flags argument).
     "sys_fchmodat2": "int32_t (int32_t, const char *, uint32_t, int32_t)",
+    # libc/calls/landlock_*.c declare their sys_* thunks in the .c files too.
+    # Without these, unveil() pulled landlock_*.o whose sys_landlock_*
+    # references had no shim, and every program calling unveil() failed to
+    # link.  libpizlo has the zsys_landlock_* forwarders (with capability
+    # checks on the attr/rule objects), so these are plain identity forwards.
+    # The object types are spelled `const void *` because the shim TU does
+    # not include landlock.h; the ABI (a single 8-byte user pointer) is
+    # identical, and libpizlo checks the pointed-to memory with the size the
+    # caller passes.
+    "sys_landlock_create_ruleset": "int32_t (const void *, uint64_t, uint32_t)",
+    "sys_landlock_add_rule": "int32_t (int32_t, int32_t, const void *, uint32_t)",
+    "sys_landlock_restrict_self": "int32_t (int32_t, uint32_t)",
 }
 
 

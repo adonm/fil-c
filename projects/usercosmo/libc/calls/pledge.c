@@ -255,6 +255,19 @@
  * @vforksafe
  */
 int pledge(const char *promises, const char *execpromises) {
+#ifdef __FILC__
+  /* Fil-C port: pledge() cannot be enforced in a Fil-C cosmo program.  The
+     implementation below needs sys_pledge_linux() (raw seccomp BPF inline
+     asm — its file is excluded from this build) plus the kPledge promise
+     table, which only exists in the excluded pledge-linux.c.  Both are
+     dangling references otherwise, so any program calling pledge() fails
+     to link.  ENOSYS is exactly what cosmo returns on hosts without
+     seccomp, and it is honest: Fil-C has no mechanism to enforce promises
+     at runtime (Fil-C programs are sandboxed with capabilities instead). */
+  (void)promises;
+  (void)execpromises;
+  return enosys();
+#else
   int e, rc;
   unsigned long ipromises, iexecpromises;
   if (_weaken(GetSymbolTable))
@@ -322,4 +335,5 @@ int pledge(const char *promises, const char *execpromises) {
   }
   STRACE("pledge(%#s, %#s) → %d% m", promises, execpromises, rc);
   return rc;
+#endif /* __FILC__ */
 }

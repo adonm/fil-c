@@ -25,7 +25,18 @@
 #include "libc/sysv/errfuns.h"
 
 static int sys_fork_impl(void) {
-#ifdef __x86_64__
+#ifdef __FILC__
+  /* Fil-C port: route through the __sys_fork() shim, which forwards to
+     libpizlo's zsys_fork_impl() (the GC-suspending, thread-list-fixing
+     fork).  The per-OS paths below are raw `syscall`/`svc` inline asm: the
+     x86_64 one happens to call __sys_fork() anyway, but the aarch64 Linux
+     path issues a raw `svc` from pizlonated code, which the Pizlonator
+     replaces with a filc_error() trap ("cannot handle inline asm") — and
+     since IsLinux() is forced true in a Fil-C cosmo program, fork() would
+     panic on aarch64.  There are no OS branches left to preserve here:
+     everything OS-specific happens below the shim. */
+  return __sys_fork().ax;
+#elif defined(__x86_64__)
 
   axdx_t ad;
   int ax, dx;

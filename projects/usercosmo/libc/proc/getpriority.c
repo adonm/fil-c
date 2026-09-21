@@ -52,7 +52,18 @@
  */
 int getpriority(int which, unsigned who) {
   int rc;
-#ifdef __x86_64__
+#ifdef __FILC__
+  /* Fil-C port: the x86_64 path below is a raw `syscall` inline asm
+     (getpriority has no .scall thunk on x86_64, so cosmo hand-rolled it),
+     which pizlonated code cannot execute.  sys_getpriority() has a shim
+     that forwards to libpizlo's zsys_getpriority(); the thunk convention
+     (-1 w/ errno on failure, NZERO-nice on success) matches the aarch64
+     path below, which is what the shim provides on every architecture. */
+  rc = sys_getpriority(which, who);
+  if (rc != -1) {
+    rc = NZERO - rc;
+  }
+#elif defined(__x86_64__)
   char cf;
   if (IsLinux()) {
     asm volatile("syscall"

@@ -18,14 +18,29 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/errno.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sysv/errfuns.h"
 
 int sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp,
                  size_t newlen) {
+#ifdef __FILC__
+  /* Fil-C port: __syslib is cosmo's embedding hook table (libc/sysv/syslib.S
+     assembly, excluded from this build) and is never populated in a Fil-C
+     cosmo program; the dangling pizlonated___syslib reference would break
+     the link for any program calling sysctlbyname().  Nothing on any host
+     answers these BSD sysctl names here, so match sysctl()'s behavior. */
+  (void)name;
+  (void)oldp;
+  (void)oldlenp;
+  (void)newp;
+  (void)newlen;
+  return _sysret(-ENOSYS);
+#else
   if (__syslib && __syslib->__version >= 10) {
     return _sysret(__syslib->__sysctlbyname(name, oldp, oldlenp, newp, newlen));
   } else {
     return enosys();
   }
+#endif
 }

@@ -264,6 +264,10 @@ GEN_OBJS = \
 #                         raw `syscall` inline asm without shims
 #                         (islinux.c: __is_linux_2_6_23 has a C replacement in
 #                         libc/calls/filc_islinux.c)
+#                         NOTE: pledge.c/sysctl*.c stay in the build; their
+#                         __FILC__ branches return ENOSYS instead of touching
+#                         the excluded raw-asm implementations (pledge() can't
+#                         be enforced under Fil-C; __syslib is never populated).
 #
 #    aarch64-only exclusions (AARCH64_EXCLUDE_FILES below, see the aarch64
 #    branch of ARCH_CFLAGS): the metal/BIOS layer (pc.internal.h's raw I/O
@@ -406,12 +410,10 @@ EXCLUDE_FILES = \
 	libc/runtime/zipos-find.c \
 	libc/runtime/zipos-close.c \
 	libc/runtime/zipos-access.c \
-	libc/calls/uname.c \
 	libc/thread/pthread_cancel.c \
 	libc/thread/makecontext.c \
 	libc/thread/pthread_getaffinity_np.c \
 	libc/thread/pthread_setaffinity_np.c \
-	libc/proc/getpriority.c \
 	libc/proc/fork-nt.c \
 	libc/proc/vfork-nt.c \
 	libc/nexgen32e/envp.c \

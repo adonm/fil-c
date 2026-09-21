@@ -15,6 +15,7 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/errno.h"
 #include "libc/limits.h"
+#include "libc/mem/mem.h"
 #include <stdfil.h>
 #include <pizlonated_runtime.h>
 
@@ -96,4 +97,30 @@ void *realloc_in_place(void *p, size_t n) {
   /* The GC allocator cannot grow in place in general; emulate with the
      preserving-alignment realloc, which is a no-op when the size fits. */
   return zgc_realloc_preserving_alignment(p, n);
+}
+
+/* Fil-C port: cosmo's mallinfo()/mallopt()/malloc_trim() are dlmalloc
+   internals (their files are excluded from this build, so the symbols were
+   dangling and any program calling them failed to link).  dlmalloc isn't
+   the allocator here — libpizlo's GC allocator is — so provide the same
+   no-op surface musl gives programs that aren't using its allocator: an
+   all-zero mallinfo(), an always-successful no-op mallopt(), and a
+   malloc_trim() that never trims anything. */
+struct mallinfo mallinfo(void) {
+  struct mallinfo info;
+  __builtin_memset(&info, 0, sizeof(info));
+  return info;
+}
+
+int mallopt(int param, int value) {
+  /* No tunable parameters in the GC allocator; accept and ignore. */
+  (void)param;
+  (void)value;
+  return 1;
+}
+
+int malloc_trim(size_t pad) {
+  /* The GC heap is mmap'd by libpizlo and cannot be returned incrementally. */
+  (void)pad;
+  return 0;
 }

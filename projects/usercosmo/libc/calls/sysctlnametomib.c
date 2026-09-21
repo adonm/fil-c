@@ -18,13 +18,23 @@
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/calls.h"
 #include "libc/calls/syscall-sysv.internal.h"
+#include "libc/errno.h"
 #include "libc/runtime/syslib.internal.h"
 #include "libc/sysv/errfuns.h"
 
 int sysctlnametomib(const char *name, int *mibp, size_t *sizep) {
+#ifdef __FILC__
+  /* Fil-C port: same situation as sysctlbyname() — __syslib is never
+     populated under Fil-C and the hard reference would break the link. */
+  (void)name;
+  (void)mibp;
+  (void)sizep;
+  return enosys();
+#else
   if (__syslib && __syslib->__version >= 10) {
     return _sysret(__syslib->__sysctlnametomib(name, mibp, sizep));
   } else {
     return enosys();
   }
+#endif
 }

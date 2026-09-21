@@ -215,7 +215,12 @@ do
     LIB=pizfix/lib-$COSMOARCH
     mkdir -p $LIB
 
-    # compiler-rt builtins + crt for the target.
+    # compiler-rt builtins + crt for the target.  The -ffixed-x18 -ffixed-x28
+    # flags keep the same aarch64 cosmo invariant as libpas/Makefile,
+    # projects/usercosmo/filc.mk and build_cxx.sh (cosmo's TIB lives in x28
+    # and the platform register is x18; nothing in the process may use them
+    # as scratch, including crtbegin, which runs pizlonated atexit handlers
+    # beneath its own frames at exit).
     if test ! -e compiler-rt/build-$COSMOARCH/lib/linux/libclang_rt.builtins-$COSMOARCH.a
     then
         mkdir -p compiler-rt/build-$COSMOARCH
@@ -235,6 +240,9 @@ do
             -DCMAKE_C_COMPILER_TARGET=$COSMOARCH-linux-gnu \
             -DCMAKE_CXX_COMPILER_TARGET=$COSMOARCH-linux-gnu \
             -DCMAKE_ASM_COMPILER_TARGET=$COSMOARCH-linux-gnu \
+            -DCMAKE_C_FLAGS="-ffixed-x18 -ffixed-x28" \
+            -DCMAKE_CXX_FLAGS="-ffixed-x18 -ffixed-x28" \
+            -DCMAKE_ASM_FLAGS="-ffixed-x18 -ffixed-x28" \
             -DCMAKE_C_COMPILER_WORKS=ON \
             -DCMAKE_CXX_COMPILER_WORKS=ON \
             -DCMAKE_ASM_COMPILER_WORKS=ON

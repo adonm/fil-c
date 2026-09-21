@@ -112,6 +112,17 @@ cmake -S runtimes -B runtimes-build -G Ninja \
 # (build_yolocosmo.sh installs pizfix/lib-aarch64/libyolocosmo.a).  Mirrors
 # the host build above, with --target=aarch64-linux-gnu and a separate build
 # tree so nothing collides; cosmo mode is static-only here too.
+#
+# The -ffixed-x18 -ffixed-x28 flags match the pizlonated libc
+# (projects/usercosmo/filc.mk) and libpas (libpas/Makefile) aarch64 cosmo
+# builds: cosmo keeps its TIB in x28 on aarch64 and every yolo-side code
+# path that pizlonated code can enter (libpizlo's pthread_getspecific-based
+# filc_get_my_thread() among them) reads it from x28, so no pizlonated code
+# may use x28 (or the platform register x18) as scratch.  Without it, LLVM
+# happily allocates x28 inside libc++/libc++abi functions and the first
+# iostream-style global ctor that allocates trips filc_pollcheck_slow's
+# my_thread == filc_get_my_thread() assertion.  The Fil-C driver injects the
+# same flags for user compiles (see Linux::addClangTargetOptions).
 if test -e pizfix/lib-aarch64/libyolocosmo.a
 then
     rm -rf runtimes-build-aarch64
@@ -125,9 +136,9 @@ then
         -DCMAKE_C_COMPILER_WORKS=ON \
         -DCMAKE_CXX_COMPILER_WORKS=ON \
         -DCMAKE_ASM_COMPILER_WORKS=ON \
-        -DCMAKE_C_FLAGS=--target=aarch64-linux-gnu \
-        -DCMAKE_CXX_FLAGS=--target=aarch64-linux-gnu \
-        -DCMAKE_ASM_FLAGS=--target=aarch64-linux-gnu \
+        -DCMAKE_C_FLAGS="--target=aarch64-linux-gnu -ffixed-x18 -ffixed-x28" \
+        -DCMAKE_CXX_FLAGS="--target=aarch64-linux-gnu -ffixed-x18 -ffixed-x28" \
+        -DCMAKE_ASM_FLAGS="--target=aarch64-linux-gnu -ffixed-x18 -ffixed-x28" \
         -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi" \
         -DLLVM_DEFAULT_TARGET_TRIPLE=aarch64-unknown-linux-gnu \
         -DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=ON \

@@ -29,6 +29,17 @@ FILCARCH ?= $(shell uname -m)
 ifneq ($(FILCARCH),$(shell uname -m))
 ARCHSUFFIX = -$(FILCARCH)
 CROSS_TARGET_FLAGS = --target=$(FILCARCH)-linux-gnu
+# The aarch64 cross build (for the cosmo flavor) must not use x18 (the
+# aarch64 platform register) or x28 (cosmo's TIB register) as scratch: the
+# unwinder runs beneath pizlonated frames and calls the pizlonated
+# personality function and cleanup handlers mid-unwind, and the yolo layer
+# reads cosmo's TIB from x28.  This matches the -ffixed-x18 -ffixed-x28
+# used by libpas, the pizlonated libc and the pizlonated C++ runtime for
+# the same architecture (see build_yolocosmo.sh, projects/usercosmo/filc.mk
+# and libpas/Makefile).
+ifneq ($(findstring aarch64,$(FILCARCH)),)
+CROSS_TARGET_FLAGS += -ffixed-x18 -ffixed-x28
+endif
 else
 ARCHSUFFIX =
 CROSS_TARGET_FLAGS =

@@ -1745,7 +1745,7 @@ if ($ENV{SARCASM}) {
   # 320, immediately above the buffer. The gas path keeps the tight 0x128
   # frame, where the anchor slot shares the masked-off half of the last
   # table slot.
-  $code.=<<___	if (!$win64);
+  $code.=<<___;
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
 	sub		\$0x148,%rsp
@@ -2184,7 +2184,7 @@ if ($ENV{SARCASM}) {
   # poly1305_blocks_avx2: the delegated-into copy of this body also runs in
   # the avx2 frame, so both frames need the anchor outside the declared
   # [0, 320) range. The gas path keeps the tight 0x128 frame.
-  $code.=<<___	if (!$win64);
+  $code.=<<___;
 	lea		-8(%rsp),%r11
 .cfi_def_cfa		%r11,16
 	sub		\$0x148,%rsp

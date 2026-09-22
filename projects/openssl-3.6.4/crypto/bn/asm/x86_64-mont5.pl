@@ -76,16 +76,6 @@ if (!$addx && `$ENV{CC} -x c /dev/null -dM -E|grep __clang_major__`
 	}
 }
 
-# Sarcasm compiles bn_sqr8x_internal/bn_sqrx8x_internal as file-local
-# subroutines (see the .globl/.type gating at their definitions): their
-# bodies address the caller's frame with the return-address-compensated
-# (+8) convention, which only the localcall clone machinery can legalize
-# (a standalone sig'd function may not touch the caller's frame). Calls
-# therefore target the local __ aliases, which carry no signature
-# annotation, exactly like other local subroutines.
-my $sqr8x_internal = "__bn_sqr8x_internal";
-my $sqrx8x_internal = "__bn_sqrx8x_internal";
-
 # Sarcasm: the dynamic Montgomery frames below live in a GC-allocated
 # '.alloca' buffer, not on the stack (gas keeps the original %rsp math).
 # $FR spells the caller frame base in both modes (like aes-x86_64.pl's $FR):
@@ -195,12 +185,8 @@ bn_mul_mont_gather5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 ___
 $code.=<<___ if ($addx);
 	mov	OPENSSL_ia32cap_P+8(%rip),%r11d
-	and	\$0x80108,%r11d
-	cmp	\$0x80108,%r11d		# check for AD*X+BMI2+BMI1
-	je	.Lmulx4x_enter		# (hoisted from bn_mul4x_mont_gather5:
-	jmp	.Lmul4x_enter		# makes both dispatches first-level jumps)
 ___
-$code.=<<___ if (!$addx);
+$code.=<<___;
 	jmp	.Lmul4x_enter
 ___
 $code.=<<___;
@@ -627,6 +613,13 @@ bn_mul4x_mont_gather5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 	mov	%rsp,%rax
 .cfi_def_cfa_register	%rax
 .Lmul4x_enter:
+___
+$code.=<<___ if ($addx);
+	and	\$0x80108,%r11d
+	cmp	\$0x80108,%r11d		# check for AD*X+BMI2+BMI1
+	je	.Lmulx4x_enter
+___
+$code.=<<___;
 	push	%rbx
 .cfi_push	%rbx
 	push	%rbp
@@ -1447,15 +1440,15 @@ ___
 }
 $code.=<<___;
 
-	call	$sqr8x_internal
+	call	__bn_sqr8x_internal
 	call	__bn_post4x_internal
-	call	$sqr8x_internal
+	call	__bn_sqr8x_internal
 	call	__bn_post4x_internal
-	call	$sqr8x_internal
+	call	__bn_sqr8x_internal
 	call	__bn_post4x_internal
-	call	$sqr8x_internal
+	call	__bn_sqr8x_internal
 	call	__bn_post4x_internal
-	call	$sqr8x_internal
+	call	__bn_sqr8x_internal
 	call	__bn_post4x_internal
 
 ___
@@ -1529,11 +1522,11 @@ $code.=<<___ if (!$ENV{SARCASM});
 .hidden	bn_sqr8x_internal
 .type	bn_sqr8x_internal,\@abi-omnipotent
 ___
-# Sarcasm: no .globl/.type — file-local only (see the comment at
-# \$sqr8x_internal). The body addresses the caller's frame with the +8
-# convention, which is only legal inside a localcall clone; a standalone
-# sig'd compile cannot prove those accesses safe. mont.s's cross-file
-# call is a recorded sarcasm gap.
+# Sarcasm: no .globl/.type — the symbol stays file-local. The body
+# addresses the caller's frame with the return-address-compensated (+8)
+# convention, which is only legal inside the localcall clone machinery; a
+# standalone sig'd compile cannot prove those accesses safe. mont.s's
+# cross-file call is a recorded sarcasm gap.
 $code.=<<___;
 .align	32
 bn_sqr8x_internal:
@@ -3102,15 +3095,15 @@ ___
 }
 $code.=<<___;
 
-	call	$sqrx8x_internal
+	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	$sqrx8x_internal
+	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	$sqrx8x_internal
+	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	$sqrx8x_internal
+	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
-	call	$sqrx8x_internal
+	call	__bn_sqrx8x_internal
 	call	__bn_postx4x_internal
 
 	mov	%r10,$num		# -num
@@ -3177,8 +3170,10 @@ $code.=<<___ if (!$ENV{SARCASM});
 .hidden	bn_sqrx8x_internal
 .type	bn_sqrx8x_internal,\@abi-omnipotent
 ___
-# Sarcasm: no .globl/.type — file-local only (same reason as
-# bn_sqr8x_internal above).
+# Sarcasm: no .globl/.type — the symbol stays file-local for the same
+# reason as bn_sqr8x_internal above: the body addresses the caller's
+# frame with the return-address-compensated (+8) convention, which is
+# only legal inside the localcall clone machinery.
 $code.=<<___;
 .align	32
 bn_sqrx8x_internal:

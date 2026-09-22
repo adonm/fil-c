@@ -742,7 +742,6 @@ my ($counters,$zero)=("%xmm14","%xmm15");
 # stay 16-aligned on both paths (sarcasm materializes the FP-touched slot
 # ranges into 16-aligned areas of its synthesized frame; enc8x %rsp is
 # 128-aligned, dec8x %rsp%256==64).
-my $FR = "%rsp";
 $code.=<<___;
 .type	aesni_multi_cbc_encrypt_avx,\@function,3
 .align	32
@@ -891,8 +890,8 @@ my $rndkey=($i&1)?$rndkey0:$rndkey1;
     # lea, which would make the output store use the *input* capability.
     $code.=<<___;
 	vaesenc		$rndkey,@out[0],@out[0]
-	 mov		64+8*$i($FR),$offset		#! load ptr
-	 cmp		32+4*$i($FR),$one
+	 mov		64+8*$i(%rsp),$offset		#! load ptr
+	 cmp		32+4*$i(%rsp),$one
 	vaesenc		$rndkey,@out[1],@out[1]
 	prefetcht0	31(@ptr[$i])			# prefetch input
 	vaesenc		$rndkey,@out[2],@out[2]
@@ -911,7 +910,7 @@ ___
 .LcoutE$i:
 	vaesenc		$rndkey,@out[5],@out[5]
 	 vpxor		16(@ptr[$i]),$zero,@inp[$i%4]	# load input and xor with 0-round
-	 mov		$offset,64+8*$i($FR)		#! store ptr
+	 mov		$offset,64+8*$i(%rsp)		#! store ptr
 	vaesenc		$rndkey,@out[6],@out[6]
 	vaesenc		$rndkey,@out[7],@out[7]
 	vmovups		`16*(3+$i)-0x78`($key),$rndkey
@@ -961,7 +960,7 @@ ___
   }
 }
 $code.=<<___;
-	 vmovdqu	32($FR),$counters
+	 vmovdqu	32(%rsp),$counters
 	prefetcht0	15(@ptr[$i-2])			# prefetch output
 	prefetcht0	15(@ptr[$i-1])
 	cmp	\$11,$rounds
@@ -1017,15 +1016,15 @@ $code.=<<___;
 	vaesenc		$rndkey1,@out[3],@out[3]
 	vaesenc		$rndkey1,@out[4],@out[4]
 	 vpaddd		$counters,$zero,$zero		# decrement counters
-	 vmovdqu	48($FR),$counters
+	 vmovdqu	48(%rsp),$counters
 	vaesenc		$rndkey1,@out[5],@out[5]
-	 mov		64($FR),$offset		#! load ptr		# pre-load 1st offset
+	 mov		64(%rsp),$offset		#! load ptr		# pre-load 1st offset
 	vaesenc		$rndkey1,@out[6],@out[6]
 	vaesenc		$rndkey1,@out[7],@out[7]
 	vmovups		0x10-0x78($key),$rndkey1
 
 	vaesenclast	$rndkey0,@out[0],@out[0]
-	 vmovdqa	$zero,32($FR)			# update counters
+	 vmovdqa	$zero,32(%rsp)			# update counters
 	 vpxor		$zero,$zero,$zero
 	vaesenclast	$rndkey0,@out[1],@out[1]
 	vaesenclast	$rndkey0,@out[2],@out[2]
@@ -1036,7 +1035,7 @@ $code.=<<___;
 	 vmovdqu	-0x78($key),$zero		# 0-round
 	vaesenclast	$rndkey0,@out[5],@out[5]
 	vaesenclast	$rndkey0,@out[6],@out[6]
-	 vmovdqa	$counters,48($FR)		# update counters
+	 vmovdqa	$counters,48(%rsp)		# update counters
 	vaesenclast	$rndkey0,@out[7],@out[7]
 	vmovups		0x20-0x78($key),$rndkey0
 
@@ -1046,42 +1045,42 @@ if ($ENV{SARCASM}) {
   $code.=<<___;
 	vmovups		@out[0],($offset)		# write output
 	 lea		16($offset),$offset
-	 mov		$offset,64($FR)		#! store ptr
+	 mov		$offset,64(%rsp)		#! store ptr
 	 vpxor		0x00($offload),@out[0],@out[0]	#! stack buffer (offe, %rsp + 128, %rsp + 192)
-	mov		64+8($FR),$offset		#! load ptr
+	mov		64+8(%rsp),$offset		#! load ptr
 	vmovups		@out[1],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+8($FR)		#! store ptr
+	 mov		$offset,64+8(%rsp)		#! store ptr
 	 vpxor		0x10($offload),@out[1],@out[1]	#! stack buffer (offe, %rsp + 128, %rsp + 192)
-	mov		64+16($FR),$offset		#! load ptr
+	mov		64+16(%rsp),$offset		#! load ptr
 	vmovups		@out[2],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+16($FR)		#! store ptr
+	 mov		$offset,64+16(%rsp)		#! store ptr
 	 vpxor		0x20($offload),@out[2],@out[2]	#! stack buffer (offe, %rsp + 128, %rsp + 192)
-	mov		64+24($FR),$offset		#! load ptr
+	mov		64+24(%rsp),$offset		#! load ptr
 	vmovups		@out[3],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+24($FR)		#! store ptr
+	 mov		$offset,64+24(%rsp)		#! store ptr
 	 vpxor		0x30($offload),@out[3],@out[3]	#! stack buffer (offe, %rsp + 128, %rsp + 192)
-	mov		64+32($FR),$offset		#! load ptr
+	mov		64+32(%rsp),$offset		#! load ptr
 	vmovups		@out[4],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+32($FR)		#! store ptr
+	 mov		$offset,64+32(%rsp)		#! store ptr
 	 vpxor		@inp[0],@out[4],@out[4]
-	mov		64+40($FR),$offset		#! load ptr
+	mov		64+40(%rsp),$offset		#! load ptr
 	vmovups		@out[5],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+40($FR)		#! store ptr
+	 mov		$offset,64+40(%rsp)		#! store ptr
 	 vpxor		@inp[1],@out[5],@out[5]
-	mov		64+48($FR),$offset		#! load ptr
+	mov		64+48(%rsp),$offset		#! load ptr
 	vmovups		@out[6],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+48($FR)		#! store ptr
+	 mov		$offset,64+48(%rsp)		#! store ptr
 	 vpxor		@inp[2],@out[6],@out[6]
-	mov		64+56($FR),$offset		#! load ptr
+	mov		64+56(%rsp),$offset		#! load ptr
 	vmovups		@out[7],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+56($FR)		#! store ptr
+	 mov		$offset,64+56(%rsp)		#! store ptr
 	 vpxor		@inp[3],@out[7],@out[7]
 
 	dec	$num
@@ -1142,7 +1141,6 @@ $code.=<<___ if ($win64);
 	movaps	-0x58(%rax),%xmm14
 	movaps	-0x48(%rax),%xmm15
 ___
-my $FRd = "%rsp";
 if ($ENV{SARCASM}) {
   # SARCASM-linux reloads the saved stack pointer first: the body reused
   # %rax (it holds $rounds, not the saved rsp), so the carrier must be
@@ -1333,8 +1331,8 @@ my $rndkey=($i&1)?$rndkey0:$rndkey1;
     # Capability-safe form: see the encrypt loop above.
     $code.=<<___;
 	vaesdec		$rndkey,@out[0],@out[0]
-	 mov		64+8*$i($FRd),$offset		#! load ptr
-	 cmp		32+4*$i($FRd),$one
+	 mov		64+8*$i(%rsp),$offset		#! load ptr
+	 cmp		32+4*$i(%rsp),$one
 	vaesdec		$rndkey,@out[1],@out[1]
 	prefetcht0	31(@ptr[$i])			# prefetch input
 	vaesdec		$rndkey,@out[2],@out[2]
@@ -1353,7 +1351,7 @@ ___
 .LcoutD$i:
 	vaesdec		$rndkey,@out[5],@out[5]
 	 vmovdqu	16(@ptr[$i]),@inp[$i%4]		# load input
-	 mov		$offset,64+8*$i($FRd)		#! store ptr
+	 mov		$offset,64+8*$i(%rsp)		#! store ptr
 	vaesdec		$rndkey,@out[6],@out[6]
 	vaesdec		$rndkey,@out[7],@out[7]
 	vmovups		`16*(3+$i)-0x78`($key),$rndkey
@@ -1399,7 +1397,7 @@ ___
   }
 }
 $code.=<<___;
-	 vmovdqu	32($FRd),$counters
+	 vmovdqu	32(%rsp),$counters
 	prefetcht0	15(@ptr[$i-2])			# prefetch output
 	prefetcht0	15(@ptr[$i-1])
 	cmp	\$11,$rounds
@@ -1455,15 +1453,15 @@ $code.=<<___;
 	vaesdec		$rndkey1,@out[3],@out[3]
 	vaesdec		$rndkey1,@out[4],@out[4]
 	 vpaddd		$counters,$zero,$zero		# decrement counters
-	 vmovdqu	48($FRd),$counters
+	 vmovdqu	48(%rsp),$counters
 	vaesdec		$rndkey1,@out[5],@out[5]
-	 mov		64($FRd),$offset		#! load ptr		# pre-load 1st offset
+	 mov		64(%rsp),$offset		#! load ptr		# pre-load 1st offset
 	vaesdec		$rndkey1,@out[6],@out[6]
 	vaesdec		$rndkey1,@out[7],@out[7]
 	vmovups		0x10-0x78($key),$rndkey1
 
 	vaesdeclast	$rndkey0,@out[0],@out[0]
-	 vmovdqa	$zero,32($FRd)			# update counters
+	 vmovdqa	$zero,32(%rsp)			# update counters
 	 vpxor		$zero,$zero,$zero
 	vaesdeclast	$rndkey0,@out[1],@out[1]
 	vpxor		0x00($offload),@out[0],@out[0]	#! stack buffer (offd, %rsp + 192, %rsp + 448)	# xor with IV
@@ -1480,7 +1478,7 @@ $code.=<<___;
 	vpxor		0x40($offload),@out[4],@out[4]	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	vaesdeclast	$rndkey0,@out[6],@out[6]
 	vpxor		0x50($offload),@out[5],@out[5]	#! stack buffer (offd, %rsp + 192, %rsp + 448)
-	 vmovdqa	$counters,48($FRd)		# update counters
+	 vmovdqa	$counters,48(%rsp)		# update counters
 	vaesdeclast	$rndkey0,@out[7],@out[7]
 	vpxor		0x60($offload),@out[6],@out[6]	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	vmovups		0x20-0x78($key),$rndkey0
@@ -1491,54 +1489,54 @@ if ($ENV{SARCASM}) {
   $code.=<<___;
 	vmovups		@out[0],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+0($FRd)		#! store ptr
-	 vmovdqu	128+0($FRd),@out[0]
+	 mov		$offset,64+0(%rsp)		#! store ptr
+	 vmovdqu	128+0(%rsp),@out[0]
 	vpxor		0x70($offload),@out[7],@out[7]	#! stack buffer (offd, %rsp + 192, %rsp + 448)
-	mov		64+8($FRd),$offset		#! load ptr
+	mov		64+8(%rsp),$offset		#! load ptr
 	vmovups		@out[1],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+8($FRd)		#! store ptr
+	 mov		$offset,64+8(%rsp)		#! store ptr
 	 vmovdqu	@out[0],0x00($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		$zero,@out[0],@out[0]
-	 vmovdqu	128+16($FRd),@out[1]
-	mov		64+16($FRd),$offset		#! load ptr
+	 vmovdqu	128+16(%rsp),@out[1]
+	mov		64+16(%rsp),$offset		#! load ptr
 	vmovups		@out[2],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+16($FRd)		#! store ptr
+	 mov		$offset,64+16(%rsp)		#! store ptr
 	 vmovdqu	@out[1],0x10($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		$zero,@out[1],@out[1]
-	 vmovdqu	128+32($FRd),@out[2]
-	mov		64+24($FRd),$offset		#! load ptr
+	 vmovdqu	128+32(%rsp),@out[2]
+	mov		64+24(%rsp),$offset		#! load ptr
 	vmovups		@out[3],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+24($FRd)		#! store ptr
+	 mov		$offset,64+24(%rsp)		#! store ptr
 	 vmovdqu	@out[2],0x20($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		$zero,@out[2],@out[2]
-	 vmovdqu	128+48($FRd),@out[3]
-	mov		64+32($FRd),$offset		#! load ptr
+	 vmovdqu	128+48(%rsp),@out[3]
+	mov		64+32(%rsp),$offset		#! load ptr
 	vmovups		@out[4],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+32($FRd)		#! store ptr
+	 mov		$offset,64+32(%rsp)		#! store ptr
 	 vmovdqu	@out[3],0x30($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		$zero,@out[3],@out[3]
 	 vmovdqu	@inp[0],0x40($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		@inp[0],$zero,@out[4]
-	mov		64+40($FRd),$offset		#! load ptr
+	mov		64+40(%rsp),$offset		#! load ptr
 	vmovups		@out[5],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+40($FRd)		#! store ptr
+	 mov		$offset,64+40(%rsp)		#! store ptr
 	 vmovdqu	@inp[1],0x50($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		@inp[1],$zero,@out[5]
-	mov		64+48($FRd),$offset		#! load ptr
+	mov		64+48(%rsp),$offset		#! load ptr
 	vmovups		@out[6],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+48($FRd)		#! store ptr
+	 mov		$offset,64+48(%rsp)		#! store ptr
 	 vmovdqu	@inp[2],0x60($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		@inp[2],$zero,@out[6]
-	mov		64+56($FRd),$offset		#! load ptr
+	mov		64+56(%rsp),$offset		#! load ptr
 	vmovups		@out[7],($offset)
 	 lea		16($offset),$offset
-	 mov		$offset,64+56($FRd)		#! store ptr
+	 mov		$offset,64+56(%rsp)		#! store ptr
 	 vmovdqu	@inp[3],0x70($offload)	#! stack buffer (offd, %rsp + 192, %rsp + 448)
 	 vpxor		@inp[3],$zero,@out[7]
 

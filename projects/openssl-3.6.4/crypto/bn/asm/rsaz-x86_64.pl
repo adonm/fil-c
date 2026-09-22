@@ -1056,10 +1056,9 @@ $code.=<<___;
 
 ___
 if ($ENV{SARCASM}) {
-  # The region grows by 16 so the entry %rsp can be parked at slot 152,
-  # just below the win64 xmm save area that starts at 160(%rsp).
+  # The region grows by 16 so the entry %rsp can be parked at slot 152.
   $code.=<<___;
-	subq	\$`128+24+16+($win64?0xb0:0)`, %rsp
+	subq	\$168, %rsp
 	movq	%rax, 152(%rsp)		# park entry %rsp in the region
 ___
 } else {

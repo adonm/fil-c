@@ -682,8 +682,7 @@ ___
 # The '#!' capability annotations are gas comments, so they are emitted
 # unconditionally; under sarcasm the table capability is saved on the base
 # lea and restored on the final aliased lea (straight-line, so the save
-# dominates the restore). pushfq/popfq stay omitted: see the
-# AES_cbc_encrypt prologue comment.
+# dominates the restore).
 {
   $code.=<<___;
 	lea	.LAES_Te+2048(%rip),$sbox	#! save capability (sboxcap_enc)
@@ -1830,24 +1829,13 @@ AES_cbc_encrypt: #! void(ptr,ptr,size_t,ptr,ptr,int)
 	cmp	\$0,%rdx	# check length
 	je	.Lcbc_epilogue
 ___
-if ($ENV{SARCASM}) {
-  # pushfq/popfq omitted: sarcasm keeps a literal pushfq across the body,
-  # leaving %rsp 8 bytes lower than its frame model assumes and injecting
-  # misaligned runtime calls. The wrapper exists only to restore DF after
-  # the (already removed) string ops; the SysV ABI preserves no other
-  # flags across a call and this body executes 'cld' and never sets DF.
-  $code.=<<___;
-	push	%rbx
-___
-} else {
-  $code.=<<___;
+$code.=<<___;
 	pushfq
 # This could be .cfi_push 49, but libunwind fails on registers it does not
 # recognize. See https://bugzilla.redhat.com/show_bug.cgi?id=217087.
 .cfi_adjust_cfa_offset	8
 	push	%rbx
 ___
-}
 $code.=<<___;
 .cfi_push	%rbx
 	push	%rbp
@@ -2365,7 +2353,9 @@ if ($ENV{SARCASM}) {
   # rsp is untouched after the tiny prologue frame above (the bulk frame
   # is a '.alloca' buffer), so reload the pushed registers straight from
   # their save slots and drop the whole frame with one add. Offsets: the
-  # pushes sit at 16-56(%rsp) above the 16-byte $keyend frame.
+  # pushes sit at 16-56(%rsp) above the 16-byte $keyend frame, and the
+  # prologue's flags word sits at 64(%rsp), so the add parks %rsp on it
+  # for the .Lcbc_popfq popfq below.
   $code.=<<___;
 	mov	16(%rsp),%r15
 .cfi_restore	%r15
@@ -2404,15 +2394,11 @@ ___
 }
 $code.=<<___;
 .Lcbc_popfq:
-___
-if (!$ENV{SARCASM}) {	# see the pushfq omission above
-  $code.=<<___;
 	popfq
 # This could be .cfi_pop 49, but libunwind fails on registers it does not
 # recognize. See https://bugzilla.redhat.com/show_bug.cgi?id=217087.
 .cfi_adjust_cfa_offset	-8
 ___
-}
 $code.=<<___;
 .Lcbc_epilogue:
 	ret

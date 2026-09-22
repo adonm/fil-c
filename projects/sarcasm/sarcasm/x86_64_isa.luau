@@ -284,13 +284,64 @@ local function isShiftCountZero(stmt)
 	return false
 end
 
+-- The RFLAGS stack transfers (x86_64, 64-bit mode): pushf/pushfq push the FULL
+-- 64-bit RFLAGS as an 8-byte stack word and popf/popfq pop it back. (pushfd/
+-- popfd are accepted as aliases: gas rejects them in 64-bit mode, and the only
+-- encoding they could name there is the same 0x9C/0x9D — there is no 4-byte
+-- RFLAGS push.) Both are MODELED now (the frame pass files the word exactly
+-- like a spill push; the transform lowers the statements through the same
+-- pushfq/popq + pushq/popfq round-trip its injected checks use):
+--   * pushfq READS all six modeled flags — the materialized word must hold the
+--     program's pending condition, so the liveness fixpoint keeps every feeding
+--     flag write alive and brackets any injected check in between with a
+--     save/restore;
+--   * popfq pops the word and WRITES all six flags from it — a full kill (the
+--     incoming flags are dead; a following jcc/setcc/cmov reads the restored
+--     values).
+-- The 16-bit forms (pushfw/popfw — the 0x66 prefixes, which shift rsp by 2 and
+-- transfer only the low 16 bits) stay rejected (x86_64_fp's REASON_FLAGXFER16):
+-- the stack model tracks 8-byte words only.
+local FLAG_PUSH = { pushf = true, pushfq = true, pushfd = true }
+local FLAG_POP = { popf = true, popfq = true, popfd = true }
+x86.FLAG_PUSH = FLAG_PUSH
+x86.FLAG_POP = FLAG_POP
+function x86.isFlagStackPush(m) return FLAG_PUSH[m] == true end
+function x86.isFlagStackPop(m) return FLAG_POP[m] == true end
+function x86.isFlagStackXfer(m) return FLAG_PUSH[m] == true or FLAG_POP[m] == true end
+
+-- The virtual register the flags value materializes into (x86_64 only). The
+-- input `pushfq` (classify defs), the frame rewrite's word file/load statements,
+-- and the input `popfq` (classify uses) all name it, so the lift connects the
+-- materialization, the slot store, the slot load, and the `push; popfq` restore
+-- through one web per def site. The word itself is typed by pointer flow as a
+-- SCALAR (nothing seeds the flags web as a pointer, and the flow rules
+-- propagate pointer-ness only through mov/cmov/ALU/lea/xchg defs — a pushfq
+-- def matches none), so no GC root store is ever emitted for it and a stack
+-- word holding flags is never scanned as a pointer. The register number must
+-- never collide with a real GPR (0..15), the yolo band
+-- (frame.YOLO_SLOT_BASE + 8*i), the slot band (frame.SLOT_BASE + off), or the
+-- parser's `%fil_` pseudos (2000+): 999999 would need a ~1 MB frame or a
+-- million pseudoregisters to reach.
+x86.FLAGS_REG_NUM = 999999
+x86.FLAGS_REG_NAME = "__rflags"
+-- A FRESH operand table naming the flags web: a def and a use of one register
+-- must never share a table (the lift keys opTemp by operand identity — see the
+-- x86_slotPartial marker in classify's mov branch).
+function x86.flagsWordOperand()
+	return { kind = "reg", rc = "gpr", num = x86.FLAGS_REG_NUM, width = 64,
+		name = x86.FLAGS_REG_NAME, implicit = true }
+end
+
 -- Does `stmt` READ the flags? Conditional consumers (jcc/setcc/cmov) and the
 -- carry-in/rotate-through-carry families, plus lahf, the stringops (DF), and
 -- the x87 conditional moves. Used by transform.luau's
 -- flag-liveness scan (flagsLiveFrom).
 function x86.flagUse(stmt)
 	if not stmt then return false end
-	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	local raw = string.lower(stmt.mnemonic)
+	-- pushf/pushfq[/pushfd] read the pending condition (see FLAG_PUSH above).
+	if FLAG_PUSH[raw] then return true end
+	local m = x86.baseMnemonic(raw)
 	if m == "jcc" or m == "setcc" or m == "cmov" then return true end
 	if FLAG_USE[m] then return true end
 	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
@@ -302,7 +353,6 @@ function x86.flagUse(stmt)
 	-- them: match exactly, but only in the zero-operand string form, so the
 	-- FP scalar-double `movsd %xmm0, %xmm1` (which touches no flags) never
 	-- counts as a use.
-	local raw = string.lower(stmt.mnemonic)
 	if (raw == "movsd" or raw == "stosd") and #(stmt.operands or {}) == 0 then
 		return true
 	end
@@ -316,7 +366,11 @@ function x86.flagDef(stmt)
 	if not stmt then return false end
 	-- A $0-count shift/rotate writes nothing (see isShiftCountZero).
 	if isShiftCountZero(stmt) then return false end
-	local m = x86.baseMnemonic(string.lower(stmt.mnemonic))
+	local raw = string.lower(stmt.mnemonic)
+	-- popf/popfq[/popfd] write all six flags from the word they pop (see
+	-- FLAG_POP above).
+	if FLAG_POP[raw] then return true end
+	local m = x86.baseMnemonic(raw)
 	if FLAG_DEF[m] then return true end
 	-- baseMnemonic only normalizes mnemonics in its BASE/FIXED tables; the rest
 	-- keep their AT&T size suffix (tzcntq, popcntl, ...). Strip it ONLY as a
@@ -452,6 +506,9 @@ end
 function x86.flagUseMask(stmt)
 	if not stmt then return 0 end
 	local raw = string.lower(stmt.mnemonic)
+	-- pushf/pushfq[/pushfd] read the whole pending condition into the word they
+	-- push (see FLAG_PUSH above).
+	if FLAG_PUSH[raw] then return FLAG_ALL end
 	local m = x86.baseMnemonic(raw)
 	if m == "jcc" or m == "setcc" or m == "cmov" then
 		local c = condOf(raw)
@@ -507,6 +564,9 @@ function x86.flagDefMask(stmt)
 	-- A $0-count shift/rotate writes nothing (see isShiftCountZero): no kill.
 	if isShiftCountZero(stmt) then return 0 end
 	local raw = string.lower(stmt.mnemonic)
+	-- popf/popfq[/popfd] write all six flags from the word they pop (see
+	-- FLAG_POP above) — a full kill, like the ALU family.
+	if FLAG_POP[raw] then return FLAG_ALL end
 	local m = x86.baseMnemonic(raw)
 	if m == "adc" or m == "sbb" then return FLAG_ALL end
 	if m == "adcx" then return FLAG_CF end
@@ -1779,6 +1839,41 @@ function x86.classify(insn)
 			error("sarcasm: " .. rawMnem .. " takes no operands (it operates on the"
 				.. " implicit direction flag): " .. (insn.raw or rawMnem))
 		end
+	elseif FLAG_PUSH[rawMnem] then
+		-- PUSHF/PUSHFQ[/PUSHFD]: push the 64-bit RFLAGS as an 8-byte stack word
+		-- (see FLAG_PUSH above). The flags value materializes into the virtual
+		-- flags register — the same round-trip x86_64_codegen.saveFlags uses for
+		-- the injected checks (pushfq, then pop into a web) — so classify models
+		-- the word's value as a def of that register. The frame rewrite keeps
+		-- this statement (the transform lowers it into pushfq; pop <web>) and
+		-- emits the word's slot store right after it, exactly like a spill push;
+		-- the depth/save-stack analysis tracks the word like any spill entry.
+		-- The materialization READS the pending condition (flagUseMask returns
+		-- FLAG_ALL), so a flag write feeding it stays live and any injected
+		-- check in between is bracketed with a save/restore.
+		if #ops ~= 0 then
+			error("sarcasm: " .. rawMnem .. " takes no operands (it pushes the"
+				.. " implicit RFLAGS): " .. (insn.raw or rawMnem))
+		end
+		table.insert(defs, x86.flagsWordOperand())
+		return { defs = defs, uses = uses, rmw = rmw, control = "none",
+			fallsThrough = true, flagsPush = true }
+	elseif FLAG_POP[rawMnem] then
+		-- POPF/POPFQ[/POPFD]: pop the flags word and write all six flags from it
+		-- (a full kill — see FLAG_POP above). The frame rewrite emits the word's
+		-- slot load INTO the virtual flags register immediately ahead of this
+		-- statement (the word is always a materialized spill entry — an input
+		-- pushfq word or a caller-saved spill push — proven by the analysis;
+		-- anything else is rejected there); this use connects that load's web to
+		-- the transform's `push <web>; popfq` lowering (the cg.restoreFlags
+		-- round-trip).
+		if #ops ~= 0 then
+			error("sarcasm: " .. rawMnem .. " takes no operands (it pops the"
+				.. " implicit RFLAGS): " .. (insn.raw or rawMnem))
+		end
+		table.insert(uses, x86.flagsWordOperand())
+		return { defs = defs, uses = uses, rmw = rmw, control = "none",
+			fallsThrough = true, flagsPop = true }
 	else
 		-- Unknown mnemonic. With a memory operand there is no way to determine the
 		-- access width, so any default-width bounds check is unsound (enqcmd's m512

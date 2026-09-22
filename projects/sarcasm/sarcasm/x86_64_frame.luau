@@ -198,12 +198,14 @@ local function insnTouchesFrame(st, usesRbp)
 	return false
 end
 
--- Does the instruction write rsp (destination operand, or the implicit push/pop write)?
+-- Does the instruction write rsp (destination operand, or the implicit push/pop
+-- write — including the RFLAGS stack transfers, which move the same 8-byte word)?
 local function insnWritesSp(st)
 	local ops = st.operands
 	if ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp" then return true end
-	local b = x86.baseMnemonic(string.lower(st.mnemonic))
-	return b == "push" or b == "pop"
+	local m = string.lower(st.mnemonic)
+	local b = x86.baseMnemonic(m)
+	return b == "push" or b == "pop" or x86.isFlagStackXfer(m)
 end
 
 -- A full-width (64-bit) `movq %rsp, %reg` SAVE form: the register parks the stack
@@ -651,6 +653,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86_saves = nil
 		st.x86_unpairedPop = nil
 		st.x86_spillPop = nil
+		st.x86_flagsPop = nil
 		st.x86_teardownStart = nil
 		st.x86_teardown = nil
 		st.x86_fp = nil
@@ -938,8 +941,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- reserves its slot in the frame.
 					depth += 8
 					spillBytes += 8
-				elseif b == "push" or b == "pop" then
-					-- any other push/pop is never prologue-transparent (implicit rsp write)
+				elseif b == "push" or b == "pop" or x86.isFlagStackXfer(m) then
+					-- any other push/pop (or an RFLAGS stack transfer — the word it
+					-- moves is modeled only at a provable post-prologue depth) is
+					-- never prologue-transparent (implicit rsp write)
 					prologueEnd = i break
 				elseif b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp"
 					and not usesRbp then
@@ -1234,8 +1239,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- like the plain "dyn": the andq only lowered rsp, and nothing may move it
 			-- again before the recovery — every rsp write below degrades to plain "dyn".
 			if sv == "dyn" then return "dyn", "dyn", fp end
-			if b == "push" then return "dyn", "dyn", fp end
-			if b == "pop" then
+			if b == "push" or x86.isFlagStackPush(m) then return "dyn", "dyn", fp end
+			if b == "pop" or x86.isFlagStackPop(m) then
 				local c = { table.unpack(sv) }
 				if #c > 0 then
 					table.remove(c)
@@ -1285,6 +1290,32 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 			-- Inert computation: propagate the depth unchanged.
 			return d, sv, fp
+		end
+		if x86.isFlagStackPush(m) then
+			-- PUSHF/PUSHFQ: the RFLAGS word is a SPILL stack word — exactly like a
+			-- caller-saved register's spill push, but its value is the materialized
+			-- flags (the transform lowers the statement into pushfq; pop <flags web>,
+			-- and the rewrite files that web into the word's slot right after). The
+			-- spill mark keeps the save-slot alias model and the dropped-save model
+			-- away from the word: the slot is ordinary, virtualized frame storage.
+			local c = { table.unpack(sv) }
+			table.insert(c, { name = x86.FLAGS_REG_NAME, num = x86.FLAGS_REG_NUM,
+				depth = d + 8, spill = true, redefined = false })
+			return d + 8, c, fp
+		end
+		if x86.isFlagStackPop(m) then
+			-- POPF/POPFQ: consumes the word at the current depth — the same shape
+			-- maintenance as a pop. Whether the word is provable (an outstanding
+			-- pushfq word or a materialized spill push, never a dropped save) is
+			-- verified from the INCOMING state at the popfq itself (the
+			-- x86_flagsPop annotation); an unprovable word poisons the save stack
+			-- exactly like an unpaired pop.
+			local c = { table.unpack(sv) }
+			if #c > 0 and c[#c].depth == d then
+				table.remove(c)
+				return d - 8, c, fp
+			end
+			return d - 8, "dyn", fp
 		end
 		if b == "push" then
 			local c = { table.unpack(sv) }
@@ -2726,6 +2757,8 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			if type(dv) == "number" then
 				if bb == "push" then ndv = dv + 8
 				elseif bb == "pop" then ndv = dv - 8
+				elseif x86.isFlagStackPush(string.lower(st2.mnemonic)) then ndv = dv + 8
+				elseif x86.isFlagStackPop(string.lower(st2.mnemonic)) then ndv = dv - 8
 				elseif (bb == "sub" or bb == "add") and ops2[1] and ops2[1].rc == "sp"
 					and ops2[2] and ops2[2].kind == "imm" then
 					ndv = (bb == "sub") and (dv + immVal(ops2[2])) or (dv - immVal(ops2[2]))
@@ -3056,7 +3089,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				elseif b == "pop" and ops[1] and ops[1].kind == "reg" and x86.CALLEE_SAVED[ops[1].name] then
 					table.insert(marks, j)
 				else
-					if b == "push" or b == "pop" or insnWritesSp(st)
+					-- An RFLAGS stack transfer inside a teardown span is an unmodeled
+					-- stack word (the span's statements are DROPPED, so the word's
+					-- slot store would vanish while the depth analysis still counted
+					-- it — and a pushfq before the span's `ret` would leave the
+					-- real return address one word deep): same class as a push.
+					if b == "push" or b == "pop" or x86.isFlagStackXfer(m) or insnWritesSp(st)
 						or insnTouchesFrame(st, usesRbp) then return nil end
 					table.insert(marks, j)
 				end
@@ -3438,6 +3476,23 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					end
 				else
 					st.x86_unpairedPop = true
+				end
+			end
+			-- A popf/popfq loads the word at (%rsp) into RFLAGS. The word must be
+			-- MATERIALIZED frame storage — an outstanding pushfq word (the frame
+			-- rewrite files the materialized flags into its slot) or a spill push
+			-- of a caller-saved register (the slot web holds the pushed value) —
+			-- at the exact current depth on every path; the rewrite then lowers the
+			-- statement into a slot load of that word plus the pushq/popfq
+			-- round-trip. Popping a DROPPED register save (a callee-saved push's
+			-- save slot is never emitted — its value lives only in the register's
+			-- web) or an unproven word has no modeled value to load: rejected by
+			-- the rewrite (no mark).
+			if x86.isFlagStackPop(string.lower(st.mnemonic)) and depthIn[i] ~= nil then
+				local sv, d = savesIn[i], depthIn[i]
+				if not isDynDepth(d) and sv ~= "dyn" and #sv > 0
+					and sv[#sv].spill and sv[#sv].depth == d then
+					st.x86_flagsPop = true
 				end
 			end
 			if not st.x86_prologue then
@@ -6625,6 +6680,63 @@ function x86_64_frame.rewrite(st, ctx)
 	if b == "enter" or b == "enterq" then
 		error("sarcasm: `enter` is not supported (cannot prove safety; use the canonical"
 			.. " push %rbp / mov %rsp,%rbp / sub $imm,%rsp frame setup): " .. (st.raw or m))
+	end
+
+	-- RFLAGS stack transfers (pushf/pushfq[/pushfd], popf/popfq[/popfd]; the
+	-- 16-bit pushfw/popfw stay rejected in x86_64_fp). The word is a SPILL stack
+	-- word (the transfer analysis models it exactly like a caller-saved
+	-- register's spill push, so the save-slot alias model and the dropped-save
+	-- model stay away from it and ordinary slot traffic at the same depth shares
+	-- the word's slot web). The value rides the virtual FLAGS register
+	-- (x86.FLAGS_REG_NUM): the transform lowers the kept statement into the
+	-- pushfq/popq + pushq/popfq round-trip its own injected checks use, and the
+	-- file/load below connects that value to the word's slot web.
+	if x86.isFlagStackPush(m) then
+		local d = st.x86_depth
+		if d == nil then return end  -- unreachable (dead code): drop like any dead statement
+		if isDynDepth(d) then
+			error("sarcasm: " .. m .. " while the stack pointer is perturbed or unknown"
+				.. " (the flags word's slot cannot be proven; cannot prove safety): "
+				.. (st.raw or m))
+		end
+		local off = D0 - (d + 8)
+		if not slotOffSafe(off) then
+			error("sarcasm: " .. m .. " frame area collides with the incoming"
+				.. " stack-argument slot band (cannot prove safety): " .. (st.raw or m))
+		end
+		-- The statement stays: the transform materializes RFLAGS into the flags
+		-- web here (pushfq; pop <web>), then this file store parks it in the
+		-- word's slot.
+		emit(st)
+		emit({ kind = "insn", mnemonic = "movq",
+			operands = { ctx.slotReg(off, 64), x86.flagsWordOperand() },
+			raw = st.raw, line = st.line })
+		return
+	end
+	if x86.isFlagStackPop(m) then
+		local d = st.x86_depth
+		if d == nil then return end  -- unreachable (dead code): drop like any dead statement
+		if not st.x86_flagsPop then
+			error("sarcasm: " .. m .. " with no provable stack word on top of the stack"
+				.. " (the word it loads must be an outstanding pushfq word or a"
+				.. " materialized spill push at the current depth on every path; popping"
+				.. " a dropped register save, an empty or divergent stack, or a word at"
+				.. " an unknown depth cannot be proven safe): " .. (st.raw or m))
+		end
+		local off = D0 - d
+		if not slotOffSafe(off) then
+			error("sarcasm: " .. m .. " frame area collides with the incoming"
+				.. " stack-argument slot band (cannot prove safety): " .. (st.raw or m))
+		end
+		-- Reload the word into the flags web first (an ordinary slot load — the
+		-- value flows slot web -> flags web), then the statement: the transform
+		-- lowers it into push <web>; popfq (stack-neutral on its own, so a path
+		-- that skips it keeps rsp balanced).
+		emit({ kind = "insn", mnemonic = "movq",
+			operands = { x86.flagsWordOperand(), ctx.slotReg(off, 64) },
+			raw = st.raw, line = st.line })
+		emit(st)
+		return
 	end
 
 	-- A stack-register name that did not parse as a REGISTER: in an AT&T-parsed file

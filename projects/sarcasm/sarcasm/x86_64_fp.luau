@@ -1505,6 +1505,7 @@ local REASON_SGX = "SGX enclave instructions (encls/enclu/enclv) have implicit e
 local REASON_NOTRACK = "the CET `notrack` prefix is not supported (it changes indirect-branch tracking for the instruction that follows, which the checker does not model; cannot prove memory safety)"
 local REASON_LOOPZF = "loop's ZF-consuming form branches on the flags left by the PRECEDING instruction, and sarcasm's injected memory-access checks clobber EFLAGS (the documented known issue), so the pending condition could be silently polluted (modeling it cannot be proven sound; use plain `loop`, which branches on the decremented counter instead)"
 local REASON_ADDRSIZE = "an address-size prefix changes the addressing mode of the instruction that follows, which sarcasm does not model (the size-suffixed spelling is supported where one exists, e.g. loopl for the 0x67-address-size `loop`)"
+local REASON_FLAGXFER16 = "the 16-bit flag-stack transfers (pushfw/popfw) move a 2-byte word (rsp shifts by 2 and only the low 16 bits of EFLAGS transfer), which the stack model does not track (cannot prove memory safety; use the 64-bit pushf/popf or pushfq/popfq)"
 
 local REASON_FLAGREAD = "flag-reading/writing instructions with unmodeled EFLAGS effects cannot be proven sound against sarcasm's injected flag-clobbering checks (the flag-liveness model has no entry for this mnemonic, so a default-dead assumption would silently omit a required save/restore)"
 local REASON_BCD = "BCD arithmetic instructions (daa/das/aaa/aas/aam/aad) read and write AF/CF with unmodeled EFLAGS effects that sarcasm's injected flag-clobbering checks could silently pollute (cannot prove memory safety)"
@@ -1595,15 +1596,16 @@ local UNSAFE = {
 	-- prefixed instruction itself is not modeled. The size-suffixed spellings
 	-- (loopl/loopq, jecxz/jrcxz) are the supported way to write those forms.
 	addr32 = REASON_ADDRSIZE, addr16 = REASON_ADDRSIZE,
-	-- Flag-stack transfers: pushf/pushfq/pushfd READ EFLAGS (a pending
-	-- condition from a preceding flag-setter would be silently polluted by an
-	-- injected check) and popf/popfq/popfd WRITE EFLAGS with values the model
-	-- does not track. Neither is in the flag-liveness tables, so both stay
-	-- rejected rather than silently passing with a dead default.
-	pushf = REASON_FLAGREAD, pushfq = REASON_FLAGREAD, pushfd = REASON_FLAGREAD,
-	pushfw = REASON_FLAGREAD,
-	popf = REASON_FLAGREAD, popfq = REASON_FLAGREAD, popfd = REASON_FLAGREAD,
-	popfw = REASON_FLAGREAD,
+	-- Flag-stack transfers, 16-bit forms only: pushfw/popfw (the 0x66 prefixes)
+	-- move a 2-BYTE word — rsp shifts by 2 and only the low 16 bits of EFLAGS
+	-- transfer — which the 8-byte-word stack model does not track (see
+	-- REASON_FLAGXFER16). The 64-bit forms (pushf/pushfq[/pushfd], popf/popfq
+	-- [/popfd]) are MODELED now: x86_64_isa.classify defs/uses the virtual flags
+	-- register, the frame pass files the word like a spill push, and the
+	-- transform lowers the pair through the same pushfq/popq + pushq/popfq
+	-- round-trip its injected checks use — so they never reach this table.
+	pushfw = REASON_FLAGXFER16,
+	popfw = REASON_FLAGXFER16,
 	-- salc (set AL from carry) reads CF with no entry in the flag-use tables.
 	salc = REASON_FLAGREAD,
 	-- BCD arithmetic: AF/CF readers+writers with unmodeled flag effects.

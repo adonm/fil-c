@@ -1442,9 +1442,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local m = string.lower(st.mnemonic)
 		local b = cgm.baseMnemonic(m)
 		-- faulting, serializing, stack-moving, or otherwise effectful instructions are
-		-- never dead code, whatever their modeled defs say
+		-- never dead code, whatever their modeled defs say. The RFLAGS stack transfers
+		-- (pushf/pushfq, popf/popfq) are in this class even though the modeled word is
+		-- virtual: their whole point is the OBSERVABLE restore of the caller's flags
+		-- (DF in particular — a pristine pushfq/cld/rep/popfq tail must hand the
+		-- entry DF back to code that reads it after the popfq, and a caller's DF=1
+		-- must survive the wrap), so DCE never drops them. (Their flag masks are in
+		-- the liveness tables — flagUseMask(FLAG_ALL) / flagDefMask(FLAG_ALL) — so
+		-- flag writes feeding the materialization stay live either way.)
 		if b == "div" or b == "idiv" or b == "cpuid" or b == "rdtsc" or b == "rdtscp"
 			or b == "push" or b == "pop" or b == "leave" or b == "enter"
+			or (cgm.isFlagStackXfer and cgm.isFlagStackXfer(m))
 			or string.match(m, "^loop") then
 			return false
 		end
@@ -4411,6 +4419,40 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				withFlagSave(flagsLiveFrom(nodeIndex[node]), function()
 					emitRepString(node)
 				end)
+			elseif c.flagsPush then
+				-- Input pushf/pushfq[/pushfd] (x86_64): materialize the RFLAGS
+				-- value into its web — the same round-trip cg.saveFlags uses for
+				-- the injected checks (pushfq, then pop into a virtual temp), so
+				-- the value may spill freely and survives everything in between.
+				-- Nothing here writes flags, and the frame rewrite emitted the
+				-- word's slot store as the very next statement (an ordinary
+				-- register copy — no injected code can land between), so the
+				-- materialized word is exactly the pending condition. The word is
+				-- typed scalar (nothing seeds the flags web as a pointer), so the
+				-- stack word is never scanned by the GC.
+				local t = node.defTemps and node.defTemps[1]
+				if not t then
+					error("sarcasm: internal error: " .. string.lower(node.stmt.mnemonic)
+						.. " with no lifted flags web: " .. (node.stmt.raw or "?"))
+				end
+				emit(build.insn("pushfq", {}, {}))
+				emit(build.insn("pop", { build.rt(t) }, { defs = { t } }))
+			elseif c.flagsPop then
+				-- Input popf/popfq[/popfd] (x86_64): the frame rewrite emitted the
+				-- word's slot load into the flags web as the previous statement;
+				-- push the value back and popfq (the cg.restoreFlags round-trip).
+				-- The pair is stack-neutral ON ITS OWN, so a path that skips it
+				-- keeps rsp exactly where the frame layout keeps it. The popfq
+				-- WRITES all six flags from the word (flagDefMask = FLAG_ALL), so
+				-- a following jcc/setcc/cmov reads the restored values and any
+				-- injected check in between is bracketed with a save/restore.
+				local t = node.useTemps and node.useTemps[1]
+				if not t then
+					error("sarcasm: internal error: " .. string.lower(node.stmt.mnemonic)
+						.. " with no lifted flags web: " .. (node.stmt.raw or "?"))
+				end
+				emit(build.insn("push", { build.rt(t) }, { uses = { t } }))
+				emit(build.insn("popfq", {}, {}))
 			elseif node.stmt.x86_slotPartial ~= nil and lowerPartialSlot(node) then
 				-- Narrow scalar traffic into a containing 8-byte slot web: lowered in
 				-- place (stores — the node was replaced by the merge sequence; aligned

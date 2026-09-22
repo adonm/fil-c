@@ -27,6 +27,7 @@ M.flagDef = isa.flagDef
 M.flagWriteNoDef = isa.flagWriteNoDef
 M.flagUseMask = isa.flagUseMask
 M.flagDefMask = isa.flagDefMask
+M.isFlagStackXfer = isa.isFlagStackXfer
 M.precolorName = function(num) return xparse.regName(num, 64) end
 M.ALLOCATABLE = isa.ALLOCATABLE
 

@@ -47,7 +47,7 @@ PTHREAD_FLAGS ?= -pthread
 # portable flags, which disable all SIMD paths so no intrinsics or assembly
 # are needed and the code builds warning-free with any C compiler.
 BLAKE3_SRC := src/blake3/blake3.c src/blake3/blake3_dispatch.c src/blake3/blake3_portable.c
-BLAKE3_FLAGS := -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512
+BLAKE3_FLAGS := -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0
 LDLIBS ?= -lcurl
 
 # Abort a target the moment one of its recipe commands fails, so a failing

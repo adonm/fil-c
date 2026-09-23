@@ -94,7 +94,7 @@ What success looks like:
     - The projeny file points at the new version URL.
 - You've tested build_all.sh, build_all_glibc.sh, and the optfil build. In case B, that might mean commits that repoint the build scripts at the new versions.
 
-Another somewhat special project is mg. We're using a normally-versioned mg (like mg 4.1) but there are also date-versioned mg releases (like 20260719). DO NOT switch to the date-versioned ones.
+Another somewhat special project is mg. We're using a normally-versioned mg (like mg 4.1) but there are also date-versioned mg releases (like 20260719). DO NOT switch to the date-versioned ones. The thing that's wrong with those is that they don't include pre-build configure scripts. Generally, we want to avoid using "releases" of autoconf-based projects that do not have configure scripts included. If you find a distro that does not have configure scripts included, then try to see if you can find some *alternate* distro of the same package that *does* include configure scripts. Only use the version that requires us to build configure scripts ourselves if there's no other alternative available (and in my experience that almost never happens).
 
 Anther interesting case is util-linux, which has both a util-linux.projeny and a yolo-util-linux.projeny. They should point at the same archive (or archive URL, when we update them). When rebasing util-linux, make sure both projeny files are updated in tandem, and make sure they point at the same URLs.
 

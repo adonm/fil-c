@@ -64,13 +64,30 @@ tar -czf pizlonated-user-glibc.tar.gz pizlonated-user-glibc
 rm -rf pizlonated-user-glibc
 cd ../..
 
+filc/projeny package \
+    projects/xz.projeny projects/xz/pizlonated-xz.tar.gz \
+    projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz \
+    projects/coreutils.projeny projects/coreutils/pizlonated-coreutils.tar.gz \
+    projects/openssl.projeny projects/openssl/pizlonated-openssl.tar.gz \
+    projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz \
+    projects/icu.projeny projects/icu/pizlonated-icu.tar.gz \
+    projects/tmux.projeny projects/tmux/pizlonated-tmux.tar.gz \
+    projects/libidn2.projeny projects/libidn2/pizlonated-libidn2.tar.gz \
+    projects/m4.projeny projects/m4/pizlonated-m4.tar.gz \
+    projects/xxHash.projeny projects/xxHash/pizlonated-xxHash.tar.gz \
+    projects/rsync.projeny projects/rsync/pizlonated-rsync.tar.gz \
+    projects/gzip.projeny projects/gzip/pizlonated-gzip.tar.gz \
+    projects/attr.projeny projects/attr/pizlonated-attr.tar.gz \
+    projects/libedit.projeny projects/libedit/pizlonated-libedit.tar.gz \
+    projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz \
+    projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz \
+    projects/brotli.projeny projects/brotli/pizlonated-brotli.tar.gz \
+    projects/blake3.projeny projects/blake3/pizlonated-blake3.tar.gz \
+    projects/dash.projeny projects/dash/pizlonated-dash.tar.gz \
+    projects/mg.projeny projects/mg/pizlonated-mg.tar.gz
+
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
-filc/projeny package projects/xz.projeny projects/xz/pizlonated-xz.tar.gz
-filc/projeny package projects/pkgconf.projeny projects/pkgconf/pizlonated-pkgconf.tar.gz
 ./package-source.sh projects/bash-5.3 pizlonated-bash
-filc/projeny package projects/coreutils.projeny projects/coreutils/pizlonated-coreutils.tar.gz
-filc/projeny package projects/openssl.projeny projects/openssl/pizlonated-openssl.tar.gz
-filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.tar.gz
 ./package-source.sh projects/openssh-10.5p1 pizlonated-openssh
 ./package-source.sh projects/binutils-2.47 pizlonated-binutils
 ./package-source.sh projects/Linux-PAM-1.7.2 pizlonated-pam
@@ -88,30 +105,14 @@ filc/projeny package projects/libffi.projeny projects/libffi/pizlonated-libffi.t
 ./package-source.sh projects/diffutils-3.12 pizlonated-diffutils
 ./package-source.sh projects/make-4.4.1 pizlonated-make
 ./package-source.sh projects/tar-1.35 pizlonated-tar
-filc/projeny package projects/icu.projeny projects/icu/pizlonated-icu.tar.gz
 ./package-source.sh projects/procps-ng-4.0.7 pizlonated-procps
-filc/projeny package projects/tmux.projeny projects/tmux/pizlonated-tmux.tar.gz
-filc/projeny package projects/libidn2.projeny projects/libidn2/pizlonated-libidn2.tar.gz
 ./package-source.sh projects/libtasn1-4.21.0 pizlonated-libtasn1
 ./package-source.sh projects/p11-kit-0.26.5 pizlonated-p11-kit
 ./package-source.sh projects/curl-8.22.0 pizlonated-curl
 ./package-source.sh projects/git-2.55.0 pizlonated-git
 ./package-source.sh projects/libevent-2.1.13 pizlonated-libevent
-filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
-filc/projeny package projects/xxHash.projeny projects/xxHash/pizlonated-xxHash.tar.gz
-filc/projeny package projects/rsync.projeny projects/rsync/pizlonated-rsync.tar.gz
-
-filc/projeny package projects/gzip.projeny projects/gzip/pizlonated-gzip.tar.gz
-filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
-filc/projeny package projects/libedit.projeny projects/libedit/pizlonated-libedit.tar.gz
-filc/projeny package projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz
-filc/projeny package projects/libxml2.projeny projects/libxml2/pizlonated-libxml2.tar.gz
-filc/projeny package projects/brotli.projeny projects/brotli/pizlonated-brotli.tar.gz
-filc/projeny package projects/blake3.projeny projects/blake3/pizlonated-blake3.tar.gz
 ./package-source.sh projects/zip-3.0 pizlonated-zip
 ./package-source.sh projects/unzip-6.0 pizlonated-unzip
-filc/projeny package projects/dash.projeny projects/dash/pizlonated-dash.tar.gz
-filc/projeny package projects/mg.projeny projects/mg/pizlonated-mg.tar.gz
 ./package-source.sh projects/zsh-5.9.2 pizlonated-zsh
 

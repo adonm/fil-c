@@ -748,13 +748,13 @@ cd ..
 rm -rf findutils-4.11.0
 hash -r
 
-tar -xf $FILCSRC/pizlix/gzip-1.14.tar.xz
-cd gzip-1.14
+tar -xf $FILCSRC/projects/gzip/pizlonated-gzip.tar.gz
+cd pizlonated-gzip
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf gzip-1.14
+rm -rf pizlonated-gzip
 hash -r
 
 tar -xf $FILCSRC/projects/make-4.4.1/pizlonated-make.tar.gz

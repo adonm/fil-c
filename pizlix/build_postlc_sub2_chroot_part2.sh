@@ -304,13 +304,13 @@ hash -r
 
 # skipping grub
 
-tar -xf gzip-1.14.tar.xz
-cd gzip-1.14
+tar -xf pizlonated-gzip.tar.gz
+cd pizlonated-gzip
 ./configure --prefix=/usr
 make
 make install
 cd ..
-rm -rf gzip-1.14
+rm -rf pizlonated-gzip
 hash -r
 
 tar -xf iproute2-6.10.0.tar.xz

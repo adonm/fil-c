@@ -101,6 +101,8 @@ filc/projeny package projects/m4.projeny projects/m4/pizlonated-m4.tar.gz
 ./package-source.sh projects/zstd-1.5.7 pizlonated-zstd
 filc/projeny package projects/xxHash.projeny projects/xxHash/pizlonated-xxHash.tar.gz
 ./package-source.sh projects/rsync-3.5.0 pizlonated-rsync
+
+filc/projeny package projects/gzip.projeny projects/gzip/pizlonated-gzip.tar.gz
 filc/projeny package projects/attr.projeny projects/attr/pizlonated-attr.tar.gz
 filc/projeny package projects/libedit.projeny projects/libedit/pizlonated-libedit.tar.gz
 filc/projeny package projects/patchelf.projeny projects/patchelf/pizlonated-patchelf.tar.gz

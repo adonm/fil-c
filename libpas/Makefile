@@ -93,12 +93,23 @@ endif
 # (the pas runtime AND the Fil-C-compiled filc/src) gets the same -ffixed
 # flags the cosmo build and the pizlonated user libc use, because any of
 # them can call into a cosmo function that reads the TIB from x28.
+#
+# This is a costly codegen restriction (two registers taken away from the
+# register allocator), so it is applied only in cosmo mode: COSMO is the
+# per-arch libyolocosmo.a marker probe above (pizfix/lib-<arch>/ for cross
+# builds, pizfix/lib/ for the host arch), so a non-cosmo aarch64 build of
+# libpas keeps the default register allocation.
 ifeq ($(FILCARCH),x86_64)
 ARCH_CFLAGS = -march=x86-64-v2
 FILCC_ARCH_FLAGS =
 else ifeq ($(FILCARCH),aarch64)
+ifneq ($(COSMO),)
 ARCH_CFLAGS = -ffixed-x18 -ffixed-x28
 FILCC_ARCH_FLAGS = -ffixed-x18 -ffixed-x28
+else
+ARCH_CFLAGS =
+FILCC_ARCH_FLAGS =
+endif
 else
 ARCH_CFLAGS =
 FILCC_ARCH_FLAGS =

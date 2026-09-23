@@ -26,6 +26,18 @@
 # collide with the host-arch build; the default (FILCARCH = host) is unchanged.
 FILCARCH ?= $(shell uname -m)
 
+# Cosmo mode probe, mirroring libpas/Makefile: the cross cosmo build is
+# detected by the per-arch libyolocosmo.a marker that build_yolocosmo.sh
+# installs into pizfix/lib-<arch> (pizfix/lib/ for the host arch).  This is
+# only consulted to decide whether costly cosmo-only codegen restrictions
+# apply; a non-cosmo build of the unwinder is unaffected.
+ifeq ($(FILCARCH),$(shell uname -m))
+COSMO_LIB_DIR = ../pizfix/lib
+else
+COSMO_LIB_DIR = ../pizfix/lib-$(FILCARCH)
+endif
+COSMO := $(wildcard $(COSMO_LIB_DIR)/libyolocosmo.a)
+
 ifneq ($(FILCARCH),$(shell uname -m))
 ARCHSUFFIX = -$(FILCARCH)
 CROSS_TARGET_FLAGS = --target=$(FILCARCH)-linux-gnu
@@ -36,9 +48,13 @@ CROSS_TARGET_FLAGS = --target=$(FILCARCH)-linux-gnu
 # reads cosmo's TIB from x28.  This matches the -ffixed-x18 -ffixed-x28
 # used by libpas, the pizlonated libc and the pizlonated C++ runtime for
 # the same architecture (see build_yolocosmo.sh, projects/usercosmo/filc.mk
-# and libpas/Makefile).
+# and libpas/Makefile).  Reserving registers is a costly codegen
+# restriction, so it applies only in cosmo mode (the per-arch cosmo marker
+# above); a non-cosmo aarch64 build keeps the default register allocation.
 ifneq ($(findstring aarch64,$(FILCARCH)),)
+ifneq ($(COSMO),)
 CROSS_TARGET_FLAGS += -ffixed-x18 -ffixed-x28
+endif
 endif
 else
 ARCHSUFFIX =

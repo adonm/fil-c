@@ -1595,6 +1595,7 @@ class Pizlonator {
   FunctionCallee LifetimeStart;
   FunctionCallee LifetimeEnd;
   FunctionCallee StackCheckAsm;
+  FunctionCallee StoreStoreFenceAsm;
   FunctionCallee ThreadlocalAddress;
   FunctionCallee DoNothing;
 
@@ -2707,6 +2708,8 @@ class Pizlonator {
       "", InsertBefore);
     Memset->addParamAttr(0, Attribute::getWithAlignment(C, Align(GCMinAlign)));
     Memset->setDebugLoc(InsertBefore->getDebugLoc());
+    CallInst::Create(StoreStoreFenceAsm, { }, "", InsertBefore)->setDebugLoc(
+      InsertBefore->getDebugLoc());
     return Allocate;
   }
 
@@ -16403,7 +16406,12 @@ public:
                          "b.cs 1f\n\t"
                          "b filc_stack_overflow_failure\n\t"
                          "1:",
-                         "=r,r,~{cc}",
+                         "=r,r,~{cc},~{memory}",
+                         /*hasSideEffects=*/true);
+      StoreStoreFenceAsm =
+          InlineAsm::get(FunctionType::get(VoidTy, false),
+                         "dmb ishst",
+                         "~{memory}",
                          /*hasSideEffects=*/true);
       break;
     case Triple::x86_64:
@@ -16441,6 +16449,11 @@ public:
                            "*m,~{memory},~{dirflag},~{fpsr},~{flags}",
                            /*hasSideEffects=*/true);
       }
+      StoreStoreFenceAsm =
+          InlineAsm::get(FunctionType::get(VoidTy, false),
+                         "",
+                         "~{memory}",
+                         /*hasSideEffects=*/true);
       break;
     default:
       report_fatal_error("Unknown arch");

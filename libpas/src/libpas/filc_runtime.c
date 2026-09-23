@@ -2236,8 +2236,32 @@ PAS_NEVER_INLINE bool filc_weak_load_barrier_slow(filc_thread* my_thread, filc_o
         /* Now we know that the object is not marked. */
         switch (filc_current_marking_state) {
         case filc_not_marking:
-            if (fugc_has_unfinished_census)
+            if (fugc_has_unfinished_census) {
+                /* The mark bits check above is totally unordered with respect to our checks of
+                   filc_current_marking_state and fugc_has_unfinished_census. That's a problem
+                   here.
+
+                   The GC marks everything that is live according to the soft handshake before it
+                   commits to termination (the CAS that turns filc_terminating into
+                   filc_not_marking), and that commit publishes those marks. Also, other mutators
+                   may run store barriers that mark objects right up until they acknowledge the
+                   termination handshake themselves, so marking can even be concurrent with the
+                   commit. But since our loads are unordered, we could have loaded the mark bits
+                   before some such mark happened, while loading the marking state after the
+                   commit that the mark happens before. In that case, we would wrongly conclude
+                   that the object is dead, and return false even though the object is live.
+
+                   We fix this by re-checking the mark bits after a fence. The fence ensures that
+                   our re-check happens after our observation of the commit, and the commit's
+                   release semantics ensure that the re-check observes all marks that happened
+                   before the commit. After the commit, no new marks can happen, since marking
+                   barriers only mark if they believe that we are still marking. So if the
+                   re-check says that the object is unmarked, then it is truly dead. */
+                pas_fence();
+                if (filc_non_free_object_is_live_for_weak(object, FUGC_MARKER))
+                    return true;
                 return false;
+            }
             return true;
         case filc_marking:
             filc_barrier_slow(my_thread, object);

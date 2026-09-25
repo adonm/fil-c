@@ -158,15 +158,15 @@ void _pthread_decimate(enum PosixThreadStatus threshold) {
 
 /* Fil-C port: the thread entry point.  cosmo's original PosixThread() ran on
  * a clone() child with the kernel TIB installed via CLONE_SETTLS; under Fil-C
- * zthread_create2() spawns a pizlonated thread whose TIB is the __thread
- * variable __filc_tib (see libc/thread/filc_tls.c), so this trampoline just
- * wires the TIB up, sets the signal mask, and runs the callback. */
+ * zthread_create2() spawns a pizlonated thread whose TIB is per-thread zgc
+ * memory installed into the zthread cookie by __filc_init_tib() (see
+ * libc/thread/filc_tls.c), so this trampoline just wires the TIB up, sets the
+ * signal mask, and runs the callback. */
 static void *PosixThread(void *arg) {
   struct PosixThread *pt = arg;
 
   // wire up the pizlonated TIB of this thread
-  __filc_init_tib(pt);
-  struct CosmoTib *tib = __get_tls();
+  struct CosmoTib *tib = __filc_init_tib(pt);
   atomic_init(&tib->tib_ptid, zthread_self_id());
   atomic_store_explicit(&tib->tib_ctid, zthread_self_id(),
                         memory_order_release);

@@ -2,6 +2,12 @@
 #define COSMOPOLITAN_LIBC_THREAD_TLS_H_
 #include "libc/dce.h"
 
+#ifdef __FILC__
+/* For zthread_self_cookie() (used by __get_tls() below) and, transitively,
+ * stdfil.h's zgc_aligned_alloc() (used by __filc_ensure_tib()). */
+#include <pizlonated_runtime.h>
+#endif
+
 #define TLS_ALIGNMENT 64
 
 #define TIB_FLAG_VFORKED 1
@@ -84,15 +90,18 @@ extern char __tls_enabled;
 
 /* Fil-C port: Fil-C code can not use the kernel-managed TIB (i.e. %fs:0), since
  * the Fil-Pizlonator rejects inline asm that touches segment registers and any
- * pointer returned by inline asm.  Instead, in Fil-C land the TIB is an
- * ordinary __thread variable, which gives every pizlonated thread its own TIB
- * with zero overhead and no kernel TLS involvement at all.  The definition of
- * the variable lives in libc/thread/filc_tls.c.  The kernel TIB set up by the
- * yolo (non-pizlonated) boot layer still exists in parallel; it is used by
- * libpizlo's yolo side and by libyolocosmo, and the two worlds never mix. */
-extern __thread struct CosmoTib __filc_tib libcesque;
+ * pointer returned by inline asm.  Instead, in Fil-C land the TIB is per-filc
+ * thread memory found through the zthread cookie (the same mechanism the musl
+ * flavor uses to find its per-thread pthread descriptor; zthread_self_cookie()
+ * inlines to a single load of the cookie in pizlonated code).  __filc_init_tib()
+ * (libc/thread/filc_tls.c) installs the TIB for the main thread and for threads
+ * created by pthread_create(); __filc_ensure_tib() lazily installs a bare TIB
+ * if __get_tls() runs before that wiring.  The kernel TIB set up by the yolo
+ * (non-pizlonated) boot layer still exists in parallel; it is used by libpizlo's
+ * yolo side and by libyolocosmo, and the two worlds never mix. */
 struct PosixThread;
 void *__filc_init_tib(struct PosixThread *) libcesque;
+void *__filc_ensure_tib(void) libcesque;
 
 /* The yolo copy of this variable lives in libc/sysv/hostos.S and is only ever
  * flipped by the yolo boot (__enable_tls).  Fil-C land never uses the kernel
@@ -118,10 +127,17 @@ struct CosmoTib *__get_tls_rax(void) dontthrow pureconst;
  *
  * This can't be used in privileged functions.
  */
-forceinline pureconst struct CosmoTib *__get_tls(void) {
+forceinline struct CosmoTib *__get_tls(void) {
 #ifdef __FILC__
-  /* Fil-C port: see the comment near the declaration of __filc_tib above. */
-  return &__filc_tib;
+  /* Fil-C port: see the comment near the declaration of __filc_init_tib
+   * above.  The cookie is null only before the TIB was wired up; fall back
+   * to the lazy installer, which mirrors the first-touch allocation that the
+   * old `__thread struct CosmoTib __filc_tib` used to get from the
+   * Fil-Pizlonator. */
+  struct CosmoTib *__tib = (struct CosmoTib *)zthread_self_cookie();
+  if (!__tib)
+    __tib = (struct CosmoTib *)__filc_ensure_tib();
+  return __tib;
 #elif defined(__chibicc__)
   return __get_tls_rax();
 #elif __x86_64__

@@ -71,14 +71,16 @@ char **__argv;
 
 static void filc_setup_main_thread(void) {
   /* The main thread's PosixThread object: a static PT_STATIC instance, set up
-     the same way __enable_tls() does it for the kernel TIB in the yolo world. */
-  _pthread_static.tib = &__filc_tib;
+     the same way __enable_tls() does it for the kernel TIB in the yolo world.
+     __filc_init_tib() installs the TIB into the zthread cookie (see
+     libc/thread/filc_tls.c) and returns it; it must run before anything in
+     pizlonated land touches __get_tls(). */
   _pthread_static.pt_flags = PT_STATIC;
   _pthread_static.pt_locale = &__global_locale;
   dll_init(&_pthread_static.list);
   if (!_pthread_list)
     _pthread_list = &_pthread_static.list;
-  __filc_init_tib(&_pthread_static);
+  _pthread_static.tib = __filc_init_tib(&_pthread_static);
 }
 
 static void filc_init_globals(char **argv, char **envp, size_t *auxv) {

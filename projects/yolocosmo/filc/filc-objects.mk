@@ -81,7 +81,6 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sock/sys_sendfile_freebsd.o \
 	o/$(MODE)/libc/sock/sys_sendfile_xnu.o \
 	o/$(MODE)/libc/log/addr2linepath.o \
-	o/$(MODE)/libc/dlopen/dlopen.o \
 	o/$(MODE)/libc/dlopen/stubs.o \
 	o/$(MODE)/libc/thread/alarm.o \
 	o/$(MODE)/libc/thread/futex_calls.o \
@@ -217,7 +216,6 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/runtime/init.o \
 	o/$(MODE)/libc/runtime/clone.o \
 	o/$(MODE)/libc/runtime/crash.o \
-	o/$(MODE)/libc/runtime/cxa_thread_atexit.o \
 	o/$(MODE)/libc/runtime/enable_tls.o \
 	o/$(MODE)/libc/runtime/exit.o \
 	o/$(MODE)/libc/runtime/fpathconf.o \

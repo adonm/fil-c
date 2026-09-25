@@ -444,6 +444,24 @@ so a broken aarch64 half fails the whole link loudly.
 - The APE payload itself is OS-agnostic by construction, but this repo only
   exercises Linux (x86_64 host, plus aarch64 via qemu or real hardware).
   Windows and macOS execution of the produced APEs is untested here.
+- TLS in the payload is portable: the yolo libc is built with cosmo's tlscc
+  (so every `%fs:0` TLS access goes through the per-OS `__get_tls_rXX`
+  dispatch helpers), libpas' fast TLS uses a pthread key under PAS_COSMO, and
+  the pizlonated libc's TIB is per-filc-thread zgc memory found through the
+  zthread cookie instead of a `__thread` variable.  A static x86_64 cosmo
+  binary therefore contains no TLS codegen that touches `%fs` directly; the
+  only remaining `%fs` instructions live in per-OS-guarded assembly
+  (`libc/sysv/tlsasm.S` helpers, `vfork.S`'s non-Windows path, and
+  `systemfive.S`'s Linux paths), which is exactly how cosmo's own default
+  x86_64 build stays Windows-safe.  Known punted exceptions: `__thread` /
+  `thread_local` variables in pizlonated code still lower to `%fs` TLS
+  accesses (the Fil-Pizlonator's thread-local cache pointer), so cosmo
+  programs that actually use C/C++ `thread_local` - and the handful of
+  usercosmo/libc++abi internals that do (trace.c, memoryexists.c, unveil.c,
+  fexecve.c, h_errno.c, `__cxa_get_globals`) - will still fault on Windows;
+  they work on Linux.  libyolort (compiler-rt builtins, which is shared with
+  the other flavors) also carries `%fs:0x28` stack-canary code from the host
+  toolchain.
 - `apelink`/`pecheck` are x86_64 Linux host tools (they are built in cosmo's
   Linux-only `x86_64-optlinux` mode), as are minilute and sarcasm.
 - aarch64 APEs (single-arch) embed the Apple-silicon loader source
@@ -455,6 +473,21 @@ so a broken aarch64 half fails the whole link loudly.
 - The aarch64 cosmo link wants `aarch64-linux-gnu-ld` (from
   `binutils-aarch64-linux-gnu`/`gcc-aarch64-linux-gnu`); the driver falls back
   to `ld.lld` when it is missing.
+- After changing what the payload references from the yolo libc (new symbols
+  in libpizlo.a/libc.a/libc++*.a, or cosmo config changes that affect TLS),
+  re-verify the closure and rebuild the slim archive:
+  `python3 projects/yolocosmo/filc/compute-closure.py --mode x86_64-ape`
+  (and `--mode aarch64-ape` for cross builds), then rerun
+  `build_yolocosmo.sh`.  Remember that changing TLS-bearing yolo flags (like
+  `TLSCC`) does not rebuild anything by itself - force it with
+  `make m=x86_64-ape filcyolo -B`.
+- Windows retest checklist for the next person with a Windows box (things
+  this container cannot run): build `helloraw.c` and `loop.c` with
+  `build/bin/clang --filc-fat-ape` and run both `.com` files on Windows;
+  then a pthread test (e.g. `filc/tests/pthreadcleanup`) and a C++ iostream
+  program.  Expected to work now that the payload is %fs-free; if the boot
+  still fails, WinDbg's faulting address maps 1:1 onto the `.com.dbg` image
+  (same load base), so symbolize with `nm -n helloraw.com.dbg`.
 
 ## Verification checklist
 

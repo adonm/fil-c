@@ -413,6 +413,122 @@ which merges both images plus the loaders into the fat APE.  Run any fat link
 with `-v` to see all three commands.  A failed step skips the ones after it,
 so a broken aarch64 half fails the whole link loudly.
 
+## Running on macOS (Apple Silicon)
+
+How a cosmo APE (single-arch aarch64 or fat) actually starts on arm64 macOS:
+the file is a shell script first (`MZqFpD='` magic), and on Darwin the stub
+takes the `/Applications`-test branch that compiles the Apple-silicon APE
+loader **from source, on the user's Mac, on first run**.  apelink embeds the
+loader source (`ape-m1.c`) gzip'd into the APE; the stub does:
+
+```
+t="${TMPDIR:-${HOME:-.}}/.ape-1.10"
+dd if="$o" skip=... count=... bs=1 | gzip -dc >"$t.c.$$";  mv "$t.c.$$" "$t.c"
+cc -w -O -o "$t.$$" "$t.c" ||exit                          # on the Mac
+mv -f "$t.$$" "$t";  exec "$t" "$o" "$@"
+```
+
+Why source, not a prebuilt loader: XNU on arm64 enforces code signing, so a
+loader embedded by a Linux build host could never run there (see the comment
+in `projects/yolocosmo/tool/build/apelink.c`, "xnu on arm64 has strict code
+signing requirements ... we do is embed the ape loader source code and then
+hope the user has a c compiler installed").  `ape-m1.c` is a real macOS
+program: it includes `<assert.h>` (line 25), `dispatch/dispatch.h`,
+`libkern/OSCacheControl.h`, `sys/sysctl.h`, etc. - the whole macOS SDK
+surface.  If the systemwide `ape` loader is installed (the stub tries
+`type ape` first, and also a previously self-extracted `$TMPDIR/.ape-1.10`),
+none of this happens.
+
+**The macOS SDK requirement.**  The stub invokes plain `cc -w -O` with no
+`-isysroot`/`SDKROOT` and no probing of `xcrun` (checked in apelink.c both in
+our tree and in the 3.9.2 toolchain) - by design, since Apple's `cc` finds its
+own SDK.  On a Mac whose `cc` cannot find an SDK (Command Line Tools not
+installed, or `xcode-select` pointing at a broken/partial install), that
+compile fails with exactly:
+
+```
+/var/folders/.../T//.ape-1.10.c:25:10: fatal error: 'assert.h' file not found
+#include <assert.h>
+```
+
+(The stub only prints its own `please run: xcode-select --install` hint when
+`cc` is missing entirely; a `cc` that exists but has no SDK gets the bare
+compile error above.  Reproduced on a Linux box with no Apple SDK:
+`clang -target arm64-apple-macos -nostdinc -c .ape-1.10.c` yields the same
+`.ape-1.10.c:25:10: fatal error: 'assert.h' file not found` - so the failure
+mode is purely "the `cc` that ran had no SDK", not anything about the APE.)
+
+**Remedy for the user's Mac** (either one):
+
+1. Install the Command Line Tools so `cc` has a working SDK, then just run the
+   APE again (first run compiles `$TMPDIR/.ape-1.10`, later runs reuse it):
+
+   ```
+   xcode-select --install          # or: xcode-select --switch /Applications/Xcode.app
+   cc --version && xcrun --show-sdk-path   # both must succeed
+   ./hello
+   ```
+
+2. Pre-build the loader once and install it as the systemwide `ape` command,
+   which every APE prefers from then on (this is cosmo's own documented
+   recommendation, `.cosmocc/3.9.2/README.md`: "Apple Arm64 users should
+   compile `cc -O -o ape bin/ape-m1.c` and move `ape` to
+   `/usr/local/bin/ape`"):
+
+   ```
+   cc -O -o ape pizfix/libexec/ape-m1.c && sudo mv ape /usr/local/bin/ape
+   ```
+
+Both remedies need the SDK once; there is no way to avoid that, since the
+loader itself is a macOS program.
+
+**What we verified about our pipeline vs upstream cosmo** (verdict: our APE
+tooling is faithful; the assert.h failure is expected cosmo behavior on an
+SDK-less Mac, not a Fil-C defect):
+
+- Stub: our apelink's generated shell script is **byte-identical** to the one
+  the upstream 3.9.2 `cosmocc` toolchain's apelink generates for the same
+  inputs (hello built by real cosmocc, fed to both apelinks), modulo (a) the
+  6-char anti-collision heredoc marker (`justineXXXXXX`), which apelink
+  derives from a Blake2b digest over its inputs and which changed between
+  cosmo 3.9.2 and the pristine snapshot vendored here (the 3.9.2 release
+  hashed with crc32+BLAKE2B256 over a hashpool, the snapshot streams
+  Hacl_Hash_Blake2b - also why the vendored `ape-x86_64.elf` differs from the
+  3.9.2 tarball's; cosmo's own builds use the tree-built apelink/loader the
+  same way we do), and (b) per-program values (our ELF entry/`e_phnum` in the
+  stub's `printf`ed ELF headers, and dd offset digit widths for our larger
+  Fil-C images).  The Darwin branch - the `cc` check, the
+  `xcode-select --install` hint, the `dd | gzip -dc >"$t.c"`, and
+  `cc -w -O -o "$t.$$" "$t.c"` - is identical.
+- `ape-m1.c`: byte-identical across
+  `projects/yolocosmo/ape/ape-m1.c` == `.cosmocc/3.9.2/bin/ape-m1.c` ==
+  `pizfix/libexec/ape-m1.c` == the gzip'd source extracted back out of one of
+  our fat APEs.  The aarch64 APE loader binary (`ape-aarch64.elf`) is also
+  byte-identical to the 3.9.2 tarball's.
+- The aarch64 payload is XNU-ready: `aarch64-ape` is built with
+  `SUPPORT_VECTOR=255` (like `x86_64-ape`; on aarch64 dce.h folds that to
+  Linux+XNU+FreeBSD - Windows/Metal are hard-zeroed there), so the XNU
+  syscall machinery IS compiled into `pizfix/lib-aarch64/libyolocosmo.a`:
+  the closure (`filc-objects-aarch64.mk`, generated by
+  `compute-closure.py --mode aarch64-ape` against the full-SUPPORT_VECTOR
+  cosmopolitan.a) includes `libc/intrin/ulock.o` (XNU ulock futexes),
+  `libc/calls/sysctl.o`, `libc/sysv/calls/sys_sysctl.o`,
+  `libc/runtime/getsysctl.o`, ...  Counterfactual check: in the
+  `aarch64-optlinux` mode (`SUPPORT_VECTOR=1`, Linux-only) `ulock.o` is not
+  built at all.  The pizlonated user libc stays `SUPPORT_VECTOR=1` (its raw
+  asm/Win32 branches are what Fil-C cannot compile); that is fine for XNU
+  because every syscall funnels through the yolo side (the `zsys_*` shims),
+  and `__hostos` detection at boot is yolo-side (upstream-tested).  aarch64
+  Linux behavior is unchanged by all this (XNU code is selected at runtime
+  via `__hostos` and never executes on Linux): hello, pthreadcleanup,
+  a 4-thread pthread+TLS test, and cpphashtablegctest{,2,3} all pass under
+  `qemu-aarch64` after a fresh build.
+- Still untested on real macOS hardware end-to-end (the SDK-less failure
+  above is from a user Mac): after the loader compiles, cosmo's XNU boot for
+  the aarch64 payload is upstream-cosmo machinery.  If something fails after
+  the loader is running, `pizfix/libexec/ape-m1.c` compiled with `-g` plus
+  the `.aarch64.elf` image are the debugging artifacts.
+
 ## Escape hatches and knobs
 
 - `--filc-cosmo` - force cosmo mode even if the marker probe says otherwise.
@@ -443,7 +559,11 @@ so a broken aarch64 half fails the whole link loudly.
 - Cosmo mode is static-only: no `-shared`, no `-pie`, no dlopen (see above).
 - The APE payload itself is OS-agnostic by construction, but this repo only
   exercises Linux (x86_64 host, plus aarch64 via qemu or real hardware).
-  Windows and macOS execution of the produced APEs is untested here.
+  Windows execution was verified under wine (see the WINDOWS STATUS bullet
+  below); macOS execution of the produced APEs has not been run on real
+  hardware here, but the macOS loader story is verified against upstream and
+  documented above ("Running on macOS (Apple Silicon)" - the loader-source
+  compile needs the macOS SDK, which is expected cosmo behavior).
 - TLS in the payload is portable: the yolo libc is built with cosmo's tlscc
   (so every `%fs:0` TLS access goes through the per-OS `__get_tls_rXX`
   dispatch helpers), libpas' fast TLS uses a pthread key under PAS_COSMO, and
@@ -547,3 +667,10 @@ Run through this after a fresh cosmo build to confirm everything works:
    half) `&& qemu-aarch64 ./hello.aarch64.elf` (aarch64 half), plus
    `pecheck hello`.
 6. C++: `clang++ -o prog prog.cpp && ./prog` with an iostream/thread program.
+7. Fat-APE macOS story (documented, no Linux action needed): the stub's
+   Darwin branch compiles `ape-m1.c` with `cc -w -O` on first run and
+   `pizfix/libexec/ape-m1.c` is byte-identical to
+   `projects/yolocosmo/ape/ape-m1.c` and to the 3.9.2 toolchain's copy;
+   `pizfix/lib-aarch64/libyolocosmo.a` contains the XNU objects
+   (`nm pizfix/lib-aarch64/libyolocosmo.a | grep ulock` shows
+   `T ulock_wait`/`T ulock_wake`).

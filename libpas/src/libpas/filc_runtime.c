@@ -32,6 +32,21 @@
 
 #if PAS_ENABLE_FILC
 
+#if PAS_COSMO
+/* cosmo's libc/dce.h (IsWindows() etc) is empty unless _COSMO_SOURCE is
+   defined, which this build does not do.  Reach for the host-os flag
+   directly instead: cosmo's yolo boot sets __hostos to _HOSTWINDOWS (4)
+   in WinMain() when the process boots on Windows, and to _HOSTLINUX (1)
+   on ELF OSes.  libpas is yolo (non-pizlonated) code, so this reads the
+   same __hostos object that the boot wrote. */
+extern char __hostos;
+#define FILC_ON_WINDOWS_HOSTOS 4 /* cosmo _HOSTWINDOWS */
+static inline bool filc_running_on_windows(void)
+{
+    return (__hostos & FILC_ON_WINDOWS_HOSTOS) != 0;
+}
+#endif
+
 #include "bmalloc_heap.h"
 #include "bmalloc_heap_config.h"
 #include "filc_dump_heap.h"
@@ -9639,6 +9654,19 @@ void filc_unmap(void* ptr, size_t size)
     PAS_ASSERT(pas_is_aligned(size, pas_real_page_size()));
     if (!size)
         return;
+#if PAS_COSMO
+    /* On cosmo-Windows there is no MAP_FIXED-over-committed-memory: the NT
+       mmap implementation backs fixed mappings with VirtualAlloc, which
+       refuses to reserve pages that are already committed, and the range may
+       span several cosmo-tracked maps after the GC's own decommits split
+       them.  The observable contract of filc_unmap is that the memory reads
+       back as fresh anonymous zero pages, so do what libpas's native win32
+       pas_page_malloc_zero_fill() does: zero the memory. */
+    if (filc_running_on_windows()) {
+        pas_zero_memory(ptr, size);
+        return;
+    }
+#endif
     void* result_ptr = mmap(ptr, size,
                             PROT_READ | PROT_WRITE,
                             MAP_PRIVATE | MAP_ANON | MAP_FIXED,

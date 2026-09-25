@@ -11,6 +11,7 @@
 #include "libc/calls/struct/timespec.h"
 #include "libc/cosmo.h"
 #include "libc/errno.h"
+#include "libc/sysv/consts/clock.h"
 #include "libc/thread/thread.h"
 
 /**
@@ -51,20 +52,23 @@ static int yolo_futex_raw(volatile void *uaddr, int op, int val,
 }
 
 void yolo_futex_wake(volatile int *addr, int cnt, int priv) {
-  int op = YOLO_FUTEX_WAKE;
-  if (priv)
-    op |= YOLO_FUTEX_PRIVATE_FLAG;
-  /* Matches musl's __wake(). */
-  yolo_futex_raw(addr, op, cnt, 0, 0);
+  /* Matches musl's __wake().  Uses the per-OS cosmo futex machinery: the raw
+     sys_futex thunk is Linux-only (it fails with ENOSYS on Windows and the
+     BSDs), which would leave waiters asleep forever there. */
+  cosmo_futex_wake((cosmo_futex_t *)addr, cnt, yolo_futex_pshare(priv));
 }
 
 void yolo_futex_wait(volatile int *addr, int val, int priv) {
-  int op = YOLO_FUTEX_WAIT;
-  if (priv)
-    op |= YOLO_FUTEX_PRIVATE_FLAG;
   /* Matches musl's __futexwait(): wait forever and ignore errors, since
-     callers are expected to use this inside a loop that rechecks `*addr`. */
-  yolo_futex_raw(addr, op, val, 0, 0);
+     callers are expected to use this inside a loop that rechecks `*addr`.
+     Uses the per-OS cosmo futex machinery (win32 futexes on Windows, ulocks
+     on XNU, ...): the raw sys_futex thunk is Linux-only and would turn every
+     blocking wait into a busy spin off-Linux.  A NULL deadline waits
+     forever; like the kernel's FUTEX_WAIT, this returns immediately with
+     -EAGAIN when *addr doesn't hold `val` anymore, which is exactly the
+     semantics the recheck loops expect. */
+  cosmo_futex_wait((cosmo_futex_t *)addr, val, yolo_futex_pshare(priv),
+                   CLOCK_MONOTONIC, 0);
 }
 
 int yolo_futex_timedwait(volatile int *addr, int val, int clock_id,

@@ -481,13 +481,48 @@ so a broken aarch64 half fails the whole link loudly.
   `build_yolocosmo.sh`.  Remember that changing TLS-bearing yolo flags (like
   `TLSCC`) does not rebuild anything by itself - force it with
   `make m=x86_64-ape filcyolo -B`.
+- WINDOWS STATUS (round 2, verified under WINE - see /tmp/usercosmo_notes.md
+  for the full recipe): a local wine64 harness (`apt-get install wine64`,
+  `WINEPREFIX=/tmp/wineprefix WINEARCH=win64 wineboot --init`, then
+  `WINEDEBUG=-all wine ./prog` on the fat APE) runs the whole stack: APE
+  loader, cosmo crt, libpizlo, stdio, threads, C++.  Fixed on the way, all
+  cosmo/Wine-specific and gated so musl/glibc are untouched:
+  + filc_start_program's RLIMIT_STACK assert: cosmo's getrlimit() on Windows
+    reads the PIB's inverted rlimit table = RLIM_INFINITY = -1 as intptr_t;
+    infinite/below-min is now replaced with 8 MiB (#if PAS_COSMO).
+  + cosmo mmap() on Wine: __maps_pickaddr() deterministically picked an
+    address inside Wine's DLL region and the EFAULT retry loop spun forever;
+    after one re-pick it now falls back to letting the OS choose (tracked
+    normally afterwards).  Real Windows never hit this (nothing lives at the
+    pick), but Wine does because cosmo cannot see foreign mappings.
+  + recursive-mutex reentry (hit on Linux too): cosmo's stdio FILE locks are
+    RECURSIVE and their reentry check compares MUTEX_OWNER(word) against
+    tib_ptid of the cookie TIB; the phony main thread's tib_ptid was 0,
+    matching an unlocked recursive mutex's zero owner, so the main thread
+    skipped the nsync lock entirely once any other thread printed
+    concurrently (duplicated output, negative fwrite memmoves, nsync panics).
+    filc_setup_main_thread() now sets tib_ptid = zthread_self_id() (and
+    deliberately NOT tib_ctid: _pthread_decimate() treats zero tib_ctid as
+    "stack free" and the decimate walk relies on stopping at the main pt).
+  + yolo_futex_wait/wake used the raw sys_futex thunk (ENOSYS off-Linux ->
+    spinning waits, dead wakes); they now use cosmo_futex_wait/wake.
+  + filc_unmap's mmap(MAP_FIXED)-over trick cannot work on cosmo-Windows
+    (VirtualAlloc refuses already-committed pages; GC decommits split the
+    tracked maps), so on Windows it zeroes the memory instead - same
+    contract; cosmo's Windows madvise(MADV_DONTNEED) also zeroes now, since
+    libpas' decommit zero-mode assumes DONTNEED pages read back zero.
+  Wine results: helloraw "Hello!" exit 0; loop still looping at timeout;
+  4-thread pthread test counter=4000 exit 0; C++ iostream/thread/exceptions
+  exit 0.  Residual known flake: a 4-thread printf stress still fails ~1/40
+  natively with the same double-entry signature (suspected Linux tid reuse
+  vs stale MUTEX_OWNER in a recursive mutex; not a gate failure).
 - Windows retest checklist for the next person with a Windows box (things
-  this container cannot run): build `helloraw.c` and `loop.c` with
-  `build/bin/clang --filc-fat-ape` and run both `.com` files on Windows;
-  then a pthread test (e.g. `filc/tests/pthreadcleanup`) and a C++ iostream
-  program.  Expected to work now that the payload is %fs-free; if the boot
-  still fails, WinDbg's faulting address maps 1:1 onto the `.com.dbg` image
-  (same load base), so symbolize with `nm -n helloraw.com.dbg`.
+  wine cannot fully emulate): rerun the same fat APEs on real Windows and
+  expect the same behavior as under wine; GC-heavy programs and signals/
+  fork remain unproven there (see /tmp/usercosmo_notes.md "Expected next
+  layers").  If the boot still fails, WinDbg's faulting address maps 1:1
+  onto the `.com.dbg` image (same load base), so symbolize with
+  `nm -n helloraw.com.dbg`.
 
 ## Verification checklist
 

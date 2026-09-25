@@ -667,6 +667,8 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
   // loop for memory
   int olderr = errno;
   struct DirectMap res;
+  bool repicked = false;  // already retried with a fresh address of our own
+  bool ospick = false;    // let the os choose the address (mystery memory)
   for (;;) {
 
     // transactionally find the mark on windows
@@ -682,13 +684,17 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
           }
           addr = 0;
         }
-        // choose suitable address then claim it in our rbtree
-        if (!addr)
-          addr = __maps_pickaddr(__maps_sparse(size));
-        if (!addr && !(addr = __maps_pickaddr(size))) {
-          __maps_unlock();
-          __maps_free(map);
-          return (void *)enomem();
+        // choose suitable address then claim it in our rbtree; if our
+        // address book has already proven unreliable, then trust the
+        // operating system to choose a location instead
+        if (!ospick) {
+          if (!addr)
+            addr = __maps_pickaddr(__maps_sparse(size));
+          if (!addr && !(addr = __maps_pickaddr(size))) {
+            __maps_unlock();
+            __maps_free(map);
+            return (void *)enomem();
+          }
         }
       } else {
         // remove existing mappings and their tracking objects
@@ -713,13 +719,15 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
         }
       }
       // claims intended interval while still holding the lock
-      map->addr = addr;
-      map->size = size;
-      MAPS_ASSERT(map->size);
-      map->prot = 0;
-      map->flags = 0;
-      map->hand = MAPS_RESERVATION;
-      __maps_insert(map);
+      if (!ospick) {
+        map->addr = addr;
+        map->size = size;
+        MAPS_ASSERT(map->size);
+        map->prot = 0;
+        map->flags = 0;
+        map->hand = MAPS_RESERVATION;
+        __maps_insert(map);
+      }
       __maps_unlock();
     } else if (MMAP_IS_SPARSE && !fixedmode && !addr) {
       __maps_lock();
@@ -736,11 +744,13 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
 
     // handle failure
     if (IsWindows()) {
-      // untrack reservation
-      __maps_lock();
-      tree_remove(&__maps.maps, &map->tree);
-      __maps.pages -= (map->size + __pagesize - 1) / __pagesize;
-      __maps_unlock();
+      // untrack reservation (there is none if the os picked the address)
+      if (!ospick) {
+        __maps_lock();
+        tree_remove(&__maps.maps, &map->tree);
+        __maps.pages -= (map->size + __pagesize - 1) / __pagesize;
+        __maps_unlock();
+      }
       if (errno == EFAULT) {  // kNtErrorInvalidAddress
         // we've encountered mystery memory
         if (fixedmode) {
@@ -749,11 +759,21 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
         } else if (noreplace) {
           // we can't try again with a different address in this case
           errno = EEXIST;
-        } else {
-          // we shall leak the tracking object since it should at least
-          // partially cover the mystery mapping. so if we loop forever
-          // the system should eventually recover and find fresh spaces
+        } else if (!repicked) {
+          // try once more with a fresh address of our own choosing; the
+          // tracking object is re-used by the next iteration
           errno = olderr;
+          addr = 0;
+          repicked = true;
+          continue;
+        } else {
+          // our address book cannot see the whole address space (e.g. the
+          // loader may have mapped libraries, shared memory, and thread
+          // blocks at locations we do not track), so let the operating
+          // system choose a location it knows is free. it still ends up
+          // tracked by us, since we insert res.addr below on success.
+          errno = olderr;
+          ospick = true;
           addr = 0;
           continue;
         }
@@ -801,7 +821,7 @@ static void *__mmap_impl(char *addr, size_t size, int prot, int flags, int fd,
   }
 
   // track map object
-  if (!IsWindows()) {
+  if (!IsWindows() || ospick) {
     struct Map *deleted = 0;
     __maps_lock();
     if (fixedmode)

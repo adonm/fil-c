@@ -25,6 +25,7 @@
 #include "libc/nt/struct/memoryrangeentry.h"
 #include "libc/runtime/runtime.h"
 #include "libc/stdio/sysparam.h"
+#include "libc/str/str.h"
 #include "libc/sysv/consts/posix.h"
 #include "libc/sysv/errno.h"
 
@@ -60,6 +61,14 @@ textwindows errno_t sys_posix_madvise_nt(char *addr, size_t size, int advice) {
         // does. Codebases like GCC explicitly make the assumption that
         // DONTNEED pages can be reclaimed just by touching them. WIN32
         // says we need to call ReclaimVirtualMemory() before touching.
+        //
+        // Linux guarantees that MADV_DONTNEED pages read back as zeroes
+        // (the pages are dropped and re-faulted from the zero page), and
+        // libpas's page decommit relies on exactly that (its zero-mode
+        // bookkeeping assumes DONTNEED = zero-filled).  So zero the pages
+        // here; that also matches what cosmo's fixed-mmap-over trick
+        // achieves on ELF OSes.
+        memset(beg, 0, end - beg);
         break;
       default:
         err = EINVAL;

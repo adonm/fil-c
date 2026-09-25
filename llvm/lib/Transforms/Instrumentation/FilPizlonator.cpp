@@ -7932,6 +7932,12 @@ class Pizlonator {
       case Intrinsic::x86_xgetbv:
       case Intrinsic::x86_sse2_pause:
       case Intrinsic::x86_rdtsc:
+      // HINT instructions don't access memory, so they can be left alone.
+      // Clang emits this intrinsic for the __builtin_arm_nop, __builtin_arm_yield,
+      // __builtin_arm_wfe, __builtin_arm_wfi, __builtin_arm_sev, and
+      // __builtin_arm_sevl builtins (and the __yield ACLE builtin), which use
+      // hint numbers 0 through 5.
+      case Intrinsic::aarch64_hint:
         return true;
 
       case Intrinsic::returnaddress:

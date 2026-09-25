@@ -45,6 +45,7 @@
 #include "pas_scavenger.h"
 #include "pas_status_reporter.h"
 #include "pas_string_stream.h"
+#include "pas_thread_local_cache.h"
 #include "pas_utils.h"
 #include "verse_heap_inlines.h"
 #include <ctype.h>
@@ -9097,6 +9098,55 @@ int filc_native_zsys_chdir(filc_thread* my_thread, filc_ptr path_ptr)
 int filc_native_zsys_fork_impl(filc_thread* my_thread)
 {
     static const bool verbose = false;
+
+    /* Fork snapshots the state of all of our locks into the child, and nothing the parent does
+       after the fork can ever fix up the child's copy-on-write image of that state. The global
+       initialization lock is uniquely hazardous here because it's the only lock that we hold while
+       running arbitrary instrumented code (global initializers and ifunc resolvers), and because
+       filc_lock_lock() parks the acquiring thread in filc_enter() before that thread sets ENTERED
+       or stores the filc_global_initialization_thread and filc_global_initialization_depth
+       bookkeeping. A thread in that window holds the lock but is invisible to filc_stop_the_world(),
+       which only waits for ENTERED threads. If we forked while some other thread was in that window,
+       then the child would inherit the lock word held while filc_global_initialization_thread is
+       NULL and depth is 0, and the parent's eventual unlock would never propagate to the child. The
+       first lazy global initialization in the child would then futex-wait forever.
+
+       So, we acquire the global initialization lock ourselves, while we're still entered and before
+       we stop the world. This serializes the fork with all global initialization: either some other
+       thread's initialization section is in flight, in which case we wait for it to finish, or we
+       are ourselves inside an initialization section, in which case the recursion fast path in
+       lock_global_initialization() just bumps the depth. Either way, the child's snapshot has the
+       lock held by the forking thread with consistent bookkeeping. We release this baseline hold in
+       both the parent and the child below; the child's release is mandatory, since a child that
+       stays holding the lock would deadlock the first thread it creates on that thread's first lazy
+       global initialization.
+
+       This baseline hold is a deliberate trade-off, not an unconditionally safe construction. The
+       pizlonated musl fork() wrapper (projects/usermusl/src/process/fork.c) takes all of musl's
+       atfork locks before calling _Fork() -> zsys_fork() -> this code: __ldso_atfork,
+       __pthread_key_atfork, __aio_atfork, __inhibit_ptc, the ten atfork_locks (at_quick_exit,
+       atexit, gettext, locale, random, sem_open, stdio-ofl, syslog, timezone, bump),
+       __malloc_atfork, and __tl_lock. So the forking thread can now block in
+       lock_global_initialization() above while holding all of those. If, concurrently, a lazy
+       global initializer or ifunc resolver, which runs while holding
+       filc_global_initialization_lock, calls anything that needs one of those atfork locks
+       (pthread_create, fopen/fwrite, setlocale, rand, __cxa_atexit, sem_open, syslog, tzset, ...),
+       then the two threads ABBA-deadlock at 0% CPU: the forker waits for the global initialization
+       lock while holding the atfork locks, and the initializer waits for an atfork lock while
+       holding the global initialization lock. While it waits, the forker is parked exited in
+       filc_lock_lock(), so it is just as invisible to filc_stop_the_world() as a thread in the
+       pre-ENTERED window described above. Before this fix, there was no such edge, since the fork
+       never took the global initialization lock; with this fix, the deadlock window is the length
+       of the longest in-flight initialization section. We accept that trade-off because the
+       alternative, forking without the hold, is a permanent 0%-CPU wedge of the fork child, which
+       is the very thing this fix exists to prevent. posix_spawn is effectively unaffected, since
+       it holds only the abort lock (LOCK(__abort_lock)) around zsys_fork(), not the whole atfork
+       lock set. The structural alternative would be to take the hold in a zsys_fork_prepare()-style
+       native at the top of the pizlonated fork() wrapper, before the wrapper takes any atfork
+       locks, with matching parent and child release; that is not implemented here because it would
+       touch the usermusl and user-glibc projeny checkouts. */
+    lock_global_initialization(my_thread);
+
     filc_exit(my_thread);
     if (verbose)
         pas_log("blocking signals in fork\n");
@@ -9221,6 +9271,19 @@ int filc_native_zsys_fork_impl(filc_thread* my_thread)
         pas_log("unblocking signals in fork\n");
     PAS_ASSERT(!pthread_sigmask(SIG_SETMASK, &oldset, NULL));
     filc_enter(my_thread);
+
+    /* Release the baseline global initialization hold, in both the parent and the child. This is
+       legal now: we're entered, pas_lock_disallowed is false, we're not holding the handshake or
+       thread list locks, and the world is resumed in the parent. It's especially important to
+       release in the child: if the child stayed holding the lock, then any thread it creates later
+       would deadlock on its first lazy global initialization, since such a thread would not take the
+       recursion fast path and the lock word would be stuck at held. The child has no threads that
+       contend this lock (the collector and scavenger never touch it), so unlocking there is safe,
+       and the unlock's futex wake is a no-op since the child has no waiters. If the fork happened
+       from inside a global initializer or ifunc resolver, then this just decrements the depth,
+       leaving that section's state exactly as it was in both the parent and the child. */
+    unlock_global_initialization(my_thread);
+
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
@@ -13620,14 +13683,56 @@ void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
     /* Make sure that we handle all signals before we get to the exit below. */
     handle_deferred_signals(thread);
 
+    /* Free the compiler-cache outline buffers. They exist only to serve Fil-C ABI calls: they hold
+       the outline argument/return slots that instrumented code accesses via
+       filc_thread_cc_slot_at_offset() and filc_thread_cc_aux_slot_at_offset(). The last thing this
+       thread does that can make a Fil-C ABI call is running the user signal handlers inside
+       handle_deferred_signals() above; everything that follows is pure runtime bookkeeping. So
+       this is the earliest point at which the buffers are dead, and freeing them here keeps the
+       TLC operations below tidy: pas_thread_local_cache_destroy() below is the last thing this
+       thread does with the libpas allocators while it can still be stopped. */
+    bmalloc_deallocate(thread->cc_outline_buffer);
+    bmalloc_deallocate(thread->cc_outline_aux_buffer);
+
     fugc_donate(&thread->mark_stack);
     filc_thread_stop_allocators(thread);
     thread->tid = 0;
     thread->is_stopping = true;
     filc_thread_undo_create(thread);
     pas_thread_local_cache_destroy(pas_lock_is_not_held);
-    bmalloc_deallocate(thread->cc_outline_buffer);
-    bmalloc_deallocate(thread->cc_outline_aux_buffer);
+
+    /* The TLC lifecycle of this thread ends right here, while the thread is still entered and
+       therefore still visible to filc_stop_the_world(). Everything this thread does from this
+       point on must neither create nor destroy a TLC, and after the filc_exit() below it must not
+       acquire any pas locks at all. That's because once we filc_exit() and filc_thread_dispose()
+       below, this thread is invisible to filc_stop_the_world(), to fugc and scavenger suspension,
+       and to fork()'s thread-list walk - yet musl will still run pthread-exit teardown for this
+       thread, all the way through __pthread_tsd_run_dtors().
+
+       The fast-TLS slot is what protects us. Setting it to PAS_FAST_TLS_DESTROYED (the same
+       marker that pas_fast_tls_destructor() sets) tells libpas that this thread will never have
+       a TLC again: pas_thread_local_cache_can_set() returns false from now on, so no libpas
+       allocation or deallocation that the remaining exit path or the pthread-exit teardown does
+       can lazily create a fresh TLC. This is a same-thread store to pas_fast_tls_variable
+       (pas_fast_tls_set() only touches the pthread key for values other than
+       PAS_FAST_TLS_DESTROYED), and it relies on pas_thread_local_cache_destroy() above having
+       already cleared the pthread key to NULL - so musl's __pthread_tsd_run_dtors() will not
+       call pas_fast_tls_destructor() for this thread at all.
+
+       Without this marker, any libpas deallocation or allocation below with no TLC present would
+       go down the slow paths that exist for exactly this "thread is exiting" case - for example
+       pas_try_deallocate_slow_no_cache() in pas_deallocate.c calls pas_thread_local_cache_get()
+       whenever pas_thread_local_cache_can_set() is true - lazily creating a brand new TLC and
+       registering it in the pthread key. pthread_exit() below would then run musl's
+       __pthread_tsd_run_dtors(), which would call pas_fast_tls_destructor() for that fresh TLC,
+       and that destructor's destroy() would acquire pas_heap_lock (see pas_thread_local_cache.c)
+       at a point where this thread is no longer visible to anything that synchronizes with
+       fork(). A fork() whose clone() lands in that window leaves its CoW child holding the
+       pas_heap_lock word with no owner that will ever release it, and the child's first heap-lock
+       operation then futex-deadlocks forever. */
+    pas_thread_local_cache_set_impl((pas_thread_local_cache*)PAS_FAST_TLS_DESTROYED);
+    PAS_ASSERT(!pas_thread_local_cache_can_set());
+
     filc_exit(thread);
 
     pas_system_mutex_lock(&thread->lock);
@@ -13651,6 +13756,16 @@ void filc_native_zthread_exit(filc_thread* thread, filc_ptr result)
     /* At this point, the GC no longer sees this thread except if the user is holding references to it.
        And since we're exited, the GC could run at any time. So the thread might be alive or it might be
        dead - we don't know. */
+
+    /* This is the invariant that fork() relies on: from here until the thread is gone, its teardown
+       must not create or destroy any TLC and must not acquire any pas locks. The fast-TLS slot is
+       marked destroyed, so musl's __pthread_tsd_run_dtors() will not call pas_fast_tls_destructor()
+       (the pthread key is NULL and pas_thread_local_cache_can_set() is false), and any libpas
+       allocation or deallocation that the teardown does will take its no-TLC slow paths. Assert all
+       of that so that a future change to this function that violates it fails loudly instead of
+       reintroducing the fork() deadlock. */
+    PAS_ASSERT(!pas_thread_local_cache_try_get());
+    PAS_ASSERT(!pas_thread_local_cache_can_set());
 
     pthread_exit(NULL);
 

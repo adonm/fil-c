@@ -9099,52 +9099,18 @@ int filc_native_zsys_fork_impl(filc_thread* my_thread)
 {
     static const bool verbose = false;
 
-    /* Fork snapshots the state of all of our locks into the child, and nothing the parent does
-       after the fork can ever fix up the child's copy-on-write image of that state. The global
-       initialization lock is uniquely hazardous here because it's the only lock that we hold while
-       running arbitrary instrumented code (global initializers and ifunc resolvers), and because
-       filc_lock_lock() parks the acquiring thread in filc_enter() before that thread sets ENTERED
-       or stores the filc_global_initialization_thread and filc_global_initialization_depth
-       bookkeeping. A thread in that window holds the lock but is invisible to filc_stop_the_world(),
-       which only waits for ENTERED threads. If we forked while some other thread was in that window,
-       then the child would inherit the lock word held while filc_global_initialization_thread is
-       NULL and depth is 0, and the parent's eventual unlock would never propagate to the child. The
-       first lazy global initialization in the child would then futex-wait forever.
+    /* Need to lock this since fork might happen while another thread is running a global initializer.
 
-       So, we acquire the global initialization lock ourselves, while we're still entered and before
-       we stop the world. This serializes the fork with all global initialization: either some other
-       thread's initialization section is in flight, in which case we wait for it to finish, or we
-       are ourselves inside an initialization section, in which case the recursion fast path in
-       lock_global_initialization() just bumps the depth. Either way, the child's snapshot has the
-       lock held by the forking thread with consistent bookkeeping. We release this baseline hold in
-       both the parent and the child below; the child's release is mandatory, since a child that
-       stays holding the lock would deadlock the first thread it creates on that thread's first lazy
-       global initialization.
+       NOTE: global initializers *almost* run user code. The only user code that can run in a global
+       init is an ifunc resolver. But the rules for ifunc resolvers are super restrictive already.
+       In normal C code, ifunc resolvers are basically not allowed to do any calls into the C library.
+       In Fil-C, we allow ifunc resolvers to do *some* amount of calls to the C library, but we don't
+       have to guarantee that this will be safe from deadlocks.
 
-       This baseline hold is a deliberate trade-off, not an unconditionally safe construction. The
-       pizlonated musl fork() wrapper (projects/usermusl/src/process/fork.c) takes all of musl's
-       atfork locks before calling _Fork() -> zsys_fork() -> this code: __ldso_atfork,
-       __pthread_key_atfork, __aio_atfork, __inhibit_ptc, the ten atfork_locks (at_quick_exit,
-       atexit, gettext, locale, random, sem_open, stdio-ofl, syslog, timezone, bump),
-       __malloc_atfork, and __tl_lock. So the forking thread can now block in
-       lock_global_initialization() above while holding all of those. If, concurrently, a lazy
-       global initializer or ifunc resolver, which runs while holding
-       filc_global_initialization_lock, calls anything that needs one of those atfork locks
-       (pthread_create, fopen/fwrite, setlocale, rand, __cxa_atexit, sem_open, syslog, tzset, ...),
-       then the two threads ABBA-deadlock at 0% CPU: the forker waits for the global initialization
-       lock while holding the atfork locks, and the initializer waits for an atfork lock while
-       holding the global initialization lock. While it waits, the forker is parked exited in
-       filc_lock_lock(), so it is just as invisible to filc_stop_the_world() as a thread in the
-       pre-ENTERED window described above. Before this fix, there was no such edge, since the fork
-       never took the global initialization lock; with this fix, the deadlock window is the length
-       of the longest in-flight initialization section. We accept that trade-off because the
-       alternative, forking without the hold, is a permanent 0%-CPU wedge of the fork child, which
-       is the very thing this fix exists to prevent. posix_spawn is effectively unaffected, since
-       it holds only the abort lock (LOCK(__abort_lock)) around zsys_fork(), not the whole atfork
-       lock set. The structural alternative would be to take the hold in a zsys_fork_prepare()-style
-       native at the top of the pizlonated fork() wrapper, before the wrapper takes any atfork
-       locks, with matching parent and child release; that is not implemented here because it would
-       touch the usermusl and user-glibc projeny checkouts. */
+       So, we don't have to worry about the lock ordering between the global initialization lock and
+       whatever locks are held by pre-fork logic in user libc. We don't need to guarantee that an
+       ifunc resolver would be deadlock-free if it called into any libc logic that needed a lock that
+       libc would grab pre-fork. */
     lock_global_initialization(my_thread);
 
     filc_exit(my_thread);

@@ -18,15 +18,16 @@
 
 #include <fenv.h>
 #include <math-inline-asm.h>
+#include <filc-x87-env.h>
 
 int
 __fegetenv (fenv_t *envp)
 {
-  asm volatile ("fnstenv %0\n"
-		/* fnstenv changes the exception mask, so load back the
-		   stored environment.  */
-		"fldenv %0"
-		: "=m" (*envp));
+  fpu_control_t cw;
+  _FPU_GETCW (cw);
+  filc_fnstenv (envp);
+  /* fnstenv changes the exception mask; restore it.  */
+  _FPU_SETCW (cw);
   stmxcsr_inline_asm (&envp->__mxcsr);
 
   /* Success.  */

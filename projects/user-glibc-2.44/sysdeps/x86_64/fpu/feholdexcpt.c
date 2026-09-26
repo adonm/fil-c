@@ -18,6 +18,7 @@
 
 #include <fenv.h>
 #include <math-inline-asm.h>
+#include <filc-x87-env.h>
 
 int
 __feholdexcept (fenv_t *envp)
@@ -26,9 +27,9 @@ __feholdexcept (fenv_t *envp)
 
   /* Store the environment.  Recall that fnstenv has a side effect of
      masking all exceptions.  Then clear all exceptions.  */
-  asm volatile ("fnstenv %0" : "=m" (*envp));
+  filc_fnstenv (envp);
   stmxcsr_inline_asm (&envp->__mxcsr);
-  asm volatile ("fnclex" : "=m" (*envp));
+  asm volatile ("fnclex");
 
   /* Set the SSE MXCSR register.  */
   mxcsr = (envp->__mxcsr | 0x1f80) & ~0x3f;

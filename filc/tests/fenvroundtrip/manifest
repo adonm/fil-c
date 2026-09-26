@@ -1,0 +1,7 @@
+return:
+
+  success
+
+output-includes:
+
+  - "fenv round trip ok"

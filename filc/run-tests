@@ -573,6 +573,13 @@ $testDirectory.each_entry {
         if manifest["extraLinkerArgs"]
             outp.print " #{manifest["extraLinkerArgs"]}"
         end
+        if $hasGLIBC
+            # The glibc flavor keeps the fenv API and the math routines in
+            # libm, a separate library, which the driver already links into
+            # C++ tests.  Link it into the C tests, too.  The other flavors
+            # either have no separate libm or have an empty one.
+            outp.print " -lm"
+        end
         outp.puts " filc/tests/utils.o >> #{Shellwords.shellescape(compilerOutput)} 2>&1"
         if expectedReturn == "linkFailure"
             outp.puts "if [ $? -eq 0 ]"

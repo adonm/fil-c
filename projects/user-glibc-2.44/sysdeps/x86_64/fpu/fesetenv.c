@@ -18,6 +18,7 @@
 
 #include <fenv.h>
 #include <math-inline-asm.h>
+#include <filc-x87-env.h>
 #include <fpu_control.h>
 #include <assert.h>
 
@@ -36,7 +37,7 @@ __fesetenv (const fenv_t *envp)
      values which we do not want to come from the saved environment.
      Therefore, we get the current environment and replace the values
      we want to use from the environment specified by the parameter.  */
-  asm volatile ("fnstenv %0" : "=m" (temp));
+  filc_fnstenv (&temp);
   stmxcsr_inline_asm (&temp.__mxcsr);
 
   if (envp == FE_DFL_ENV)
@@ -104,8 +105,8 @@ __fesetenv (const fenv_t *envp)
       temp.__mxcsr = envp->__mxcsr;
     }
 
-  asm volatile ("fldenv %0" : : "m" (temp));
   ldmxcsr_inline_asm (&temp.__mxcsr);
+  filc_fldenv (&temp);
 
   /* Success.  */
   return 0;

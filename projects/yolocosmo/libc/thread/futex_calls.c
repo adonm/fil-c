@@ -3,10 +3,16 @@
 ╞═════════════════════════════════════════════════════════════════════════════╡
 │ This file is part of the Fil-C yolocosmo support.                            │
 │                                                                              │
-│ It implements the yolo futex primitives that the Fil-C runtime (libpizlo)    │
-│ uses to implement its zsys_futex_* pass-through system calls. The musl       │
-│ flavored equivalents live in projects/yolomusl/src/thread/futex_calls.c and  │
-│ these functions have exactly the same signatures and semantics.              │
+│ It implements the portable yolo futex primitives that the Fil-C runtime      │
+│ (libpizlo) uses to implement its zsys_futex_* pass-through system calls.     │
+│ The musl flavored equivalents live in                                        │
+│ projects/yolomusl/src/thread/futex_calls.c and these functions have exactly  │
+│ the same signatures and semantics.  Only the portable subset is provided:    │
+│ these three are backed by cosmo's per-OS futex machinery                     │
+│ (libc/intrin/cosmo_futex.c), so they work on Linux, Windows, XNU, and the    │
+│ BSDs.  The Linux-only PI and requeue operations are not exposed at all; the  │
+│ Fil-C runtime's zsys_futex_lock_pi/unlock_pi/requeue forwarders panic under  │
+│ PAS_COSMO.                                                                   │
 ╚─────────────────────────────────────────────────────────────────────────────*/
 #include "libc/calls/struct/timespec.h"
 #include "libc/cosmo.h"
@@ -14,41 +20,10 @@
 #include "libc/sysv/consts/clock.h"
 #include "libc/thread/thread.h"
 
-/**
- * Raw futex(2) thunk generated from libc/sysv/calls/sys_futex.S.
- *
- * Like all .scall thunks it returns the syscall result on success, or -1 with
- * `errno` set on error (Linux futexes never return a negative result on
- * success, so this is unambiguous).
- */
-long sys_futex(volatile void *, int, int, const void *, volatile void *, int);
-
-#define YOLO_FUTEX_WAIT         0
-#define YOLO_FUTEX_WAKE         1
-#define YOLO_FUTEX_REQUEUE      3
-#define YOLO_FUTEX_LOCK_PI      6
-#define YOLO_FUTEX_UNLOCK_PI    7
-#define YOLO_FUTEX_PRIVATE_FLAG 128
-
 static char yolo_futex_pshare(int priv) {
   if (priv)
     return PTHREAD_PROCESS_PRIVATE;
   return PTHREAD_PROCESS_SHARED;
-}
-
-/**
- * Runs a futex syscall and returns its result, or -errno on error, without
- * clobbering `errno`.
- */
-static int yolo_futex_raw(volatile void *uaddr, int op, int val,
-                          const void *timeout, volatile void *uaddr2) {
-  int e = errno;
-  long r = sys_futex(uaddr, op, val, timeout, uaddr2, 0);
-  if (r < 0) {
-    r = -errno;
-    errno = e;
-  }
-  return (int)r;
 }
 
 void yolo_futex_wake(volatile int *addr, int cnt, int priv) {
@@ -85,34 +60,5 @@ int yolo_futex_timedwait(volatile int *addr, int val, int clock_id,
     return -rc;
   if (rc == -EINVAL)
     return EINVAL;
-  return 0;
-}
-
-int yolo_futex_unlock_pi(volatile int *addr, int priv) {
-  int op = YOLO_FUTEX_UNLOCK_PI;
-  if (priv)
-    op |= YOLO_FUTEX_PRIVATE_FLAG;
-  return yolo_futex_raw(addr, op, 0, 0, 0);
-}
-
-int yolo_futex_lock_pi(volatile int *addr, int priv,
-                       const struct timespec *timeout) {
-  int op = YOLO_FUTEX_LOCK_PI;
-  if (priv)
-    op |= YOLO_FUTEX_PRIVATE_FLAG;
-  /* The kernel interprets the timeout for FUTEX_LOCK_PI itself (absolute
-     time); pass it through untouched, just like musl does. */
-  return yolo_futex_raw(addr, op, 0, timeout, 0);
-}
-
-int yolo_futex_requeue(volatile int *addr, int priv, int wake_count,
-                       int requeue_count, volatile int *addr2) {
-  int op = YOLO_FUTEX_REQUEUE;
-  if (priv)
-    op |= YOLO_FUTEX_PRIVATE_FLAG;
-  /* The requeue count is passed in the timeout argument slot, as the futex
-     syscall's fourth argument doubles as val2 for the requeue operations. */
-  yolo_futex_raw(addr, op, wake_count, (const void *)(intptr_t)requeue_count,
-                 addr2);
   return 0;
 }

@@ -19,7 +19,6 @@
 #include <signal.h>
 #include <sys/wait.h>
 #include <sys/types.h>
-#include "libc/sock/struct/mmsghdr.h"
 #include "libc/errno.h"
 
 void *bsearch(const void *key, const void *base, size_t nel, size_t width,
@@ -52,32 +51,6 @@ long long llrintl(long double x) {
    zsys_fork_impl(), i.e. libpizlo's GC-suspending fork.  (This file used to
    provide a bare `return zsys_fork()` fork(), which silently skipped every
    atfork handler and all of cosmo's fork-time lock quiescing.) */
-
-/**
- * posix_fallocate(): cosmo has no fallocate wrapper, but libpizlo has
- * zsys_fallocate().  POSIX semantics: return the errno number on failure,
- * zero on success.
- */
-int posix_fallocate(int fd, long offset, long len) {
-  if (!zsys_fallocate(fd, 0, offset, len))
-    return 0;
-  return errno;
-}
-
-/**
- * sendmmsg()/recvmmsg(): cosmo has the struct (via libc/sock/struct/
- * mmsghdr.h, which the runtime shares) but no implementations; libpizlo's
- * zsys_sendmmsg()/zsys_recvmmsg() do the full mmsghdr marshaling.
- */
-int sendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen,
-             unsigned int flags) {
-  return zsys_sendmmsg(sockfd, msgvec, vlen, (int)flags);
-}
-
-int recvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen,
-             unsigned int flags, const struct timespec *timeout) {
-  return zsys_recvmmsg(sockfd, msgvec, vlen, (int)flags, timeout);
-}
 
 /**
  * qsort()/qsort_r(): cosmo's introsort (libc/str/qsort.c) moves elements
@@ -194,21 +167,6 @@ int vfork(void) {
 int sys_getdents(unsigned fd, void *dirent, unsigned len, long *basep) {
   (void)basep;
   return zsys_getdents(fd, dirent, len);
-}
-
-/**
- * waitid(): cosmo's thunk isn't wired up; libpizlo's zsys_waitid() has the
- * POSIX shape.  Note zsys_waitid takes an unsigned id (idtype dispatch is
- * done by the kernel).  The rusage argument that waitid() technically has
- * is not supported (Linux ignores it when null, and we always pass null).
- */
-int waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options) {
-  int rc = zsys_waitid((int)idtype, (unsigned)id, infop, options);
-  if (rc >= 0 && infop) {
-    /* POSIX says waitid() returns 0 and fills infop; leave si_pid etc. to
-       the caller. */
-  }
-  return rc;
 }
 
 /**

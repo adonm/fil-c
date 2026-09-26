@@ -279,6 +279,17 @@ def main():
                     matches.append(cand)
             if matches:
                 return matches
+            # The archive member may be stale relative to the o/ tree (e.g.
+            # the archive was packed before a flag change rebuilt some
+            # objects, so the on-disk object's undefined-symbol set has
+            # drifted).  Fall back to matching on the defined-symbol set
+            # alone: what ld pulls a member for is what it defines.
+            for cand in sorted(candidates):
+                obj = nmed[cand]
+                if obj is not None and obj.defined == sig[0]:
+                    matches.append(cand)
+            if matches:
+                return matches
         return []
 
     member_to_paths = [None] * len(members)

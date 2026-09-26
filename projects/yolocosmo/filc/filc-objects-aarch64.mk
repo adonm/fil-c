@@ -105,7 +105,6 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/stdio/stderr.o \
 	o/$(MODE)/libc/stdio/stdout.o \
 	o/$(MODE)/libc/stdio/strtold.o \
-	o/$(MODE)/libc/stdio/syscall.o \
 	o/$(MODE)/libc/stdio/vcscanf.o \
 	o/$(MODE)/libc/stdio/vfprintf.o \
 	o/$(MODE)/libc/stdio/vfprintf_unlocked.o \
@@ -227,6 +226,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/clock_nanosleep.o \
 	o/$(MODE)/libc/calls/clock_settime.o \
 	o/$(MODE)/libc/calls/close.o \
+	o/$(MODE)/libc/calls/close_range.o \
 	o/$(MODE)/libc/calls/commandv.o \
 	o/$(MODE)/libc/calls/copy_file_range.o \
 	o/$(MODE)/libc/calls/creat.o \
@@ -296,6 +296,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/isevilpath.o \
 	o/$(MODE)/libc/calls/islinux.o \
 	o/$(MODE)/libc/calls/issetugid.o \
+	o/$(MODE)/libc/calls/landlock_add_rule.o \
+	o/$(MODE)/libc/calls/landlock_create_ruleset.o \
+	o/$(MODE)/libc/calls/landlock_restrict_self.o \
 	o/$(MODE)/libc/calls/lchmod.o \
 	o/$(MODE)/libc/calls/lchown.o \
 	o/$(MODE)/libc/calls/libc_internal_signals.o \
@@ -325,6 +328,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/pipe.o \
 	o/$(MODE)/libc/calls/pipe2-sysv.o \
 	o/$(MODE)/libc/calls/pipe2.o \
+	o/$(MODE)/libc/calls/pivot_root.o \
 	o/$(MODE)/libc/calls/pledge-linux.o \
 	o/$(MODE)/libc/calls/poll-sysv.o \
 	o/$(MODE)/libc/calls/poll.o \
@@ -350,6 +354,8 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/sched_get_priority_max.o \
 	o/$(MODE)/libc/calls/sched_get_priority_min.o \
 	o/$(MODE)/libc/calls/sched_getcpu.o \
+	o/$(MODE)/libc/calls/sched_getparam.o \
+	o/$(MODE)/libc/calls/sched_getscheduler.o \
 	o/$(MODE)/libc/calls/sched_rr_get_interval.o \
 	o/$(MODE)/libc/calls/sched_setparam.o \
 	o/$(MODE)/libc/calls/sched_setscheduler.o \
@@ -378,6 +384,7 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/siginfo2cosmo.o \
 	o/$(MODE)/libc/calls/signal.o \
 	o/$(MODE)/libc/calls/sigpending.o \
+	o/$(MODE)/libc/calls/sigqueue.o \
 	o/$(MODE)/libc/calls/sigsuspend.o \
 	o/$(MODE)/libc/calls/sigtimedwait.o \
 	o/$(MODE)/libc/calls/sigwait.o \
@@ -414,7 +421,6 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/calls/write.o \
 	o/$(MODE)/libc/calls/writev.o \
 	o/$(MODE)/libc/calls/xoflags.o \
-	o/$(MODE)/libc/calls/yolo_syscall_wrappers.o \
 	o/$(MODE)/libc/fmt/basename.o \
 	o/$(MODE)/libc/fmt/itoa64fixed16.greg.o \
 	o/$(MODE)/libc/fmt/itoa64radix16.greg.o \
@@ -729,11 +735,8 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/__sys_socketpair.o \
 	o/$(MODE)/libc/sysv/calls/__sys_utimensat.o \
 	o/$(MODE)/libc/sysv/calls/__sys_wait4.o \
-	o/$(MODE)/libc/sysv/calls/sys_acct.o \
-	o/$(MODE)/libc/sysv/calls/sys_adjtimex.o \
 	o/$(MODE)/libc/sysv/calls/sys_chdir.o \
 	o/$(MODE)/libc/sysv/calls/sys_chroot.o \
-	o/$(MODE)/libc/sysv/calls/sys_clock_adjtime.o \
 	o/$(MODE)/libc/sysv/calls/sys_clock_getres.o \
 	o/$(MODE)/libc/sysv/calls/sys_clock_settime.o \
 	o/$(MODE)/libc/sysv/calls/sys_close.o \
@@ -741,16 +744,9 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_copy_file_range.o \
 	o/$(MODE)/libc/sysv/calls/sys_dup.o \
 	o/$(MODE)/libc/sysv/calls/sys_dup2.o \
-	o/$(MODE)/libc/sysv/calls/sys_epoll_create1.o \
-	o/$(MODE)/libc/sysv/calls/sys_epoll_ctl.o \
-	o/$(MODE)/libc/sysv/calls/sys_epoll_pwait.o \
-	o/$(MODE)/libc/sysv/calls/sys_epoll_pwait2.o \
-	o/$(MODE)/libc/sysv/calls/sys_epoll_wait.o \
-	o/$(MODE)/libc/sysv/calls/sys_eventfd2.o \
 	o/$(MODE)/libc/sysv/calls/sys_faccessat.o \
 	o/$(MODE)/libc/sysv/calls/sys_faccessat2.o \
 	o/$(MODE)/libc/sysv/calls/sys_fadvise.o \
-	o/$(MODE)/libc/sysv/calls/sys_fallocate.o \
 	o/$(MODE)/libc/sysv/calls/sys_fchdir.o \
 	o/$(MODE)/libc/sysv/calls/sys_fchmod.o \
 	o/$(MODE)/libc/sysv/calls/sys_fchmodat.o \
@@ -759,15 +755,10 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_fchownat.o \
 	o/$(MODE)/libc/sysv/calls/sys_fdatasync.o \
 	o/$(MODE)/libc/sysv/calls/sys_fexecve.o \
-	o/$(MODE)/libc/sysv/calls/sys_fgetxattr.o \
-	o/$(MODE)/libc/sysv/calls/sys_flistxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_flock.o \
-	o/$(MODE)/libc/sysv/calls/sys_fremovexattr.o \
-	o/$(MODE)/libc/sysv/calls/sys_fsetxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_fstatfs.o \
 	o/$(MODE)/libc/sysv/calls/sys_fsync.o \
 	o/$(MODE)/libc/sysv/calls/sys_ftruncate.o \
-	o/$(MODE)/libc/sysv/calls/sys_futex.o \
 	o/$(MODE)/libc/sysv/calls/sys_futex_cp.o \
 	o/$(MODE)/libc/sysv/calls/sys_futimens.o \
 	o/$(MODE)/libc/sysv/calls/sys_futimes.o \
@@ -789,44 +780,26 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_getsid.o \
 	o/$(MODE)/libc/sysv/calls/sys_getsockopt.o \
 	o/$(MODE)/libc/sysv/calls/sys_getuid.o \
-	o/$(MODE)/libc/sysv/calls/sys_getxattr.o \
-	o/$(MODE)/libc/sysv/calls/sys_inotify_add_watch.o \
-	o/$(MODE)/libc/sysv/calls/sys_inotify_init.o \
-	o/$(MODE)/libc/sysv/calls/sys_inotify_init1.o \
-	o/$(MODE)/libc/sysv/calls/sys_inotify_rm_watch.o \
 	o/$(MODE)/libc/sysv/calls/sys_ioctl.o \
-	o/$(MODE)/libc/sysv/calls/sys_ioperm.o \
-	o/$(MODE)/libc/sysv/calls/sys_iopl.o \
 	o/$(MODE)/libc/sysv/calls/sys_issetugid.o \
 	o/$(MODE)/libc/sysv/calls/sys_kill.o \
-	o/$(MODE)/libc/sysv/calls/sys_lgetxattr.o \
+	o/$(MODE)/libc/sysv/calls/sys_landlock_add_rule.o \
+	o/$(MODE)/libc/sysv/calls/sys_landlock_create_ruleset.o \
+	o/$(MODE)/libc/sysv/calls/sys_landlock_restrict_self.o \
 	o/$(MODE)/libc/sysv/calls/sys_linkat.o \
 	o/$(MODE)/libc/sysv/calls/sys_listen.o \
-	o/$(MODE)/libc/sysv/calls/sys_listxattr.o \
-	o/$(MODE)/libc/sysv/calls/sys_llistxattr.o \
-	o/$(MODE)/libc/sysv/calls/sys_lremovexattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_lseek.o \
-	o/$(MODE)/libc/sysv/calls/sys_lsetxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_madvise.o \
 	o/$(MODE)/libc/sysv/calls/sys_memfd_create.o \
 	o/$(MODE)/libc/sysv/calls/sys_mincore.o \
 	o/$(MODE)/libc/sysv/calls/sys_mkdirat.o \
 	o/$(MODE)/libc/sysv/calls/sys_mknod.o \
-	o/$(MODE)/libc/sysv/calls/sys_mknodat.o \
 	o/$(MODE)/libc/sysv/calls/sys_mlock.o \
-	o/$(MODE)/libc/sysv/calls/sys_mlockall.o \
 	o/$(MODE)/libc/sysv/calls/sys_mount.o \
 	o/$(MODE)/libc/sysv/calls/sys_mremap.o \
-	o/$(MODE)/libc/sysv/calls/sys_msgctl.o \
-	o/$(MODE)/libc/sysv/calls/sys_msgget.o \
-	o/$(MODE)/libc/sysv/calls/sys_msgrcv.o \
-	o/$(MODE)/libc/sysv/calls/sys_msgsnd.o \
 	o/$(MODE)/libc/sysv/calls/sys_msync.o \
 	o/$(MODE)/libc/sysv/calls/sys_munlock.o \
-	o/$(MODE)/libc/sysv/calls/sys_munlockall.o \
-	o/$(MODE)/libc/sysv/calls/sys_name_to_handle_at.o \
-	o/$(MODE)/libc/sysv/calls/sys_open_by_handle_at.o \
-	o/$(MODE)/libc/sysv/calls/sys_personality.o \
+	o/$(MODE)/libc/sysv/calls/sys_pivot_root.o \
 	o/$(MODE)/libc/sysv/calls/sys_ppoll.o \
 	o/$(MODE)/libc/sysv/calls/sys_pread.o \
 	o/$(MODE)/libc/sysv/calls/sys_preadv.o \
@@ -838,36 +811,26 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_readv.o \
 	o/$(MODE)/libc/sysv/calls/sys_reboot.o \
 	o/$(MODE)/libc/sysv/calls/sys_recvfrom.o \
-	o/$(MODE)/libc/sysv/calls/sys_recvmmsg.o \
 	o/$(MODE)/libc/sysv/calls/sys_recvmsg.o \
-	o/$(MODE)/libc/sysv/calls/sys_remap_file_pages.o \
-	o/$(MODE)/libc/sysv/calls/sys_removexattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_renameat.o \
 	o/$(MODE)/libc/sysv/calls/sys_rtprio_thread.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_get_priority_max.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_get_priority_min.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_getaffinity.o \
+	o/$(MODE)/libc/sysv/calls/sys_sched_getparam.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_getscheduler.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_rr_get_interval.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setaffinity.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setparam.o \
 	o/$(MODE)/libc/sysv/calls/sys_sched_setscheduler.o \
-	o/$(MODE)/libc/sysv/calls/sys_semctl.o \
-	o/$(MODE)/libc/sysv/calls/sys_semget.o \
-	o/$(MODE)/libc/sysv/calls/sys_semop.o \
-	o/$(MODE)/libc/sysv/calls/sys_semtimedop.o \
 	o/$(MODE)/libc/sysv/calls/sys_sendfile.o \
-	o/$(MODE)/libc/sysv/calls/sys_sendmmsg.o \
 	o/$(MODE)/libc/sysv/calls/sys_sendmsg.o \
 	o/$(MODE)/libc/sysv/calls/sys_sendto.o \
-	o/$(MODE)/libc/sysv/calls/sys_setdomainname.o \
 	o/$(MODE)/libc/sysv/calls/sys_setfsgid.o \
 	o/$(MODE)/libc/sysv/calls/sys_setfsuid.o \
 	o/$(MODE)/libc/sysv/calls/sys_setgid.o \
 	o/$(MODE)/libc/sysv/calls/sys_setgroups.o \
-	o/$(MODE)/libc/sysv/calls/sys_sethostname.o \
 	o/$(MODE)/libc/sysv/calls/sys_setitimer.o \
-	o/$(MODE)/libc/sysv/calls/sys_setns.o \
 	o/$(MODE)/libc/sysv/calls/sys_setpgid.o \
 	o/$(MODE)/libc/sysv/calls/sys_setpriority.o \
 	o/$(MODE)/libc/sysv/calls/sys_setregid.o \
@@ -879,45 +842,29 @@ FILC_YOLO_OBJS = \
 	o/$(MODE)/libc/sysv/calls/sys_setsockopt.o \
 	o/$(MODE)/libc/sysv/calls/sys_settimeofday.o \
 	o/$(MODE)/libc/sysv/calls/sys_setuid.o \
-	o/$(MODE)/libc/sysv/calls/sys_setxattr.o \
 	o/$(MODE)/libc/sysv/calls/sys_shm_open.o \
-	o/$(MODE)/libc/sysv/calls/sys_shmat.o \
-	o/$(MODE)/libc/sysv/calls/sys_shmctl.o \
-	o/$(MODE)/libc/sysv/calls/sys_shmdt.o \
-	o/$(MODE)/libc/sysv/calls/sys_shmget.o \
 	o/$(MODE)/libc/sysv/calls/sys_shutdown.o \
 	o/$(MODE)/libc/sysv/calls/sys_sigaction.o \
 	o/$(MODE)/libc/sysv/calls/sys_sigaltstack.o \
-	o/$(MODE)/libc/sysv/calls/sys_signalfd4.o \
 	o/$(MODE)/libc/sysv/calls/sys_sigpending.o \
+	o/$(MODE)/libc/sysv/calls/sys_sigqueue.o \
+	o/$(MODE)/libc/sysv/calls/sys_sigqueueinfo.o \
 	o/$(MODE)/libc/sysv/calls/sys_sigsuspend.o \
 	o/$(MODE)/libc/sysv/calls/sys_sigtimedwait.o \
 	o/$(MODE)/libc/sysv/calls/sys_splice.o \
 	o/$(MODE)/libc/sysv/calls/sys_statfs.o \
-	o/$(MODE)/libc/sysv/calls/sys_swapoff.o \
-	o/$(MODE)/libc/sysv/calls/sys_swapon.o \
 	o/$(MODE)/libc/sysv/calls/sys_symlinkat.o \
 	o/$(MODE)/libc/sysv/calls/sys_sync.o \
 	o/$(MODE)/libc/sysv/calls/sys_syncfs.o \
 	o/$(MODE)/libc/sysv/calls/sys_sysctl.o \
 	o/$(MODE)/libc/sysv/calls/sys_sysinfo.o \
-	o/$(MODE)/libc/sysv/calls/sys_syslog.o \
-	o/$(MODE)/libc/sysv/calls/sys_tee.o \
 	o/$(MODE)/libc/sysv/calls/sys_tgkill.o \
-	o/$(MODE)/libc/sysv/calls/sys_timerfd_create.o \
-	o/$(MODE)/libc/sysv/calls/sys_timerfd_gettime.o \
-	o/$(MODE)/libc/sysv/calls/sys_timerfd_settime.o \
 	o/$(MODE)/libc/sysv/calls/sys_tkill.o \
 	o/$(MODE)/libc/sysv/calls/sys_truncate.o \
 	o/$(MODE)/libc/sysv/calls/sys_umask.o \
-	o/$(MODE)/libc/sysv/calls/sys_umount2.o \
 	o/$(MODE)/libc/sysv/calls/sys_uname.o \
 	o/$(MODE)/libc/sysv/calls/sys_unlinkat.o \
-	o/$(MODE)/libc/sysv/calls/sys_unshare.o \
 	o/$(MODE)/libc/sysv/calls/sys_utimes.o \
-	o/$(MODE)/libc/sysv/calls/sys_vhangup.o \
-	o/$(MODE)/libc/sysv/calls/sys_vmsplice.o \
-	o/$(MODE)/libc/sysv/calls/sys_waitid.o \
 	o/$(MODE)/libc/sysv/calls/sys_write.o \
 	o/$(MODE)/libc/sysv/calls/sys_writev.o \
 	o/$(MODE)/libc/sysv/errno-bsd.o \

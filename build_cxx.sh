@@ -104,9 +104,17 @@ cmake -S runtimes -B runtimes-build -G Ninja \
     -DLIBCXX_HARDENING_MODE=extensive \
     -DLLVM_INCLUDE_TESTS=OFF
 
-(cd runtimes-build && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
+# The driver resolves the C++ stdlib headers from build/include/c++ (see
+# install-cxx-*.sh, which installs them there after the build).  If a stale
+# copy from a previous run is present while the runtimes are being compiled,
+# libc++'s C-compatibility headers (string.h, errno.h, ...) include_next into
+# that stale copy, whose include guards collide with the copies being compiled
+# from runtimes-build/include, and the underlying libc header is never reached
+# (e.g. `strcmp` ends up undeclared).  So make sure the driver's copy doesn't
+# exist while ninja runs; install-cxx-*.sh recreates it below.
+rm -rf build/include/c++ build/include/$TRIPLE/c++
 
-./install-cxx-$OS.sh
+(cd runtimes-build && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
 
 # The aarch64 flavor of the C++ runtime, when the aarch64 cosmo tree exists
 # (build_yolocosmo.sh installs pizfix/lib-aarch64/libyolocosmo.a).  Mirrors
@@ -152,6 +160,11 @@ then
         -DLIBCXX_HARDENING_MODE=extensive \
         -DLLVM_INCLUDE_TESTS=OFF
 
+    # Same stale-header dance as above: install-cxx-$OS.sh recreated
+    # build/include/c++ for the host, which would shadow the headers this
+    # aarch64 build compiles from runtimes-build-aarch64/include.
+    rm -rf build/include/c++ build/include/aarch64-unknown-linux-gnu/c++
+
     (cd runtimes-build-aarch64 && ninja $NINJAFLAGS $NINJARUNTIMEFLAGS)
 
     mkdir -p pizfix/lib-aarch64
@@ -163,6 +176,12 @@ then
     cp -R runtimes-build-aarch64/include/aarch64-unknown-linux-gnu/c++ \
         build/include/aarch64-unknown-linux-gnu/c++
 fi
+
+# Install the host C++ headers and archives into the LLVM build tree and
+# pizfix.  This has to happen after the aarch64 section above (if it ran),
+# because the aarch64 ninja needs the host header copies out of the way for
+# the same include_next-shadowing reason as the host ninja did.
+./install-cxx-$OS.sh
 
 ./fix_clang.sh
 

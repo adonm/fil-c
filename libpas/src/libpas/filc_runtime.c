@@ -84,49 +84,74 @@ static inline bool filc_running_on_windows(void)
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <poll.h>
-#include <sys/timex.h>
 #include <sys/file.h>
 #include <sys/sendfile.h>
 #include <futex_calls.h>
 #include <dirent.h>
 #include <sys/random.h>
+#if !PAS_COSMO
+/* The cosmo flavor doesn't provide these Linux-only system call surfaces at
+   all; the zsys_* forwarders for them panic under PAS_COSMO (see below), so
+   the headers aren't needed there and don't even exist in yolocosmo. */
 #include <sys/epoll.h>
-#include <sys/sysinfo.h>
-#include <sched.h>
-#include <sys/prctl.h>
 #include <sys/eventfd.h>
 #include <sys/xattr.h>
-#include <linux/landlock.h>
-#include <sys/syscall.h>
-#include <linux/perf_event.h>
-#include <linux/hw_breakpoint.h>
-#include <linux/seccomp.h>
-#include <linux/filter.h>
 #include <sys/signalfd.h>
-#include <sys/ipc.h>
-#include <sys/sem.h>
-#include <sys/shm.h>
-#include <sys/msg.h>
-#include <grp.h>
-#include <math.h>
 #include <sys/swap.h>
 #ifdef __x86_64__
 #include <sys/io.h>
 #endif
 #include <sys/personality.h>
 #include <sys/fsuid.h>
-#include <sys/prctl.h>
 #include <sys/inotify.h>
-#include <sys/mount.h>
 #include <sys/klog.h>
 #include <sys/timerfd.h>
 #include <sys/quota.h>
+#include <sys/timex.h>
+#endif
+#include <sys/sysinfo.h>
+#include <sched.h>
+#include <sys/prctl.h>
+#include <linux/landlock.h>
+#include <sys/syscall.h>
+#include <linux/perf_event.h>
+#include <linux/hw_breakpoint.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#if !PAS_COSMO
+/* SysV IPC surfaces don't exist in cosmo; the zsys_* forwarders for them
+   panic under PAS_COSMO.  (Leaving these includes un-gated would make them
+   resolve to whatever <sys/sem.h>-alikes the build host's toolchain has.) */
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <sys/msg.h>
+#endif
+#include <grp.h>
+#include <math.h>
+#include <sys/mount.h>
 #include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/reboot.h>
 #include <linux/keyctl.h>
 #include <fenv.h>
 #include <dlfcn.h>
+
+#if PAS_COSMO
+/* Cosmo's raw getdents thunk; cosmo's own libc/stdio/dirstream.c declares and
+   calls exactly this.  Used by the zsys_getdents forwarder, which backs the
+   pizlonated user-side readdir(). */
+int sys_getdents(unsigned, void *, unsigned, long *);
+
+/* Cosmo exposes landlock and pivot_root, but only declares landlock_* in
+   libc/calls/landlock.h (not in the isystem surface, and that header's type
+   definitions collide with <linux/landlock.h>), and declares pivot_root()
+   only with _COSMO_SOURCE or _BSD_SOURCE. */
+int pivot_root(const char *, const char *);
+int landlock_restrict_self(int, unsigned);
+int landlock_add_rule(int, int, const void *, unsigned);
+int landlock_create_ruleset(const struct landlock_ruleset_attr *, size_t, unsigned);
+#endif
 
 #if PAS_GLIBC
 #include <sys/pidfd.h>
@@ -10007,12 +10032,25 @@ int filc_native_zsys_munlock(filc_thread* my_thread, filc_ptr addr_ptr, size_t l
 
 int filc_native_zsys_mlockall(filc_thread* my_thread, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "mlockall not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, mlockall(flags));
+#endif
 }
 
 int filc_native_zsys_munlockall(filc_thread* my_thread)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "munlockall not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, munlockall());
+#endif
 }
 
 int filc_native_zsys_sigpending(filc_thread* my_thread, filc_ptr set_ptr)
@@ -10061,8 +10099,16 @@ int filc_native_zsys_fchmod(filc_thread* my_thread, int fd, unsigned mode)
 
 int filc_native_zsys_mkfifo(filc_thread* my_thread, filc_ptr path_ptr, unsigned mode)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(mode);
+    filc_internal_panic(NULL, "mkfifo not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, mkfifo(path, mode));
+#endif
 }
 
 int filc_native_zsys_mkdirat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr,
@@ -10500,6 +10546,15 @@ ssize_t filc_native_zsys_recvmsg(filc_thread* my_thread, int sockfd, filc_ptr ms
 int filc_native_zsys_sendmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgvec_ptr, unsigned vlen,
                               int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(sockfd);
+    PAS_UNUSED_PARAM(msgvec_ptr);
+    PAS_UNUSED_PARAM(vlen);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "sendmmsg not supported.");
+#else
+
     check_fd(sockfd);
     static const bool verbose = false;
     
@@ -10534,11 +10589,22 @@ int filc_native_zsys_sendmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgve
             user_msgvec[index].msg_len = msgvec[index].msg_len;
     }
     return result;
+#endif
 }
 
 int filc_native_zsys_recvmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgvec_ptr, unsigned vlen,
                               int flags, filc_ptr timeout_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(sockfd);
+    PAS_UNUSED_PARAM(msgvec_ptr);
+    PAS_UNUSED_PARAM(vlen);
+    PAS_UNUSED_PARAM(flags);
+    PAS_UNUSED_PARAM(timeout_ptr);
+    filc_internal_panic(NULL, "recvmmsg not supported.");
+#else
+
     check_fd(sockfd);
     static const bool verbose = false;
 
@@ -10576,6 +10642,7 @@ int filc_native_zsys_recvmmsg(filc_thread* my_thread, int sockfd, filc_ptr msgve
         }
     }
     return result;
+#endif
 }
 
 int filc_native_zsys_fcntl_impl(filc_thread* my_thread, int fd, int cmd, filc_cc_cursor* args)
@@ -10707,6 +10774,12 @@ int filc_native_zsys_poll(filc_thread* my_thread, filc_ptr pollfds_ptr, unsigned
 
 int filc_native_zsys_acct(filc_thread* my_thread, filc_ptr file_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(file_ptr);
+    filc_internal_panic(NULL, "acct not supported.");
+#else
+
     char* file = filc_check_and_get_tmp_str(my_thread, file_ptr);
     filc_exit(my_thread);
     int result = acct(file);
@@ -10716,6 +10789,7 @@ int filc_native_zsys_acct(filc_thread* my_thread, filc_ptr file_ptr)
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
+#endif
 }
 
 int filc_native_zsys_setgroups(filc_thread* my_thread, size_t size, filc_ptr list_ptr)
@@ -10974,6 +11048,13 @@ int filc_native_zsys_lutimes(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr
 
 int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_ptr olddelta_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(delta_ptr);
+    PAS_UNUSED_PARAM(olddelta_ptr);
+    filc_internal_panic(NULL, "adjtime not supported.");
+#else
+
     if (filc_ptr_ptr(delta_ptr))
         filc_check_read(delta_ptr, sizeof(struct timeval));
     if (filc_ptr_ptr(olddelta_ptr))
@@ -10987,6 +11068,7 @@ int filc_native_zsys_adjtime(filc_thread* my_thread, filc_ptr delta_ptr, filc_pt
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
+#endif
 }
 
 long filc_native_zsys_pathconf(filc_thread* my_thread, filc_ptr path_ptr, int name)
@@ -11013,12 +11095,30 @@ int filc_native_zsys_setrlimit(filc_thread* my_thread, int resource, filc_ptr rl
    yet. */
 int filc_native_zsys_semget(filc_thread* my_thread, int key, int nsems, int flag)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(nsems);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "semget not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, semget(key, nsems, flag));
+#endif
 }
 
 int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int cmd,
                             filc_cc_cursor* args)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(semnum);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(args);
+    filc_internal_panic(NULL, "semctl not supported.");
+#else
+
     switch (cmd) {
     case IPC_STAT:
     case IPC_SET:
@@ -11059,39 +11159,85 @@ int filc_native_zsys_semctl(filc_thread* my_thread, int semid, int semnum, int c
         filc_set_errno(EINVAL);
         return -1;
     }
+#endif
 }
 
 int filc_native_zsys_semop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(array_ptr);
+    PAS_UNUSED_PARAM(nops);
+    filc_internal_panic(NULL, "semop not supported.");
+#else
+
     filc_check_write(array_ptr, filc_mul_size(nops, sizeof(struct sembuf)));
     return FILC_SYSCALL(my_thread, semop(semid, (struct sembuf*)filc_ptr_ptr(array_ptr), nops));
+#endif
 }
 
 int filc_native_zsys_semtimedop(filc_thread* my_thread, int semid, filc_ptr array_ptr, size_t nops,
                                 filc_ptr ts_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(semid);
+    PAS_UNUSED_PARAM(array_ptr);
+    PAS_UNUSED_PARAM(nops);
+    PAS_UNUSED_PARAM(ts_ptr);
+    filc_internal_panic(NULL, "semtimedop not supported.");
+#else
+
     if (filc_ptr_ptr(ts_ptr))
         filc_check_read(ts_ptr, sizeof(struct timespec));
     filc_check_write(array_ptr, filc_mul_size(nops, sizeof(struct sembuf)));
     return FILC_SYSCALL(
         my_thread, semtimedop(semid, (struct sembuf*)filc_ptr_ptr(array_ptr), nops,
                               (const struct timespec*)filc_ptr_ptr(ts_ptr)));
+#endif
 }
 
 int filc_native_zsys_shmget(filc_thread* my_thread, int key, size_t size, int flag)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "shmget not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, shmget(key, size, flag));
+#endif
 }
 
 int filc_native_zsys_shmctl(filc_thread* my_thread, int shmid, int cmd, filc_ptr buf_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "shmctl not supported.");
+#else
+
     if (filc_ptr_ptr(buf_ptr))
         filc_check_write(buf_ptr, sizeof(struct shmid_ds));
     return FILC_SYSCALL(my_thread, shmctl(shmid, cmd, (struct shmid_ds*)filc_ptr_ptr(buf_ptr)));
+#endif
 }
 
 filc_ptr filc_native_zsys_shmat(filc_thread* my_thread, int shmid, filc_ptr addr_ptr, int flag)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(shmid);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(flag);
+    filc_internal_panic(NULL, "shmat not supported.");
+#else
+
     size_t length;
     filc_ptr result = mmap_error_result();
 
@@ -11142,10 +11288,17 @@ done:
     shmdt(dummy);
     filc_enter(my_thread);
     return result;
+#endif
 }
 
 int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    filc_internal_panic(NULL, "shmdt not supported.");
+#else
+
     FILC_CHECK(
         filc_ptr_ptr(addr_ptr) == filc_ptr_lower(addr_ptr),
         NULL,
@@ -11165,32 +11318,71 @@ int filc_native_zsys_shmdt(filc_thread* my_thread, filc_ptr addr_ptr)
     filc_unmap(filc_ptr_ptr(addr_ptr), available);
     filc_enter(my_thread);
     return 0;
+#endif
 }
 
 int filc_native_zsys_msgget(filc_thread* my_thread, int key, int msgflg)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "msgget not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, msgget(key, msgflg));
+#endif
 }
 
 int filc_native_zsys_msgctl(filc_thread* my_thread, int msgid, int cmd, filc_ptr buf_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "msgctl not supported.");
+#else
+
     if (filc_ptr_ptr(buf_ptr))
         filc_check_write(buf_ptr, sizeof(struct msqid_ds));
     return FILC_SYSCALL(my_thread, msgctl(msgid, cmd, (struct msqid_ds*)filc_ptr_ptr(buf_ptr)));
+#endif
 }
 
 long filc_native_zsys_msgrcv(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
                              long msgtyp, int msgflg)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgtyp);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "msgrcv not supported.");
+#else
+
     filc_check_write(msgp_ptr, filc_add_size(PAS_OFFSETOF(struct msgbuf, mtext), msgsz));
     return FILC_SYSCALL(my_thread, msgrcv(msgid, filc_ptr_ptr(msgp_ptr), msgsz, msgtyp, msgflg));
+#endif
 }
 
 int filc_native_zsys_msgsnd(filc_thread* my_thread, int msgid, filc_ptr msgp_ptr, size_t msgsz,
                             int msgflg)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(msgid);
+    PAS_UNUSED_PARAM(msgp_ptr);
+    PAS_UNUSED_PARAM(msgsz);
+    PAS_UNUSED_PARAM(msgflg);
+    filc_internal_panic(NULL, "msgsnd not supported.");
+#else
+
     filc_check_read(msgp_ptr, filc_add_size(PAS_OFFSETOF(struct msgbuf, mtext), msgsz));
     return FILC_SYSCALL(my_thread, msgsnd(msgid, filc_ptr_ptr(msgp_ptr), msgsz, msgflg));
+#endif
 }
 
 int filc_native_zsys_futimes(filc_thread* my_thread, int fd, filc_ptr times_ptr)
@@ -11279,8 +11471,13 @@ int filc_native_zsys_sched_setparam(filc_thread* my_thread, int pid, filc_ptr pa
 int filc_native_zsys_sched_getparam(filc_thread* my_thread, int pid, filc_ptr param_buf)
 {
     filc_check_write(param_buf, sizeof(struct sched_param));
+#if PAS_COSMO
+    return FILC_SYSCALL(my_thread,
+                        sched_getparam(pid, (struct sched_param*)filc_ptr_ptr(param_buf)));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_sched_getparam, pid,
                                            (struct sched_param*)filc_ptr_ptr(param_buf)));
+#endif
 }
 
 int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int policy,
@@ -11294,7 +11491,11 @@ int filc_native_zsys_sched_setscheduler(filc_thread* my_thread, int pid, int pol
 
 int filc_native_zsys_sched_getscheduler(filc_thread* my_thread, int pid)
 {
+#if PAS_COSMO
+    return FILC_SYSCALL(my_thread, sched_getscheduler(pid));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_sched_getscheduler, pid));
+#endif
 }
 
 int filc_native_zsys_sched_get_priority_min(filc_thread* my_thread, int policy)
@@ -11397,16 +11598,32 @@ int filc_native_zsys_futex_timedwait(filc_thread* my_thread, filc_ptr addr_ptr, 
 
 int filc_native_zsys_futex_unlock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(priv);
+    filc_internal_panic(NULL, "futex_unlock_pi not supported.");
+#else
+
     filc_check_write(addr_ptr, sizeof(int));
     filc_exit(my_thread);
     int result = yolo_futex_unlock_pi((volatile int*)filc_ptr_ptr(addr_ptr), priv);
     filc_enter(my_thread);
     return result;
+#endif
 }
 
 int filc_native_zsys_futex_lock_pi(filc_thread* my_thread, filc_ptr addr_ptr, int priv,
                                    filc_ptr timeout_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(priv);
+    PAS_UNUSED_PARAM(timeout_ptr);
+    filc_internal_panic(NULL, "futex_lock_pi not supported.");
+#else
+
     filc_check_write(addr_ptr, sizeof(int));
     if (filc_ptr_ptr(timeout_ptr))
         filc_check_read(timeout_ptr, sizeof(struct timespec));
@@ -11415,28 +11632,52 @@ int filc_native_zsys_futex_lock_pi(filc_thread* my_thread, filc_ptr addr_ptr, in
                                     (const struct timespec*)filc_ptr_ptr(timeout_ptr));
     filc_enter(my_thread);
     return result;
+#endif
 }
 
 void filc_native_zsys_futex_requeue(filc_thread* my_thread, filc_ptr addr_ptr, int priv,
                                     int wake_count, int requeue_count, filc_ptr addr2_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(priv);
+    PAS_UNUSED_PARAM(wake_count);
+    PAS_UNUSED_PARAM(requeue_count);
+    PAS_UNUSED_PARAM(addr2_ptr);
+    filc_internal_panic(NULL, "futex_requeue not supported.");
+#else
+
     filc_exit(my_thread);
     yolo_futex_requeue((volatile int*)filc_ptr_ptr(addr_ptr), priv, wake_count, requeue_count,
                        (volatile int*)filc_ptr_ptr(addr2_ptr));
     filc_enter(my_thread);
+#endif
 }
 
 int filc_native_zsys_getdents(filc_thread* my_thread, int fd, filc_ptr dirent_ptr, size_t size)
 {
     check_fd(fd);
     filc_check_write(dirent_ptr, size);
-#if PAS_GLIBC
+#if PAS_COSMO
+    /* Cosmo doesn't have a public getdents(3), but it does have the raw
+       sys_getdents thunk (this is exactly what cosmo's own readdir() calls;
+       on Linux it is getdents(2), on aarch64 the kernel's getdents slot holds
+       the getdents64-shaped call).  The trailing argument is only used by the
+       BSD getdirentries shapes.  This has to work, since the pizlonated
+       user-side readdir() runs through this forwarder. */
+    long basep = 0;
+    return FILC_SYSCALL(my_thread,
+                        sys_getdents(fd, (struct dirent*)filc_ptr_ptr(dirent_ptr), size, &basep));
+#elif PAS_GLIBC
 #if !defined(_LARGEFILE64_SOURCE)
 #error "Fil-C runtime requires _LARGEFILE64_SOURCE"
 #endif
 #define getdents getdents64
-#endif
     return FILC_SYSCALL(my_thread, getdents(fd, (struct dirent*)filc_ptr_ptr(dirent_ptr), size));
+#else
+    return FILC_SYSCALL(my_thread, getdents(fd, (struct dirent*)filc_ptr_ptr(dirent_ptr), size));
+#endif
 }
 
 long filc_native_zsys_getrandom(filc_thread* my_thread, filc_ptr buf_ptr, size_t buflen,
@@ -11448,9 +11689,20 @@ long filc_native_zsys_getrandom(filc_thread* my_thread, filc_ptr buf_ptr, size_t
 
 int filc_native_zsys_epoll_create1_impl(filc_thread* my_thread, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "epoll_create1 not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, epoll_create1(flags));
+#endif
 }
 
+#if !PAS_COSMO
+/* Cosmo doesn't expose epoll, so none of the epoll marshalling below is
+   needed (or even compiles) there; the epoll forwarders panic under
+   PAS_COSMO instead. */
 struct user_epoll_event {
 	uint32_t events;
 	epoll_data_t data;
@@ -11486,29 +11738,60 @@ static int to_user_epoll_events(int result, struct epoll_event* evs, filc_ptr ev
     }
     return result;
 }
+#endif /* !PAS_COSMO */
 
 int filc_native_zsys_epoll_ctl_impl(filc_thread* my_thread, int epfd, int op, int fd,
                                     filc_ptr event_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(epfd);
+    PAS_UNUSED_PARAM(op);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(event_ptr);
+    filc_internal_panic(NULL, "epoll_ctl not supported.");
+#else
+
     check_fd(epfd);
     check_fd(fd);
     struct epoll_event* ev = from_user_epoll_event(my_thread, event_ptr);
     return FILC_SYSCALL(my_thread, epoll_ctl(epfd, op, fd, ev));
+#endif
 }
 
 int filc_native_zsys_epoll_wait_impl(filc_thread* my_thread, int epfd, filc_ptr events_ptr,
                                      int maxevents, int timeout)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(epfd);
+    PAS_UNUSED_PARAM(events_ptr);
+    PAS_UNUSED_PARAM(maxevents);
+    PAS_UNUSED_PARAM(timeout);
+    filc_internal_panic(NULL, "epoll_wait not supported.");
+#else
+
     check_fd(epfd);
     struct epoll_event* evs = make_epoll_events(my_thread, maxevents);
     return to_user_epoll_events(
         FILC_SYSCALL(my_thread, epoll_wait(epfd, evs, maxevents, timeout)),
         evs, events_ptr);
+#endif
 }
 
 int filc_native_zsys_epoll_pwait_impl(filc_thread* my_thread, int epfd, filc_ptr events_ptr,
                                       int maxevents, int timeout, filc_ptr sigmask_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(epfd);
+    PAS_UNUSED_PARAM(events_ptr);
+    PAS_UNUSED_PARAM(maxevents);
+    PAS_UNUSED_PARAM(timeout);
+    PAS_UNUSED_PARAM(sigmask_ptr);
+    filc_internal_panic(NULL, "epoll_pwait not supported.");
+#else
+
     check_fd(epfd);
     sigset_t* sigmask = NULL;
     if (filc_ptr_ptr(sigmask_ptr)) {
@@ -11520,6 +11803,7 @@ int filc_native_zsys_epoll_pwait_impl(filc_thread* my_thread, int epfd, filc_ptr
     return to_user_epoll_events(
         FILC_SYSCALL(my_thread, epoll_pwait(epfd, evs, maxevents, timeout, sigmask)),
         evs, events_ptr);
+#endif
 }
 
 int filc_native_zsys_epoll_pwait2_impl(filc_thread* my_thread, int epfd, filc_ptr events_ptr,
@@ -11569,9 +11853,17 @@ int filc_native_zsys_sched_setaffinity(filc_thread* my_thread, int tid, size_t s
 int filc_native_zsys_raw_sched_getaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
 {
     filc_check_write(set_ptr, size);
+#if PAS_COSMO
+    /* Cosmo doesn't let us do a raw sched_getaffinity syscall, but it does
+       expose the same thing as sched_getaffinity(3), which is what the yolo
+       syscall() shim would have to call anyway. */
+    return FILC_SYSCALL(my_thread,
+                        sched_getaffinity(tid, size, (cpu_set_t*)filc_ptr_ptr(set_ptr)));
+#else
     return FILC_SYSCALL(my_thread,
                         syscall(SYS_sched_getaffinity, tid, size,
                                 (unsigned long *)filc_ptr_ptr(set_ptr)));
+#endif
 }
 
 int filc_native_zsys_sched_getaffinity(filc_thread* my_thread, int tid, size_t size, filc_ptr set_ptr)
@@ -11583,6 +11875,16 @@ int filc_native_zsys_sched_getaffinity(filc_thread* my_thread, int tid, size_t s
 long filc_native_zsys_get_mempolicy(filc_thread* my_thread, filc_ptr mode, filc_ptr nodemask,
                                     unsigned long maxnode, filc_ptr addr, unsigned long flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(mode);
+    PAS_UNUSED_PARAM(nodemask);
+    PAS_UNUSED_PARAM(maxnode);
+    PAS_UNUSED_PARAM(addr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "get_mempolicy not supported.");
+#else
+
     if (filc_ptr_ptr(mode))
         filc_check_write(mode, sizeof(int));
     if (filc_ptr_ptr(nodemask)) {
@@ -11598,11 +11900,20 @@ long filc_native_zsys_get_mempolicy(filc_thread* my_thread, filc_ptr mode, filc_
                         syscall(SYS_get_mempolicy, (int *)filc_ptr_ptr(mode),
                                 (unsigned long *)filc_ptr_ptr(nodemask),
                                 maxnode, filc_ptr_ptr(addr), flags));
+#endif
 }
 
 long filc_native_zsys_set_mempolicy(filc_thread* my_thread, int mode, filc_ptr nodemask,
                                     unsigned long maxnode)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(mode);
+    PAS_UNUSED_PARAM(nodemask);
+    PAS_UNUSED_PARAM(maxnode);
+    filc_internal_panic(NULL, "set_mempolicy not supported.");
+#else
+
     if (filc_ptr_ptr(nodemask)) {
         filc_check_read(
             nodemask,
@@ -11614,6 +11925,7 @@ long filc_native_zsys_set_mempolicy(filc_thread* my_thread, int mode, filc_ptr n
                         syscall(SYS_set_mempolicy, mode,
                                 (const unsigned long *)filc_ptr_ptr(nodemask),
                                 maxnode));
+#endif
 }
 
 int filc_native_zsys_posix_fadvise(filc_thread* my_thread, int fd, long base, long len, int advice)
@@ -11852,38 +12164,80 @@ int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* a
 
 int filc_native_zsys_eventfd(filc_thread* my_thread, unsigned initval, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(initval);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "eventfd not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, eventfd(initval, flags));
+#endif
 }
 
 long filc_native_zsys_listxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr list_ptr,
                                 size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(list_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "listxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_check_write(list_ptr, size);
     return FILC_SYSCALL(my_thread, listxattr(path, (char*)filc_ptr_ptr(list_ptr), size));
+#endif
 }
 
 long filc_native_zsys_llistxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr list_ptr,
                                  size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(list_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "llistxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     filc_check_write(list_ptr, size);
     return FILC_SYSCALL(my_thread, llistxattr(path, (char*)filc_ptr_ptr(list_ptr), size));
+#endif
 }
 
 long filc_native_zsys_flistxattr(filc_thread* my_thread, int fd, filc_ptr list_ptr, size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(list_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "flistxattr not supported.");
+#else
+
     check_fd(fd);
     filc_check_write(list_ptr, size);
     return FILC_SYSCALL(my_thread, flistxattr(fd, (char*)filc_ptr_ptr(list_ptr), size));
+#endif
 }
 
 int filc_native_zsys_landlock_create_ruleset(filc_thread* my_thread, filc_ptr attr_ptr, size_t size,
                                              unsigned flags)
 {
     filc_check_read(attr_ptr, size);
+#if PAS_COSMO
+    return FILC_SYSCALL(
+        my_thread,
+        landlock_create_ruleset((const struct landlock_ruleset_attr*)filc_ptr_ptr(attr_ptr),
+                                size, flags));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_landlock_create_ruleset, filc_ptr_ptr(attr_ptr), size,
                                            flags));
+#endif
 }
 
 int filc_native_zsys_landlock_add_rule(filc_thread* my_thread, int fd, int rule_type,
@@ -11899,19 +12253,38 @@ int filc_native_zsys_landlock_add_rule(filc_thread* my_thread, int fd, int rule_
         filc_set_errno(ENOSYS);
         return -1;
     }
+#if PAS_COSMO
+    return FILC_SYSCALL(my_thread,
+                        landlock_add_rule(fd, rule_type, filc_ptr_ptr(rule_attr_ptr), flags));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_landlock_add_rule, fd, rule_type,
                                            filc_ptr_ptr(rule_attr_ptr), flags));
+#endif
 }
 
 int filc_native_zsys_landlock_restrict_self(filc_thread* my_thread, int fd, unsigned flags)
 {
     check_fd(fd);
+#if PAS_COSMO
+    return FILC_SYSCALL(my_thread, landlock_restrict_self(fd, flags));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_landlock_restrict_self, fd, flags));
+#endif
 }
 
 int filc_native_zsys_perf_event_open(filc_thread* my_thread, filc_ptr attr_ptr, int pid, int cpu,
                                      int fd, unsigned long flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(attr_ptr);
+    PAS_UNUSED_PARAM(pid);
+    PAS_UNUSED_PARAM(cpu);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "perf_event_open not supported.");
+#else
+
     check_fd(fd);
     filc_ptr size_ptr = filc_ptr_with_offset(attr_ptr, PAS_OFFSETOF(struct perf_event_attr, size));
     filc_check_read(size_ptr, sizeof(unsigned));
@@ -11920,11 +12293,22 @@ int filc_native_zsys_perf_event_open(filc_thread* my_thread, filc_ptr attr_ptr, 
     filc_check_write(attr_ptr, size);
     return FILC_SYSCALL(my_thread, syscall(SYS_perf_event_open, filc_ptr_ptr(attr_ptr), pid, cpu, fd,
                                            flags));
+#endif
 }
 
 filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_ptr, size_t old_size,
                                  size_t new_size, int flags, filc_ptr new_address_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(old_address_ptr);
+    PAS_UNUSED_PARAM(old_size);
+    PAS_UNUSED_PARAM(new_size);
+    PAS_UNUSED_PARAM(flags);
+    PAS_UNUSED_PARAM(new_address_ptr);
+    filc_internal_panic(NULL, "mremap not supported.");
+#else
+
     static const bool verbose = false;
     
     /* NOTE: Because of how we handle private mappings (see comment below), we have to catch all cases
@@ -12113,10 +12497,19 @@ filc_ptr filc_native_zsys_mremap(filc_thread* my_thread, filc_ptr old_address_pt
 
     filc_set_errno(errno);
     return mmap_error_result();
+#endif
 }
 
 int filc_native_zsys_signalfd(filc_thread* my_thread, int fd, filc_ptr mask_ptr, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(mask_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "signalfd not supported.");
+#else
+
     filc_check_user_sigset(mask_ptr, filc_read_access);
     sigset_t set;
     filc_from_user_sigset((sigset_t*)filc_ptr_ptr(mask_ptr), &set);
@@ -12126,6 +12519,7 @@ int filc_native_zsys_signalfd(filc_thread* my_thread, int fd, filc_ptr mask_ptr,
             PAS_ASSERT(!sigdelsetyolo(&set, sig));
     }
     return FILC_SYSCALL(my_thread, signalfd(fd, &set, flags));
+#endif
 }
 
 int filc_native_zsys_clock_nanosleep(filc_thread* my_thread, int clockid, int flags, filc_ptr req_ptr,
@@ -12142,7 +12536,16 @@ int filc_native_zsys_clock_nanosleep(filc_thread* my_thread, int clockid, int fl
 
 int filc_native_zsys_posix_fallocate(filc_thread* my_thread, int fd, long offset, long len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(offset);
+    PAS_UNUSED_PARAM(len);
+    filc_internal_panic(NULL, "posix_fallocate not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, posix_fallocate(fd, offset, len));
+#endif
 }
 
 int filc_native_zsys_sigaltstack(filc_thread* my_thread, filc_ptr ss_ptr, filc_ptr old_ss_ptr)
@@ -12218,73 +12621,160 @@ int filc_native_zsys_symlinkat(filc_thread* my_thread, filc_ptr target_ptr, int 
 ssize_t filc_native_zsys_getxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr,
                                   filc_ptr value_ptr, size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "getxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_write(value_ptr, size);
     return FILC_SYSCALL(my_thread, getxattr(path, name, filc_ptr_ptr(value_ptr), size));
+#endif
 }
 
 ssize_t filc_native_zsys_lgetxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr,
                                    filc_ptr value_ptr, size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "lgetxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_write(value_ptr, size);
     return FILC_SYSCALL(my_thread, lgetxattr(path, name, filc_ptr_ptr(value_ptr), size));
+#endif
 }
 
 ssize_t filc_native_zsys_fgetxattr(filc_thread* my_thread, int fd, filc_ptr name_ptr,
                                    filc_ptr value_ptr, size_t size)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    filc_internal_panic(NULL, "fgetxattr not supported.");
+#else
+
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_write(value_ptr, size);
     return FILC_SYSCALL(my_thread, fgetxattr(fd, name, filc_ptr_ptr(value_ptr), size));
+#endif
 }
 
 int filc_native_zsys_removexattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    filc_internal_panic(NULL, "removexattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, removexattr(path, name));
+#endif
 }
 
 int filc_native_zsys_lremovexattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    filc_internal_panic(NULL, "lremovexattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, lremovexattr(path, name));
+#endif
 }
 
 int filc_native_zsys_fremovexattr(filc_thread* my_thread, int fd, filc_ptr name_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(name_ptr);
+    filc_internal_panic(NULL, "fremovexattr not supported.");
+#else
+
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, fremovexattr(fd, name));
+#endif
 }
 
 int filc_native_zsys_setxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr,
                               filc_ptr value_ptr, size_t size, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "setxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_read(value_ptr, size);
     return FILC_SYSCALL(my_thread, setxattr(path, name, filc_ptr_ptr(value_ptr), size, flags));
+#endif
 }
 
 int filc_native_zsys_lsetxattr(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr name_ptr,
                                filc_ptr value_ptr, size_t size, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "lsetxattr not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_read(value_ptr, size);
     return FILC_SYSCALL(my_thread, lsetxattr(path, name, filc_ptr_ptr(value_ptr), size, flags));
+#endif
 }
 
 int filc_native_zsys_fsetxattr(filc_thread* my_thread, int fd, filc_ptr name_ptr, filc_ptr value_ptr,
                                size_t size, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(value_ptr);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "fsetxattr not supported.");
+#else
+
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     filc_check_read(value_ptr, size);
     return FILC_SYSCALL(my_thread, fsetxattr(fd, name, filc_ptr_ptr(value_ptr), size, flags));
+#endif
 }
 
 int filc_native_zsys_getdomainname(filc_thread* my_thread, filc_ptr name_ptr, size_t len)
@@ -12295,8 +12785,16 @@ int filc_native_zsys_getdomainname(filc_thread* my_thread, filc_ptr name_ptr, si
 
 int filc_native_zsys_setdomainname(filc_thread* my_thread, filc_ptr name_ptr, size_t len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(len);
+    filc_internal_panic(NULL, "setdomainname not supported.");
+#else
+
     filc_check_read(name_ptr, len);
     return FILC_SYSCALL(my_thread, setdomainname((const char*)filc_ptr_ptr(name_ptr), len));
+#endif
 }
 
 int filc_native_zsys_gethostname(filc_thread* my_thread, filc_ptr name_ptr, size_t len)
@@ -12307,13 +12805,31 @@ int filc_native_zsys_gethostname(filc_thread* my_thread, filc_ptr name_ptr, size
 
 int filc_native_zsys_sethostname(filc_thread* my_thread, filc_ptr name_ptr, size_t len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(len);
+    filc_internal_panic(NULL, "sethostname not supported.");
+#else
+
     filc_check_read(name_ptr, len);
     return FILC_SYSCALL(my_thread, sethostname((const char*)filc_ptr_ptr(name_ptr), len));
+#endif
 }
 
 int filc_native_zsys_remap_file_pages(filc_thread* my_thread, filc_ptr addr_ptr, size_t size,
                                       int user_prot, size_t pgoff, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(addr_ptr);
+    PAS_UNUSED_PARAM(size);
+    PAS_UNUSED_PARAM(user_prot);
+    PAS_UNUSED_PARAM(pgoff);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "remap_file_pages not supported.");
+#else
+
     int prot;
     if (!from_user_prot(user_prot, &prot)) {
         filc_set_errno(EINVAL);
@@ -12323,18 +12839,34 @@ int filc_native_zsys_remap_file_pages(filc_thread* my_thread, filc_ptr addr_ptr,
     check_mmap(addr_ptr);
     return FILC_SYSCALL(my_thread, remap_file_pages(filc_ptr_ptr(addr_ptr), size, user_prot, pgoff,
                                                     flags));
+#endif
 }
 
 int filc_native_zsys_swapon(filc_thread* my_thread, filc_ptr path_ptr, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "swapon not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, swapon(path, flags));
+#endif
 }
 
 int filc_native_zsys_swapoff(filc_thread* my_thread, filc_ptr path_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(path_ptr);
+    filc_internal_panic(NULL, "swapoff not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, swapoff(path));
+#endif
 }
 
 int filc_native_zsys_syncfs(filc_thread* my_thread, int fd)
@@ -12344,7 +12876,13 @@ int filc_native_zsys_syncfs(filc_thread* my_thread, int fd)
 
 int filc_native_zsys_vhangup(filc_thread* my_thread)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "vhangup not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, vhangup());
+#endif
 }
 
 #ifdef __x86_64__
@@ -12352,19 +12890,42 @@ int filc_native_zsys_vhangup(filc_thread* my_thread)
 int filc_native_zsys_ioperm(filc_thread* my_thread, unsigned long form, unsigned long num,
                             int turn_on)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(form);
+    PAS_UNUSED_PARAM(num);
+    PAS_UNUSED_PARAM(turn_on);
+    filc_internal_panic(NULL, "ioperm not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, ioperm(form, num, turn_on));
+#endif
 }
 
 int filc_native_zsys_iopl(filc_thread* my_thread, int level)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(level);
+    filc_internal_panic(NULL, "iopl not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, iopl(level));
+#endif
 }
 
 #endif
 
 int filc_native_zsys_personality(filc_thread* my_thread, unsigned long persona)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(persona);
+    filc_internal_panic(NULL, "personality not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, personality(persona));
+#endif
 }
 
 int filc_native_zsys_setfsgid(filc_thread* my_thread, unsigned fsgid)
@@ -12385,6 +12946,13 @@ int arch_prctl(int code, void* addr);
 
 int filc_native_zsys_arch_prctl(filc_thread* my_thread, int code, filc_ptr addr_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(code);
+    PAS_UNUSED_PARAM(addr_ptr);
+    filc_internal_panic(NULL, "arch_prctl not supported.");
+#else
+
     switch (code) {
     case ARCH_SET_CPUID:
         break;
@@ -12404,17 +12972,26 @@ int filc_native_zsys_arch_prctl(filc_thread* my_thread, int code, filc_ptr addr_
         return -1;
     }
     return FILC_SYSCALL(my_thread, arch_prctl(code, filc_ptr_ptr(addr_ptr)));
+#endif
 }
 
 int filc_native_zsys_modify_ldt(filc_thread* my_thread, int func, filc_ptr ptr,
                                 unsigned long bytecount)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(func);
+    PAS_UNUSED_PARAM(ptr);
+    PAS_UNUSED_PARAM(bytecount);
+    filc_internal_panic(NULL, "modify_ldt not supported.");
+#else
     FILC_CHECK(
         !func,
         NULL,
         "modify_ldt with func != 0 not allowed.");
     filc_check_write(ptr, bytecount);
     return FILC_SYSCALL(my_thread, syscall(SYS_modify_ldt, 0, filc_ptr_ptr(ptr), bytecount));
+#endif
 }
 
 #endif
@@ -12434,15 +13011,25 @@ struct user_cap_data {
 #define CAP_VERSION_2 0x20071026
 #define CAP_VERSION_3 0x20080522
 
+#if !PAS_COSMO
+/* Only used by the capget/capset forwarders, which panic under cosmo. */
 static int get_preferred_version(filc_thread* my_thread, struct user_cap_header* header)
 {
     header->version = CAP_VERSION_3;
     struct user_cap_data data[2];
     return FILC_SYSCALL(my_thread, syscall(SYS_capget, header, data));
 }
+#endif /* !PAS_COSMO */
 
 int filc_native_zsys_capget(filc_thread* my_thread, filc_ptr header_ptr, filc_ptr data_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(header_ptr);
+    PAS_UNUSED_PARAM(data_ptr);
+    filc_internal_panic(NULL, "capget not supported.");
+#else
+
     filc_check_write(header_ptr, sizeof(struct user_cap_header));
     struct user_cap_header* header = (struct user_cap_header*)filc_ptr_ptr(header_ptr);
     if (filc_ptr_ptr(data_ptr)) {
@@ -12459,10 +13046,18 @@ int filc_native_zsys_capget(filc_thread* my_thread, filc_ptr header_ptr, filc_pt
         }
     }
     return FILC_SYSCALL(my_thread, syscall(SYS_capget, header, filc_ptr_ptr(data_ptr)));
+#endif
 }
 
 int filc_native_zsys_capset(filc_thread* my_thread, filc_ptr header_ptr, filc_ptr data_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(header_ptr);
+    PAS_UNUSED_PARAM(data_ptr);
+    filc_internal_panic(NULL, "capset not supported.");
+#else
+
     filc_check_write(header_ptr, sizeof(struct user_cap_header));
     struct user_cap_header* header = (struct user_cap_header*)filc_ptr_ptr(header_ptr);
     if (filc_ptr_ptr(data_ptr)) {
@@ -12479,19 +13074,37 @@ int filc_native_zsys_capset(filc_thread* my_thread, filc_ptr header_ptr, filc_pt
         }
     }
     return FILC_SYSCALL(my_thread, syscall(SYS_capset, header, filc_ptr_ptr(data_ptr)));
+#endif
 }
 
 int filc_native_zsys_delete_module(filc_thread* my_thread, filc_ptr name_ptr, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "delete_module not supported.");
+#else
+
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, syscall(SYS_delete_module, name, flags));
+#endif
 }
 
 int filc_native_zsys_inotify_add_watch(filc_thread* my_thread, int fd, filc_ptr path_ptr,
                                        unsigned mask)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(mask);
+    filc_internal_panic(NULL, "inotify_add_watch not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     return FILC_SYSCALL(my_thread, inotify_add_watch(fd, path, mask));
+#endif
 }
 
 int filc_native_zsys_fsconfig(filc_thread* my_thread, int fd, unsigned cmd, filc_ptr key_ptr,
@@ -12625,39 +13238,87 @@ int filc_native_zsys_fspick(filc_thread* my_thread, int fd, filc_ptr path_ptr, u
 int filc_native_zsys_init_module(filc_thread* my_thread, filc_ptr module_image_ptr, unsigned long len,
                                  filc_ptr param_values_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(module_image_ptr);
+    PAS_UNUSED_PARAM(len);
+    PAS_UNUSED_PARAM(param_values_ptr);
+    filc_internal_panic(NULL, "init_module not supported.");
+#else
+
     filc_check_read(module_image_ptr, len);
     char* param_values = filc_check_and_get_tmp_str(my_thread, param_values_ptr);
     return FILC_SYSCALL(my_thread, syscall(SYS_init_module, filc_ptr_ptr(module_image_ptr), len,
                                            param_values));
+#endif
 }
 
 int filc_native_zsys_finit_module(filc_thread* my_thread, int fd, filc_ptr param_values_ptr,
                                   int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(param_values_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "finit_module not supported.");
+#else
+
     char* param_values = filc_check_and_get_tmp_str(my_thread, param_values_ptr);
     return FILC_SYSCALL(my_thread, syscall(SYS_finit_module, fd, param_values, flags));
+#endif
 }
 
 int filc_native_zsys_inotify_rm_watch(filc_thread* my_thread, int fd, int wd)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(wd);
+    filc_internal_panic(NULL, "inotify_rm_watch not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, inotify_rm_watch(fd, wd));
+#endif
 }
 
 int filc_native_zsys_inotify_init(filc_thread* my_thread)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    filc_internal_panic(NULL, "inotify_init not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, inotify_init());
+#endif
 }
 
 int filc_native_zsys_inotify_init1(filc_thread* my_thread, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "inotify_init1 not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, inotify_init1(flags));
+#endif
 }
 
 int filc_native_zsys_syslog(filc_thread* my_thread, int type, filc_ptr buf_ptr, int len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(type);
+    PAS_UNUSED_PARAM(buf_ptr);
+    PAS_UNUSED_PARAM(len);
+    filc_internal_panic(NULL, "syslog not supported.");
+#else
+
     if (type != 8) /* 8 = SYSLOG_ACTION_CONSOLE_LEVEL */
         filc_check_write(buf_ptr, len);
     return FILC_SYSCALL(my_thread, klogctl(type, (char*)filc_ptr_ptr(buf_ptr), len));
+#endif
 }
 
 int filc_native_zsys_mount(filc_thread* my_thread, filc_ptr source_ptr, filc_ptr target_ptr,
@@ -12723,19 +13384,36 @@ int filc_native_zsys_open_tree(filc_thread* my_thread, int fd, filc_ptr path_ptr
 
 int filc_native_zsys_pidfd_open(filc_thread* my_thread, int pid, unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(pid);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "pidfd_open not supported.");
+#else
+
 #if PAS_GLIBC
     return FILC_SYSCALL(my_thread, pidfd_open(pid, flags));
 #else
     return FILC_SYSCALL(my_thread, syscall(SYS_pidfd_open, pid, flags));
 #endif
+#endif
 }
 
 int filc_native_zsys_pidfd_getfd(filc_thread* my_thread, int pidfd, int targetfd, unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(pidfd);
+    PAS_UNUSED_PARAM(targetfd);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "pidfd_getfd not supported.");
+#else
+
 #if PAS_GLIBC
     return FILC_SYSCALL(my_thread, pidfd_getfd(pidfd, targetfd, flags));
 #else
     return FILC_SYSCALL(my_thread, syscall(SYS_pidfd_getfd, pidfd, targetfd, flags));
+#endif
 #endif
 }
 
@@ -12743,12 +13421,25 @@ int filc_native_zsys_pivot_root(filc_thread* my_thread, filc_ptr new_root_ptr, f
 {
     char* new_root = filc_check_and_get_tmp_str(my_thread, new_root_ptr);
     char* put_old = filc_check_and_get_tmp_str(my_thread, put_old_ptr);
+#if PAS_COSMO
+    return FILC_SYSCALL(my_thread, pivot_root(new_root, put_old));
+#else
     return FILC_SYSCALL(my_thread, syscall(SYS_pivot_root, new_root, put_old));
+#endif
 }
 
 int filc_native_zsys_pidfd_send_signal(filc_thread* my_thread, int pidfd, int sig,
                                        filc_ptr siginfo_ptr, unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(pidfd);
+    PAS_UNUSED_PARAM(sig);
+    PAS_UNUSED_PARAM(siginfo_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "pidfd_send_signal not supported.");
+#else
+
     /* The kernel allows a null siginfo; in that case it delivers the signal with default siginfo
        semantics.  Note that a non-null siginfo requires CAP_SYS_ADMIN, so programs usually pass
        null. */
@@ -12760,6 +13451,7 @@ int filc_native_zsys_pidfd_send_signal(filc_thread* my_thread, int pidfd, int si
 #else
     return FILC_SYSCALL(my_thread, syscall(SYS_pidfd_send_signal, pidfd, sig,
                                            (siginfo_t*)filc_ptr_ptr(siginfo_ptr), flags));
+#endif
 #endif
 }
 
@@ -12834,12 +13526,29 @@ int filc_native_zsys_fanotify_mark(filc_thread* my_thread, int fd, unsigned flag
 
 int filc_native_zsys_timerfd_create(filc_thread* my_thread, int clockid, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(clockid);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "timerfd_create not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, timerfd_create(clockid, flags));
+#endif
 }
 
 int filc_native_zsys_timerfd_settime(filc_thread* my_thread, int fd, int flags,
                                      filc_ptr new_value_ptr, filc_ptr old_value_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(flags);
+    PAS_UNUSED_PARAM(new_value_ptr);
+    PAS_UNUSED_PARAM(old_value_ptr);
+    filc_internal_panic(NULL, "timerfd_settime not supported.");
+#else
+
     if (filc_ptr_ptr(new_value_ptr))
         filc_check_read(new_value_ptr, sizeof(struct itimerspec));
     if (filc_ptr_ptr(old_value_ptr))
@@ -12848,13 +13557,22 @@ int filc_native_zsys_timerfd_settime(filc_thread* my_thread, int fd, int flags,
         my_thread, timerfd_settime(fd, flags,
                                    (const struct itimerspec*)filc_ptr_ptr(new_value_ptr),
                                    (struct itimerspec*)filc_ptr_ptr(old_value_ptr)));
+#endif
 }
 
 int filc_native_zsys_timerfd_gettime(filc_thread* my_thread, int fd, filc_ptr curr_value_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(curr_value_ptr);
+    filc_internal_panic(NULL, "timerfd_gettime not supported.");
+#else
+
     filc_check_write(curr_value_ptr, sizeof(struct itimerspec));
     return FILC_SYSCALL(
         my_thread, timerfd_gettime(fd, (struct itimerspec*)filc_ptr_ptr(curr_value_ptr)));
+#endif
 }
 
 #ifdef Q_GETNEXTQUOTA
@@ -12875,6 +13593,15 @@ struct nextdqblk {
 int filc_native_zsys_quotactl(filc_thread* my_thread, int cmd, filc_ptr special_ptr, int id,
                               filc_ptr addr_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(cmd);
+    PAS_UNUSED_PARAM(special_ptr);
+    PAS_UNUSED_PARAM(id);
+    PAS_UNUSED_PARAM(addr_ptr);
+    filc_internal_panic(NULL, "quotactl not supported.");
+#else
+
     char* special = filc_check_and_get_tmp_str_or_null(my_thread, special_ptr);
     char* addr = NULL;
     switch (cmd >> SUBCMDSHIFT) {
@@ -12920,13 +13647,24 @@ int filc_native_zsys_quotactl(filc_thread* my_thread, int cmd, filc_ptr special_
         filc_safety_panic(NULL, "unrecognized quotactl command %d.", cmd);
     }
     return FILC_SYSCALL(my_thread, quotactl(cmd, special, id, addr));
+#endif
 }
 
 int filc_native_zsys_unshare(filc_thread* my_thread, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "unshare not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, unshare(flags));
+#endif
 }
 
+#if !PAS_COSMO
+/* Only used by the name_to_handle_at/open_by_handle_at forwarders, which
+   panic under cosmo. */
 static struct file_handle* check_and_get_file_handle(filc_ptr handle_ptr)
 {
     filc_check_write(handle_ptr, PAS_OFFSETOF(struct file_handle, f_handle));
@@ -12937,23 +13675,44 @@ static struct file_handle* check_and_get_file_handle(filc_ptr handle_ptr)
                          (size_t)handle->handle_bytes));
     return handle;
 }
+#endif /* !PAS_COSMO */
 
 int filc_native_zsys_name_to_handle_at(filc_thread* my_thread, int fd, filc_ptr path_ptr,
                                        filc_ptr handle_ptr, filc_ptr mount_id_ptr, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(path_ptr);
+    PAS_UNUSED_PARAM(handle_ptr);
+    PAS_UNUSED_PARAM(mount_id_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "name_to_handle_at not supported.");
+#else
+
     char* path = filc_check_and_get_tmp_str(my_thread, path_ptr);
     struct file_handle* handle = check_and_get_file_handle(handle_ptr);
     filc_check_write(mount_id_ptr, sizeof(int));
     return FILC_SYSCALL(my_thread, name_to_handle_at(fd, path, handle,
                                                      (int*)filc_ptr_ptr(mount_id_ptr), flags));
+#endif
 }
 
 int filc_native_zsys_open_by_handle_at(filc_thread* my_thread, int mount_fd, filc_ptr handle_ptr,
                                        int flags)
 
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(mount_fd);
+    PAS_UNUSED_PARAM(handle_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "open_by_handle_at not supported.");
+#else
+
     struct file_handle* handle = check_and_get_file_handle(handle_ptr);
     return FILC_SYSCALL(my_thread, open_by_handle_at(mount_fd, handle, flags));
+#endif
 }
 
 int filc_native_zsys_pkey_alloc(filc_thread* my_thread, unsigned flags, unsigned rights)
@@ -12981,13 +13740,29 @@ int filc_native_zsys_pkey_free(filc_thread* my_thread, int pkey)
 
 int filc_native_zsys_memfd_create(filc_thread* my_thread, filc_ptr name_ptr, unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(name_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "memfd_create not supported.");
+#else
+
     char* name = filc_check_and_get_tmp_str(my_thread, name_ptr);
     return FILC_SYSCALL(my_thread, memfd_create(name, flags));
+#endif
 }
 
 int filc_native_zsys_setns(filc_thread* my_thread, int fd, int nstype)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(nstype);
+    filc_internal_panic(NULL, "setns not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, setns(fd, nstype));
+#endif
 }
 
 int filc_native_zsys_sigqueue(filc_thread* my_thread, int pid, int sig, filc_ptr value_ptr)
@@ -13040,14 +13815,23 @@ int filc_native_zsys_openat2(filc_thread* my_thread, int dirfd, filc_ptr path_pt
         }
         actual_size = sizeof(struct known_open_how);
     }
-    
+
     if (verbose) {
         pas_log("doing an openat2 with dirfd = %d, path = %s, size = %zu.\n",
                 dirfd, path, actual_size);
     }
 
+#if PAS_COSMO
+    /* Cosmo doesn't expose openat2(2).  The capability checks above still run,
+       so that bad arguments get the same safety errors as on musl/glibc; only
+       the actual syscall is unavailable. */
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(dirfd);
+    filc_internal_panic(NULL, "openat2 not supported.");
+#else
     return FILC_SYSCALL(
         my_thread, syscall(SYS_openat2, dirfd, path, filc_ptr_ptr(how_ptr), actual_size));
+#endif
 }
 
 int filc_native_zsys_statfs(filc_thread* my_thread, filc_ptr path_ptr, filc_ptr buf_ptr)
@@ -13086,7 +13870,7 @@ int filc_native_zsys_renameat(filc_thread* my_thread, int oldfd, filc_ptr old_pt
 
 int filc_native_zsys_getcpu(filc_thread* my_thread, filc_ptr cpu_ptr, filc_ptr node_ptr)
 {
-#if PAS_GLIBC
+#if PAS_GLIBC || PAS_COSMO
     if (filc_ptr_ptr(cpu_ptr))
         filc_check_write(cpu_ptr, sizeof(unsigned));
     if (filc_ptr_ptr(node_ptr))
@@ -13117,9 +13901,19 @@ int filc_native_zsys_msync(filc_thread* my_thread, filc_ptr start_ptr, size_t le
 int filc_native_zsys_waitid(filc_thread* my_thread, int idtype, unsigned id, filc_ptr info_ptr,
                             int options)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(idtype);
+    PAS_UNUSED_PARAM(id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(options);
+    filc_internal_panic(NULL, "waitid not supported.");
+#else
+
     if (filc_ptr_ptr(info_ptr))
         filc_check_write(info_ptr, sizeof(siginfo_t));
     return FILC_SYSCALL(my_thread, waitid((idtype_t)idtype, id, (siginfo_t*)filc_ptr_ptr(info_ptr), options));
+#endif
 }
 
 int filc_native_zsys_sigtimedwait(filc_thread* my_thread, filc_ptr set_ptr, filc_ptr info_ptr,
@@ -13156,12 +13950,23 @@ ssize_t filc_native_zsys_copy_file_range(filc_thread* my_thread, int fd_in, filc
 int filc_native_zsys_renameat2(filc_thread* my_thread, int oldfd, filc_ptr old_ptr, int newfd,
                                filc_ptr new_ptr, unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(oldfd);
+    PAS_UNUSED_PARAM(old_ptr);
+    PAS_UNUSED_PARAM(newfd);
+    PAS_UNUSED_PARAM(new_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "renameat2 not supported.");
+#else
+
     char* old = filc_check_and_get_tmp_str(my_thread, old_ptr);
     char* new_path = filc_check_and_get_tmp_str(my_thread, new_ptr);
 #if PAS_GLIBC
     return FILC_SYSCALL(my_thread, renameat2(oldfd, old, newfd, new_path, flags));
 #else
     return FILC_SYSCALL(my_thread, syscall(SYS_renameat2, oldfd, old, newfd, new_path, flags));
+#endif
 #endif
 }
 
@@ -13195,6 +14000,16 @@ struct statx {
 int filc_native_zsys_statx(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr, int flags,
                            unsigned mask, filc_ptr statxbuf_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(dirfd);
+    PAS_UNUSED_PARAM(pathname_ptr);
+    PAS_UNUSED_PARAM(flags);
+    PAS_UNUSED_PARAM(mask);
+    PAS_UNUSED_PARAM(statxbuf_ptr);
+    filc_internal_panic(NULL, "statx not supported.");
+#else
+
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     filc_check_write(statxbuf_ptr, sizeof(struct statx));
 #if PAS_GLIBC
@@ -13204,6 +14019,7 @@ int filc_native_zsys_statx(filc_thread* my_thread, int dirfd, filc_ptr pathname_
     return FILC_SYSCALL(
         my_thread, syscall(SYS_statx, dirfd, pathname, flags, mask,
                            (struct statx*)filc_ptr_ptr(statxbuf_ptr)));
+#endif
 #endif
 }
 
@@ -13221,12 +14037,31 @@ ssize_t filc_native_zsys_splice(filc_thread* my_thread, int fd_in, filc_ptr off_
 ssize_t filc_native_zsys_tee(filc_thread* my_thread, int fd_in, int fd_out, size_t len,
                              unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd_in);
+    PAS_UNUSED_PARAM(fd_out);
+    PAS_UNUSED_PARAM(len);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "tee not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, tee(fd_in, fd_out, len, flags));
+#endif
 }
 
 ssize_t filc_native_zsys_vmsplice(filc_thread* my_thread, int fd, filc_ptr user_iov, size_t cnt,
                                   unsigned flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(user_iov);
+    PAS_UNUSED_PARAM(cnt);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "vmsplice not supported.");
+#else
+
     check_fd(fd);
     ssize_t result;
     /* vmsplice either transfers user memory into a pipe, or pipe data into user memory.  The
@@ -13251,6 +14086,7 @@ ssize_t filc_native_zsys_vmsplice(filc_thread* my_thread, int fd, filc_ptr user_
     if (result < 0)
         filc_set_errno(my_errno);
     return result;
+#endif
 }
 
 int filc_native_zsys_mknod(filc_thread* my_thread, filc_ptr pathname_ptr, unsigned mode,
@@ -13263,8 +14099,18 @@ int filc_native_zsys_mknod(filc_thread* my_thread, filc_ptr pathname_ptr, unsign
 int filc_native_zsys_mknodat(filc_thread* my_thread, int dirfd, filc_ptr pathname_ptr, unsigned mode,
                              unsigned long dev)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(dirfd);
+    PAS_UNUSED_PARAM(pathname_ptr);
+    PAS_UNUSED_PARAM(mode);
+    PAS_UNUSED_PARAM(dev);
+    filc_internal_panic(NULL, "mknodat not supported.");
+#else
+
     char* pathname = filc_check_and_get_tmp_str(my_thread, pathname_ptr);
     return FILC_SYSCALL(my_thread, mknodat(dirfd, pathname, mode, dev));
+#endif
 }
 
 int filc_native_zsys_reboot(filc_thread* my_thread, int howto)
@@ -13274,8 +14120,16 @@ int filc_native_zsys_reboot(filc_thread* my_thread, int howto)
 
 int filc_native_zsys_umount2(filc_thread* my_thread, filc_ptr special_ptr, int flags)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(special_ptr);
+    PAS_UNUSED_PARAM(flags);
+    filc_internal_panic(NULL, "umount2 not supported.");
+#else
+
     char* special = filc_check_and_get_tmp_str(my_thread, special_ptr);
     return FILC_SYSCALL(my_thread, umount2(special, flags));
+#endif
 }
 
 struct ksigevent {
@@ -13288,6 +14142,14 @@ struct ksigevent {
 int filc_native_zsys_timer_create(filc_thread* my_thread, int clockid, filc_ptr ksev_ptr,
                                   filc_ptr timer_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(clockid);
+    PAS_UNUSED_PARAM(ksev_ptr);
+    PAS_UNUSED_PARAM(timer_ptr);
+    filc_internal_panic(NULL, "timer_create not supported.");
+#else
+
     /* POSIX allows a null ksevp; in that case the kernel creates a timer that delivers SIGALRM
        with default semantics. */
     if (filc_ptr_ptr(ksev_ptr))
@@ -13296,16 +14158,33 @@ int filc_native_zsys_timer_create(filc_thread* my_thread, int clockid, filc_ptr 
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_create, clockid,
                                            (struct ksigevent*)filc_ptr_ptr(ksev_ptr),
                                            (int*)filc_ptr_ptr(timer_ptr)));
+#endif
 }
 
 int filc_native_zsys_timer_getoverrun(filc_thread* my_thread, int timer)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(timer);
+    filc_internal_panic(NULL, "timer_getoverrun not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_getoverrun, timer));
+#endif
 }
 
 int filc_native_zsys_timer_settime(filc_thread* my_thread, int timer, int flags, filc_ptr val_ptr,
                                    filc_ptr old_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(timer);
+    PAS_UNUSED_PARAM(flags);
+    PAS_UNUSED_PARAM(val_ptr);
+    PAS_UNUSED_PARAM(old_ptr);
+    filc_internal_panic(NULL, "timer_settime not supported.");
+#else
+
     if (filc_ptr_ptr(val_ptr))
         filc_check_read(val_ptr, sizeof(struct itimerspec));
     if (filc_ptr_ptr(old_ptr))
@@ -13313,28 +14192,61 @@ int filc_native_zsys_timer_settime(filc_thread* my_thread, int timer, int flags,
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_settime, timer, flags,
                                            (const struct itimerspec*)filc_ptr_ptr(val_ptr),
                                            (struct itimerspec*)filc_ptr_ptr(old_ptr)));
+#endif
 }
 
 int filc_native_zsys_timer_delete(filc_thread* my_thread, int timer)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(timer);
+    filc_internal_panic(NULL, "timer_delete not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_delete, timer));
+#endif
 }
 
 int filc_native_zsys_timer_gettime(filc_thread* my_thread, int timer, filc_ptr val_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(timer);
+    PAS_UNUSED_PARAM(val_ptr);
+    filc_internal_panic(NULL, "timer_gettime not supported.");
+#else
+
     if (filc_ptr_ptr(val_ptr))
         filc_check_write(val_ptr, sizeof(struct itimerspec));
     return FILC_SYSCALL(my_thread, syscall(SYS_timer_gettime, timer,
                                            (struct itimerspec*)filc_ptr_ptr(val_ptr)));
+#endif
 }
 
 int filc_native_zsys_fallocate(filc_thread* my_thread, int fd, int mode, long offset, long len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(fd);
+    PAS_UNUSED_PARAM(mode);
+    PAS_UNUSED_PARAM(offset);
+    PAS_UNUSED_PARAM(len);
+    filc_internal_panic(NULL, "fallocate not supported.");
+#else
+
     return FILC_SYSCALL(my_thread, fallocate(fd, mode, offset, len));
+#endif
 }
 
 long filc_native_zsys_keyctl(filc_thread* my_thread, int op, filc_cc_cursor* args)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(op);
+    PAS_UNUSED_PARAM(args);
+    filc_internal_panic(NULL, "keyctl not supported.");
+#else
+
     switch (op) {
     case KEYCTL_GET_KEYRING_ID:
     case KEYCTL_LINK:
@@ -13471,30 +14383,62 @@ long filc_native_zsys_keyctl(filc_thread* my_thread, int op, filc_cc_cursor* arg
         filc_set_errno(ENOSYS);
         return -1;
     }
+#endif
 }
 
 int filc_native_zsys_add_key(filc_thread* my_thread, filc_ptr type_ptr, filc_ptr description_ptr,
                              filc_ptr payload_ptr, size_t plen, int ringid)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(type_ptr);
+    PAS_UNUSED_PARAM(description_ptr);
+    PAS_UNUSED_PARAM(payload_ptr);
+    PAS_UNUSED_PARAM(plen);
+    PAS_UNUSED_PARAM(ringid);
+    filc_internal_panic(NULL, "add_key not supported.");
+#else
+
     char* type = filc_check_and_get_tmp_str(my_thread, type_ptr);
     char* description = filc_check_and_get_tmp_str(my_thread, description_ptr);
     filc_check_read(payload_ptr, plen);
     return FILC_SYSCALL(my_thread, syscall(SYS_add_key, type, description, filc_ptr_ptr(payload_ptr),
                                            plen, ringid));
+#endif
 }
 
 int filc_native_zsys_request_key(filc_thread* my_thread, filc_ptr type_ptr, filc_ptr description_ptr,
                                  filc_ptr callout_ptr, int destringid)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(type_ptr);
+    PAS_UNUSED_PARAM(description_ptr);
+    PAS_UNUSED_PARAM(callout_ptr);
+    PAS_UNUSED_PARAM(destringid);
+    filc_internal_panic(NULL, "request_key not supported.");
+#else
+
     char* type = filc_check_and_get_tmp_str(my_thread, type_ptr);
     char* description = filc_check_and_get_tmp_str(my_thread, description_ptr);
     char* callout = filc_check_and_get_tmp_str_or_null(my_thread, callout_ptr);
     return FILC_SYSCALL(my_thread, syscall(SYS_request_key, type, description, callout, destringid));
+#endif
 }
 
 long filc_native_zsys_keyctl_dh_compute(filc_thread* my_thread, int priv, int prime, int base,
                                         filc_ptr buffer_ptr, size_t buflen)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(priv);
+    PAS_UNUSED_PARAM(prime);
+    PAS_UNUSED_PARAM(base);
+    PAS_UNUSED_PARAM(buffer_ptr);
+    PAS_UNUSED_PARAM(buflen);
+    filc_internal_panic(NULL, "keyctl_dh_compute not supported.");
+#else
+
     filc_check_write(buffer_ptr, buflen);
     
     struct keyctl_dh_params params;
@@ -13505,12 +14449,26 @@ long filc_native_zsys_keyctl_dh_compute(filc_thread* my_thread, int priv, int pr
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_DH_COMPUTE, &params,
                                            filc_ptr_ptr(buffer_ptr), buflen, NULL));
+#endif
 }
 
 long filc_native_zsys_keyctl_dh_compute_kdf(filc_thread* my_thread, int priv, int prime, int base,
                                             filc_ptr hashname_ptr, filc_ptr otherinfo_ptr,
                                             size_t otherinfolen, filc_ptr buffer_ptr, size_t buflen)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(priv);
+    PAS_UNUSED_PARAM(prime);
+    PAS_UNUSED_PARAM(base);
+    PAS_UNUSED_PARAM(hashname_ptr);
+    PAS_UNUSED_PARAM(otherinfo_ptr);
+    PAS_UNUSED_PARAM(otherinfolen);
+    PAS_UNUSED_PARAM(buffer_ptr);
+    PAS_UNUSED_PARAM(buflen);
+    filc_internal_panic(NULL, "keyctl_dh_compute_kdf not supported.");
+#else
+
     char* hashname = filc_check_and_get_tmp_str(my_thread, hashname_ptr);
     filc_check_write(otherinfo_ptr, otherinfolen); /* Maybe this is readonly? Let's play it safe
                                                       though. */
@@ -13530,22 +14488,43 @@ long filc_native_zsys_keyctl_dh_compute_kdf(filc_thread* my_thread, int priv, in
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_DH_COMPUTE, &params,
                                            filc_ptr_ptr(buffer_ptr), buflen, &kdfparams));
+#endif
 }
 
 long filc_native_zsys_keyctl_pkey_query(filc_thread* my_thread, int key_id, filc_ptr info_ptr,
                                         filc_ptr result_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key_id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(result_ptr);
+    filc_internal_panic(NULL, "keyctl_pkey_query not supported.");
+#else
+
     char* info = filc_check_and_get_tmp_str_or_null(my_thread, info_ptr);
     if (filc_ptr_ptr(result_ptr))
         filc_check_write(result_ptr, sizeof(struct keyctl_pkey_query));
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_PKEY_QUERY, key_id, NULL, info,
                                            filc_ptr_ptr(result_ptr)));
+#endif
 }
 
 long filc_native_zsys_keyctl_pkey_encrypt(filc_thread* my_thread, int key_id, filc_ptr info_ptr,
                                           filc_ptr data_ptr, size_t data_len, filc_ptr enc_ptr,
                                           size_t enc_len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key_id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(data_ptr);
+    PAS_UNUSED_PARAM(data_len);
+    PAS_UNUSED_PARAM(enc_ptr);
+    PAS_UNUSED_PARAM(enc_len);
+    filc_internal_panic(NULL, "keyctl_pkey_encrypt not supported.");
+#else
+
     char* info = filc_check_and_get_tmp_str_or_null(my_thread, info_ptr);
     filc_check_read(data_ptr, data_len);
     filc_check_write(enc_ptr, enc_len);
@@ -13558,12 +14537,24 @@ long filc_native_zsys_keyctl_pkey_encrypt(filc_thread* my_thread, int key_id, fi
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_PKEY_ENCRYPT, &params, info,
                                            filc_ptr_ptr(data_ptr), filc_ptr_ptr(enc_ptr)));
+#endif
 }
 
 long filc_native_zsys_keyctl_pkey_decrypt(filc_thread* my_thread, int key_id, filc_ptr info_ptr,
                                           filc_ptr enc_ptr, size_t enc_len, filc_ptr data_ptr,
                                           size_t data_len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key_id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(enc_ptr);
+    PAS_UNUSED_PARAM(enc_len);
+    PAS_UNUSED_PARAM(data_ptr);
+    PAS_UNUSED_PARAM(data_len);
+    filc_internal_panic(NULL, "keyctl_pkey_decrypt not supported.");
+#else
+
     char* info = filc_check_and_get_tmp_str_or_null(my_thread, info_ptr);
     filc_check_read(enc_ptr, enc_len);
     filc_check_write(data_ptr, data_len);
@@ -13576,12 +14567,24 @@ long filc_native_zsys_keyctl_pkey_decrypt(filc_thread* my_thread, int key_id, fi
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_PKEY_DECRYPT, &params, info,
                                            filc_ptr_ptr(enc_ptr), filc_ptr_ptr(data_ptr)));
+#endif
 }
 
 long filc_native_zsys_keyctl_pkey_sign(filc_thread* my_thread, int key_id, filc_ptr info_ptr,
                                        filc_ptr data_ptr, size_t data_len, filc_ptr sig_ptr,
                                        size_t sig_len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key_id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(data_ptr);
+    PAS_UNUSED_PARAM(data_len);
+    PAS_UNUSED_PARAM(sig_ptr);
+    PAS_UNUSED_PARAM(sig_len);
+    filc_internal_panic(NULL, "keyctl_pkey_sign not supported.");
+#else
+
     char* info = filc_check_and_get_tmp_str_or_null(my_thread, info_ptr);
     filc_check_read(data_ptr, data_len);
     filc_check_write(sig_ptr, sig_len);
@@ -13594,12 +14597,24 @@ long filc_native_zsys_keyctl_pkey_sign(filc_thread* my_thread, int key_id, filc_
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_PKEY_SIGN, &params, info,
                                            filc_ptr_ptr(data_ptr), filc_ptr_ptr(sig_ptr)));
+#endif
 }
 
 long filc_native_zsys_keyctl_pkey_verify(filc_thread* my_thread, int key_id, filc_ptr info_ptr,
                                          filc_ptr data_ptr, size_t data_len, filc_ptr sig_ptr,
                                          size_t sig_len)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(key_id);
+    PAS_UNUSED_PARAM(info_ptr);
+    PAS_UNUSED_PARAM(data_ptr);
+    PAS_UNUSED_PARAM(data_len);
+    PAS_UNUSED_PARAM(sig_ptr);
+    PAS_UNUSED_PARAM(sig_len);
+    filc_internal_panic(NULL, "keyctl_pkey_verify not supported.");
+#else
+
     char* info = filc_check_and_get_tmp_str_or_null(my_thread, info_ptr);
     filc_check_read(data_ptr, data_len);
     filc_check_read(sig_ptr, sig_len);
@@ -13612,12 +14627,21 @@ long filc_native_zsys_keyctl_pkey_verify(filc_thread* my_thread, int key_id, fil
 
     return FILC_SYSCALL(my_thread, syscall(SYS_keyctl, KEYCTL_PKEY_VERIFY, &params, info,
                                            filc_ptr_ptr(data_ptr), filc_ptr_ptr(sig_ptr)));
+#endif
 }
 
 int filc_native_zsys_clock_adjtime(filc_thread* my_thread, int clock_id, filc_ptr buf_ptr)
 {
+#if PAS_COSMO
+    PAS_UNUSED_PARAM(my_thread);
+    PAS_UNUSED_PARAM(clock_id);
+    PAS_UNUSED_PARAM(buf_ptr);
+    filc_internal_panic(NULL, "clock_adjtime not supported.");
+#else
+
     filc_check_write(buf_ptr, sizeof(struct timex));
     return FILC_SYSCALL(my_thread, clock_adjtime(clock_id, (struct timex*)filc_ptr_ptr(buf_ptr)));
+#endif
 }
 
 void filc_native_zsys_abort(filc_thread* my_thread)

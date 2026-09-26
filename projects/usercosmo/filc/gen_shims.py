@@ -222,6 +222,128 @@ ZSYS_SYSCALL_SUPPORTED = {
     204,  # sched_getaffinity
 }
 
+# Thunks whose zsys_* forwarder only works when the yolo libc below libpizlo
+# exposes the underlying syscall.  Cosmo (unlike musl and glibc) does not
+# expose these system calls at all - no public C API, and the raw .scall
+# thunks stay unpizlonated and uncalled - so libpizlo's cosmo build compiles
+# these forwarders as filc_internal_panic.  The pizlonated user libc must not
+# expose them either, so their shims trap with a clear error instead of
+# forwarding into a panicking forwarder.  (These are all things cosmopolitan
+# libc would not normally let a program do: epoll/inotify/eventfd/timerfd/
+# signalfd, xattr, SysV IPC, swap, port I/O, personality, klog, quota,
+# adjtimex, mount umount2, fsuid-independent calls, fallocate/tee/vmsplice/
+# remap_file_pages, file handles, memfd_create/setns/unshare, getdents,
+# waitid, mremap, mlockall, mkfifo/mknodat, sendmmsg/recvmmsg, acct/vhangup/
+# sethostname/setdomainname, futex PI/requeue, and the assorted modern Linux
+# adds: capget/keyctl/pidfd/fanotify/fsopen/mempolicy/modules/perf_event_open/
+# statx/openat2/renameat2/timer_*.)
+COSMO_TRAP = {
+    "sys_acct",
+    "sys_add_key",
+    "sys_adjtime",
+    "sys_adjtimex",
+    "sys_clock_adjtime",
+    "sys_capget",
+    "sys_capset",
+    "sys_delete_module",
+    "sys_epoll_create",
+    "sys_epoll_create1",
+    "sys_epoll_ctl",
+    "sys_epoll_wait",
+    "sys_epoll_pwait",
+    "sys_epoll_pwait2",
+    "sys_eventfd",
+    "sys_eventfd2",
+    "sys_fallocate",
+    "sys_fanotify_init",
+    "sys_fanotify_mark",
+    "sys_fgetxattr",
+    "sys_finit_module",
+    "sys_flistxattr",
+    "sys_fremovexattr",
+    "sys_fsetxattr",
+    "sys_fsconfig",
+    "sys_fsmount",
+    "sys_fsopen",
+    "sys_fspick",
+    "sys_get_mempolicy",
+    "sys_getxattr",
+    "sys_inotify_add_watch",
+    "sys_inotify_init",
+    "sys_inotify_init1",
+    "sys_inotify_rm_watch",
+    "sys_init_module",
+    "sys_ioperm",
+    "sys_iopl",
+    "sys_keyctl",
+    "sys_listxattr",
+    "sys_llistxattr",
+    "sys_lgetxattr",
+    "sys_lremovexattr",
+    "sys_lsetxattr",
+    "sys_memfd_create",
+    "sys_mkfifo",
+    "sys_mknodat",
+    "sys_mlockall",
+    "sys_mremap",
+    "sys_msgctl",
+    "sys_msgget",
+    "sys_msgrcv",
+    "sys_msgsnd",
+    "sys_munlockall",
+    "sys_name_to_handle_at",
+    "sys_open_by_handle_at",
+    "sys_openat2",
+    "sys_open_tree",
+    "sys_perf_event_open",
+    "sys_personality",
+    "sys_pidfd_getfd",
+    "sys_pidfd_open",
+    "sys_pidfd_send_signal",
+    "sys_pkey_alloc",
+    "sys_pkey_free",
+    "sys_process_madvise",
+    "sys_process_mrelease",
+    "sys_quotactl",
+    "sys_recvmmsg",
+    "sys_remap_file_pages",
+    "sys_removexattr",
+    "sys_renameat2",
+    "sys_request_key",
+    "sys_sendmmsg",
+    "sys_set_mempolicy",
+    "sys_setdomainname",
+    "sys_sethostname",
+    "sys_setns",
+    "sys_setxattr",
+    "sys_shmat",
+    "sys_shmctl",
+    "sys_shmdt",
+    "sys_shmget",
+    "sys_mkfifoat",
+    "sys_posix_fallocate",
+    "sys_signalfd",
+    "sys_signalfd4",
+    "sys_statx",
+    "sys_swapon",
+    "sys_swapoff",
+    "sys_syslog",
+    "sys_tee",
+    "sys_timer_create",
+    "sys_timer_delete",
+    "sys_timer_gettime",
+    "sys_timer_getoverrun",
+    "sys_timer_settime",
+    "sys_timerfd_create",
+    "sys_timerfd_gettime",
+    "sys_timerfd_settime",
+    "sys_umount2",
+    "sys_unshare",
+    "sys_vhangup",
+    "sys_vmsplice",
+    "sys_waitid",
+}
+
 
 # Declarations that cosmo puts inside a .c file instead of a header, so the
 # ast-dump scan misses them.  Each entry: thunk name -> qualType string.
@@ -431,6 +553,16 @@ def gen_thunk(name, qual, zsys, out, stats, conds=None, arch="x86_64"):
         if is_void:
             return ""
         return "return %s;" % ("0" if is_ptr else "-1")
+
+    if name in COSMO_TRAP:
+        # The syscall isn't exposed by the cosmo flavor at all (the yolo libc
+        # below libpizlo has no API for it and libpizlo panics for it), so
+        # trap instead of forwarding, exactly like the thunks that have no
+        # zsys_* equivalent at all.  See the COSMO_TRAP comment above.
+        body = '  zerrorf("usercosmo: %s is not supported under Fil-C (not exposed by cosmo)");\n  %s' % (name, ret_default())
+        out.append("%s %s(%s) {\n%s\n}\n" % (ret, name, defparams(args, True), body))
+        stats["trap"] += 1
+        return
 
     if name in HAND_MAP:
         code, _ = HAND_MAP[name]

@@ -144,24 +144,6 @@ void *cosmo_mremap(void *old, size_t oldn, size_t newn, int flags, ...) {
   return zsys_mremap(old, oldn, newn, flags, new);
 }
 
-/**
- * Linux-style mremap(): cosmo has no public wrapper of this shape (its
- * cosmo_mremap() requires the new_address argument unconditionally, which
- * also breaks under Fil-C when the caller did not pass one, since reading a
- * vararg that was not passed is a safety error).  The new_address argument
- * only exists when MREMAP_FIXED is set, so read it only then.
- */
-void *mremap(void *old, size_t oldn, size_t newn, int flags, ...) {
-  va_list va;
-  void *new = 0;
-  if (flags & MREMAP_FIXED) {
-    va_start(va, flags);
-    new = va_arg(va, void *);
-    va_end(va);
-  }
-  return zsys_mremap(old, oldn, newn, flags, new);
-}
-
 /* dlmalloc marks mappings it hands out as munlockable in the __maps tree;
    that bookkeeping has no consumer on the Fil-C side. */
 void __maps_mark(void *addr, size_t size) {

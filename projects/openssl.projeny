@@ -3748,6 +3748,18 @@ deleted file mode 100644
 -plan tests => 1;
 -
 -ok(run(test(["afalgtest"])), "running afalgtest");
+diff --git a/openssl/test/recipes/70-test_quic_radix.t b/openssl/test/recipes/70-test_quic_radix.t
+--- a/openssl/test/recipes/70-test_quic_radix.t
++++ b/openssl/test/recipes/70-test_quic_radix.t
+@@ -11,6 +11,8 @@
+
+ setup("test_quic_radix");
+
++plan skip_all => "This test is flaky";
++
+ plan skip_all => "QUIC protocol is not supported by this OpenSSL build"
+     if disabled('quic');
+
 diff --git a/openssl/test/recipes/90-test_secmem.t b/openssl/test/recipes/90-test_secmem.t
 deleted file mode 100644
 --- a/openssl/test/recipes/90-test_secmem.t

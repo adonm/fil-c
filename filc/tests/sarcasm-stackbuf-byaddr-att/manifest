@@ -4,3 +4,5 @@ only-on-platform:
   x86_64
 output-includes:
   - "stackbuf byaddr att ok"
+needsAVX512:
+  true

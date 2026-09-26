@@ -3146,6 +3146,21 @@ class Pizlonator {
       }
     }
 
+    // An alloca without lifetime markers is live throughout the function, but it never reaches a
+    // lifetime start above, so it must be made to interfere with every other explicit local here.
+    // Otherwise, such allocas (all of them, at -O0) share one lowers slot, and the collector only
+    // sees the stack aux of whichever one was initialized last.
+    for (AllocaInst* AI : StackAuxOrder) {
+      if (!AlwaysLive.count(AI))
+        continue;
+      for (AllocaInst* OtherAI : StackAuxOrder) {
+        if (OtherAI == AI)
+          continue;
+        StackAuxInterference[AI].insert(OtherAI);
+        StackAuxInterference[OtherAI].insert(AI);
+      }
+    }
+
     for (AllocaInst* AI : StackAuxOrder) {
       const std::unordered_set<AllocaInst*>& Adjacency = StackAuxInterference[AI];
       for (size_t FrameIndex = FrameSize; ; FrameIndex++) {

@@ -13265,9 +13265,10 @@ int filc_native_zsys_syslog(filc_thread* my_thread, int type, filc_ptr buf_ptr, 
 int filc_native_zsys_mount(filc_thread* my_thread, filc_ptr source_ptr, filc_ptr target_ptr,
                            filc_ptr fs_type_ptr, unsigned long flags, filc_ptr data_ptr)
 {
-    char* source = filc_check_and_get_tmp_str(my_thread, source_ptr);
+    /* Remounts, bind mounts and propagation changes pass NULL source and fs_type. */
+    char* source = filc_check_and_get_tmp_str_or_null(my_thread, source_ptr);
     char* target = filc_check_and_get_tmp_str(my_thread, target_ptr);
-    char* fs_type = filc_check_and_get_tmp_str(my_thread, fs_type_ptr);
+    char* fs_type = filc_check_and_get_tmp_str_or_null(my_thread, fs_type_ptr);
     char* data = filc_check_and_get_tmp_str_or_null(my_thread, data_ptr);
     return FILC_SYSCALL(my_thread, mount(source, target, fs_type, flags, data));
 }

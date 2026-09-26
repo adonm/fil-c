@@ -12032,7 +12032,7 @@ int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* a
         unsigned long value2 = filc_cc_cursor_get_next_unsigned_long(my_thread, args);
         unsigned long value3 = filc_cc_cursor_get_next_unsigned_long(my_thread, args);
         unsigned long value4 = filc_cc_cursor_get_next_unsigned_long(my_thread, args);
-        return FILC_SYSCALL(my_thread, prctl(PR_SET_NO_NEW_PRIVS, value1, value2, value3, value4));
+        return FILC_SYSCALL(my_thread, prctl(option, value1, value2, value3, value4));
     }
 
     case PR_SET_SECCOMP: {
@@ -12126,6 +12126,7 @@ int filc_native_zsys_prctl(filc_thread* my_thread, int option, filc_cc_cursor* a
         return -1;
 
     case PR_GET_FPEXC:
+    case PR_GET_PDEATHSIG:
     case PR_GET_CHILD_SUBREAPER:
     case PR_GET_FPEMU:
     case PR_GET_TSC: {

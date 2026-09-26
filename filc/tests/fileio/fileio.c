@@ -314,9 +314,11 @@ int main(int argc, char** argv)
     struct stat s;
     ZASSERT(!fstat(fd, &s));
     ZASSERT(s.st_size == 666 + 42);
+#ifndef __COSMOPOLITAN__
     struct my_statx sx;
     ZASSERT(!syscall(SYS_statx, fd, "", AT_EMPTY_PATH, 0xfff, &sx));
     ZASSERT(sx.stx_size == 666 + 42);
+#endif
 
     struct timeval tv[2];
     ZASSERT(!gettimeofday(tv, NULL));
@@ -504,6 +506,7 @@ int main(int argc, char** argv)
     ZASSERT(!unlink("filc/test-output/fileio/copy_src2.txt"));
     ZASSERT(!unlink("filc/test-output/fileio/copy_dst2.txt"));
 
+#ifndef __COSMOPOLITAN__
     // Test openat2 syscall
     {
         // Create a test file
@@ -537,6 +540,7 @@ int main(int argc, char** argv)
         // Clean up
         ZASSERT(!unlink("filc/test-output/fileio/openat2_test.txt"));
     }
+#endif
 
     return 0;
 }

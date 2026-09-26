@@ -138,15 +138,6 @@ static void deallocate_impl(void* ptr, size_t size)
 #endif
 }
 
-/* NOTE (cosmo flavor): we deliberately do NOT force page allocations above 4GB
-   here.  The kernel picks high addresses for anonymous mmaps in statically
-   linked non-PIE binaries anyway, and the syscall-with-guarded-pointer
-   machinery (filc_call_syscall_with_guarded_ptr in filc_runtime.c) no longer
-   relies on a 4GB address threshold to tell objects and integers apart: under
-   cosmo it discriminates using the capability (object) instead, and pizlonated
-   globals legally live below the 4GB line (ape.lds loads the image at
-   0x400000). */
-
 static void* allocate_with_possibly_simulated_page_size(size_t size, pas_commit_mode commit_mode)
 {
     static const bool verbose = false;

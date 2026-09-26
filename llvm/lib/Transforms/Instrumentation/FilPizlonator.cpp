@@ -6799,7 +6799,11 @@ class Pizlonator {
     assert(C->getType() != FlightPtrTy);
 
     if (ConstantTarget CT = constexprRecurse(C)) {
-      assert(!(Offset % WordSize));
+      // A pointer at a misaligned offset (in a packed struct) has no
+      // capability slot; let the initializer store it the way a runtime store
+      // would.
+      if (Offset % WordSize)
+        return false;
       Result.push_back(ConstantRelocation(Offset, CT.Kind, CT.Target));
       return true;
     }

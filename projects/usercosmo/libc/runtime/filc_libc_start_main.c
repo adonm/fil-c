@@ -82,7 +82,15 @@ static void filc_setup_main_thread(void) {
     _pthread_list = &_pthread_static.list;
   _pthread_static.tib = __filc_init_tib(&_pthread_static);
   /* Wire up tib_ptid exactly like pthread_create.c's PosixThread() does for
-     spawned threads.  tib_ptid participates in cosmo's recursive-mutex
+     spawned threads: without this, _pthread_tid(&_pthread_static) spins
+     forever waiting for tib_ptid to become non-zero (any libc call that
+     resolves the current thread's tid - pthread_setschedparam(),
+     pthread_getschedparam(), pthread_kill(), ... - goes through that loop),
+     and gettid() falls off its tib_ptid fast path.  zthread_self_id() is the
+     same kernel tid that gettid() must return for the main thread, matching
+     the spawned-thread convention (and the fork.c child re-init). */
+  atomic_init(&_pthread_static.tib->tib_ptid, zthread_self_id());
+  /* tib_ptid participates in cosmo's recursive-mutex
      protocol: pthread_mutex_lock_recursive_*() treats
      MUTEX_OWNER(word) == tib_ptid as "recursive reentry" and skips the
      underlying nsync lock.  An unlocked recursive mutex has owner == 0, so
@@ -90,7 +98,7 @@ static void filc_setup_main_thread(void) {
      "reenter" every recursive lock - including stdout/stderr/stdin's FILE
      locks - without holding it, breaking mutual exclusion the moment any
      other thread touches the same lock.
-     
+
      NB: tib_ctid is deliberately NOT set here.  _pthread_decimate() treats
      a zero tib_ctid as "this thread is not using its stack anymore"; the
      main thread's PosixThread lives for the whole process and cosmo's own

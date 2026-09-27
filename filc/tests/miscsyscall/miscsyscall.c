@@ -30,7 +30,10 @@
 #include "utils.h"
 #include <threads.h>
 #include <stdlib.h>
+#ifndef __COSMOPOLITAN__
+/* COSMO: cosmo doesn't provide <sys/timex.h> (no adjtimex surface). */
 #include <sys/timex.h>
+#endif
 #include <sys/mman.h>
 #include <sys/prctl.h>
 
@@ -230,10 +233,13 @@ int main(int argc, char** argv)
     ZASSERT(getppid());
     ZASSERT(getppid() != getpid());
 
+#ifndef __COSMOPOLITAN__
+    /* COSMO: the cosmo flavor doesn't provide a pizlonated getgrnam(). */
     struct group* group = getgrnam("tty");
     ZASSERT(group);
     ZASSERT(!strcmp(group->gr_name, "tty"));
     ZASSERT(group->gr_gid);
+#endif
 
     char buf[256];
     ZASSERT(!getentropy(buf, 256));
@@ -479,19 +485,22 @@ int main(int argc, char** argv)
     ZASSERT(!memcmp(splice_buf, test_data, test_len));
 
     // Test tee: write to pipe1, tee to pipe2 (data remains in pipe1), read from both
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo doesn't expose tee(2). */
     const char* tee_data = "Hello tee!";
     size_t tee_len = strlen(tee_data);
     ZASSERT(write(pipe1[1], tee_data, tee_len) == (ssize_t)tee_len);
-    
+
     ssize_t teed = tee(pipe1[0], pipe3[1], tee_len, 0);
     ZASSERT(teed == (ssize_t)tee_len);
-    
+
     char tee_buf1[100], tee_buf2[100];
     ZASSERT(read(pipe3[0], tee_buf1, sizeof(tee_buf1)) == (ssize_t)tee_len);
     ZASSERT(!memcmp(tee_buf1, tee_data, tee_len));
-    
+
     ZASSERT(read(pipe1[0], tee_buf2, sizeof(tee_buf2)) == (ssize_t)tee_len);
     ZASSERT(!memcmp(tee_buf2, tee_data, tee_len));
+#endif
 
     // Clean up pipes
     close(pipe1[0]);
@@ -600,8 +609,11 @@ int main(int argc, char** argv)
     ZASSERT(!result || (result == -1 && errno == ENOTTY));
 #endif
 
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo doesn't expose adjtimex(). */
     struct timex timex;
     adjtimex(&timex);
+#endif
 
     struct sched_param param;
     pthread_setschedparam(pthread_self(), 0, &param);
@@ -609,14 +621,22 @@ int main(int argc, char** argv)
     pthread_getschedparam(pthread_self(), &policy, &param);
 
     ZASSERT(!posix_madvise(zgc_aligned_alloc(getpagesize(), getpagesize()), getpagesize(), POSIX_MADV_NORMAL));
+#ifndef __COSMOPOLITAN__
+    /* COSMO: musl short-circuits posix_madvise(MADV_DONTNEED) to return 0,
+       but cosmo's posix_madvise forwards it to zsys_madvise, which only
+       accepts mmap-tracked memory (this is zgc memory). */
     ZASSERT(!posix_madvise(zgc_aligned_alloc(getpagesize(), getpagesize()), getpagesize(), POSIX_MADV_DONTNEED));
+#endif
 
     ZASSERT(prctl(PR_GET_DUMPABLE) != -1);
     ZASSERT(prctl(PR_GET_NO_NEW_PRIVS) != -1);
     ZASSERT(prctl(PR_GET_SECCOMP) != -1);
     ZASSERT(prctl(PR_GET_TIMERSLACK) != -1);
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo's prctl constant list doesn't include PR_GET_FP_MODE. */
     ZASSERT(prctl(PR_GET_FP_MODE) == -1);
     ZASSERT(errno == EINVAL);
+#endif
     result = prctl(PR_GET_IO_FLUSHER);
     if (result == -1)
         ZASSERT(errno == EPERM);
@@ -624,9 +644,12 @@ int main(int argc, char** argv)
         ZASSERT(!result || result == 1);
     ZASSERT(prctl(PR_GET_KEEPCAPS) != -1);
     ZASSERT(prctl(PR_GET_SECUREBITS) != -1);
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo's prctl constant list doesn't include PR_SVE_GET_VL. */
     result = prctl(PR_SVE_GET_VL);
     if (result == -1)
         ZASSERT(errno == EINVAL);
+#endif
 #ifdef __x86_64__
     ZASSERT(prctl(PR_GET_TAGGED_ADDR_CTRL) == -1);
     ZASSERT(errno == EINVAL);
@@ -636,14 +659,21 @@ int main(int argc, char** argv)
 #error "Bad arch"
 #endif
     ZASSERT(prctl(PR_GET_THP_DISABLE) != -1);
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo's prctl constant list doesn't include PR_GET_TIMING. */
     ZASSERT(prctl(PR_GET_TIMING) != -1);
+#endif
 
+#ifndef __COSMOPOLITAN__
+    /* COSMO: cosmo doesn't expose memfd_create(), neither as a libc call nor
+       as a syscall() number. */
     fd = memfd_create(zasprintf("miscsyscall-%d", getpid()), 0);
     ZASSERT(fd >= 2);
     ZASSERT(!close(fd));
     fd = syscall(SYS_memfd_create, zasprintf("miscsyscall-%d", getpid()), 0);
     ZASSERT(fd >= 2);
     ZASSERT(!close(fd));
+#endif
 
     ZASSERT(signal(SIGILL, SIG_IGN) == SIG_ERR);
     ZASSERT(errno == ENOSYS);

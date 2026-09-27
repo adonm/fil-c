@@ -90,8 +90,7 @@ static inline void pas_fast_tls_set(void* value)
     pthread_setspecific(pas_fast_tls_key, value);
 }
 
-#else
-
+#else /* PAS_OS(DARWIN) || PAS_COSMO -> so !PAS_OS(DARWIN) && !PAS_COSMO */
 PAS_API extern __thread void* pas_fast_tls_variable;
 
 static inline void* pas_fast_tls_get(void)
@@ -109,7 +108,7 @@ static inline void pas_fast_tls_set(void* value)
     }
 }
 
-#endif
+#endif /* PAS_OS(DARWIN) || PAS_COSMO -> so end of !PAS_OS(DARWIN) && !PAS_COSMO */
 
 #endif /* PAS_HAVE_PTHREAD_MACHDEP_H -> so end of !PAS_HAVE_PTHREAD_MACHDEP_H */
 

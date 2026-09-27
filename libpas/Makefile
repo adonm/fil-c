@@ -83,6 +83,7 @@ ifneq ($(COSMO),)
 COSMO_CCFLAGS = \
 	-include $(FILC_YOLO_INCLUDE)/normalize.inc \
 	-D__COSMOPOLITAN__ \
+	-D_COSMO_SOURCE=1 \
 	-DPAS_COSMO=1
 endif
 

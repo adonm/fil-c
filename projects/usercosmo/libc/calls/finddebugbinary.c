@@ -28,6 +28,7 @@
 #include "libc/errno.h"
 #include "libc/intrin/directmap.h"
 #include "libc/intrin/promises.h"
+#include "libc/mem/mem.h"
 #include "libc/nt/memory.h"
 #include "libc/nt/runtime.h"
 #include "libc/runtime/runtime.h"
@@ -79,14 +80,23 @@ static bool IsMyDebugBinary(const char *path) {
     // sanity test that this .com.dbg file (1) is an elf image, and (2)
     // contains the same number of bytes of code as our .com executable
     // which is currently running in memory.
+    //
+    // Fil-C port: read the image into heap memory instead of mmap()ing it.
+    // The Fil-C runtime refuses mmap() on Windows (zsys_mmap panics, since
+    // filc_unmap() cannot unmap there), and this constructor runs in every
+    // program that links crash reporting, so the mmap+munmap probe would
+    // kill the process at startup on Windows.  Reading the file gives the
+    // same answer on every host.
     if ((size = lseek(fd, 0, SEEK_END)) != -1 &&
-        (addr = mmap(0, size, PROT_READ, MAP_SHARED, fd, 0)) != MAP_FAILED) {
-      if (READ32LE((char *)addr) == READ32LE("\177ELF") &&
-          ((Elf64_Ehdr *)addr)->e_machine == GetElfMachine() &&
-          GetElfSymbolValue(addr, "_etext", &value)) {
-        res = !_etext || value == (uintptr_t)_etext;
+        (addr = malloc(size)) != NULL) {
+      if (pread(fd, addr, size, 0) == size) {
+        if (READ32LE((char *)addr) == READ32LE("\177ELF") &&
+            ((Elf64_Ehdr *)addr)->e_machine == GetElfMachine() &&
+            GetElfSymbolValue(addr, "_etext", &value)) {
+          res = !_etext || value == (uintptr_t)_etext;
+        }
       }
-      munmap(addr, size);
+      free(addr);
     }
     close(fd);
   }

@@ -49,7 +49,7 @@ pthread_key_t pas_fast_tls_key;
    direct %fs TLS codegen does not work on all of cosmo's target operating
    systems, so pas_fast_tls_get/set go through the pthread key instead. */
 __thread void* pas_fast_tls_variable;
-#endif
+#endif /* !PAS_COSMO */
 
 void pas_fast_tls_initialize_if_necessary(void)
 {

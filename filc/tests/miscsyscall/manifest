@@ -7,6 +7,3 @@ output-returns:
    - sizeof(nlink_t) = 8
    - "the error was: Invalid argument"
    - No worries.
-
-# COSMO: cosmo does not provide <sys/timex.h> (no adjtimex surface).
-unsupportedOnCOSMO: true

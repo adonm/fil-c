@@ -64,7 +64,7 @@
 #if PAS_COSMO
 #undef PAS_GLIBC
 #define PAS_GLIBC 0
-#endif
+#endif /* PAS_COSMO */
 
 /* PAS_COMPILER() - the target compiler */
 #define PAS_COMPILER(FEATURE) (defined PAS_COMPILER_##FEATURE  && PAS_COMPILER_##FEATURE)
@@ -176,7 +176,7 @@
 /* Cosmo's normalize.inc (force-included when building against cosmo headers)
    undefines __linux__, but the cosmo flavor only targets Linux. */
 #define PAS_OS_LINUX 1
-#endif
+#endif /* PAS_COSMO */
 
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__FreeBSD_kernel__)
 #define PAS_OS_FREEBSD 1

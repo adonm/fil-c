@@ -30,7 +30,7 @@
 /* Cosmo's sys/auxv.h doesn't define AT_MAX_KEY; musl's elf.h sets it to 51
    (AT_RSEQ_ALIGN, the highest known auxv key). */
 #define AT_MAX_KEY 51
-#endif
+#endif /* PAS_COSMO */
 
 #if LIBPAS_ENABLED && PAS_ENABLE_FILC
 
@@ -245,7 +245,7 @@ void filc_start_program(int argc, char** argv,
     if (stack_rlim.rlim_cur == (rlim_t)RLIM_INFINITY
         || (intptr_t)stack_rlim.rlim_cur < stack_min)
         stack_rlim.rlim_cur = (rlim_t)8 * 1024 * 1024;
-#endif
+#endif /* PAS_COSMO */
     PAS_ASSERT((intptr_t)stack_rlim.rlim_cur >= stack_min);
     PAS_ASSERT(!pthread_attr_setstacksize(&attr, stack_rlim.rlim_cur));
 

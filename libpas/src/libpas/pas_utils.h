@@ -1671,7 +1671,7 @@ static inline bool pas_system_thread_id_weak_cas(pas_system_thread_id* ptr,
 {
     return pas_compare_and_swap_ptr_weak(ptr, expected, new_value);
 }
-#else
+#else /* PAS_OS(DARWIN) || PAS_OS(FREEBSD) || PAS_OS(OPENBSD) || (PAS_OS(LINUX) && !PAS_GLIBC && !PAS_COSMO && PAS_COMPILER(CLANG)) -> so !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) && !PAS_OS(OPENBSD) && !(PAS_OS(LINUX) && !PAS_GLIBC && !PAS_COSMO && PAS_COMPILER(CLANG)) */
 #define PAS_SYSTEM_THREAD_ID_FORMAT "%" PRIxPTR
 #define PAS_NULL_SYSTEM_THREAD_ID 0
 static inline bool pas_system_thread_id_weak_cas(pas_system_thread_id* ptr,
@@ -1680,7 +1680,7 @@ static inline bool pas_system_thread_id_weak_cas(pas_system_thread_id* ptr,
 {
     return pas_compare_and_swap_uintptr_weak(ptr, expected, new_value);
 }
-#endif
+#endif /* PAS_OS(DARWIN) || PAS_OS(FREEBSD) || PAS_OS(OPENBSD) || (PAS_OS(LINUX) && !PAS_GLIBC && !PAS_COSMO && PAS_COMPILER(CLANG)) -> so end of !PAS_OS(DARWIN) && !PAS_OS(FREEBSD) && !PAS_OS(OPENBSD) && !(PAS_OS(LINUX) && !PAS_GLIBC && !PAS_COSMO && PAS_COMPILER(CLANG)) */
 
 extern pas_system_thread_id pas_panicking_thread;
 

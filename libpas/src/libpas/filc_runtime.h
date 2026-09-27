@@ -215,9 +215,9 @@ typedef uintptr_t filc_word;
    than the max-plus-one that musl's is. Cosmo's NSIG macro is the same value
    but is a compile-time constant. */
 #define FILC_MAX_USER_SIGNUM              NSIG
-#else
+#else /* PAS_COSMO -> so !PAS_COSMO */
 #define FILC_MAX_USER_SIGNUM              (_NSIG - 1)
-#endif
+#endif /* PAS_COSMO -> so end of !PAS_COSMO */
                                           
 #define FILC_THREAD_STATE_ENTERED         ((uint8_t)1)
 #define FILC_THREAD_STATE_CHECK_REQUESTED ((uint8_t)2)

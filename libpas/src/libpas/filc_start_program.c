@@ -37,6 +37,7 @@
 #include "filc_native.h"
 #include "filc_runtime.h"
 #include <elf.h>
+#include <fenv.h>
 #include <pthread.h>
 #include <stdalign.h>
 #include <stdio.h>
@@ -134,6 +135,11 @@ static void really_start_program(
     PAS_ASSERT(!auxv[num_entries - 1]);
 
     filc_set_user_environment(my_thread, argc, argv, pizlonated_argv, environ_ptr, auxv_ptr);
+
+    /* The runtime's own initialization does floating-point math that raises
+       FE_INEXACT. The program must start with its floating-point exception
+       flags clear, as it would without the runtime. */
+    feclearexcept(FE_ALL_EXCEPT);
     
     if (pizlonated___libc_start_main) {
         __libc_start_main_ptr = pizlonated___libc_start_main(my_thread, NULL);

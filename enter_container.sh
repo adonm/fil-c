@@ -308,7 +308,7 @@ RUN apt-get install -y \
     python3 python3-pip python3-setuptools \
     wget rsync file less sudo \
     libcurl4-openssl-dev libncurses-dev libssl-dev zlib1g-dev \
-    xz-utils bzip2 gzip gdb lldb mg screen tmux
+    xz-utils bzip2 gzip gdb lldb mg screen tmux libzydis-dev libzycore-dev
 
 RUN pip install meson
 

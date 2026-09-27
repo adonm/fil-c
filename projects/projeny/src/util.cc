@@ -440,7 +440,7 @@ bool try_read_file_bytes(const std::string& path, std::string* out)
 
 namespace {
 
-// Try-variant of write_file_bytes: the same write-temp + fsync + rename
+// Try-variant of write_file_bytes: the same write-temp + rename
 // protocol (a crash never leaves a half-written file), but reports failure
 // via the return value (strerror reason in *err when non-null) instead of
 // dying. Used by write_file_bytes and the best-effort try_copy_file_bytes.
@@ -479,15 +479,6 @@ bool write_file_bytes_try(const std::string& path, const std::string& data,
         }
         off += (size_t)w;
     }
-    // fsync before rename so the data is durable on disk (not just in the
-    // page cache) when the rename makes it visible; crash recovery then
-    // only ever sees complete files.
-    if (fsync(fd) != 0) {
-        int e = errno;
-        close(fd);
-        unlink(tmp.c_str());
-        return fail(e);
-    }
     if (close(fd) != 0) {
         int e = errno;
         unlink(tmp.c_str());
@@ -508,23 +499,6 @@ void write_file_bytes(const std::string& path, const std::string& data)
     std::string err;
     if (!write_file_bytes_try(path, data, &err))
         die("cannot write file '" + path + "': " + err);
-}
-
-void fsync_dir(const std::string& path)
-{
-    // Persist a directory entry itself (fsync the dir fd) so renames into
-    // it survive a crash. Best-effort on filesystems that reject dir fsync
-    // (EINVAL): the rename itself is still ordered after the fsynced file
-    // data by write_file_bytes, so recovery only ever sees complete files.
-    int fd = open(path.c_str(), O_RDONLY | O_DIRECTORY);
-    if (fd < 0)
-        die("cannot open directory '" + path + "': " + strerror(errno));
-    if (fsync(fd) != 0 && errno != EINVAL) {
-        int e = errno;
-        close(fd);
-        die("cannot fsync directory '" + path + "': " + strerror(e));
-    }
-    close(fd);
 }
 
 void copy_file_bytes(const std::string& src, const std::string& dst)

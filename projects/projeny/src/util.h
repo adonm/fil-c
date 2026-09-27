@@ -113,7 +113,7 @@ bool try_read_file_bytes(const std::string& path, std::string* out);
 void write_file_bytes(const std::string& path, const std::string& data);
 void copy_file_bytes(const std::string& src, const std::string& dst);
 // Try-variant of copy_file_bytes for best-effort callers: same
-// temp-file+fsync+rename protocol as write_file_bytes, but returns false
+// temp-file+rename protocol as write_file_bytes, but returns false
 // instead of dying (*err, when non-null, receives a strerror-style reason).
 bool try_copy_file_bytes(const std::string& src, const std::string& dst,
                          std::string* err = nullptr);
@@ -228,7 +228,6 @@ class TempDir {
 // press on after a failed deletion (erase-setup) uses it to report what
 // went wrong without stopping.
 bool remove_recursive(const std::string& path, std::string* err = nullptr);
-void fsync_dir(const std::string& path); // persist dir entries, dies on failure
 void make_dirs(const std::string& path);        // mkdir -p, dies on failure
 std::vector<std::string> list_dir_names(const std::string& path); // sorted, no . / ..
 void move_path(const std::string& src, const std::string& dst);   // rename(2), dies

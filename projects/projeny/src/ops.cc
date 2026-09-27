@@ -305,7 +305,7 @@ void ensure_snapshot(const std::string& archive)
     }
     if (path_exists(snap) && files_equal(archive, snap))
         return;
-    // write_file_bytes is temp file + fsync + rename, so the snapshot
+    // write_file_bytes is temp file + rename, so the snapshot
     // switches atomically and a crash never leaves a half-written copy.
     // It is byte-exact for regular files, which tarballs are.
     write_file_bytes(snap, read_file_bytes(archive));
@@ -425,7 +425,7 @@ bool download_url_snapshot_sequential(const std::string& snap,
             last_err = "its blake3 hash is " + have + ", expected " + u.hash;
             continue;
         }
-        // write_file_bytes is temp file + fsync + rename, so the snapshot
+        // write_file_bytes is temp file + rename, so the snapshot
         // switches atomically and a crash never leaves a half-written copy
         // (the next run simply re-downloads).
         write_file_bytes(snap, data);
@@ -1957,7 +1957,7 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     // Write phase: everything computed, now replace the checkout.
     //
     // Order matters for crash recovery (see ConflictJournal above). Each
-    // file write is itself atomic (temp file + fsync + rename inside
+    // file write is itself atomic (temp file + rename inside
     // write_file_bytes, so a crash never leaves a half-written file), but
     // the journal, the status file, the .projeny file, and the workdir
     // cannot all flip in one rename. The order below keeps every crash
@@ -1967,7 +1967,7 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
     //      side is upstream) — before anything else is touched;
     //   2. write the status file (embedding the upstream text);
     //   3. write the .projeny file (upstream text);
-    //   4. move the merged tree into place, fsync the parent dir;
+    //   4. move the merged tree into place;
     //   5. remove stale workdirs (other names) — only once the new tree
     //      and both files are durable, so a crash never loses a checkout
     //      that is still the only copy of some state;
@@ -2007,7 +2007,6 @@ int setup_conflicted_merge(const Ctx& ctx, const std::string& local_text,
         die("cannot remove existing workdir '" + cur_workdir + "'");
     move_path(Ntree, cur_workdir);
     tN.release(); // Ntree moved out; don't delete it
-    fsync_dir(ctx.pdir.empty() ? "." : ctx.pdir);
     for (auto& c : candidates) {
         if (c != cur_workdir && path_exists(c) && !remove_recursive(c))
             die("cannot remove existing workdir '" + c + "'");
@@ -4060,7 +4059,6 @@ int cmd_package(const std::string& projeny_arg, const std::string& output)
     CmdResult r = run_cmd(argv);
     if (r.code != 0)
         die("failed to create archive '" + output + "'", r.output);
-    fsync_dir(dd.empty() ? "." : dd);
     printf("projeny: packaged %zu file(s) from '%s' into '%s' (%s/)\n",
            count, rel_to_cwd(workdir).c_str(), output.c_str(),
            kind.prefix.c_str());
@@ -4103,7 +4101,6 @@ int cmd_extract(const std::string& projeny_arg, const std::string& dest_dir)
 
     size_t count = 0;
     stage_tracked(workdir, ref, st, "", dest, &count);
-    fsync_dir(dest);
     printf("projeny: extracted %zu file(s) from '%s' to '%s'\n", count,
            rel_to_cwd(workdir).c_str(), dest.c_str());
     return 0;

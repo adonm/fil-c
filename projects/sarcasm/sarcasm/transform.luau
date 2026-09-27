@@ -945,13 +945,15 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- its fixed frame (bsaes's `leaq 32(%rbp), %rsi` handed to a helper — a
 	-- "lea cluster" once the pointer is copied/offset and the traffic flows
 	-- through the derived registers). A plain frame slot's address cannot
-	-- escape, so promote the WHOLE fixed frame to a GC region [0, frameSize):
-	-- its slots stop virtualizing and every fixed-frame access redirects into
-	-- the region (checked accesses; the region's capability flows to helpers
-	-- with the lea). The detection must run with the annotated regions present
-	-- (a lea into one of THOSE is no escape), so the analysis runs again here
-	-- — it is pure and simply re-marks the body. No escape -> no region ->
-	-- byte-identical output.
+	-- escape, so promote the fixed frame to a GC region — its slots stop
+	-- virtualizing and every fixed-frame access redirects into the region
+	-- (checked accesses; the region's capability flows to helpers with the
+	-- lea). The region's base sits ABOVE the body's OUTGOING stack-argument
+	-- area (see below — that band is calling notation, not GC state, and must
+	-- stay slot traffic). The detection must run with the annotated regions
+	-- present (a lea into one of THOSE is no escape), so the analysis runs
+	-- again here — it is pure and simply re-marks the body. No escape -> no
+	-- region -> byte-identical output.
 	local frameRegion = nil
 	if backend.arch == "x86_64" and framePolicy.analyzeFrame then
 		local fs2, _, _, fpinfo2, yolo2, frameEscapes = framePolicy.analyzeFrame(body, sigDesc, allocaRegions)
@@ -977,11 +979,78 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- under-covers the promotion.
 		if fs2 ~= nil and fctx then fctx.frameSize = fs2 end
 		if frameEscapes and fctx and fctx.frameSize > 0 then
-			-- LAST in the list: an explicit (annotated) region overlapping the
-			-- frame wins the membership test.
-			frameRegion = { base = 0, size = fctx.frameSize, align = 16,
-				anchored = false, frameRegion = true }
-			table.insert(allocaRegions, frameRegion)
+			-- The body's OUTGOING stack-argument area is pure calling NOTATION.
+			-- The asm stores each call's 7th+ integer-class arguments at
+			-- 8*o(%rsp) (o = 0-based outgoing word) right before the call, and
+			-- the callsite marshalling (marshalFastArgs) intercepts those
+			-- stores, re-marshalling the values into a synthesized outgoing
+			-- window dropped over %rsp at the call itself. That interception
+			-- works through the SLOT webs: the store's slot (the frame slot
+			-- model's disp + D0 - d) must be defined so the call's use can
+			-- read value AND pointer lower from it. If the promoted region
+			-- swallowed the band, the stores would pass through verbatim as
+			-- region traffic — no slot web — and every stack-passed argument
+			-- would marshal from a never-defined entry temp (a null lower; the
+			-- callee panics). So the region's base sits ABOVE the outgoing
+			-- band and the band stays slot traffic (the membership sites — the
+			-- frame rewrite's slot-block lookup, x86_64_codegen.luau's
+			-- normStackOff, and the region-lea seeding below — all key the
+			-- band's accesses outside the region, in lockstep).
+			--
+			-- Band size: for each qualifying callsite, the outgoing band spans
+			-- [D0 - d, D0 - d + 8*intArgs') in frame coordinates (the SysV
+			-- spelling: one 8-byte slot per integer-class argument beyond the
+			-- six yolo registers — the same accounting as the frame pass's
+			-- outgoing-area scan for stack buffers), where d is the call's
+			-- static rsp depth and intArgs' the integer-class argument count.
+			-- A call AT D0 spans [0, 8*intArgs'); a DEEPER call (d > D0, a
+			-- mid-body push in front) spans from a NEGATIVE base — its
+			-- positive part still needs the carve, so the top
+			-- 8*intArgs' + (D0 - d) is what counts (clamped at 0: a deep call
+			-- with a small band reaches only red-zone offsets, outside the
+			-- region). Qualifying callsites: a real `call` (this excludes
+			-- `jmp`-mnemonic tail calls, which source stack arguments from the
+			-- incoming band and have no outgoing traffic) carrying a parseable
+			-- signature, NOT a tail-call conversion (same incoming-band
+			-- accounting), NOT a localcall/B2 clone (their stores key into the
+			-- clone-compensated/banded coordinates, not the plain frame band),
+			-- at a provable NUMBER depth (the D9 run above marked the depths;
+			-- dead code has none). The largest top, rounded up to 16 (the
+			-- region's alignment — the band's top must stay 16-aligned so
+			-- aligned FP accesses in the region keep their alignment), is the
+			-- carve. This is >= the true area of every callsite: each
+			-- callsite's own top is covered by the max.
+			local outgoingBytes = 0
+			for _, st in body do
+				if st.kind == "insn" and not st.tailCall and not st.localClone
+					and not st.b2clone and st.annotation
+					and type(st.x86_depth) == "number"
+					and fctx.callerDepth ~= nil
+					and cgm.baseMnemonic(string.lower(st.mnemonic)) == "call" then
+					local okcs, cs = pcall(sig.parseSignature, st.annotation)
+					if okcs and cs then
+						local intArgs = 0
+						for k = 1, cs.argWords do
+							if not isFp(cs.argTypes[k]) then intArgs += 1 end
+						end
+						local top = 8 * (intArgs - cc.yoloRegCount)
+							+ (fctx.callerDepth - st.x86_depth)
+						if top > outgoingBytes then outgoingBytes = top end
+					end
+				end
+			end
+			outgoingBytes = math.ceil(outgoingBytes / 16) * 16
+			-- Only promote when something is LEFT above the outgoing band: a
+			-- frame that is entirely outgoing-argument notation has no GC state
+			-- to promote (its escaping leas then reject below, which is the
+			-- correct outcome for such a frame).
+			if fctx.frameSize - outgoingBytes > 0 then
+				-- LAST in the list: an explicit (annotated) region overlapping the
+				-- frame wins the membership test.
+				frameRegion = { base = outgoingBytes, size = fctx.frameSize - outgoingBytes,
+					align = 16, anchored = false, frameRegion = true }
+				table.insert(allocaRegions, frameRegion)
+			end
 		end
 	end
 
@@ -1039,7 +1108,112 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local n = 0
 		for i = 1, k - 1 do if not isFp(cs.argTypes[i]) then n += 1 end end
 		if stmt and stmt.tailCall then return framePass.yoloSlotNum(n - cc.yoloRegCount) end
-		return framePass.SLOT_BASE + 8 * (n - cc.yoloRegCount)
+		-- The outgoing stack-argument slot key. The body's own store of outgoing
+		-- word o (0-based, at disp 8*o relative to the call's rsp) keys the frame
+		-- slot model's coordinate disp + D0 - d (x86_64_frame.luau's slotKeyOf):
+		-- AT the frame base depth D0 that is the plain 8*o, but a call executing
+		-- at another STATIC depth must key the same +D0-d normalization or
+		-- reaching definitions never connects the body's store to the call's use
+		-- (the marshal would then bind the slot's never-defined entry temp and
+		-- store a null capability lower — the callee panics on the pointer
+		-- argument). Clone statements apply their own slot-model compensations
+		-- (the localClone +8 rule's -8; the B2 clone's band — the same terms
+		-- slotKeyOf applies to their stores), so a cloned callsite keys exactly
+		-- what its cloned stores key. Same guard family as the region membership
+		-- sites (the frame rewrite's slot-block region lookup,
+		-- x86_64_codegen.luau's normStackOff, the region-lea seeding above);
+		-- prologue statements stay keyed at the plain band (mirrored there).
+		-- fctx is in scope: it is created before this definition and fully
+		-- populated long before the marshal runs.
+		local key = framePass.SLOT_BASE + 8 * (n - cc.yoloRegCount)
+		if stmt and not stmt.x86_prologue then
+			local d = stmt.x86_depth
+			if d ~= nil and type(d) ~= "table" and d ~= "dyn"
+				and fctx and fctx.callerDepth then
+				key = key + (fctx.callerDepth - d)
+				if stmt.localClone then
+					key = key - 8
+				elseif stmt.b2clone then
+					key = key + (stmt.x86_b2band or 0)
+				end
+			end
+		end
+		-- OUTGOING WORD SHARING ITS SLOT WITH AN OUTSTANDING PUSH SAVE. When this
+		-- call's stack-argument word lands on the save slot of an outstanding,
+		-- non-spill push (a callee-saved push under the dropped-save model: the
+		-- frame rewrite drops BOTH the push and its matching pop), the value the
+		-- callee must observe is NOT the slot web at `key`: the rewrite's
+		-- save-slot alias model rewrites every full-width access to that
+		-- coordinate into the PUSHED REGISTER's web (the dropped pop must restore
+		-- what the slot holds, so the model defines the register's web with each
+		-- stored value — and with the pushed value while nothing overwrote the
+		-- slot). The slot web therefore has no definition at all, and the marshal
+		-- would bind its never-defined entry temp: a null capability lower for a
+		-- stack-passed pointer (the callee panics "cannot write pointer with null
+		-- object") and garbage for an integer one. Hardware semantics agree with
+		-- the alias model: the callee reads the slot's current content — the
+		-- pushed value, or the stored value of whatever wrote the slot last (that
+		-- store CLOBBERS the pushed value) — which is exactly the pushed
+		-- register's web at the call. (That agreement covers the CALL's own word
+		-- read; the web redefinition itself is hardware-exact only under the
+		-- poisoned-window rule the frame pass enforces — between an aliased
+		-- different-source store and its matching pop the pushed register must
+		-- not be touched, since the model serves the stored value for register
+		-- reads there while hardware keeps the pushed one. See
+		-- x86_64_frame.luau's save-slot divergence rejection.) This covers BOTH
+		-- spellings of the shared
+		-- word: storing the pushed register itself, and storing a DIFFERENT
+		-- source (`pushq %r12` parking the seed, then `movq %rbx, (%rsp)` storing
+		-- the region pointer as outgoing word 0) — the alias model defines the
+		-- register's web from the store's own source web either way. So key the
+		-- call's use at the pushed
+		-- register: the marshal reads the stored value, capability lower included
+		-- (the register web's lower rides the normal marshalFastArgs pointer
+		-- paths). That chain is only sound while the aliased store actually
+		-- REACHES the alias model — which the frame pass's prologue-prefix scan
+		-- guarantees by ENDING the prefix at a plain sp-based interior
+		-- `leaq K(%rsp), %reg` (0 < K < depth): without that exception the
+		-- escaping-frame-address lea of the push-alias/escape-cluster shapes got
+		-- swallowed into the prefix together with the push, the lea dropped as a
+		-- phantom rsp-save carrier (no D9 promotion), and the outgoing store
+		-- dropped as a phantom carrier save-store before the alias model could
+		-- rewrite it — this keying then bound the pushed web's PRE-push
+		-- definition (the seed, null lower; see the pinned
+		-- sarcasm-frame-escape-push-alias-* tests). The word's normalized frame
+		-- offset is key - SLOT_BASE (the same
+		-- keying its stores use, clone compensations included) and a save entry
+		-- pushed at depth e.depth sits at D0 - e.depth, so the word aliases the
+		-- save exactly when D0 - e.depth == key - SLOT_BASE. Spill pushes
+		-- (caller-saved registers, pushfq words) are skipped: their slots ARE
+		-- ordinary slot webs (the spill push emits a slot store the call's use
+		-- reaches). A REDEFINED save is rejected: its register web holds the
+		-- redefinition while the slot still holds the pre-push value — a value
+		-- the web model cannot name at the call — so the callsite fails loudly
+		-- instead of silently marshalling the wrong value (the rewrite's alias
+		-- model likewise cannot express such accesses). Clone callsites are left
+		-- on the slot key: their stores key into clone-compensated coordinates
+		-- whose aliasing this check does not model.
+		local sv = stmt and stmt.x86_saves
+		if stmt and not stmt.tailCall and not stmt.localClone and not stmt.b2clone
+			and type(sv) == "table" and fctx and fctx.callerDepth ~= nil then
+			local wo = key - framePass.SLOT_BASE
+			for _, e in sv do
+				if e.spill then continue end
+				if fctx.usesFp and e.name == "rbp" then continue end
+				if e.num ~= nil and fctx.callerDepth - e.depth == wo then
+					if e.redefined then
+						error("sarcasm: outgoing stack-argument word " .. tostring(wo)
+							.. " shares its slot with the outstanding save of %" .. e.name
+							.. ", and %" .. e.name .. " was redefined after the push (the"
+							.. " slot still holds the pushed value, which cannot be"
+							.. " marshalled; re-spell the arguments, e.g. subq below the"
+							.. " push): " .. (stmt.raw or "call"))
+					end
+					return e.num
+				end
+			end
+		end
+		return key
 	end
 
 	local function callInfo(stmt)
@@ -1690,6 +1864,22 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 							if d0 ~= nil and type(d0) ~= "table" and d0 ~= "dyn"
 								and fctx and fctx.callerDepth then
 								off = off + fctx.callerDepth - d0 - 8
+							end
+						elseif not st.b2clone and not st.x86_prologue then
+							-- a plain sp-based lea at a static depth keys
+							-- NORMALIZED (off = disp + D0 - d — the slot model's
+							-- own coordinate; the raw displacement is the region
+							-- coordinate only AT the frame base depth D0).
+							-- Mirrors the frame rewrite's slot-block region
+							-- lookup (x86_64_frame.luau) and the region redirect's
+							-- normStackOff (x86_64_codegen.luau) — the three
+							-- membership decisions must agree exactly. Prologue
+							-- statements and B2 clones stay keyed raw (the
+							-- pre-existing behavior at the other two sites too).
+							local d0 = st.x86_depth
+							if d0 ~= nil and type(d0) ~= "table" and d0 ~= "dyn"
+								and fctx and fctx.callerDepth then
+								off = off + fctx.callerDepth - d0
 							end
 						end
 					end
@@ -3213,7 +3403,9 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		cg.move(pColored(cc.myth), vMyth)
 		cg.move(pColored(cc.fo), fpLo)
 		local fastUses = { pColored(cc.myth), pColored(cc.fo), fnT }
-		local fpVecUses, winN = marshalFastArgs(cs, argTemps, fastUses)
+		-- (node.stmt rides along so the outgoing-slot keys are depth-aware —
+		-- see callArgSource; the generic path below must key identically.)
+		local fpVecUses, winN = marshalFastArgs(cs, argTemps, fastUses, node.stmt)
 		local fastNode = cg.emitIndirectCallInsn(fnT, fastUses, cg.callerSavedClobbers())
 		if fpVecUses then fastNode.fpVecUses = fpVecUses end
 		-- restore rsp over the outgoing stack-arg area before rejoining (the generic
@@ -3240,7 +3432,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if not zeroT then zeroT = allocTemp({ role = "scratch" }); cg.moveZero(zeroT) end
 				cg.store(zeroT, vMyth, loOff)
 			else
-				local aTemp = argTemps[callArgSource(cs, k)]
+				local aTemp = argTemps[callArgSource(cs, k, node.stmt)]
 				cg.store(aTemp, vMyth, bufOff)
 				local loT = (ty == 7) and pf.lowerTemp[aTemp] or nil
 				if loT then

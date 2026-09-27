@@ -1167,15 +1167,28 @@ function M.make(ctx)
 		end
 		return nil  -- not a stack base (e.g. rbp as an ordinary GPR with frame-pointer omission)
 	end
-	-- The +8 rule for a clone statement's rsp-relative operand at a static depth
-	-- (the return-address compensation — localcall.luau; keyed exactly like the
-	-- frame rewrite's slot/region coordinates).
-	local function cloneStackOff(node, base, disp)
+	-- Depth normalization for a statement's rsp-relative operand at a static
+	-- depth: the slot model's coordinate (off = disp + D0 - d — the raw
+	-- displacement is the region coordinate only AT the frame base depth D0).
+	-- A CLONE statement's displacement additionally keys 8 lower (the +8 rule —
+	-- the return-address compensation, localcall.luau). Both are keyed exactly
+	-- like the frame rewrite's slot/region coordinates (x86_64_frame.luau's
+	-- slotKeyOf and its slot-block region lookup) and the transform's region-lea
+	-- seeding (transform.luau) — the three membership decisions must agree
+	-- exactly. Prologue statements stay keyed raw (mirroring the frame
+	-- rewrite's region lookup; the pre-existing behavior on both sides), and
+	-- B2-clone statements stay keyed raw too (their private band coordinates
+	-- are a separate, untouched keying).
+	local function normStackOff(node, base, disp)
 		local off = stackOff(base, disp)
-		if off and base.rc == "sp" and node.stmt and node.stmt.localClone then
+		if off and base.rc == "sp" and node.stmt then
 			local d = node.stmt.x86_depth
 			if d ~= nil and type(d) ~= "table" and d ~= "dyn" and fctx and fctx.callerDepth then
-				off = off + fctx.callerDepth - d - 8
+				if node.stmt.localClone then
+					off = off + fctx.callerDepth - d - 8
+				elseif not node.stmt.b2clone and not node.stmt.x86_prologue then
+					off = off + fctx.callerDepth - d
+				end
 			end
 		end
 		return off
@@ -1244,7 +1257,7 @@ function M.make(ctx)
 		if m == "lea" then
 			local mem = M.memOperand(node.stmt)
 			if mem and not mem.dispSym and mem.base then
-				local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
+				local off = normStackOff(node, mem.base, mem.dispVal or 0)
 				local r, reloff = nil, nil
 				if off then r, reloff = nodeRegion(off, mem.base and mem.base.rc == "sp") end
 				if r then
@@ -1279,7 +1292,7 @@ function M.make(ctx)
 		end
 		if m == "mov" and ops[1] and ops[1].kind == "reg" and ops[1].rc ~= "sp"
 			and ops[2] and ops[2].rc == "sp" then
-			local r, reloff = nodeRegion(cloneStackOff(node, { kind = "reg", rc = "sp" }, 0), true)
+			local r, reloff = nodeRegion(normStackOff(node, { kind = "reg", rc = "sp" }, 0), true)
 			if r then
 				local rd = node.defTemps[1]
 				-- rsp+0 redirected into the region: buffer + (0 - base), NOT buffer + 0.
@@ -1290,7 +1303,7 @@ function M.make(ctx)
 		end
 		local mem = M.memOperand(node.stmt)
 		if mem and not mem.dispSym then
-			local off = cloneStackOff(node, mem.base, mem.dispVal or 0)
+			local off = normStackOff(node, mem.base, mem.dispVal or 0)
 			local r, reloff = nil, nil
 			if off then r, reloff = nodeRegion(off, mem.base and mem.base.rc == "sp") end
 			if r then

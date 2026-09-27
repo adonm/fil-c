@@ -357,7 +357,9 @@ Per-architecture backends (`arm64_*` / `x86_64_*` pairs):
   (`%fs:0x28`, Intel `fs:[0x28]`) still parse as symbolic displacements and
   keep their rejections.
 - `*_frame.luau`   — frame policy: drop the input's frame setup/teardown, virtualize
-  stack-pointer/frame-pointer-relative slots, reject stack-address escapes. (arm64
+  stack-pointer/frame-pointer-relative slots, reject stack-address escapes (on
+  x86_64 an escaping FIXED frame is instead promoted to a GC region — see the
+  frame section's escape-promotion subsection). (arm64
   also virtualizes NEON/FP stack slots into the raw-byte GPR slot webs — including
   the AAPCS callee-saved d8-d15 writeback save/restore forms — and derives the
   frame geometry that normalizes x29-relative offsets into the
@@ -404,7 +406,11 @@ NOTE (historical alloca regions): the `;! alloca`-driven GC-allocation regions
 with the `regionRedirect` address-math redirection and the arm64/x86_64
 alloca-base normalization) were removed with the annotations. The only region
 source left is the fixed-frame escape promotion (D9), which rides the same
-`regionOf`/`regionRedirect` machinery. Stack allocation is spelled with the
+`regionOf`/`regionRedirect` machinery — the promoted region covers the fixed
+frame ABOVE the body's outgoing stack-argument band (that band is calling
+notation, not GC state), and region keying for an sp-based operand at a static
+depth is depth-normalized (`disp + D0 - d`); see the frame section's
+"fixed-frame escape promotion" subsection. Stack allocation is spelled with the
 `.alloca` directive, which never touches sp and needs no regions.
 An indexed region lea (`lea D(%rsp,%idx,s),%r` with the static displacement
 in the region) redirects exactly like its non-indexed form: the value rides
@@ -453,7 +459,9 @@ with rbp = rsp + frameSize, an rbp-relative d in [-frameSize-128, -frameSize), e
 leaf function's `-8(%rbp)` with no `subq` at all, IS the red zone), as is taking the
 address of the stack frame at all
 (e.g. `add xD, sp, #k` / `leaq 8(%rsp), %rax` / `movq %rsp, %rax` — safety cannot be
-proven).
+proven; x86_64's one exception is a lea INTO the fixed frame, which promotes the
+frame to a GC region instead of rejecting — see the escape-promotion subsection
+below).
 sarcasm SYNTHESIZES its own frame regardless (for the SOV check + filc_frame push +
 callee-saved for the new allocation), discarding the input's frame ops.
 
@@ -517,7 +525,24 @@ marshals those words in BOTH directions, so signatures have no GPR arity limit
   reload elimination) and renderInsn re-bases them. A 7th+ integer argument's
   VALUE comes from the body's own outgoing-args area — an ordinary frame slot
   (the compiler-style placement: outgoing argument o at `8*o(%rsp)`), connected
-  to the call by reaching-definitions. A stack-resident pointer LOWER word is
+  to the call by reaching-definitions. The slot key is DEPTH-AWARE
+  (`callArgSource`): a call at a static rsp depth d keys its k-th outgoing stack
+  word at `SLOT_BASE + 8*(n-6) + (D0 - d)` (n the integer-class word index, D0
+  the frame base depth — the store of outgoing word o keys the frame slot
+  model's coordinate `disp + D0 - d`, so the call's use must key the same
+  normalized coordinate or reaching definitions never connects them; the
+  pre-fix behavior, a fixed `SLOT_BASE + 8*(n-6)`, was valid only at D0-depth
+  calls, and a call at any other static depth marshalled the slot's
+  never-defined entry temp — a null capability lower, so the callee panics
+  "cannot write pointer with null object" on a stack-passed pointer). Clone
+  callsites apply the clone compensations (the localcall +8 rule's -8, the B2
+  band), keying exactly what their cloned stores key, and prologue statements
+  stay keyed at the plain band. The same keying serves direct calls, indirect
+  calls, and the generic buffer-CC path (one `callArgSource`). An outgoing word
+  whose slot coincides with an outstanding push's save slot is keyed at the
+  PUSHED register instead — see the frame section's escape-promotion subsection
+  for the alias model and the redefined-save rejection. A stack-resident pointer
+  LOWER word is
   re-read from the argument's GC root slot (a fixed frame offset, 16 + 8*index,
   always current — every lower is rooted where its web is defined) instead of
   from the lower web: lower webs are no-spill, so keeping one live per pointer
@@ -660,7 +685,15 @@ a partial-width store (the web model has no subregister view, while the remainin
 bytes keep the value the dropped pop restores), a vector/x87 access (it cannot name a
 GPR web), an instruction whose register form is not exactly modeled (the rewritten
 instruction is re-classified; the conservative first-reg-def fallback would desync
-slot and register), and any access while the save state is unprovable ("dyn" — the
+slot and register), any CLAIMED-GPR instruction — a pure-GPR mnemonic (xadd in all of
+its b/w/l/q sizes, crc32, adcx/adox, bsf/bsr, the BMI2 register forms,
+lzcnt/tzcnt/popcnt, movnti, ...) that the FP knowledge table claims for its exact
+register semantics, so `isFpInsn` is true for it purely by the claim and BOTH the
+alias-model scan above and the poisoned-window pass skip it as FP-class traffic
+while it is really GPR code the save-slot model cannot rewrite onto the pushed
+register's web (xadd's old-value writeback claims BOTH operands) — fail-closed
+rejected by the same overlap scan the alias model uses, and any access while the
+save state is unprovable ("dyn" — the
 paths disagree on what is pushed, so no provable mapping exists). Virtualizing such an
 access into an unrelated slot web would silently miscompile instead: the store would
 never reach the register and the dropped pop would resurrect the stale pre-push
@@ -695,6 +728,19 @@ or the recovery-address lea `leaq d(%rsp), %reg` at depth d — the ghash/aesni-
 shape) copied reg→reg (`movq %carrier, %reg2`), or parked in a frame slot
 (`movq %carrier, off(%rsp)` / `off(%rbp)` — a save-store, keyed by slot offset in
 the access's own coordinates), and re-materialized by a full-width slot load.
+EXCEPTION (the prologue-prefix scan's interior lea): a PLAIN sp-based
+`leaq K(%rsp), %reg` whose displacement parks an address INSIDE the frame
+interior (0 < K < depth) is body data flow, not frame setup — it materializes a
+mid-frame address (the frame-escape cluster's window base, whose pointer the
+body stores into the frame and passes to calls as a stack argument), so the
+prologue prefix ENDS there. Letting the prefix swallow it misfiled everything up
+to the next rsp-touching instruction as prologue: the lea became a phantom
+carrier (dropped with its copy chain, so the D9 escape promotion never fired),
+and a following mid-function push became a prologue pad push at the D0 boundary,
+putting its save slot on the outgoing-argument band (the pinned push-alias
+shapes). Entry-rsp materializations (`K == depth`, the rsaz-avx2 shape),
+below-rsp anchors (K < 0), above-rsp argument-window spellings (K > depth), and
+the rbp/indexed forms stay transparent.
 A `leaq K(%carrier), %reg` DERIVES a new carrier (the sha1-avx2 X[]+K[]
 rolling-cursor shape: `leaq 128(%rsp), %r13` then `leaq 256(%r13), %r13` per
 schedule phase): the base's parked value is absolute, so adding K parks
@@ -703,6 +749,25 @@ park above the entry rsp stays unproven and falls through to the ordinary
 carrier-use rejection). The derived carrier rides the same discipline (the
 deriving lea is dropped; its saveIdx names the deriving lea, so the clone-band
 shift applies to its accesses exactly as to the base's).
+KNOWN LIMITATION (accepted-shape wrong code — do not rely on this shape; documented
+rather than fixed because a general fix would rework the carrier path that OpenSSL
+asm exercises heavily): with a mid-body push OUTSTANDING (the transient prologue pad,
+rsp at a shifted depth d ~= D0), `leaq K(%rsp), %reg` leas AT THE SHIFTED DEPTH whose
+destination registers feed a call's REGISTER arguments produce wrong addresses: each
+such lea parks a dropped phantom carrier (the d ~= D0 lea-save path, keyed at depth
+d - K), so no definition of the argument register's web reaches the output and the
+call marshal binds every such argument to the SAME stale value — native passes the
+distinct consecutive addresses rsp+24/32/40, sarcasm passes one value for all three
+(verified with an unpromoted frame; the leas also keep the body out of the D9 escape
+detector, so no promotion masks it). The same leas at the frame-base depth (d == D0,
+no push outstanding) take the interior-lea/escape paths and materialize correctly, and
+memory-only uses of shifted-depth leas are the carrier discipline's own sound shapes.
+WORKAROUNDS (both verified to restore native behavior): compute the addresses BEFORE
+the push at the frame-base depth, adding the push's 8 bytes to each displacement
+(`leaq (K+8)(%rsp), %reg` before `pushq` == `leaq K(%rsp), %reg` after it), or park
+ONE anchor carrier before the push and derive each argument address from it with its
+own displacement (`leaq K(%carrier), %reg` — derived carriers key their own
+depth - K, so distinct displacements stay distinct).
 A recovery — `movq %reg, %rsp` OR `leaq K(%reg), %rsp` (the perlasm
 `leaq (%rsi), %rsp`) — may read any carrier that provably holds the save value
 and revives the parked depth (minus K). Register class is unrestricted: the
@@ -734,8 +799,12 @@ base, including plain unannotated heap loads/stores/RMWs (which would need a
 static stack-or-heap decision the frame pass cannot make) and lea
 address-taking, stays a static error);
 returning or storing the register is an error like any other carrier read.
-Exceptions: (a) a caller-saved save with the static frame-escape region based at
-rsp+0 is NOT a carrier — the region redirect keeps it alive as a REAL value;
+Exceptions: (a) a caller-saved save with the static frame-escape region covering
+rsp+0 is NOT a carrier — the region redirect keeps it alive as a REAL value
+(the region covers rsp+0 only when no outgoing-band carve fired: the promoted
+region's base sits above the body's outgoing stack-argument band, so with a
+carve the save is an ordinary carrier again — see the escape-promotion
+subsection below);
 (b) when the entry signature has SysV stack arguments (see "fast-CC stack
 argument words" above), the save — and its `leaq 0(%rsp), %reg` form — may go
 into ANY register as an entry-rsp ALIAS for reading the incoming stack
@@ -765,6 +834,156 @@ rbp — `movq %rsp,%rbp`, `movq %rbp,%rsp`, `leave`, teardown `popq %rbp` — ar
 unaffected). An rsp memory index (`movq (%rdi,%rsp,1), %rax`, which the encoding
 forbids but the parser accepts) is rejected on the same path instead of crashing the
 assembler.
+
+#### x86_64: the fixed-frame escape promotion (D9)
+
+A plain frame slot's address cannot escape, but a body may take the address of
+its FIXED frame (`leaq 32(%rbp), %rsi` handed to a helper — the bsaes "lea
+cluster" shape, once the pointer is copied/offset and the traffic flows through
+the derived registers). When the escape detector proves that, sarcasm promotes
+the fixed frame to a GC region: its slots stop virtualizing and every
+fixed-frame access redirects into the region (checked accesses; the region's
+capability flows to helpers with the lea, and copies of the region pointer share
+the capability). The detection must run with the annotated regions present (a
+lea into one of THOSE is no escape), so the analysis runs again at transform
+time — it is pure and simply re-marks the body. No escape -> no region ->
+byte-identical output. x86_64-only.
+
+- **The region covers `[outgoingBytes, frameSize)`, not `[0, frameSize)`.** The
+  body's OUTGOING stack-argument area is pure calling NOTATION: the asm stores
+  each call's 7th+ integer-class arguments at `8*o(%rsp)` right before the call,
+  and the callsite marshalling intercepts those stores, re-marshalling the
+  values into a synthesized outgoing window dropped over %rsp at the call itself
+  (see "fast-CC stack argument words" above). That interception works through
+  the SLOT webs; if the promoted region swallowed the band, the stores would pass
+  through verbatim as region traffic — no slot web — and every stack-passed
+  argument would marshal from a never-defined entry temp (a null capability
+  lower; the callee panics). So the region's base sits ABOVE the band and the
+  band stays slot traffic: the membership sites (the frame rewrite's slot-block
+  region lookup, the codegen's region redirect, the transform's region-lea
+  seeding) all key the band's accesses outside the region in lockstep, and
+  stack-passed pointer arguments OUT of a promoted frame work (they marshal
+  value and lower from the slot web as usual). `outgoingBytes` covers the band
+  of every qualifying callsite — a real `call` (`jmp`-mnemonic tail calls are
+  excluded: they source stack arguments from the incoming band) carrying a
+  parseable signature annotation, NOT a tail-call conversion (same incoming-band
+  accounting) and NOT a localcall/B2 clone (their stores key into the
+  clone-compensated/banded coordinates), at a provable NUMBER depth. A call at
+  static depth `d` with `i` integer-class argument words spans
+  `[D0 - d, D0 - d + 8*(i - 6))` in frame coordinates (the SysV spelling: one
+  8-byte slot per integer-class argument beyond the six yolo registers), so the
+  carve is the largest `8*(i - 6) + (D0 - d)` over all qualifying callsites —
+  a DEEPER call (a mid-body push in front) contributes its positive part,
+  clamped at 0 (a deep call with a small band reaches only red-zone offsets,
+  outside the region) — rounded up to 16, so the band's top stays 16-aligned and
+  aligned FP accesses in the region keep their alignment. This is >= the true
+  area of every callsite: each callsite's own top is covered by the max. A frame
+  that is entirely outgoing-argument notation has no GC state to promote: the
+  band swallows the whole frame, no region is created, and the escaping leas
+  reject.
+
+- **Depth-normalized region keying.** The region membership/redirect keying for
+  an sp-based operand at a static depth `d` is `disp + D0 - d` (`D0` = the
+  post-prologue frame base depth): the raw displacement is the region coordinate
+  only AT the frame base depth, and keying the raw `disp` misdirected any
+  promoted-frame access executed at a non-D0 depth (a mid-body push/pop) to the
+  wrong region offset. Clone statements key `disp + D0 - d - 8` (the +8 rule —
+  the return-address compensation); "dyn" string depths and the
+  {anchored}/{dynreg} table scopes keep their self-consistent raw keying, and
+  prologue statements stay keyed raw. The three keying sites — the frame
+  rewrite's slot-block region lookup, x86_64_codegen.luau's region redirect
+  (`normStackOff`), and the transform's region-lea seeding — are guarded
+  identically, and `regionLeaOf` plus the lea-save rkey computations apply the
+  same term, so the carrier-vs-region-pointer decision can never disagree with
+  the membership decision.
+
+- **An outgoing word sharing its slot with an outstanding push.** A callee
+  reading outgoing stack word `o` whose slot coincides with the save slot of an
+  outstanding, non-spill push (a callee-saved push under the dropped-save model:
+  the rewrite drops BOTH the push and its matching pop) reads the PUSHED
+  REGISTER's web — exact for the word's own traffic, since a store to the same
+  address would clobber the push. This holds for BOTH spellings of the shared
+  word: storing the pushed register itself, and storing a DIFFERENT source (the
+  common compiler shape `pushq %r12` parking the seed, then
+  `movq %rbx, (%rsp)` storing the region pointer as outgoing word 0). The
+  rewrite's save-slot alias model defines the register's web with EACH aliased
+  full-width access whose memory operand is the DESTINATION — from the
+  access's own source web (a store, whatever register it names) or from the
+  value its rewritten register form computes (an ALU RMW, a unary form) — and
+  with the pushed value while nothing overwrote the slot, so the stored
+  value, capability lower included, rides the normal marshalFastArgs
+  pointer paths, and the dropped pop yields the STORED value (the outgoing
+  store clobbered the parked one) exactly like real x86.
+  The web redefinition is the one place this model is NOT hardware-exact, and
+  its exact guarantee is this: in hardware neither the push nor any store to
+  the slot ever modifies the register, so from the FIRST aliased access that
+  defines the web with a value the hardware register does not take — a
+  different-source full-width store, a mem-dest ALU RMW
+  (`addq %rbx, (%rsp)`), or a unary form (`notq (%rsp)`); a same-register mov
+  store rewrites to a web self-move and is the one no-op, while loads and
+  compares never define the web — until the save's matching pop the model's
+  register (the slot's stored value) and the hardware register (the pushed
+  value) diverge — and the model is exact in that window only while the pushed
+  register is not touched. analyzeFrame enforces this fail-closed: it rejects,
+  at the opening access, any body where a statement between a web-defining
+  aliased full-width access and the save's matching pop directly names
+  the pushed register (a read would serve the stored value where hardware
+  returns the pushed one; a write — or any other operand use of the register,
+  a memory base included — diverges at the latest at the dropped pop, whose
+  hardware reload brings back the slot's stored value; a same-register aliased
+  store inside the window writes the register's constant pushed value into the
+  slot where the model defines the web with itself). Pure slot loads and
+  further web-defining accesses inside the window are exact (both model and
+  hardware hold the slot's value), as is everything naming the register AT or
+  AFTER the pop (the model's web, the stored value, and the pop's hardware
+  reload are one value — the working push-alias shapes read the register only
+  there). Spill pushes
+  (caller-saved registers, pushfq words) are skipped — their slots ARE ordinary
+  slot webs the call's use reaches — and so is %rbp when it is the frame
+  pointer, and clone callsites stay on the slot key (their stores key into
+  clone-compensated coordinates whose aliasing this check does not model). A
+  REDEFINED save — the register was redefined after the push, so the slot still
+  holds the pre-push value, which the web model cannot name at the call — is
+  REJECTED with a precise message (re-spell the arguments, e.g. `subq` below
+  the push) instead of silently marshalling garbage.
+  The callsite marshal keys the call's use at the pushed register's reg number
+  when the word's normalized frame offset (`key - SLOT_BASE`, the same keying
+  its stores use, clone compensations included) equals an outstanding save's
+  slot offset (`D0 - e.depth`).
+  The keying is only sound while the aliased store actually REACHES the
+  alias model, which is where the prologue-prefix scan's interior-lea
+  exception (see the carrier rules above) comes in: without it, the
+  escaping-frame-address lea that seeds the escape cluster got swallowed into
+  the prefix together with the push, the lea classified as a phantom rsp-save
+  carrier (dropped, so the D9 promotion never fired), and the outgoing store
+  dropped as a phantom carrier save-store before the alias model could see it
+  — the marshal then bound the pushed web's PRE-push definition (the seed,
+  null lower) or the spill slot's pre-store web, i.e. the pushed/parked value
+  instead of the stored one.
+
+- **Allocation and rooting discipline.** The region is allocated ONCE, up top,
+  before any body statement (every fixed-frame access and lea redirects into it,
+  so it must exist from the first instruction), with the runtime
+  `filc_allocate(my_thread, size)`: the runtime rounds the size to 16 and returns
+  a >=16-aligned payload at allocation+16, zeroes the payload, initializes the
+  object header, and executes the publish store-store fence
+  (`pas_store_store_fence`) internally before returning — so sarcasm owes NO
+  additional fence. The fence law ("a store-store fence after the allocation is
+  initialized but before the pointer becomes visible") is discharged inside the
+  runtime on every architecture; the compiler's inline-allocation path
+  (FilPizlonator) needs its own fence only because it writes the header itself
+  after the TLC bump-allocate, while sarcasm's two allocation sites — the D9
+  region and `.alloca` — both go through the runtime and inherit its fence. The
+  region's capability (the payload lower) is rooted ONCE, up top, into the
+  function's `filc_frame` lowers array (a rootstore to `[rsp+16+8*i]`)
+  immediately after the `filc_allocate` call — before any GC point (no pollcheck
+  is emitted between the call and the root store, and all root slots are
+  zero-initialized in the prologue). Copies of the region pointer alias the same
+  lower (or carry a move of it); FUGC is non-moving, so unrooted copies are
+  sound. The lower temp is pinned against spilling (spillCost), and the spill
+  rewrite covers rootstore nodes like every other non-insn node. A `.alloca` in
+  a promoted-region frame composes cleanly: two independent `filc_allocate`
+  calls.
 
 #### x86_64: FP/SIMD registers, materialization, and injected-call saves
 FP/SIMD registers (xmm/ymm/zmm, MMX mmN, x87 st/st(N), opmask k0-k7) are IN SCOPE.
@@ -1654,7 +1873,9 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   frame slot (`movq %rsp, (%rsp)` — the slot virtualization rewrites only the
   memory operand, so the live sp/fp value would leak into a virtual temp). The
   exceptions: address arithmetic landing INSIDE the promoted frame-escape region
-  (redirected to a real pointer into the GC region) and the phantom saved-rsp carrier flow
+  (redirected to a real pointer into the GC region — the region covers the fixed
+  frame above the outgoing stack-argument band, see the frame section's
+  escape-promotion subsection) and the phantom saved-rsp carrier flow
   (every use of the parked value is dropped or rejected, so nothing observable
   escapes — see the frame section). The
   full mid-function stack-pointer-movement policy is in the frame section.
@@ -1666,9 +1887,11 @@ error (exit code 1). Current limitations, enforced on both architectures unless 
   is unknown at compile time, so it cannot be bounds-checked or virtualized.
 - `.alloca` requires exactly 3 operands (size, alignment, result) of the
   documented shapes; anything else (symbols, FP/vector registers, heap memory,
-  bad immediates) is rejected. A `.alloca` in a promoted-region frame or at an
-  unknown depth with spill-slot operands is rejected rather than silently
-  mis-virtualizing the slot.
+  bad immediates) is rejected. A `.alloca` in a promoted-region frame COMPOSES
+  with the promotion — two independent `filc_allocate` calls, the frame region
+  and the `.alloca` object (see the frame section's escape-promotion
+  subsection). At an unknown depth with spill-slot operands it is rejected
+  rather than silently mis-virtualizing the slot.
 - Dropping the alloca's %rsp-mutating instruction also discards its flag effects: a
   body whose control flow consumes the flags of that instruction (branching on the
   allocation's `sub`/`mov` flags) observes different flags than hardware. An
@@ -2028,10 +2251,13 @@ ret exemptions), and the transform (retaddr temps, emission, flag treatment).
   regs-only sub, this is exactly `disp - 8`). The same bias applies in the
   frame rewrite's static-region lookup and slot keying, in the transform's
   region-lea seed scan, and in the codegen's region redirect (all riding
-  `fctx.callerDepth` = D0), so the sub's `8(%rsp)` keys to the caller's slot
-  0 and `leaq 8(%rsp),%rdi` (rsaz's frame-address idiom) keys to region
-  offset 0, which the redirect resolves to the region pointer when the
-  caller's buffer sits in the promoted frame-escape region. rbp-relative
+  `fctx.callerDepth` = D0; the same sites key plain sp-based statements
+  depth-normally, `disp + D0 - d` — see the escape-promotion subsection), so
+  the sub's `8(%rsp)` keys to the caller's slot 0 and `leaq 8(%rsp),%rdi`
+  (rsaz's frame-address idiom) keys to region offset 0 — the region's base,
+  the promoted frame above its outgoing stack-argument band — which the
+  redirect resolves to the region pointer when the caller's buffer sits in the
+  promoted frame-escape region. rbp-relative
   operands are never biased (the call does not move rbp);
   the entry-rsp-parking lea forms shift by the same 8 (a clone's
   `leaq d+8(%rsp)` parks the entry rsp). A clone may set up its own frame

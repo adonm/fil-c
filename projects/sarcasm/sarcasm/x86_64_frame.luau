@@ -150,6 +150,26 @@ local function isFpInsn(fpe, st)
 	return fp.hasFpReg(st) or (fpe ~= nil and fpe.claim ~= false)
 end
 
+-- Is this statement an FP-class statement ONLY because the knowledge module
+-- claims it? A claimed-GPR entry (xadd/crc32/adcx/adox/bsf/bsr, the BMI2
+-- register forms, lzcnt/tzcnt/popcnt, movnti, fnstsw/fstsw, the descriptor-table
+-- stores, ...) models a PURE-GPR instruction: `gpr` is set and no FP/vector
+-- register appears among the operands, so isFpInsn is true purely by the claim.
+-- The claim exists so the FP machinery can model the instruction's exact GPR
+-- semantics (xadd's old-value writeback claims BOTH operands) outside the
+-- save-slot context — but for the save-slot alias model such a statement is GPR
+-- traffic that the model's candidate scan (and the poisoned-window pass) never
+-- sees, since both exclude isFpInsn statements as FP-class. The rewrite uses
+-- this predicate to reject claimed-GPR accesses that alias an outstanding
+-- non-spill save slot (the alias model cannot rewrite them onto the pushed
+-- register's web, so accepting them would silently desync the slot). Real
+-- FP/vector statements — an xmm/k/mmx register IS present — are not claimed-GPR
+-- and keep their pre-existing materialization treatment.
+local function isClaimedGprInsn(fpe, st)
+	if fpe == nil or fpe.gpr == nil or fpe.claim == false then return false end
+	return not fp.hasFpReg(st)
+end
+
 -- GPR stack-access width in bytes: an Intel PTR size when present, the movz*/movs*
 -- source letter, a trailing AT&T [bwlq] suffix, default 8. (FP accesses are sized by
 -- the fp knowledge module instead.) setcc carries NO size suffix anywhere but writes
@@ -1046,6 +1066,35 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- (Without this the prefix would stop here and a following
 					-- constant frame allocation would be orphaned into a
 					-- "mid-function" adjustment.)
+					-- EXCEPTION: a PLAIN sp-based lea whose displacement parks an
+					-- address INSIDE the frame interior (0 < disp < depth) is body
+					-- data flow, not frame setup: it materializes a mid-frame
+					-- address — the frame-escape cluster's window base
+					-- (`leaq 16(%rsp), %rax` feeding copies, stores through it, and
+					-- a call that passes the window pointer as a STACK argument).
+					-- The transparency above would swallow it — and with it every
+					-- later statement up to the next rsp-touching insn, including a
+					-- mid-function push — into the prefix: the lea then classifies
+					-- as a phantom rsp-save carrier (its leaSave mark drops it with
+					-- the copy chain, so the escape promotion never fires), and the
+					-- push becomes a prologue pad push at the D0 boundary, putting
+					-- its save slot on the frame base instead of the transient pad
+					-- below it (the outgoing-argument word that shares that slot
+					-- then keys the wrong web — the pinned push-alias/store-escape
+					-- shapes). Ending the prefix at such a lea keeps D0 at the true
+					-- frame base and every later statement on its intended path:
+					-- the lea is a D0-depth escape lea (the D9 promotion fires), the
+					-- push is a mid-body save (the dropped-save/alias model below),
+					-- and an entry-rsp materialization (disp == depth), a below-rsp
+					-- anchor (disp < 0), an above-rsp argument-window spelling
+					-- (disp > depth), and the rbp/indexed forms all stay
+					-- transparent here.
+					local lmem = ops[2]
+					if lmem and lmem.base and lmem.base.rc == "sp"
+						and not lmem.index and not lmem.dispSym
+						and (lmem.dispVal or 0) > 0 and (lmem.dispVal or 0) < depth then
+						prologueEnd = i break
+					end
 				elseif b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].rc == "sp" then
 					prologueEnd = i break
 				elseif insnWritesSp(st) then
@@ -1554,6 +1603,15 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- the +8 rule (the return-address compensation on rsp-relative
 			-- clone accesses — localcall.luau)
 			off = off + D0 - d - 8
+		elseif not st.b2clone and not st.x86_prologue then
+			-- plain sp-based lea at a static depth: NORMALIZED coordinates
+			-- (disp + D0 - d — the slot model's own key; the raw displacement
+			-- is the region coordinate only AT the frame base depth D0). The
+			-- recorded roff must match the region redirect's value (the
+			-- redirect keys the lea the same way — see the slot-block region
+			-- lookup above, x86_64_codegen.luau's normStackOff, and
+			-- transform.luau's region-lea seeding).
+			off = off + D0 - d
 		end
 		local r = regionOf(off, false)
 		if r then return off - r.base, r.base, "S" end
@@ -1768,9 +1826,25 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				local k = mem.dispVal or 0
 				-- A clone statement parks the ENTRY stack pointer with K = d + 8
 				-- (the return-address word — the +8 rule); the static-region
-				-- membership test keys its displacement the same way.
+				-- membership test keys its displacement the same way. A PLAIN
+				-- sp-based lea at a static depth keys NORMALIZED (disp + D0 - d
+				-- — the slot model's own coordinate; the raw displacement is
+				-- the region coordinate only AT D0) — the same term the
+				-- slot-block region lookup, regionLeaOf, the region redirect's
+				-- normStackOff (x86_64_codegen.luau) and the transform's
+				-- region-lea seeding (transform.luau) apply, so the
+				-- carrier-vs-region-pointer decision can never disagree with
+				-- the membership decision. Prologue statements and B2 clones
+				-- stay keyed raw (their untouched keyings).
 				local pk = st.localClone and (k - 8) or k
-				local rkey = st.localClone and (k + D0 - d - 8) or k
+				local rkey
+				if st.localClone then
+					rkey = k + D0 - d - 8
+				elseif not st.b2clone and not st.x86_prologue then
+					rkey = k + D0 - d
+				else
+					rkey = k
+				end
 				-- Feature (lea-save carriers at provable depths): a `leaq K(%rsp), %reg`
 				-- at ANY provable depth parks a carrier whose value is
 				-- entry_rsp - (d - K) — an ABSOLUTE entry-relative address exactly like
@@ -3291,7 +3365,20 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						and not mem.index and not mem.dispSym then
 						local k = mem.dispVal or 0
 						local pk = st.localClone and (k - 8) or k
-						local rkey = st.localClone and (k + D0 - depthIn[i] - 8) or k
+						-- The region membership key: the +8 rule for clone
+						-- statements; NORMALIZED (disp + D0 - d) for a plain
+						-- sp-based lea at a static depth (the slot model's own
+						-- coordinate — see the fixpoint's rkey above and the
+						-- slot-block region lookup); raw for prologue
+						-- statements and B2 clones (their untouched keyings).
+						local rkey
+						if st.localClone then
+							rkey = k + D0 - depthIn[i] - 8
+						elseif not st.b2clone and not st.x86_prologue then
+							rkey = k + D0 - depthIn[i]
+						else
+							rkey = k
+						end
 						local leaAny = type(depthIn[i]) == "number"
 							and (depthIn[i] ~= D0 or ops[1].name == "rbp")
 							and not st.b2clone and not st.localClone
@@ -6448,9 +6535,17 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						elseif d == D0 then
 							off = (mem.dispVal or 0)
 						end
-						-- a perturbed non-clone depth: rejected before AND after
-						-- promotion (its raw displacement keys no region) — not
-						-- promotable, so not counted an escape.
+						-- a perturbed non-clone depth: not counted an escape.
+						-- (Historically such a lea was rejected both before AND
+						-- after promotion. Since the region lookup normalizes
+						-- plain static-depth displacements — disp + D0 - d — a
+						-- perturbed lea whose NORMALIZED offset lands in the
+						-- promoted region now redirects like any region member
+						-- when a promotion fires for another reason; without a
+						-- promotion it is still rejected. The detector
+						-- deliberately keeps the historical escape accounting:
+						-- the promotion decision is driven by the D0/clone leas
+						-- exactly as before.)
 					end
 					-- a table/"dyn" depth: the region scopes (anchored/dynreg
 					-- leas) or the perturbed rejection — never the escape path.
@@ -6652,6 +6747,270 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						end
 					end
 				end
+			end
+		end
+	end
+
+	-- Save-slot alias DIVERGENCE rejection (the poisoned-window rule; runs LAST
+	-- so every x86_* mark is final, mirroring the rewrite's alias model exactly).
+	--
+	-- The alias model above (in the rewrite's slot path) models a full-width
+	-- access to an outstanding dropped save's slot as an access to the PUSHED
+	-- REGISTER, keeping the mnemonic: the rewritten register form DEFINES the
+	-- register's web whenever the memory operand was the DESTINATION — a mov
+	-- store defines the web with its own source (whatever register it names),
+	-- and a mem-dest ALU RMW (`addq %rbx, (%rsp)`) or unary form (`notq
+	-- (%rsp)`) defines it with the value the form computes — so the dropped
+	-- pop restores the stored value. In HARDWARE, though, neither the push nor
+	-- any store to the slot ever modifies the register — the register keeps
+	-- the pushed value until the matching pop reloads the slot. So from the
+	-- FIRST aliased access that defines the web with a value the hardware
+	-- register does not take until that pop, the model's web and the hardware
+	-- register DIVERGE, and the only accesses on which model and native still
+	-- agree are the aliased ones that keep both sides at the slot's content:
+	-- pure slot loads (both sides serve the slot's content) and further
+	-- dest-first defining accesses (both sides compute the same value — the
+	-- web and the slot stay equal throughout the window). The ONE no-op
+	-- exception is the same-register mov store (`movq %r12, (%rsp)` rewrites
+	-- to `movq %r12, %r12`: the web is defined with itself, which is exactly
+	-- the constant pushed value the hardware register keeps). Loads, compares,
+	-- and every other use-only form never define the web and never open a
+	-- window. Anything that DIRECTLY names the pushed register inside that
+	-- window observes or establishes the wrong value:
+	--
+	--   * a direct READ (`movq %r12, %r15`): native reads the pushed value,
+	--     the model serves the slot's stored value — miscompiled immediately;
+	--   * a direct WRITE / redefinition (`movq $5, %r12`): both sides take the
+	--     written value, but the dropped pop then disagrees — native reloads
+	--     the slot's stored value while the model keeps the written web;
+	--   * a SAME-REGISTER aliased store inside an OPEN window (`movq %r12,
+	--     (%rsp)`): native writes the register's constant pushed value into
+	--     the slot, while the model defines the web with itself (a no-op) —
+	--     the slot and the web then disagree, so every later slot load and
+	--     the pop's reload diverge;
+	--   * any other operand naming the register (a memory base, an indirect
+	--     call/jump target, a nested `pushq %r12`, ...): it reads the register.
+	--
+	-- Such a shape is rejected AT the access that opened the window,
+	-- fail-closed, instead of being silently miscompiled. Everything else
+	-- stays accepted: pure aliased loads, and further aliased dest-first RMWs
+	-- / unary forms / different-source mov stores that no later direct
+	-- register read observes (each keeps the web and the slot equal — the
+	-- rewritten register form's value and the pop's hardware reload agree on
+	-- the slot content), and every access AT or AFTER the matching pop (where
+	-- the model's web, the stored value, and the pop's hardware reload are the
+	-- same value — the working push-alias shapes).
+	--
+	-- The window is tracked per (register, slot depth) — the save-stack state's
+	-- own identity — so nested save windows (another register pushed inside
+	-- this one) neither extend nor confuse it, and the scan stops exactly at
+	-- the pop that consumes this save (its hardware reload re-syncs the two
+	-- views). A window whose state becomes unprovable ("dyn") or whose save is
+	-- truncated by an rsp recovery ends the scan: the alias model no longer
+	-- applies there, and such a body's pop cannot pair (it is rejected
+	-- downstream), so no accepted shape is left unchecked. The scan walks the
+	-- CFG forward from the store (the same successors walk checkLostReload
+	-- uses) so a statement reached WITHOUT the store — a no-store path's use of
+	-- the register, where model and hardware still agree — is never flagged,
+	-- while a loop back to a use after the store is.
+	do
+		-- Does the operand (or a memory operand's base/index) name this GPR?
+		-- Register operands carry the physical number in every width spelling
+		-- (%r12/%r12d/%r12w/%r12b share num 12), so the num match covers the
+		-- subregister reads and writes the web model treats as full defs.
+		local function namesSave(o, save)
+			if not o then return false end
+			if o.kind == "reg" then
+				return o.rc == "gpr" and o.num ~= nil and o.num == save.num
+			elseif o.kind == "mem" then
+				return namesSave(o.base, save) or namesSave(o.index, save)
+			end
+			return false
+		end
+		for si, sst in body do
+			if sst.kind ~= "insn" then continue end
+			local d = sst.x86_depth
+			local sv = sst.x86_saves
+			if sv == nil or sv == "dyn" or #sv == 0 then continue end
+			-- Statements the rewrite diverts BEFORE the alias model never open a
+			-- window (the model never sees them): dropped phantom-carrier traffic,
+			-- dropped lea saves / restore loads, buffer lowering, region carriers,
+			-- and region members (a store landing in a promoted region passes
+			-- through verbatim). Prologue statements are pure frame setup (no slot
+			-- store can reach the model's raw-keyed path), and a statement that
+			-- executes both before and after a mid-function `and` is rejected by
+			-- the rewrite before the model runs.
+			if sst.x86_prologue or sst.x86_saveStore or sst.x86_carrierLoad
+				or sst.x86_leaSave or sst.x86_dropRestore or sst.x86_regionCarrier
+				or sst.x86StackBufAccess or sst.x86StackBufIdx or sst.x86StackBufLea
+				or sst.x86StackBufAddr or sst.x86StackBufLeaValue
+				or sst.x86StackBufRep or (sst.x86_preAnd and sst.x86_postAnd) then continue end
+			local m = string.lower(sst.mnemonic)
+			-- Claimed-GPR statements (isFpInsn true purely by the knowledge claim
+			-- — xadd & friends) stay skipped here, but only because the rewrite
+			-- now rejects every claimed-GPR access that overlaps an outstanding
+			-- non-spill save slot BEFORE the alias model could rewrite it onto
+			-- the pushed register's web: a statement this pass would otherwise
+			-- have to validate can no longer be accepted, so no window is left
+			-- unopened (see the claimed-GPR rejection in the rewrite).
+			if isFpInsn(fpKnowledge.lookup(m), sst) then continue end
+			local ops = sst.operands
+			local mem, memCount = nil, 0
+			for _, o in ops do
+				if o.kind == "mem" then mem = o memCount += 1 end
+			end
+			-- The web-defining access: a full-width (8-byte GPR) access whose
+			-- DESTINATION is the memory operand (dest-first operands), with no
+			-- index and no symbolic displacement. ANY mnemonic — the alias model
+			-- rewrites the access keeping its mnemonic, so a mem-dest ALU RMW
+			-- (`addq %rbx, (%rsp)`) or a unary form (`notq (%rsp)`) defines the
+			-- pushed register's web exactly like a mov store does.
+			if memCount ~= 1 or not mem or ops[1] ~= mem then continue end
+			if mem.index or mem.dispSym then continue end
+			if gprStackWidth(m, mem) ~= 8 then continue end
+			-- The store's normalized frame offset — the rewrite's slot-path keying
+			-- (alias carriers absolute; rsp-relative +D0-d with the clone
+			-- compensations; rbp-relative off rbpNorm). A base that is neither
+			-- rsp, rbp, nor an alias carrier is a heap access: it never reaches
+			-- the slot path. An unprovable depth reaches the model only through
+			-- the rbp-relative exception (rbp provably holds the frame pointer),
+			-- exactly like the rewrite's perturbed-depth gate.
+			local off
+			local spBase = mem.base and mem.base.rc == "sp"
+			local rbpBase = usesRbp and mem.base and mem.base.name == "rbp"
+			if not (spBase or rbpBase) and sst.x86_aliasOff == nil then continue end
+			if rbpBase and sst.x86_fp ~= "est" and (d == nil or isDynDepth(d)) then
+				continue
+			end
+			if d == nil then continue end
+			if sst.x86_aliasOff ~= nil then
+				off = sst.x86_aliasOff
+			else
+				off = mem.dispVal or 0
+				if not spBase then
+					off = rbpNorm + off
+				elseif sst.localClone then
+					off = off + D0 - d - 8
+				elseif sst.b2clone then
+					off = off + D0 - d
+					-- The B2 pre-scan (b2saveHit in the rewrite): a clone access
+					-- overlapping a save slot keys UNBANDED (it addresses the
+					-- jumper's slot), everything else rides its private band.
+					local unbanded = off
+					local hitB2 = false
+					for _, s in sv do
+						if usesRbp and s.name == "rbp" then continue end
+						local sd = D0 - s.depth
+						if unbanded < sd + 8 and unbanded + 8 > sd then hitB2 = true break end
+					end
+					if not hitB2 then off = off + (sst.x86_b2band or 0) end
+				elseif not sst.x86_prologue then
+					off = off + D0 - d
+				end
+			end
+			if regionOf(off, false) then continue end
+			-- The save this access lands on: the same rbp-save and spill skips as
+			-- the alias model, and SLOT-ALIGNED (off == the slot's offset) — a
+			-- partial-overlap access is rejected by the model and defines no web.
+			local save = nil
+			for _, s in sv do
+				if usesRbp and s.name == "rbp" then continue end
+				if s.spill then continue end
+				if off == D0 - s.depth then save = s break end
+			end
+			if not save then continue end
+			-- The model only rewrites onto a REGISTER web (it rejects aliased
+			-- accesses to an unmodelable save outright), so only a named GPR save
+			-- can have its web defined by this access.
+			local parsed = x86parse.classifyReg(save.name)
+			if save.num == nil or not (parsed and parsed.rc == "gpr") then continue end
+			-- Mirror the alias model's own rewrite: replace the memory operand
+			-- with the saved register's operand (exactly the regOp the model
+			-- constructs) and classify the REGISTER form. Only a form the model
+			-- actually rewrites onto the register — an exactly-modeled register
+			-- form (no pcall failure, no `unknown` fallback; the model rejects
+			-- those at the rewrite anyway) — whose classification DEFS the saved
+			-- register opens a window. Pure loads (src-mem), compares, and the
+			-- other use-only forms never define the web; an unmodelable form is
+			-- not an opener.
+			local regOp = { kind = "reg", rc = "gpr", num = parsed.num,
+				width = 64, name = parsed.name }
+			local newops = {}
+			for _, o in ops do table.insert(newops, (o == mem) and regOp or o) end
+			local okC, c2 = pcall(x86.classify, {
+				mnemonic = sst.mnemonic, operands = newops, opsize = sst.opsize,
+				raw = sst.raw, syntax = sst.syntax,
+			})
+			if not okC or (c2 and c2.unknown) then continue end
+			local definesSave = false
+			for _, def in (c2.defs or {}) do
+				if def and def.kind == "reg" and def.rc == "gpr"
+					and def.num == save.num then
+					definesSave = true break
+				end
+			end
+			if not definesSave then continue end
+			-- The SAME-source skip is mov-ONLY: `movq %r12, (%rsp)` rewrites to
+			-- `movq %r12, %r12` — the model defines the web with itself, which
+			-- is the constant pushed value the hardware register keeps — so the
+			-- two views agree and no window opens. Every other defining form of
+			-- the register itself computes a NEW value (`addq %r12, (%rsp)`
+			-- defines web = 2x the pushed value; `notq (%rsp)` inverts it) that
+			-- the hardware register never takes, so it opens a window exactly
+			-- like a different-source store.
+			if x86.baseMnemonic(m) == "mov" and namesSave(ops[2], save) then continue end
+			-- The poisoned window: forward from this access while the save stays
+			-- outstanding, up to (exclusive) the pop that consumes it.
+			local seen, work = {}, {}
+			for _, j in successors(si) do table.insert(work, j) end
+			while #work > 0 do
+				local j = table.remove(work)
+				if seen[j] then continue end
+				seen[j] = true
+				local ost = body[j]
+				if ost == nil or ost.kind ~= "insn" then continue end
+				local osv = ost.x86_saves
+				local od = ost.x86_depth
+				-- Unreachable code has no state; a "dyn" save state ends the
+				-- tracked window (its own pop cannot pair and is rejected
+				-- downstream, so nothing accepted is left unchecked).
+				if osv == nil or osv == "dyn" then continue end
+				local outstanding = false
+				for _, e in osv do
+					if e.num == save.num and e.depth == save.depth
+						and e.name == save.name then
+						outstanding = true break
+					end
+				end
+				if not outstanding then continue end
+				-- THE matching pop: the transfer consumes the TOP save at the pop's
+				-- own depth, so our save is consumed exactly when it tops the stack
+				-- at depth == save.depth. Hardware reloads the slot's stored value
+				-- into the register there and the model's web already holds that
+				-- value — the two views re-sync, so stop AT the pop (its own
+				-- destination operand names the register by design).
+				if od == save.depth and osv[#osv] and osv[#osv].num == save.num
+					and osv[#osv].depth == save.depth and osv[#osv].name == save.name
+					and x86.baseMnemonic(string.lower(ost.mnemonic)) == "pop" then
+					continue
+				end
+				local hitOp = nil
+				for _, o in (ost.operands or {}) do
+					if namesSave(o, save) then hitOp = o break end
+				end
+				if hitOp then
+					error("sarcasm: stack access overlapping a pushed register's save slot inside"
+						.. " the transient prologue pad stores a different value while the pushed"
+						.. " register %" .. save.name .. " is still read or written before the"
+						.. " matching pop (the save-slot model serves the stored value for"
+						.. " register reads in that window, which does not match hardware — the"
+						.. " push and the slot stores never modify the register; the statement `"
+						.. (ost.raw or ost.mnemonic) .. "` names %" .. save.name
+						.. " inside that window); pop the pad first, place the outgoing store"
+						.. " below the push, or don't touch %" .. save.name
+						.. " until after the pop: " .. (sst.raw or m))
+				end
+				for _, s in successors(j) do table.insert(work, s) end
 			end
 		end
 	end
@@ -7508,7 +7867,19 @@ function x86_64_frame.rewrite(st, ctx)
 		-- (rbp-relative offsets are static at any depth). A CLONE statement's
 		-- rsp-relative displacement at a static depth keys with the +8 rule (the
 		-- return-address compensation: hardware has the pushed return address
-		-- between the clone's rsp and the caller's frame — localcall.luau).
+		-- between the clone's rsp and the caller's frame — localcall.luau). A
+		-- PLAIN sp-based statement at a static depth keys NORMALIZED
+		-- (disp + D0 - d — the slot model's own coordinate, see slotKeyOf and
+		-- the slot keying below): the raw displacement is the region coordinate
+		-- only AT the frame base depth D0. Mirrors the region redirect's
+		-- normStackOff (x86_64_codegen.luau) and the transform's region-lea
+		-- seeding (transform.luau) — the three membership decisions must agree
+		-- exactly (and regionLeaOf/the lea-save rkeys below apply the same
+		-- term). Prologue statements stay keyed RAW here and at the redirect
+		-- (the pre-existing behavior on both sides; the uniform rule would be
+		-- correct for them too, but changing it is not this fix's scope).
+		-- B2-clone statements also stay keyed raw (their private band
+		-- coordinates are a separate, untouched keying).
 		local region = nil
 		local rOff = aliasOff or (mem.dispVal or 0)
 		if aliasOff ~= nil then
@@ -7521,7 +7892,9 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		if aliasOff == nil then
 		if mem.base.rc ~= "sp" then rOff = rbpNorm + rOff
-		elseif st.localClone and d ~= nil and not isDynDepth(d) then rOff = rOff + D0 - d - 8 end
+		elseif st.localClone and d ~= nil and not isDynDepth(d) then rOff = rOff + D0 - d - 8
+		elseif not st.b2clone and not st.x86_prologue
+			and d ~= nil and type(d) ~= "table" and d ~= "dyn" then rOff = rOff + D0 - d end
 		end
 		if aliasOff == nil and mem.base.rc == "sp" and not st.x86_prologue and type(d) == "table" then
 			if d.anchored and rOff >= d.anchored.base and rOff < d.anchored.base + d.anchored.size then
@@ -7625,7 +7998,12 @@ function x86_64_frame.rewrite(st, ctx)
 		local function b2saveHit(unbanded)
 			local sv = st.x86_saves
 			if sv == nil or sv == "dyn" or #sv == 0 then return false end
-			if isFpInsn(fpEntry, st) then return false end
+			-- A claimed-GPR statement (isFpInsn true purely by the knowledge
+			-- claim — see isClaimedGprInsn) is GPR traffic here too: it keys
+			-- UNBANDED when it hits a save slot, exactly like an ordinary GPR
+			-- access, so the save-slot coordinate identity holds and the
+			-- claimed-GPR rejection scan below sees the true (unbanded) offset.
+			if isFpInsn(fpEntry, st) and not isClaimedGprInsn(fpEntry, st) then return false end
 			local w0 = gprStackWidth(m, mem)
 			if not w0 then return false end
 			for _, s in sv do
@@ -7880,6 +8258,43 @@ function x86_64_frame.rewrite(st, ctx)
 			-- the state unprovable makes its own pop unpairable — a body with an
 			-- unpairable pop or a return at a poisoned depth is rejected downstream.
 			-- Virtualize without the aliasing model.
+		end
+		-- A CLAIMED-GPR access: isFpInsn is true for it PURELY by the knowledge
+		-- table's claim (the entry has `gpr` and a claim, and the statement names
+		-- no FP/vector register — see isClaimedGprInsn). The alias-model scan
+		-- below excludes it as FP-class traffic, so an access that aliases an
+		-- outstanding non-spill save slot would fall through to the ordinary slot
+		-- path and virtualize the pad slot like any unrelated slot — silently
+		-- desyncing it from the pushed register's web: the pad's content lives in
+		-- the pushed register, not in memory, and the instruction's exact
+		-- register semantics (xadd is a read-modify-write on BOTH of its
+		-- operands: the slot's old value is written back to the source register)
+		-- are not expressible as the alias model's memory-operand->register
+		-- rewrite. Fail closed: reject with the same overlap scan the alias model
+		-- uses (same width, same rbp-save and spill skips, same normalized-offset
+		-- arithmetic). xaddb/w/l/q (and the suffixless Intel spellings) all land
+		-- here, as does every other claimed-GPR entry in the knowledge table.
+		if isClaimedGprInsn(fpEntry, st) and sv and sv ~= "dyn" and #sv > 0 then
+			local w0 = gprStackWidth(m, mem)
+			if w0 then
+				for _, s in sv do
+					if usesRbp and s.name == "rbp" then continue end  -- saved frame pointer
+					if s.spill then continue end  -- a spill slot is an ordinary slot
+					local sd = D0 - s.depth
+					if off < sd + 8 and off + w0 > sd then
+						error("sarcasm: stack access overlapping a pushed register's save slot"
+							.. " inside the transient prologue pad by an instruction the"
+							.. " save-slot model cannot express (`" .. m .. "` is a pure-GPR"
+							.. " instruction the FP knowledge table claims for its exact"
+							.. " register semantics, so the alias model never rewrites it onto"
+							.. " the pushed register: the access would ride an ordinary slot"
+							.. " web while the pad's content lives in the pushed register's"
+							.. " web, not in memory — and xadd's old-value writeback claims"
+							.. " BOTH operands): pop the pad first or place the access below"
+							.. " the push: " .. (st.raw or m))
+					end
+				end
+			end
 		end
 		local aliasHit, aliasDisp, aliasW = nil, nil, nil
 		if sv and sv ~= "dyn" and #sv > 0 and not isFpInsn(fpEntry, st) then

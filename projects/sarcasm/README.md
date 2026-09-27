@@ -286,7 +286,10 @@ the caller's frame slots all follow the ordinary web rules. Details:
   written against the return-address-compensated `N+8(%rsp)` convention (the
   rsaz/mont5/aesni-gcm subs) sees its rsp-relative displacements biased by -8:
   its `8(%rsp)` keys to the caller's slot 0, and `leaq 8(%rsp),%rdi` becomes
-  `leaq 0(%rsp),%rdi`, which resolves into the caller's alloca region.
+  `leaq 0(%rsp),%rdi`, which the region redirect resolves into the caller's
+  promoted frame region (the fixed-frame escape promotion: when the caller's
+  frame address escapes, its frame becomes a garbage-collected allocation —
+  see DESIGN.md).
 - `#! local` is accepted as an optional explicit marker on such calls
   (validated to resolve the same way; a mismatch is a compile error).
 - A subroutine may set up its own frame with a constant `sub` (torn down
@@ -374,6 +377,10 @@ it never touches `%rsp`/`sp`, so the input's own stack math keeps its meaning:
 - Accesses through the result are capability-checked exactly like any heap
   pointer (misaligned pointer-sized accesses trap; scalar/vector accesses
   follow the usual hardware-alignment rules).
+- Composes with the fixed-frame escape promotion: a function whose frame
+  address escapes gets its frame promoted to a separate garbage-collected
+  region (see DESIGN.md) — the `.alloca` allocation is an independent
+  `filc_allocate` call.
 - Alignment is consolidated in the directive: the result already satisfies
   `alignment` (wider alignments over-allocate and align up), so call sites
   use it directly for aligned traffic — no per-site `and $-16` masking and
@@ -679,7 +686,15 @@ file-wide canonical table from there:
   virtualized into register-allocated locals with compile-time bounds —
   the 128-byte SysV red zone is legal. Accesses
   outside the frame, caller-argument-area writes, and taking the frame's
-  address are rejected. Aligned vector accesses wider than 16 bytes
+  address are rejected. The one x86_64 exception: when the FIXED frame's
+  address escapes (a `lea` computes an address inside the frame and the
+  pointer can leave the function), the whole frame ABOVE the outgoing
+  stack-argument band is promoted to a garbage-collected region — its slots
+  stop virtualizing, every access and frame-interior `lea` redirects into the
+  region, and the region's capability flows out with the pointer (the
+  outgoing stack-argument band itself stays ordinary slot traffic — it is
+  calling notation, not GC state — so stack-passed arguments out of a
+  promoted frame work). Aligned vector accesses wider than 16 bytes
   (vmovdqa32/64) need a covering `and $-N,%rsp` note plus an aligned offset
   (the frame is then emitted aligned); otherwise they are compile errors
   suggesting the unaligned form.
@@ -720,7 +735,8 @@ runs.
   (read-only objects trap). A heap access whose base has no capability —
   an integer address — traps at runtime with a null capability.
 - The stack frame is virtualized (compile-time bounds, red zone legal),
-  and allocas become garbage-collected allocations.
+  allocas become garbage-collected allocations, and a frame whose address
+  escapes is promoted to a garbage-collected region (x86_64).
 - Pointer loads, stores, atomics, and RMWs maintain the capability through
   memory (including the aux capability array and the GC store barrier), so
   pointers round-trip and stay dereferenceable.

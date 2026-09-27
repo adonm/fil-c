@@ -137,7 +137,7 @@ $func: #! int(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 ___
 						if ($avx) {
 $code.=<<___;
-	lea	OPENSSL_ia32cap_P(%rip),%r11
+	lea	OPENSSL_ia32cap_P(%rip),%r11 #! global ptr
 	mov	\$1,%eax
 	cmp	\$0,`$win64?"%rcx":"%rdi"`
 	je	.Lprobe

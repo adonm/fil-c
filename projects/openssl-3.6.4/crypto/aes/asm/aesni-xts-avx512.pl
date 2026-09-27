@@ -1118,13 +1118,13 @@ ___
     .type	aesni_xts_avx512_eligible,\@abi-omnipotent
     .align	32
     aesni_xts_avx512_eligible: #! int()
-        mov	OPENSSL_ia32cap_P+8(%rip), %ecx
+        mov	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
         xor	%eax,%eax
     	# 1<<31|1<<30|1<<17|1<<16 avx512vl + avx512bw + avx512dq + avx512f
         and	\$0xc0030000, %ecx
         cmp	\$0xc0030000, %ecx
         jne	.L_done
-        mov	OPENSSL_ia32cap_P+12(%rip), %ecx
+        mov	OPENSSL_ia32cap_P+12(%rip), %ecx #! global ptr
     	# 1<<10|1<<9|1<<6 vaes + vpclmulqdq + vbmi2
         and	\$0x640, %ecx
         cmp	\$0x640, %ecx

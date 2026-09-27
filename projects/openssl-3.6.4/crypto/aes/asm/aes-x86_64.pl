@@ -1872,7 +1872,7 @@ $code.=<<___;
 	cmoveq	%r10,$sbox
 
 .cfi_remember_state
-	mov	OPENSSL_ia32cap_P(%rip),%r10d
+	mov	OPENSSL_ia32cap_P(%rip),%r10d #! global ptr
 	cmp	\$$speed_limit,%rdx
 	jb	.Lcbc_slow_prologue
 	test	\$15,%rdx

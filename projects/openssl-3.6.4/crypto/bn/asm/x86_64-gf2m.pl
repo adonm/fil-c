@@ -182,7 +182,7 @@ $code.=<<___;
 bn_GF2m_mul_2x2: #! void(ptr,long,long,long,long)
 .cfi_startproc
 	mov	%rsp,%rax
-	mov	OPENSSL_ia32cap_P(%rip),%r10
+	mov	OPENSSL_ia32cap_P(%rip),%r10 #! global ptr
 	bt	\$33,%r10
 	jnc	.Lvanilla_mul_2x2
 

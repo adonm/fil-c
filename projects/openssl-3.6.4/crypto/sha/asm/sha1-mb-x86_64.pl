@@ -379,7 +379,7 @@ $code.=<<___;
 .align	32
 sha1_multi_block: #! void(ptr,ptr,int)
 .cfi_startproc
-	mov	OPENSSL_ia32cap_P+4(%rip),%rcx
+	mov	OPENSSL_ia32cap_P+4(%rip),%rcx #! global ptr
 	bt	\$61,%rcx			# check SHA bit
 	jc	_shaext_shortcut
 ___

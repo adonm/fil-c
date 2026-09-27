@@ -88,7 +88,7 @@ ossl_aes_cfb128_vaes_eligible: #! int()
 .cfi_startproc
     endbranch
 
-    mov OPENSSL_ia32cap_P+8(%rip),%ecx
+    mov OPENSSL_ia32cap_P+8(%rip),%ecx #! global ptr
     xor %eax,%eax
 
     # Check 3rd 32-bit word of OPENSSL_ia32cap_P for the feature bit(s):
@@ -98,7 +98,7 @@ ossl_aes_cfb128_vaes_eligible: #! int()
     cmp \$0x40030000,%ecx
     jne .Laes_cfb128_vaes_eligible_done
 
-    mov OPENSSL_ia32cap_P+12(%rip),%ecx
+    mov OPENSSL_ia32cap_P+12(%rip),%ecx #! global ptr
 
     # Check 4th 32-bit word of OPENSSL_ia32cap_P for the feature bit(s):
     # AVX512VAES (bit 9)

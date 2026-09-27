@@ -269,9 +269,9 @@ $code.=<<___;
 .align	16
 sha1_block_data_order: #! void(ptr,ptr,size_t)
 .cfi_startproc
-	mov	OPENSSL_ia32cap_P+0(%rip),%r9d
-	mov	OPENSSL_ia32cap_P+4(%rip),%r8d
-	mov	OPENSSL_ia32cap_P+8(%rip),%r10d
+	mov	OPENSSL_ia32cap_P+0(%rip),%r9d #! global ptr
+	mov	OPENSSL_ia32cap_P+4(%rip),%r8d #! global ptr
+	mov	OPENSSL_ia32cap_P+8(%rip),%r10d #! global ptr
 	test	\$`1<<9`,%r8d		# check SSSE3 bit
 	jz	.Lialu
 ___

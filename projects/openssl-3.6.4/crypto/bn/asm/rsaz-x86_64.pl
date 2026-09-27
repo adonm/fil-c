@@ -153,7 +153,7 @@ $code.=<<___;
 ___
 $code.=<<___ if ($addx);
 	movl	\$0x80100,%r11d
-	andl	OPENSSL_ia32cap_P+8(%rip),%r11d
+	andl	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 	cmpl	\$0x80100,%r11d		# check for MULX and ADO/CX
 	je	.Loop_sqrx
 ___
@@ -917,7 +917,7 @@ ___
 }
 $code.=<<___ if ($addx);
 	movl	\$0x80100,%r11d
-	andl	OPENSSL_ia32cap_P+8(%rip),%r11d
+	andl	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 	cmpl	\$0x80100,%r11d		# check for MULX and ADO/CX
 	je	.Lmulx
 ___
@@ -1140,7 +1140,7 @@ $code.=<<___;
 ___
 $code.=<<___ if ($addx);
 	movl	\$0x80100,%r11d
-	andl	OPENSSL_ia32cap_P+8(%rip),%r11d
+	andl	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 	cmpl	\$0x80100,%r11d		# check for MULX and ADO/CX
 	je	.Lmulx_gather
 ___
@@ -1604,7 +1604,7 @@ $code.=<<___;
 ___
 $code.=<<___ if ($addx);
 	movl	\$0x80100,%r11d
-	andl	OPENSSL_ia32cap_P+8(%rip),%r11d
+	andl	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 	cmpl	\$0x80100,%r11d		# check for MULX and ADO/CX
 	je	.Lmulx_scatter
 ___
@@ -1762,7 +1762,7 @@ $code.=<<___;
 .Lmul_by_one_body:
 ___
 $code.=<<___ if ($addx);
-	movl	OPENSSL_ia32cap_P+8(%rip),%eax
+	movl	OPENSSL_ia32cap_P+8(%rip),%eax #! global ptr
 ___
 $code.=<<___;
 	movq	$mod, %rbp	# reassign argument

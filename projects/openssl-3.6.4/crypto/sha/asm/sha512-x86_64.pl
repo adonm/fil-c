@@ -287,7 +287,7 @@ $func: #! void(ptr,ptr,size_t)
 .cfi_startproc
 ___
 $code.=<<___ if ($SZ==4 || $avx);
-    lea OPENSSL_ia32cap_P(%rip),%r10
+    lea OPENSSL_ia32cap_P(%rip),%r10 #! global ptr
     mov 0(%r10),%r9
     mov 8(%r10),%r11d
 ___

@@ -1488,16 +1488,6 @@ while(defined(my $line=<>)) {
 	printf "%s",$vex_prefix->out();
 	}
 	if (my $opcode=opcode->re(\$line)) {
-	# sarcasm: annotate rip-relative references to the
-	# OPENSSL_ia32cap_P extern global (the only extern data symbol in
-	# the corpus). Direct asm-to-asm calls carry their explicit
-	# `#! <sig>` from the generating .pl files; local-subroutine
-	# calls stay unannotated for sarcasm's auto-discovery.
-	if ($gas && !defined($ann)) {
-	  if ($line =~ /OPENSSL_ia32cap_P([+]\d+)?\(%rip\)/) {
-	    $ann = " global ptr";
-	  }
-	}
 
 	my $asm = eval("\$".$opcode->mnemonic());
 

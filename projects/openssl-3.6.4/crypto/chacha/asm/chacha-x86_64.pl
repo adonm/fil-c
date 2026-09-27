@@ -270,7 +270,7 @@ ChaCha20_ctr32: #! void(ptr,ptr,size_t,ptr,ptr)
 .cfi_startproc
 	cmp	\$0,$len
 	je	.Lno_data
-	mov	OPENSSL_ia32cap_P+4(%rip),%r10
+	mov	OPENSSL_ia32cap_P+4(%rip),%r10 #! global ptr
 ___
 $code.=<<___	if ($avx>2);
 	bt	\$48,%r10		# check for AVX512F

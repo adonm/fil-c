@@ -264,7 +264,7 @@ ___
 # Scalar misaligned loads are fine (checked with alignment 1, like Fil-C);
 # the 8-byte capability-word load below works in both modes.
 $code.=<<___;
-	mov	OPENSSL_ia32cap_P+4(%rip),%rcx
+	mov	OPENSSL_ia32cap_P+4(%rip),%rcx #! global ptr
 	bt	\$61,%rcx			# check SHA bit
 	jc	_shaext_shortcut
 ___

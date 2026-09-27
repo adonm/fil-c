@@ -140,8 +140,8 @@ $code.=<<___;
 aesni_cbc_sha1_enc: #! void(ptr,ptr,size_t,ptr,ptr,ptr,ptr)
 .cfi_startproc
 	# caller should check for SSSE3 and AES-NI bits
-	mov	OPENSSL_ia32cap_P+0(%rip),%r10d
-	mov	OPENSSL_ia32cap_P+4(%rip),%r11
+	mov	OPENSSL_ia32cap_P+0(%rip),%r10d #! global ptr
+	mov	OPENSSL_ia32cap_P+4(%rip),%r11 #! global ptr
 ___
 $code.=<<___ if ($shaext);
 	bt	\$61,%r11		# check SHA bit
@@ -872,8 +872,8 @@ $code.=<<___;
 aesni256_cbc_sha1_dec:
 .cfi_startproc
 	# caller should check for SSSE3 and AES-NI bits
-	mov	OPENSSL_ia32cap_P+0(%rip),%r10d
-	mov	OPENSSL_ia32cap_P+4(%rip),%r11d
+	mov	OPENSSL_ia32cap_P+0(%rip),%r10d #! global ptr
+	mov	OPENSSL_ia32cap_P+4(%rip),%r11d #! global ptr
 ___
 $code.=<<___ if ($avx);
 	and	\$`1<<28`,%r11d		# mask AVX bit

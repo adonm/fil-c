@@ -127,7 +127,7 @@ ___
 $code.=<<___ if ($avx);
 	cmp	\$2,$num
 	jb	.Lenc_non_avx
-	mov	OPENSSL_ia32cap_P+4(%rip),%ecx
+	mov	OPENSSL_ia32cap_P+4(%rip),%ecx #! global ptr
 	test	\$`1<<28`,%ecx			# AVX bit
 	jnz	_avx_cbc_enc_shortcut
 	jmp	.Lenc_non_avx
@@ -433,7 +433,7 @@ ___
 $code.=<<___ if ($avx);
 	cmp	\$2,$num
 	jb	.Ldec_non_avx
-	mov	OPENSSL_ia32cap_P+4(%rip),%ecx
+	mov	OPENSSL_ia32cap_P+4(%rip),%ecx #! global ptr
 	test	\$`1<<28`,%ecx			# AVX bit
 	jnz	_avx_cbc_dec_shortcut
 	jmp	.Ldec_non_avx

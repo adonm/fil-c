@@ -812,7 +812,7 @@ if ($do4xaggr) {
 my ($Xl,$Xm,$Xh,$Hkey3,$Hkey4)=map("%xmm$_",(11..15));
 
 $code.=<<___;
-	mov		OPENSSL_ia32cap_P+4(%rip),%eax
+	mov		OPENSSL_ia32cap_P+4(%rip),%eax #! global ptr
 	cmp		\$0x30,$len
 	jb		.Lskip4x
 

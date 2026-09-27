@@ -518,7 +518,7 @@ ecp_nistz256_ord_mul_mont: #! void(ptr,ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 	cmp	\$0x80100, %ecx
 	je	.Lecp_nistz256_ord_mul_montx
 ___
@@ -848,7 +848,7 @@ ecp_nistz256_ord_sqr_mont: #! void(ptr,ptr,long)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 	cmp	\$0x80100, %ecx
 	je	.Lecp_nistz256_ord_sqr_montx
 ___
@@ -1595,7 +1595,7 @@ ecp_nistz256_to_mont: #! void(ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 ___
 $code.=<<___;
 	lea	.LRR(%rip), $b_org
@@ -1617,7 +1617,7 @@ ecp_nistz256_mul_mont: #! void(ptr,ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 ___
 $code.=<<___;
 .Lmul_mont:
@@ -1918,7 +1918,7 @@ ecp_nistz256_sqr_mont: #! void(ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 ___
 $code.=<<___;
 	push	%rbp
@@ -2605,7 +2605,7 @@ ecp_nistz256_gather_w5: #! void(ptr,ptr,int)
 .cfi_startproc
 ___
 $code.=<<___	if ($avx>1);
-	mov	OPENSSL_ia32cap_P+8(%rip), %eax
+	mov	OPENSSL_ia32cap_P+8(%rip), %eax #! global ptr
 	test	\$`1<<5`, %eax
 	jnz	.Lavx2_gather_w5
 ___
@@ -2725,7 +2725,7 @@ ecp_nistz256_gather_w7: #! void(ptr,ptr,int)
 .cfi_startproc
 ___
 $code.=<<___	if ($avx>1);
-	mov	OPENSSL_ia32cap_P+8(%rip), %eax
+	mov	OPENSSL_ia32cap_P+8(%rip), %eax #! global ptr
 	test	\$`1<<5`, %eax
 	jnz	.Lavx2_gather_w7
 ___
@@ -3248,7 +3248,7 @@ ecp_nistz256_point_double: #! void(ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 	cmp	\$0x80100, %ecx
 	je	.Lpoint_doublex
 ___
@@ -3541,7 +3541,7 @@ ecp_nistz256_point_add: #! void(ptr,ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 	cmp	\$0x80100, %ecx
 	je	.Lpoint_addx
 ___
@@ -3994,7 +3994,7 @@ ecp_nistz256_point_add_affine: #! void(ptr,ptr,ptr)
 ___
 $code.=<<___	if ($addx);
 	mov	\$0x80100, %ecx
-	and	OPENSSL_ia32cap_P+8(%rip), %ecx
+	and	OPENSSL_ia32cap_P+8(%rip), %ecx #! global ptr
 	cmp	\$0x80100, %ecx
 	je	.Lpoint_add_affinex
 ___

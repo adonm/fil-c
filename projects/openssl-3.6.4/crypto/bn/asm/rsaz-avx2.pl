@@ -1847,7 +1847,7 @@ $code.=<<___;
 .type	rsaz_avx2_eligible,\@abi-omnipotent
 .align	32
 rsaz_avx2_eligible: #! int()
-	mov	OPENSSL_ia32cap_P+8(%rip),%eax
+	mov	OPENSSL_ia32cap_P+8(%rip),%eax #! global ptr
 ___
 $code.=<<___	if ($addx);
 	mov	\$`1<<8|1<<19`,%ecx

@@ -184,7 +184,7 @@ bn_mul_mont_gather5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 	jnz	.Lmul_enter
 ___
 $code.=<<___ if ($addx);
-	mov	OPENSSL_ia32cap_P+8(%rip),%r11d
+	mov	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 ___
 $code.=<<___;
 	jmp	.Lmul4x_enter
@@ -1290,7 +1290,7 @@ bn_power5: #! void(ptr,ptr,ptr,ptr,ptr,int,int)
 .cfi_def_cfa_register	%rax
 ___
 $code.=<<___ if ($addx);
-	mov	OPENSSL_ia32cap_P+8(%rip),%r11d
+	mov	OPENSSL_ia32cap_P+8(%rip),%r11d #! global ptr
 	and	\$0x80108,%r11d
 	cmp	\$0x80108,%r11d		# check for AD*X+BMI2+BMI1
 	je	.Lpowerx5_enter

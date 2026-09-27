@@ -52,8 +52,8 @@ using tools::addPathIfExists;
 // between the arches.  Everything that resolves a cosmo-flavor artifact out
 // of the pizfix tree (the CRT objects and linker script here, the APE
 // loader below) has to go through this.
-static StringRef GetCosmoLibDir(const llvm::Triple &Triple) {
-  if (Triple.getArch() == llvm::Triple::aarch64)
+static StringRef GetCosmoLibDir(const ToolChain& T) {
+  if (T.getDriver().HasCosmo && T.getTriple().getArch() == llvm::Triple::aarch64)
     return "lib-aarch64";
   return "lib";
 }
@@ -700,7 +700,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       LibDir = A->getValue();
     } else if (D.HasPizfix) {
       LibDir = D.PizfixRoot;
-      llvm::sys::path::append(LibDir, GetCosmoLibDir(ToolChain.getTriple()));
+      llvm::sys::path::append(LibDir, GetCosmoLibDir(ToolChain));
     } else if (D.HasOptfil) {
       LibDir = "/opt/fil/lib";
     } else {
@@ -899,7 +899,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
         BasePath = A->getValue();
       } else {
         SmallString<128> P(ToolChain.getDriver().PizfixRoot);
-        llvm::sys::path::append(P, GetCosmoLibDir(ToolChain.getTriple()));
+        llvm::sys::path::append(P, GetCosmoLibDir(ToolChain));
         BasePath = std::string(P);
       }
       SmallString<128> FullPath(BasePath);
@@ -1018,7 +1018,7 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       BasePath = A->getValue();
     } else {
       SmallString<128> P(ToolChain.getDriver().PizfixRoot);
-      llvm::sys::path::append(P, GetCosmoLibDir(ToolChain.getTriple()));
+      llvm::sys::path::append(P, GetCosmoLibDir(ToolChain));
       BasePath = std::string(P);
     }
 

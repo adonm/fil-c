@@ -723,7 +723,7 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
         P = A->getValue();
       } else {
         SmallString<128> Path(D.PizfixRoot);
-        if (getTriple().getArch() == llvm::Triple::aarch64) {
+        if (D.HasCosmo && getTriple().getArch() == llvm::Triple::aarch64) {
           // The kernel headers (os-include's linux/asm/asm-generic) are
           // per-architecture.  build_yolocosmo.sh installs the aarch64
           // variant of os-include from the cross toolchain's headers; if it

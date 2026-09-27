@@ -691,9 +691,24 @@ void filc_initialize(filc_stack_limit stack_limit)
     is_initialized = true;
 }
 
+/* libpas's slow paths use floating-point heuristics, which raise FE_INEXACT in
+   the calling thread. Allocation must not change the program's floating-point
+   exception flags. */
+static PAS_ALWAYS_INLINE pas_allocation_result allocate_preserving_fp_flags(
+    pas_heap* heap, size_t size, size_t alignment)
+{
+    fexcept_t flags;
+    fegetexceptflag(&flags, FE_ALL_EXCEPT);
+    pas_allocation_result result = alignment
+        ? verse_heap_allocate_with_alignment(heap, size, alignment)
+        : verse_heap_allocate(heap, size);
+    fesetexceptflag(&flags, FE_ALL_EXCEPT);
+    return result;
+}
+
 PAS_NEVER_INLINE pas_allocation_result filc_thread_allocate_slow(size_t size)
 {
-    return verse_heap_allocate(fugc_default_heap, size);
+    return allocate_preserving_fp_flags(fugc_default_heap, size, 0);
 }
 
 filc_thread* filc_get_my_thread(void)
@@ -3010,7 +3025,7 @@ static PAS_ALWAYS_INLINE filc_object* allocate_aligned_impl(
     size_t total_size;
     prepare_allocate(&size, alignment, &offset_to_payload, &total_size);
     return finish_allocate(
-        my_thread, verse_heap_allocate_with_alignment(heap, total_size, alignment),
+        my_thread, allocate_preserving_fp_flags(heap, total_size, alignment),
         size, alignment, offset_to_payload, object_flags, exit_allowed_mode, finalizer_queue);
 }
 
@@ -3144,7 +3159,7 @@ filc_object* filc_reallocate_with_alignment(filc_thread* my_thread, filc_object*
     size_t total_size;
     prepare_allocate(&new_size, alignment, &offset_to_payload, &total_size);
     return finish_reallocate(
-        my_thread, verse_heap_allocate_with_alignment(fugc_default_heap, total_size, alignment),
+        my_thread, allocate_preserving_fp_flags(fugc_default_heap, total_size, alignment),
         object, new_size, alignment, offset_to_payload);
 }
 

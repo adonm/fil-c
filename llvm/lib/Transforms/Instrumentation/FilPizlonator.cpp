@@ -14434,6 +14434,23 @@ class Pizlonator {
             F->getName() == "sigsetjmp");
   }
 
+  /* Clang only marks setjmp returns_twice when it recognizes it as a builtin, which
+     -fno-builtin turns off. GCC recognizes these functions by name regardless, and so do we: the
+     rest of the pass depends on the attribute. */
+  void markSetjmpsReturnTwice() {
+    for (Function& F : M.functions()) {
+      if (!isSetjmp(&F))
+        continue;
+      F.addFnAttr(Attribute::ReturnsTwice);
+      for (User* U : F.users()) {
+        if (CallBase* CB = dyn_cast<CallBase>(U)) {
+          if (CB->getCalledOperand() == &F)
+            CB->addFnAttr(Attribute::ReturnsTwice);
+        }
+      }
+    }
+  }
+
   JmpBufKind getJmpBufKindForSetjmp(Function* F) {
     if (F->getName() == "setjmp")
       return JmpBufKind::setjmp;
@@ -14657,8 +14674,11 @@ class Pizlonator {
              G.getName() == "llvm.used" ||
              G.getName() == "llvm.compiler.used");
 
-      /* FIXME: Don't even know what this is? */
-      assert(G.getLinkage() != GlobalValue::CommonLinkage);
+      /* Common symbols (-fcommon, __attribute__((common))) are zero-initialized tentative
+         definitions that the linker merges across translation units. Weak definitions merge the
+         same way, and the rest of the pass knows how to handle them. */
+      if (G.getLinkage() == GlobalValue::CommonLinkage)
+        G.setLinkage(GlobalValue::WeakAnyLinkage);
 
       if (G.getLinkage() == GlobalValue::LinkOnceODRLinkage)
         G.setLinkage(GlobalValue::LinkOnceAnyLinkage);
@@ -16163,6 +16183,7 @@ public:
 
     Dummy = makeDummy(Int32Ty);
 
+    markSetjmpsReturnTwice();
     lowerIndirectBr();
 
     if (verbose)

@@ -1656,6 +1656,7 @@ class Pizlonator {
   std::unordered_map<Instruction*, Type*> InstTypes;
   std::unordered_map<Instruction*, std::vector<Type*>> InstTypeVectors;
   std::unordered_map<InvokeInst*, LandingPadInst*> LPIs;
+  std::unordered_set<CallInst*> FramePoppingMustTails;
 
   std::unordered_map<uint64_t, Function*> CallerEntrypointThunks;
   std::unordered_map<uint64_t, Function*> CalleeEntrypointThunks;
@@ -2739,6 +2740,40 @@ class Pizlonator {
 
   Value* allocate(Value* Size, Value* Alignment, Instruction* InsertBefore) {
     return flightPtrForObject(allocateObject(Size, Alignment, InsertBefore), InsertBefore);
+  }
+
+  // A musttail call pops this function's Fil-C frame before the callee runs. Fil-C callers root
+  // the objects they pass as arguments; callees do not root their incoming arguments (except
+  // byval ones). So the frame can only be popped if no argument depends on it for rooting: every
+  // pointer-carrying argument must be one of our own non-byval arguments (or a pointer derived
+  // from one, which shares its object), which our caller roots, or a constant without a
+  // capability. Other musttail calls become ordinary calls. Globals are excluded because
+  // getting their address may run code (ifunc resolvers, initializers).
+  bool mustTailArgsRootedByCaller(CallInst* CI) {
+    for (unsigned Idx = 0; Idx < CI->arg_size(); ++Idx) {
+      if (CI->isByValArgument(Idx))
+        return false;
+      Value* V = CI->getArgOperand(Idx);
+      if (!countPtrs(V->getType()))
+        continue;
+      for (;;) {
+        if (GetElementPtrInst* GEP = dyn_cast<GetElementPtrInst>(V))
+          V = GEP->getPointerOperand();
+        else if (isa<BitCastInst>(V) || isa<AddrSpaceCastInst>(V))
+          V = cast<Instruction>(V)->getOperand(0);
+        else
+          break;
+      }
+      if (Argument* A = dyn_cast<Argument>(V)) {
+        if (A->getParent() == OldF && !A->hasByValAttr())
+          continue;
+        return false;
+      }
+      if (isa<ConstantPointerNull>(V) || isa<UndefValue>(V) || isa<ConstantAggregateZero>(V))
+        continue;
+      return false;
+    }
+    return true;
   }
 
   size_t countPtrs(Type* T) {
@@ -14035,6 +14070,38 @@ class Pizlonator {
       }
       
       TheCall->setDebugLoc(CI->getDebugLoc());
+
+      // Preserve guaranteed tail calls whose arguments our caller keeps alive (see
+      // mustTailArgsRootedByCaller); other musttail calls, including coroutine symmetric
+      // transfer, become ordinary calls. The caller and callee had matching prototypes, so their
+      // lowered functions return the same (has_exception, value) aggregate, and the caller can
+      // hand the callee's result straight back to its own caller after popping its Fil-C frame.
+      if (isa<CallInst>(CI) && FramePoppingMustTails.count(cast<CallInst>(CI))
+          && TheCall->getType() == NewF->getReturnType()) {
+        new StoreInst(
+          new LoadInst(
+            RawPtrTy,
+            GetElementPtrInst::Create(
+              FrameTy, Frame, { ConstantInt::get(Int32Ty, 0), ConstantInt::get(Int32Ty, 0) },
+              "filc_frame_parent_ptr", TheCall),
+            "filc_frame_parent", TheCall),
+          threadTopFramePtr(MyThread, TheCall),
+          TheCall);
+        TheCall->setTailCallKind(CallInst::TCK_MustTail);
+        BasicBlock* CallBB = TheCall->getParent();
+        // The original ret after CI is now dead; it still gets lowered, so leave it valid.
+        SplitBlock(CallBB, CI);
+        ReplaceInstWithInst(CallBB->getTerminator(), ReturnInst::Create(C, TheCall));
+        if (FT->getReturnType() != VoidTy) {
+          LoadInst* LI = new LoadInst(
+            toFlightType(FT->getReturnType()), RawNull, "filc_dead_musttail_result", CI);
+          LI->setDebugLoc(CI->getDebugLoc());
+          CI->replaceAllUsesWith(LI);
+        }
+        CI->eraseFromParent();
+        return;
+      }
+
       Instruction* HasException = ExtractValueInst::Create(
         Int1Ty, TheCall, { 0 }, "filc_has_exception", CI);
       HasException->setDebugLoc(CI->getDebugLoc());
@@ -16998,6 +17065,15 @@ public:
           BB->insertInto(NewF);
         }
         computeFrameIndexMap(Blocks);
+        FramePoppingMustTails.clear();
+        for (BasicBlock* BB : Blocks) {
+          for (Instruction& I : *BB) {
+            if (CallInst* CI = dyn_cast<CallInst>(&I)) {
+              if (CI->isMustTailCall() && mustTailArgsRootedByCaller(CI))
+                FramePoppingMustTails.insert(CI);
+            }
+          }
+        }
         scheduleChecks(Blocks, BackEdgePreds);
         // Snapshot the instructions before we do crazy stuff.
         std::vector<Instruction*> Instructions;

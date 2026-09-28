@@ -360,8 +360,8 @@ cd ..
 rm -rf acl-2.4.0
 hash -r
 
-tar -xf $FILCSRC/pizlix/pcre2-10.48.tar.bz2
-cd pcre2-10.48
+tar -xf $FILCSRC/projects/pcre2/pizlonated-pcre2.tar.gz
+cd pizlonated-pcre2
 CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
             --enable-unicode                    \
             --disable-jit                       \
@@ -373,7 +373,7 @@ CC=/opt/fil/bin/filcc CXX=/opt/fil/bin/fil++ ./configure --prefix=/opt/fil \
 make -j `nproc`
 make -j `nproc` install
 cd ..
-rm -rf pcre2-10.48
+rm -rf pizlonated-pcre2
 hash -r
 
 tar -xf $FILCSRC/pizlix/ncurses-6.6.tar.gz

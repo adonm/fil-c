@@ -86,7 +86,8 @@ filc/projeny package \
     projects/dash.projeny projects/dash/pizlonated-dash.tar.gz \
     projects/mg.projeny projects/mg/pizlonated-mg.tar.gz \
     projects/Linux-PAM.projeny projects/Linux-PAM/pizlonated-pam.tar.gz \
-    projects/libuv.projeny projects/libuv/pizlonated-libuv.tar.gz
+    projects/libuv.projeny projects/libuv/pizlonated-libuv.tar.gz \
+    projects/pcre2.projeny projects/pcre2/pizlonated-pcre2.tar.gz
 
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/bash-5.3 pizlonated-bash

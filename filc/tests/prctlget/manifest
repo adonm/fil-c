@@ -1,7 +1,8 @@
 return:
-
   success
 
 output-includes:
-
   - "prctl ok"
+
+# This tests prctls that cosmo doesn't have.
+unsupportedOnCOSMO: true

@@ -2,3 +2,6 @@ return:
   success
 output-includes:
   - "priority-inheritance mutex ok"
+
+# Cosmo doesn't support PI mutexes
+unsupportedOnCOSMO: true

@@ -252,20 +252,21 @@ static unsigned poison_lookup(uint64_t addr, size_t size) {
     return bits;
 }
 
-void mem_get_taint(uint64_t addr, size_t size, bool* cb, bool* ci) {
+void mem_get_taint(uint64_t addr, size_t size, Taint* out) {
     unsigned bits = poison_lookup(addr, size);
-    if (cb)
-        *cb = (bits & POISON_CANNOT_BRANCH) != 0;
-    if (ci)
-        *ci = (bits & POISON_CANNOT_INDEX) != 0;
+    if (!out)
+        return;
+    out->cannot_branch = (bits & POISON_CANNOT_BRANCH) != 0;
+    out->cannot_index = (bits & POISON_CANNOT_INDEX) != 0;
 }
 
 // Store taint semantics (see mem.h): the destination bytes gain the stored
 // value's cannot-branch/index bits plus the matching clear-on-store bit, so
 // a later store to a clear-on-store location sanitizes the value (and the
 // memory). Load/store poison bits and clear bits are sticky.
-void mem_note_store(CPU* cpu, uint64_t addr, size_t size, bool cb, bool ci) {
+void mem_note_store(CPU* cpu, uint64_t addr, size_t size, Taint t) {
     (void)cpu;
+    bool cb = t.cannot_branch, ci = t.cannot_index;
     if (!cb && !ci) {
         // Clean store still honors clear-on-store: it sanitizes locations
         // that carry clear bits.
@@ -494,8 +495,8 @@ void mem_copy(CPU* cpu, uint64_t dst, uint64_t src, size_t n) {
     watch_check(cpu, dst, n, 0xccccccccccccccccULL);
     mem_check_load(cpu, src, n);
     mem_check_store(cpu, dst, n);
-    bool cb = false, ci = false;
-    mem_get_taint(src, n, &cb, &ci);
+    Taint t;
+    mem_get_taint(src, n, &t);
     t_recovery_armed = true;
     if (sigsetjmp(t_recovery_buf, 1)) {
         t_recovery_armed = false;
@@ -503,7 +504,7 @@ void mem_copy(CPU* cpu, uint64_t dst, uint64_t src, size_t n) {
     }
     memmove((void*)(uintptr_t)dst, (const void*)(uintptr_t)src, n);
     t_recovery_armed = false;
-    mem_note_store(cpu, dst, n, cb, ci);
+    mem_note_store(cpu, dst, n, t);
 }
 
 bool mem_copy_guarded(uint64_t src, void* dst, size_t n) {

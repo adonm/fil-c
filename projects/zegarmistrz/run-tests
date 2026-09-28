@@ -32,6 +32,13 @@ gcc -O2 -static -o "$OUTDIR/static_hi" tests/static_hi.c || { log "guest compile
 for t in poison_load poison_store poison_branch poison_index poison_unpoison poison_clear poison_syscall; do
     gcc -O2 -o "$OUTDIR/$t" "tests/$t.c" 2>/dev/null || { log "guest compile failed: $t"; exit 1; }
 done
+# Masked/compress poisoning tests use AVX512 intrinsics (run only under the
+# emulator, expecting core dumps like the other poison-* fault tests).
+for t in poison_masked_load poison_masked_store poison_compress_expand; do
+    gcc -O2 -mavx512f -mavx512bw -mavx512vl -mavx512dq -mavx512vbmi -mavx512vbmi2 \
+        -o "$OUTDIR/$t" "tests/$t.c" 2>/dev/null \
+        || { log "guest compile failed: $t"; exit 1; }
+done
 # Crash guest for core-dump tests.
 cat > "$OUTDIR/crash.c" <<'EOF'
 #include <stdio.h>
@@ -75,6 +82,9 @@ echo "poison-store"
 echo "poison-branch"
 echo "poison-index"
 echo "poison-syscall"
+echo "poison-masked-load"
+echo "poison-masked-store"
+echo "poison-compress-expand"
 echo "poison-unpoison"
 echo "poison-clear"
 echo "core-gdb"
@@ -134,7 +144,7 @@ argv[2]=bar" ] && echo "PASS args-exit" || echo "FAIL args-exit: exit=$ec out=[$
       diff test-output/aes.native test-output/aes.emu | head -5
     fi
     ;;
-  poison-load|poison-store|poison-branch|poison-index|poison-syscall)
+  poison-load|poison-store|poison-branch|poison-index|poison-syscall|poison-masked-load|poison-masked-store|poison-compress-expand)
     name="$t"
     bin=$(echo "$t" | tr "-" "_")
     rm -f "test-output/zegarmistrz.core.$bin."*

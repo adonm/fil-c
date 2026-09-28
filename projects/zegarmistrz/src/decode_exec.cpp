@@ -346,8 +346,7 @@ bool is_cmovcc(ZydisMnemonic m) {
 
 struct Val {
     uint64_t v = 0;
-    bool cb = false; // cannot_branch
-    bool ci = false; // cannot_index
+    Taint taint;
 };
 
 // Compute linear address of a memory operand. next_rip = address of the
@@ -363,7 +362,7 @@ uint64_t resolve_mem(CPU* cpu, const ZydisDecodedOperand& op, uint64_t next_rip)
             int idx, size, shift;
             if (!reg_to_gpr(op.mem.base, idx, size, shift))
                 guest_error(cpu, "unsupported base register in memory operand");
-            if (cpu->gpr[idx].cannot_index)
+            if (cpu->gpr[idx].taint.cannot_index)
                 guest_error(cpu, "tainted (cannot-index) value used as address base");
             base = cpu->gpr[idx].val;
             has_base = true;
@@ -373,7 +372,7 @@ uint64_t resolve_mem(CPU* cpu, const ZydisDecodedOperand& op, uint64_t next_rip)
         int idx, size, shift;
         if (!reg_to_gpr(op.mem.index, idx, size, shift))
             guest_error(cpu, "unsupported index register in memory operand");
-        if (cpu->gpr[idx].cannot_index)
+        if (cpu->gpr[idx].taint.cannot_index)
             guest_error(cpu, "tainted (cannot-index) value used as address index");
         uint64_t iv = cpu->gpr[idx].val;
         // Index is used at its natural width; 32-bit index is zero-extended.
@@ -408,8 +407,8 @@ Val op_load(CPU* cpu, const Dec& d, int oi) {
             guest_error(cpu, "unsupported register operand");
         uint64_t full = cpu->gpr[idx].val;
         r.v = (full >> shift) & mask_for(size);
-        r.cb = cpu->gpr[idx].cannot_branch;
-        r.ci = cpu->gpr[idx].cannot_index;
+        r.taint.cannot_branch = cpu->gpr[idx].taint.cannot_branch;
+        r.taint.cannot_index = cpu->gpr[idx].taint.cannot_index;
         return r;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
@@ -423,7 +422,7 @@ Val op_load(CPU* cpu, const Dec& d, int oi) {
         default: guest_error(cpu, "unsupported memory operand size");
         }
         // Poisoning: loads from cannot-branch/index memory taint the value.
-        mem_get_taint(addr, bytes, &r.cb, &r.ci);
+        mem_get_taint(addr, bytes, &r.taint);
         return r;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
@@ -454,8 +453,8 @@ void op_store(CPU* cpu, const Dec& d, int oi, Val v) {
             full = (full & ~m) | ((v.v & mask_for(size)) << shift);
         }
         cpu->gpr[idx].val = full;
-        cpu->gpr[idx].cannot_branch = v.cb;
-        cpu->gpr[idx].cannot_index = v.ci;
+        cpu->gpr[idx].taint.cannot_branch = v.taint.cannot_branch;
+        cpu->gpr[idx].taint.cannot_index = v.taint.cannot_index;
         return;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
@@ -469,7 +468,7 @@ void op_store(CPU* cpu, const Dec& d, int oi, Val v) {
         default: guest_error(cpu, "unsupported memory operand size");
         }
         // Poisoning: a stored tainted value poisons the destination.
-        mem_note_store(cpu, addr, bytes, v.cb, v.ci);
+        mem_note_store(cpu, addr, bytes, v.taint);
         return;
     }
     guest_error(cpu, "cannot store to non-register/memory operand");
@@ -480,43 +479,43 @@ void op_store(CPU* cpu, const Dec& d, int oi, Val v) {
 // poison); vec_store_bytes takes the stored value's taint for mem_note_store
 // and propagates register sidecars.
 void vec_load_bytes(CPU* cpu, const Dec& d, int oi, uint8_t* out, unsigned n,
-                    bool* cb = nullptr, bool* ci = nullptr) {
+                    Taint* t = nullptr) {
     const auto& op = d.ops[oi];
-    if (cb)
-        *cb = false;
-    if (ci)
-        *ci = false;
+    if (t)
+        t->clear();
     if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int idx, width;
         if (!reg_to_vec(op.reg.value, idx, width))
             guest_error(cpu, "unsupported vector register");
         memcpy(out, cpu->xmm[idx].bytes, n);
-        if (cb)
-            *cb = cpu->xmm[idx].cannot_branch;
-        if (ci)
-            *ci = cpu->xmm[idx].cannot_index;
+        if (t)
+            *t = cpu->xmm[idx].taint;
         return;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
         uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
         mem_load_bytes(cpu, addr, out, n);
-        mem_get_taint(addr, n, cb, ci);
+        if (t)
+            mem_get_taint(addr, n, t);
+        else {
+            Taint tmp;
+            mem_get_taint(addr, n, &tmp);
+            (void)tmp;
+        }
         return;
     }
     guest_error(cpu, "unsupported vector operand");
 }
 
 void vec_store_bytes(CPU* cpu, const Dec& d, int oi, const uint8_t* in, unsigned n,
-                     bool zero_upper, unsigned total_width, bool cb = false,
-                     bool ci = false) {
+                     bool zero_upper, unsigned total_width, Taint t = Taint()) {
     const auto& op = d.ops[oi];
     if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int idx, width;
         if (!reg_to_vec(op.reg.value, idx, width))
             guest_error(cpu, "unsupported vector register");
         memcpy(cpu->xmm[idx].bytes, in, n);
-        cpu->xmm[idx].cannot_branch = cb;
-        cpu->xmm[idx].cannot_index = ci;
+        cpu->xmm[idx].taint = t;
         if (zero_upper) {
             unsigned zfrom = n < total_width ? n : total_width;
             // VEX: zero everything above n up to 64? No: VEX128 zeros
@@ -527,15 +526,62 @@ void vec_store_bytes(CPU* cpu, const Dec& d, int oi, const uint8_t* in, unsigned
             // MAXVL-1:VL where MAXVL is 512 if AVX512... on this host,
             // VEX128 zeros ymm upper + zmm upper? Yes: VEX zeros DEST[MAXVL-1:VL].
             // Phase 1: zero everything above n.
-            if (zfrom < 64)
-                memset(cpu->xmm[idx].bytes + zfrom, 0, 64 - zfrom);
+            if (zfrom < MAX_VEC_BYTES)
+                memset(cpu->xmm[idx].bytes + zfrom, 0, MAX_VEC_BYTES - zfrom);
         }
         return;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
         uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
         mem_store_bytes(cpu, addr, in, n);
-        mem_note_store(cpu, addr, n, cb, ci);
+        mem_note_store(cpu, addr, n, t);
+        return;
+    }
+    guest_error(cpu, "cannot store vector to operand");
+}
+
+// VecVal overloads: taint lives in VecVal.taint. Raw-pointer overloads
+// above (for sub-vectors) use Taint as well (no bool pairs).
+void vec_load_bytes(CPU* cpu, const Dec& d, int oi, VecVal& out, unsigned n) {
+    const auto& op = d.ops[oi];
+    out.taint.clear();
+    if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        int idx, width;
+        if (!reg_to_vec(op.reg.value, idx, width))
+            guest_error(cpu, "unsupported vector register");
+        memcpy(out.bytes, cpu->xmm[idx].bytes, n);
+        out.taint = cpu->xmm[idx].taint;
+        return;
+    }
+    if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+        uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
+        mem_load_bytes(cpu, addr, out.bytes, n);
+        mem_get_taint(addr, n, &out.taint);
+        return;
+    }
+    guest_error(cpu, "unsupported vector operand");
+}
+
+void vec_store_bytes(CPU* cpu, const Dec& d, int oi, const VecVal& in, unsigned n,
+                     bool zero_upper, unsigned total_width) {
+    const auto& op = d.ops[oi];
+    if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
+        int idx, width;
+        if (!reg_to_vec(op.reg.value, idx, width))
+            guest_error(cpu, "unsupported vector register");
+        memcpy(cpu->xmm[idx].bytes, in.bytes, n);
+        cpu->xmm[idx].taint = in.taint;
+        if (zero_upper) {
+            unsigned zfrom = n < total_width ? n : total_width;
+            if (zfrom < MAX_VEC_BYTES)
+                memset(cpu->xmm[idx].bytes + zfrom, 0, MAX_VEC_BYTES - zfrom);
+        }
+        return;
+    }
+    if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
+        uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
+        mem_store_bytes(cpu, addr, in.bytes, n);
+        mem_note_store(cpu, addr, n, in.taint);
         return;
     }
     guest_error(cpu, "cannot store vector to operand");
@@ -546,24 +592,24 @@ void vec_store_bytes(CPU* cpu, const Dec& d, int oi, const uint8_t* in, unsigned
 // self-xor (and self-sub) of the same register, which produce untagged zero.
 
 void flags_taint2(CPU* cpu, Val a, Val b) {
-    cpu->flags_cannot_branch = a.cb || b.cb;
-    cpu->flags_cannot_index = a.ci || b.ci;
+    cpu->flags_taint.cannot_branch = a.taint.cannot_branch || b.taint.cannot_branch;
+    cpu->flags_taint.cannot_index = a.taint.cannot_index || b.taint.cannot_index;
 }
 
 void flags_taint1(CPU* cpu, Val a) {
-    cpu->flags_cannot_branch = a.cb;
-    cpu->flags_cannot_index = a.ci;
+    cpu->flags_taint.cannot_branch = a.taint.cannot_branch;
+    cpu->flags_taint.cannot_index = a.taint.cannot_index;
 }
 
 void flags_clear(CPU* cpu) {
-    cpu->flags_cannot_branch = false;
-    cpu->flags_cannot_index = false;
+    cpu->flags_taint.cannot_branch = false;
+    cpu->flags_taint.cannot_index = false;
 }
 
 void check_flags_taint(CPU* cpu, const char* what) {
-    if (cpu->flags_cannot_branch)
+    if (cpu->flags_taint.cannot_branch)
         guest_error(cpu, "tainted (cannot-branch) value used in branch condition");
-    if (cpu->flags_cannot_index)
+    if (cpu->flags_taint.cannot_index)
         guest_error(cpu, "tainted (cannot-index) value used in branch condition");
     (void)what;
 }
@@ -590,14 +636,14 @@ bool vec_self_op(const Dec& d) {
 
 uint64_t next_rip(CPU* cpu, const Dec& d) { return cpu->rip + d.insn.length; }
 
-void push64(CPU* cpu, uint64_t v, bool cb = false, bool ci = false) {
+void push64(CPU* cpu, uint64_t v, Taint t = Taint()) {
     uint64_t rsp = cpu->gpr[ZG_RSP].val - 8;
-    if (cpu->gpr[ZG_RSP].cannot_index)
+    if (cpu->gpr[ZG_RSP].taint.cannot_index)
         guest_error(cpu, "tainted RSP used by push");
     mem_store64(cpu, rsp, v);
     // Record the stored value's taint on the new stack slot: a clean push
     // clears stale poison (via clear-on-store), a tainted push poisons it.
-    mem_note_store(cpu, rsp, 8, cb, ci);
+    mem_note_store(cpu, rsp, 8, t);
     // RSP taint tracks the pointer only: it keeps its old taint (normally
     // clean) and must NOT OR in the stored value's taint. Otherwise every
     // push of a tainted value would taint RSP and all later RSP-relative
@@ -609,12 +655,12 @@ void push64(CPU* cpu, uint64_t v, bool cb = false, bool ci = false) {
 // RSP itself keeps its old taint; only .val advances.
 Val pop64(CPU* cpu) {
     uint64_t rsp = cpu->gpr[ZG_RSP].val;
-    if (cpu->gpr[ZG_RSP].cannot_index)
+    if (cpu->gpr[ZG_RSP].taint.cannot_index)
         guest_error(cpu, "tainted RSP used by pop");
     uint64_t v = mem_load64(cpu, rsp);
     Val r;
     r.v = v;
-    mem_get_taint(rsp, 8, &r.cb, &r.ci);
+    mem_get_taint(rsp, 8, &r.taint);
     cpu->gpr[ZG_RSP].val = rsp + 8;
     return r;
 }
@@ -684,9 +730,9 @@ uint64_t branch_target(CPU* cpu, const Dec& d, int oi) {
         return op.imm.is_signed ? (uint64_t)op.imm.value.s : op.imm.value.u;
     }
     Val v = op_load(cpu, d, oi);
-    if (v.cb)
+    if (v.taint.cannot_branch)
         guest_error(cpu, "tainted (cannot-branch) branch target");
-    if (v.ci)
+    if (v.taint.cannot_index)
         guest_error(cpu, "tainted (cannot-index) branch target");
     return v.v;
 }
@@ -706,24 +752,21 @@ void exec_lea(CPU* cpu, const Dec& d) {
     // arrive here; recompute from the address registers.
     {
         const auto& op = d.ops[1];
-        bool cb = false, ci = false;
+        Taint t;
         if (op.mem.base != ZYDIS_REGISTER_NONE &&
             op.mem.base != ZYDIS_REGISTER_RIP) {
             int idx, size, shift;
             if (reg_to_gpr(op.mem.base, idx, size, shift)) {
-                cb = cb || cpu->gpr[idx].cannot_branch;
-                ci = ci || cpu->gpr[idx].cannot_index;
+                t |= cpu->gpr[idx].taint;
             }
         }
         if (op.mem.index != ZYDIS_REGISTER_NONE) {
             int idx, size, shift;
             if (reg_to_gpr(op.mem.index, idx, size, shift)) {
-                cb = cb || cpu->gpr[idx].cannot_branch;
-                ci = ci || cpu->gpr[idx].cannot_index;
+                t |= cpu->gpr[idx].taint;
             }
         }
-        v.cb = cb;
-        v.ci = ci;
+        v.taint = t;
     }
     op_store(cpu, d, 0, v);
     cpu->rip = next_rip(cpu, d);
@@ -739,7 +782,7 @@ void exec_xchg(CPU* cpu, const Dec& d) {
 
 void exec_push(CPU* cpu, const Dec& d) {
     Val v = op_load(cpu, d, 0);
-    push64(cpu, v.v, v.cb, v.ci);
+    push64(cpu, v.v, v.taint);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -752,12 +795,12 @@ void exec_pop(CPU* cpu, const Dec& d) {
 void exec_leave(CPU* cpu, const Dec& d) {
     // MOV RSP,RBP semantics: RSP takes RBP's value and pointer taint.
     cpu->gpr[ZG_RSP].val = cpu->gpr[ZG_RBP].val;
-    cpu->gpr[ZG_RSP].cannot_branch = cpu->gpr[ZG_RBP].cannot_branch;
-    cpu->gpr[ZG_RSP].cannot_index = cpu->gpr[ZG_RBP].cannot_index;
+    cpu->gpr[ZG_RSP].taint.cannot_branch = cpu->gpr[ZG_RBP].taint.cannot_branch;
+    cpu->gpr[ZG_RSP].taint.cannot_index = cpu->gpr[ZG_RBP].taint.cannot_index;
     Val v = pop64(cpu);
     cpu->gpr[ZG_RBP].val = v.v;
-    cpu->gpr[ZG_RBP].cannot_branch = v.cb;
-    cpu->gpr[ZG_RBP].cannot_index = v.ci;
+    cpu->gpr[ZG_RBP].taint.cannot_branch = v.taint.cannot_branch;
+    cpu->gpr[ZG_RBP].taint.cannot_index = v.taint.cannot_index;
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -767,38 +810,33 @@ void exec_enter(CPU* cpu, const Dec& d) {
     Val nesting = op_load(cpu, d, 1);
     // Preserve taint across the frame pushes (push64 keeps RSP taint but
     // records slot taint via mem_note_store).
-    push64(cpu, cpu->gpr[ZG_RBP].val, cpu->gpr[ZG_RBP].cannot_branch,
-           cpu->gpr[ZG_RBP].cannot_index);
+    push64(cpu, cpu->gpr[ZG_RBP].val, cpu->gpr[ZG_RBP].taint);
     uint64_t frame = cpu->gpr[ZG_RSP].val;
     // RBP at this point still holds the old frame pointer for the copies.
-    bool old_rsp_cb = cpu->gpr[ZG_RSP].cannot_branch;
-    bool old_rsp_ci = cpu->gpr[ZG_RSP].cannot_index;
+    Taint old_rsp_taint = cpu->gpr[ZG_RSP].taint;
     unsigned level = (unsigned)nesting.v & 0x1f;
     if (level > 0) {
         for (unsigned i = 1; i < level; i++) {
             uint64_t a = cpu->gpr[ZG_RBP].val - i * 8;
             uint64_t w = mem_load64(cpu, a);
-            bool tcb = false, tci = false;
-            mem_get_taint(a, 8, &tcb, &tci);
+            Taint t;
+            mem_get_taint(a, 8, &t);
             Val wv;
             wv.v = w;
-            wv.cb = tcb;
-            wv.ci = tci;
+            wv.taint = t;
             (void)wv;
-            push64(cpu, w, tcb, tci);
+            push64(cpu, w, t);
         }
-        push64(cpu, frame, old_rsp_cb, old_rsp_ci);
+        push64(cpu, frame, old_rsp_taint);
     }
     cpu->gpr[ZG_RBP].val = frame;
-    cpu->gpr[ZG_RBP].cannot_branch = old_rsp_cb;
-    cpu->gpr[ZG_RBP].cannot_index = old_rsp_ci;
+    cpu->gpr[ZG_RBP].taint = old_rsp_taint;
     // New RSP = frame - alloc: pointer derived from frame and alloc size, so
     // it inherits both the old RSP taint and the alloc-size taint. The
     // nesting level controls the loop above (branch-like), so its taint
     // propagates too.
     cpu->gpr[ZG_RSP].val = frame - (alloc.v & 0xffff);
-    cpu->gpr[ZG_RSP].cannot_branch = old_rsp_cb || alloc.cb || nesting.cb;
-    cpu->gpr[ZG_RSP].cannot_index = old_rsp_ci || alloc.ci || nesting.ci;
+    cpu->gpr[ZG_RSP].taint = old_rsp_taint | alloc.taint | nesting.taint;
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -850,8 +888,8 @@ void exec_alu(CPU* cpu, const Dec& d, ZydisMnemonic m) {
             flags_logic(cpu, w, 0);
             flags_clear(cpu);
             out.v = 0;
-            out.cb = false;
-            out.ci = false;
+            out.taint.cannot_branch = false;
+            out.taint.cannot_index = false;
             op_store(cpu, d, 0, out);
             cpu->rip = next_rip(cpu, d);
             return;
@@ -901,8 +939,8 @@ void exec_alu(CPU* cpu, const Dec& d, ZydisMnemonic m) {
             flags_logic(cpu, w, 0);
             flags_clear(cpu);
             out.v = 0;
-            out.cb = false;
-            out.ci = false;
+            out.taint.cannot_branch = false;
+            out.taint.cannot_index = false;
             if (m == ZYDIS_MNEMONIC_XOR) {
                 op_store(cpu, d, 0, out);
                 cpu->rip = next_rip(cpu, d);
@@ -917,8 +955,8 @@ void exec_alu(CPU* cpu, const Dec& d, ZydisMnemonic m) {
     default: guest_error(cpu, "bad alu op");
     }
     // Taint propagation (except zero idiom handled above).
-    out.cb = dst.cb || src.cb;
-    out.ci = dst.ci || src.ci;
+    out.taint.cannot_branch = dst.taint.cannot_branch || src.taint.cannot_branch;
+    out.taint.cannot_index = dst.taint.cannot_index || src.taint.cannot_index;
     flags_taint2(cpu, dst, src);
     if (m == ZYDIS_MNEMONIC_CMP || m == ZYDIS_MNEMONIC_TEST) {
         cpu->rip = next_rip(cpu, d);
@@ -946,8 +984,8 @@ void exec_incdec(CPU* cpu, const Dec& d, bool is_inc) {
     cpu->set_flag(FLAG_CF, old_cf); // INC/DEC preserve CF
     Val out;
     out.v = r;
-    out.cb = v.cb;
-    out.ci = v.ci;
+    out.taint.cannot_branch = v.taint.cannot_branch;
+    out.taint.cannot_index = v.taint.cannot_index;
     flags_taint1(cpu, v);
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
@@ -962,8 +1000,8 @@ void exec_neg(CPU* cpu, const Dec& d) {
     flags_sub(cpu, w, 0, a, r);
     Val out;
     out.v = r;
-    out.cb = v.cb;
-    out.ci = v.ci;
+    out.taint.cannot_branch = v.taint.cannot_branch;
+    out.taint.cannot_index = v.taint.cannot_index;
     flags_taint1(cpu, v);
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
@@ -974,8 +1012,8 @@ void exec_not(CPU* cpu, const Dec& d) {
     int w = common_int_width(d);
     Val out;
     out.v = (~v.v) & mask_for(w);
-    out.cb = v.cb;
-    out.ci = v.ci;
+    out.taint.cannot_branch = v.taint.cannot_branch;
+    out.taint.cannot_index = v.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -988,8 +1026,8 @@ void exec_shift(CPU* cpu, const Dec& d, ZydisMnemonic m) {
     uint64_t count = cnt.v & (bits == 64 ? 63 : 31);
     uint64_t a = dst.v & mask_for(w);
     Val out;
-    out.cb = dst.cb || cnt.cb;
-    out.ci = dst.ci || cnt.ci;
+    out.taint.cannot_branch = dst.taint.cannot_branch || cnt.taint.cannot_branch;
+    out.taint.cannot_index = dst.taint.cannot_index || cnt.taint.cannot_index;
     if (count == 0) {
         cpu->rip = next_rip(cpu, d);
         return;
@@ -1136,8 +1174,8 @@ void exec_imul(CPU* cpu, const Dec& d) {
     cpu->set_flag(FLAG_ZF, false);
     cpu->set_flag(FLAG_SF, false);
     cpu->set_flag(FLAG_PF, false);
-    out.cb = s0.cb || s1.cb;
-    out.ci = s0.ci || s1.ci;
+    out.taint.cannot_branch = s0.taint.cannot_branch || s1.taint.cannot_branch;
+    out.taint.cannot_index = s0.taint.cannot_index || s1.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1272,8 +1310,8 @@ void exec_movzx(CPU* cpu, const Dec& d) {
     Val s = op_load(cpu, d, 1);
     Val out;
     out.v = s.v; // op_load already masks to source width; zero-extend is free
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1290,8 +1328,8 @@ void exec_movsx(CPU* cpu, const Dec& d) {
         sv = (int32_t)s.v;
     Val out;
     out.v = (uint64_t)sv;
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1302,8 +1340,8 @@ void exec_setcc(CPU* cpu, const Dec& d) {
     // rather than a fault).
     Val out;
     out.v = eval_cond(cpu, d.insn.mnemonic) ? 1 : 0;
-    out.cb = cpu->flags_cannot_branch;
-    out.ci = cpu->flags_cannot_index;
+    out.taint.cannot_branch = cpu->flags_taint.cannot_branch;
+    out.taint.cannot_index = cpu->flags_taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1314,15 +1352,15 @@ void exec_cmovcc(CPU* cpu, const Dec& d) {
     bool take = eval_cond(cpu, d.insn.mnemonic);
     if (take) {
         Val s = op_load(cpu, d, 1);
-        s.cb = s.cb || cpu->flags_cannot_branch;
-        s.ci = s.ci || cpu->flags_cannot_index;
+        s.taint.cannot_branch = s.taint.cannot_branch || cpu->flags_taint.cannot_branch;
+        s.taint.cannot_index = s.taint.cannot_index || cpu->flags_taint.cannot_index;
         op_store(cpu, d, 0, s);
-    } else if (cpu->flags_cannot_branch || cpu->flags_cannot_index) {
+    } else if (cpu->flags_taint.cannot_branch || cpu->flags_taint.cannot_index) {
         // Not taken: taint the destination in place (CMOV dest is always a
         // register, so this load+store is side-effect free).
         Val cur = op_load(cpu, d, 0);
-        cur.cb = cur.cb || cpu->flags_cannot_branch;
-        cur.ci = cur.ci || cpu->flags_cannot_index;
+        cur.taint.cannot_branch = cur.taint.cannot_branch || cpu->flags_taint.cannot_branch;
+        cur.taint.cannot_index = cur.taint.cannot_index || cpu->flags_taint.cannot_index;
         op_store(cpu, d, 0, cur);
     }
     cpu->rip = next_rip(cpu, d);
@@ -1368,8 +1406,8 @@ void exec_bswap(CPU* cpu, const Dec& d) {
     out.v = __builtin_bswap64(v.v) >> (64 - 8 * common_int_width(d));
     if (common_int_width(d) == 4)
         out.v = __builtin_bswap32((uint32_t)v.v);
-    out.cb = v.cb;
-    out.ci = v.ci;
+    out.taint.cannot_branch = v.taint.cannot_branch;
+    out.taint.cannot_index = v.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1384,8 +1422,8 @@ void exec_bit_test(CPU* cpu, const Dec& d) {
     // implement the full semantics.
     int64_t bit = (int64_t)off.v;
     Val out = base;
-    out.cb = base.cb || off.cb;
-    out.ci = base.ci || off.ci;
+    out.taint.cannot_branch = base.taint.cannot_branch || off.taint.cannot_branch;
+    out.taint.cannot_index = base.taint.cannot_index || off.taint.cannot_index;
     if (d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
         int64_t byte_off;
         unsigned bit_in_byte;
@@ -1427,8 +1465,8 @@ void exec_bsfbsr(CPU* cpu, const Dec& d, bool is_bsr) {
     int w = common_int_width(d);
     uint64_t v = s.v & mask_for(w);
     Val out;
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     if (v == 0) {
         cpu->set_flag(FLAG_ZF, true);
         // dest undefined on zero; leave it.
@@ -1445,8 +1483,8 @@ void exec_popcnt(CPU* cpu, const Dec& d) {
     int w = common_int_width(d);
     Val out;
     out.v = __builtin_popcountll(s.v & mask_for(w));
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     cpu->set_flag(FLAG_CF, false);
     cpu->set_flag(FLAG_OF, false);
     cpu->set_flag(FLAG_SF, false);
@@ -1462,8 +1500,8 @@ void exec_tzcnt_lzcnt(CPU* cpu, const Dec& d, bool is_tzcnt) {
     int w = common_int_width(d);
     uint64_t v = s.v & mask_for(w);
     Val out;
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     if (is_tzcnt)
         out.v = (v == 0) ? w * 8 : __builtin_ctzll(v);
     else
@@ -1500,8 +1538,8 @@ void exec_cmpxchg(CPU* cpu, const Dec& d) {
     if (acc == dv) {
         Val out;
         out.v = sv;
-        out.cb = src.cb;
-        out.ci = src.ci;
+        out.taint.cannot_branch = src.taint.cannot_branch;
+        out.taint.cannot_index = src.taint.cannot_index;
         op_store(cpu, d, 0, out);
     } else {
         uint64_t full = cpu->gpr[ZG_RAX].val;
@@ -1527,12 +1565,12 @@ void exec_xadd(CPU* cpu, const Dec& d) {
     flags_add(cpu, w, dst.v & m, src.v & m, r);
     Val to_dst;
     to_dst.v = r;
-    to_dst.cb = dst.cb || src.cb;
-    to_dst.ci = dst.ci || src.ci;
+    to_dst.taint.cannot_branch = dst.taint.cannot_branch || src.taint.cannot_branch;
+    to_dst.taint.cannot_index = dst.taint.cannot_index || src.taint.cannot_index;
     Val to_src;
     to_src.v = dst.v & m;
-    to_src.cb = dst.cb;
-    to_src.ci = dst.ci;
+    to_src.taint.cannot_branch = dst.taint.cannot_branch;
+    to_src.taint.cannot_index = dst.taint.cannot_index;
     op_store(cpu, d, 0, to_dst);
     op_store(cpu, d, 1, to_src);
     cpu->rip = next_rip(cpu, d);
@@ -1588,8 +1626,8 @@ void exec_movbe(CPU* cpu, const Dec& d) {
         out.v = __builtin_bswap64(s.v);
     else
         guest_error(cpu, "bad movbe width");
-    out.cb = s.cb;
-    out.ci = s.ci;
+    out.taint.cannot_branch = s.taint.cannot_branch;
+    out.taint.cannot_index = s.taint.cannot_index;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -1613,8 +1651,8 @@ void handle_magic_call(CPU* cpu, const Dec& d) {
     uint64_t flags = cpu->gpr[ZG_RCX].val;
     uint64_t ret = mem_client_request(cpu->emu, cpu, op, ptr, size, flags);
     cpu->gpr[ZG_RAX].val = ret;
-    cpu->gpr[ZG_RAX].cannot_branch = false;
-    cpu->gpr[ZG_RAX].cannot_index = false;
+    cpu->gpr[ZG_RAX].taint.cannot_branch = false;
+    cpu->gpr[ZG_RAX].taint.cannot_index = false;
     // CALL semantics without touching the stack: RIP advances past CALL.
     cpu->rip = next_rip(cpu, d);
 }
@@ -1634,14 +1672,14 @@ void exec_call(CPU* cpu, const Dec& d) {
 
 void exec_ret(CPU* cpu, const Dec& d) {
     uint64_t rsp = cpu->gpr[ZG_RSP].val;
-    if (cpu->gpr[ZG_RSP].cannot_index)
+    if (cpu->gpr[ZG_RSP].taint.cannot_index)
         guest_error(cpu, "tainted RSP used by ret");
     uint64_t target = mem_load64(cpu, rsp);
-    bool tcb = false, tci = false;
-    mem_get_taint(rsp, 8, &tcb, &tci);
-    if (tcb)
+    Taint t;
+    mem_get_taint(rsp, 8, &t);
+    if (t.cannot_branch)
         guest_error(cpu, "tainted (cannot-branch) return address");
-    if (tci)
+    if (t.cannot_index)
         guest_error(cpu, "tainted (cannot-index) return address");
     cpu->gpr[ZG_RSP].val = rsp + 8;
     int n = explicit_ops(d);
@@ -1672,7 +1710,7 @@ void exec_jcxz(CPU* cpu, const Dec& d) {
             : (d.insn.mnemonic == ZYDIS_MNEMONIC_JECXZ) ? 4
                                                        : 8;
     uint64_t m = mask_for(w);
-    if (cpu->gpr[ZG_RCX].cannot_branch || cpu->gpr[ZG_RCX].cannot_index)
+    if (cpu->gpr[ZG_RCX].taint.cannot_branch || cpu->gpr[ZG_RCX].taint.cannot_index)
         guest_error(cpu, "tainted (cannot-branch/index) RCX in jcxz");
     uint64_t cx = cpu->gpr[ZG_RCX].val & m;
     if (cx == 0)
@@ -1683,7 +1721,7 @@ void exec_jcxz(CPU* cpu, const Dec& d) {
 
 void exec_loop(CPU* cpu, const Dec& d) {
     int w = (d.insn.attributes & ZYDIS_ATTRIB_HAS_ADDRESSSIZE) ? 4 : 8;
-    if (cpu->gpr[ZG_RCX].cannot_branch || cpu->gpr[ZG_RCX].cannot_index)
+    if (cpu->gpr[ZG_RCX].taint.cannot_branch || cpu->gpr[ZG_RCX].taint.cannot_index)
         guest_error(cpu, "tainted (cannot-branch/index) RCX in loop");
     check_flags_taint(cpu, "loop");
     if (w != 8) {
@@ -1763,14 +1801,14 @@ int string_width(ZydisMnemonic m) {
 }
 
 void check_si_di_taint(CPU* cpu) {
-    if (cpu->gpr[ZG_RSI].cannot_index || cpu->gpr[ZG_RDI].cannot_index)
+    if (cpu->gpr[ZG_RSI].taint.cannot_index || cpu->gpr[ZG_RDI].taint.cannot_index)
         guest_error(cpu, "tainted (cannot-index) RSI/RDI in string op");
 }
 
 void check_rep_taint(CPU* cpu, const Dec& d) {
     if (!has_rep(d))
         return;
-    if (cpu->gpr[ZG_RCX].cannot_branch || cpu->gpr[ZG_RCX].cannot_index)
+    if (cpu->gpr[ZG_RCX].taint.cannot_branch || cpu->gpr[ZG_RCX].taint.cannot_index)
         guest_error(cpu, "tainted (cannot-branch/index) RCX in rep string op");
 }
 
@@ -1811,8 +1849,7 @@ void exec_string(CPU* cpu, const Dec& d) {
     uint64_t si = cpu->gpr[ZG_RSI].val;
     uint64_t di = cpu->gpr[ZG_RDI].val;
     uint64_t ax = cpu->gpr[ZG_RAX].val & mask_for(w);
-    bool ax_cb = cpu->gpr[ZG_RAX].cannot_branch;
-    bool ax_ci = cpu->gpr[ZG_RAX].cannot_index;
+    Taint ax_taint = cpu->gpr[ZG_RAX].taint;
     uint64_t done = 0;
     for (uint64_t i = 0; i < count; i++) {
         if (is_movs) {
@@ -1823,15 +1860,15 @@ void exec_string(CPU* cpu, const Dec& d) {
             case 4: v = mem_load32(cpu, si); break;
             default: v = mem_load64(cpu, si); break;
             }
-            bool mcb = false, mci = false;
-            mem_get_taint(si, w, &mcb, &mci);
+            Taint mtaint;
+            mem_get_taint(si, w, &mtaint);
             switch (w) {
             case 1: mem_store8(cpu, di, (uint8_t)v); break;
             case 2: mem_store16(cpu, di, (uint16_t)v); break;
             case 4: mem_store32(cpu, di, (uint32_t)v); break;
             default: mem_store64(cpu, di, v); break;
             }
-            mem_note_store(cpu, di, w, mcb, mci);
+            mem_note_store(cpu, di, w, mtaint);
             si += step;
             di += step;
             done++;
@@ -1842,7 +1879,7 @@ void exec_string(CPU* cpu, const Dec& d) {
             case 4: mem_store32(cpu, di, (uint32_t)ax); break;
             default: mem_store64(cpu, di, ax); break;
             }
-            mem_note_store(cpu, di, w, ax_cb, ax_ci);
+            mem_note_store(cpu, di, w, ax_taint);
             di += step;
             done++;
         } else if (is_lods) {
@@ -1852,12 +1889,12 @@ void exec_string(CPU* cpu, const Dec& d) {
             case 4: ax = mem_load32(cpu, si); break;
             default: ax = mem_load64(cpu, si); break;
             }
-            mem_get_taint(si, w, &ax_cb, &ax_ci);
+            mem_get_taint(si, w, &ax_taint);
             si += step;
             done++;
         } else if (is_scas || is_cmps) {
             uint64_t b;
-            bool scb = false, sci = false;
+            Taint sctaint;
             if (is_scas) {
                 switch (w) {
                 case 1: b = mem_load8(cpu, di); break;
@@ -1865,7 +1902,7 @@ void exec_string(CPU* cpu, const Dec& d) {
                 case 4: b = mem_load32(cpu, di); break;
                 default: b = mem_load64(cpu, di); break;
                 }
-                mem_get_taint(di, w, &scb, &sci);
+                mem_get_taint(di, w, &sctaint);
                 di += step;
             } else {
                 uint64_t a;
@@ -1875,21 +1912,16 @@ void exec_string(CPU* cpu, const Dec& d) {
                 case 4: a = mem_load32(cpu, si); b = mem_load32(cpu, di); break;
                 default: a = mem_load64(cpu, si); b = mem_load64(cpu, di); break;
                 }
-                bool s1 = false, s2 = false;
-                mem_get_taint(si, w, &s1, &s2);
-                mem_get_taint(di, w, &scb, &sci);
-                scb = scb || s1;
-                sci = sci || s2;
+                Taint s_taint;
+                mem_get_taint(si, w, &s_taint);
                 si += step;
                 di += step;
                 ax = a;
-                ax_cb = s1;
-                ax_ci = s2;
+                ax_taint = s_taint;
             }
             uint64_t r = (ax - b) & mask_for(w);
             flags_sub(cpu, w, ax, b, r);
-            cpu->flags_cannot_branch = ax_cb || scb;
-            cpu->flags_cannot_index = ax_ci || sci;
+            cpu->flags_taint = ax_taint | sctaint;
             done++;
             if (rep) {
                 // REPE/REPZ continues while ZF=1; REPNE while ZF=0.
@@ -1914,8 +1946,7 @@ void exec_string(CPU* cpu, const Dec& d) {
         else
             cpu->gpr[ZG_RAX].val =
                 (cpu->gpr[ZG_RAX].val & ~mask_for(w)) | (ax & mask_for(w));
-        cpu->gpr[ZG_RAX].cannot_branch = ax_cb;
-        cpu->gpr[ZG_RAX].cannot_index = ax_ci;
+        cpu->gpr[ZG_RAX].taint = ax_taint;
     }
     if (is_stos || is_lods) {
         // AL/AX/EAX/RAX already handled: STOS uses ax snapshot; LODS wrote back.
@@ -1951,8 +1982,8 @@ void exec_cpuid(CPU* cpu, const Dec& d) {
     cpu->gpr[ZG_RCX].val = c;
     cpu->gpr[ZG_RDX].val = e;
     for (int r : {ZG_RAX, ZG_RBX, ZG_RCX, ZG_RDX}) {
-        cpu->gpr[r].cannot_branch = false;
-        cpu->gpr[r].cannot_index = false;
+        cpu->gpr[r].taint.cannot_branch = false;
+        cpu->gpr[r].taint.cannot_index = false;
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -1997,8 +2028,8 @@ void exec_popf(CPU* cpu, const Dec& d) {
                           FLAG_DF | FLAG_OF;
     cpu->rflags = (cpu->rflags & ~mask) | (v.v & mask) | 0x2;
     // Flags restored from a tainted stack slot inherit its taint.
-    cpu->flags_cannot_branch = v.cb;
-    cpu->flags_cannot_index = v.ci;
+    cpu->flags_taint.cannot_branch = v.taint.cannot_branch;
+    cpu->flags_taint.cannot_index = v.taint.cannot_index;
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2027,35 +2058,26 @@ unsigned vec_width(const Dec& d) {
 // Load the two sources for a 2-operand legacy op (a=dst, b=src) or a
 // 3-operand VEX op (a=src1, b=src2). Returns width in bytes. Optional
 // cb/ci receive the OR of both sources' cannot-branch/index taint.
-unsigned vec_sources(CPU* cpu, const Dec& d, uint8_t* a, uint8_t* b,
-                     bool* cb = nullptr, bool* ci = nullptr) {
+unsigned vec_sources(CPU* cpu, const Dec& d, VecVal& a, VecVal& b) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    bool cb1 = false, ci1 = false, cb2 = false, ci2 = false;
-    // VEX non-destructive form has 3+ explicit operands (dst, src1, src2,
-    // plus imm8 for shuffles/blends); legacy has 2 (dst/src, src).
     if (is_vex(d) && n >= 3) {
-        vec_load_bytes(cpu, d, 1, a, w, &cb1, &ci1);
-        vec_load_bytes(cpu, d, 2, b, w, &cb2, &ci2);
+        vec_load_bytes(cpu, d, 1, a, w);
+        vec_load_bytes(cpu, d, 2, b, w);
     } else {
-        vec_load_bytes(cpu, d, 0, a, w, &cb1, &ci1);
-        vec_load_bytes(cpu, d, 1, b, w, &cb2, &ci2);
+        vec_load_bytes(cpu, d, 0, a, w);
+        vec_load_bytes(cpu, d, 1, b, w);
     }
-    if (cb)
-        *cb = cb1 || cb2;
-    if (ci)
-        *ci = ci1 || ci2;
     return w;
 }
 
-void vec_store_dst(CPU* cpu, const Dec& d, const uint8_t* out, unsigned w,
-                   bool cb = false, bool ci = false) {
+void vec_store_dst(CPU* cpu, const Dec& d, const VecVal& out, unsigned w) {
     int n = explicit_ops(d);
     bool vex = is_vex(d);
     if (vex && n >= 3)
-        vec_store_bytes(cpu, d, 0, out, w, true, w, cb, ci);
+        vec_store_bytes(cpu, d, 0, out, w, true, w);
     else
-        vec_store_bytes(cpu, d, 0, out, w, false, w, cb, ci);
+        vec_store_bytes(cpu, d, 0, out, w, false, w);
 }
 
 bool is_aligned_move(ZydisMnemonic m) {
@@ -2083,18 +2105,17 @@ void exec_vec_move(CPU* cpu, const Dec& d) {
     unsigned w = vec_width(d);
     int n = explicit_ops(d);
     // Direction: dst is op0. Source may be reg or mem.
-    uint8_t tmp[64];
-    bool vcb = false, vci = false;
+    VecVal tmp;
     if (d.ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
         d.ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY) {
         // store
-        vec_load_bytes(cpu, d, 1, tmp, w, &vcb, &vci);
+        vec_load_bytes(cpu, d, 1, tmp, w);
         if (is_aligned_move(d.insn.mnemonic)) {
             uint64_t addr = resolve_mem(cpu, d.ops[0], cpu->rip + d.insn.length);
             if (addr & (w >= 16 ? 15 : 0))
                 guest_error(cpu, "guest SIGSEGV (unaligned vector store)", addr);
         }
-        vec_store_bytes(cpu, d, 0, tmp, w, false, w, vcb, vci);
+        vec_store_bytes(cpu, d, 0, tmp, w, false, w);
     } else {
         // load (reg <- reg/mem)
         if (d.ops[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
@@ -2103,9 +2124,9 @@ void exec_vec_move(CPU* cpu, const Dec& d) {
             if (addr & 15)
                 guest_error(cpu, "guest SIGSEGV (unaligned vector load)", addr);
         }
-        vec_load_bytes(cpu, d, 1, tmp, w, &vcb, &vci);
+        vec_load_bytes(cpu, d, 1, tmp, w);
         bool vex = is_vex(d);
-        vec_store_bytes(cpu, d, 0, tmp, w, vex, w, vcb, vci);
+        vec_store_bytes(cpu, d, 0, tmp, w, vex, w);
     }
     (void)n;
     cpu->rip = next_rip(cpu, d);
@@ -2113,14 +2134,14 @@ void exec_vec_move(CPU* cpu, const Dec& d) {
 
 void exec_vec_logic(CPU* cpu, const Dec& d, int kind) {
     // kind: 0=AND 1=OR 2=XOR 3=ANDN
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     // Self-xor (vpxor/xorps reg,reg,reg with all sources identical) clears
     // taint: the result is zero regardless of input.
     if (kind == 2 && vec_self_op(d)) {
         memset(o, 0, w);
-        vec_store_dst(cpu, d, o, w, false, false);
+        o.taint.clear();
+        vec_store_dst(cpu, d, o, w);
         cpu->rip = next_rip(cpu, d);
         return;
     }
@@ -2134,14 +2155,14 @@ void exec_vec_logic(CPU* cpu, const Dec& d, int kind) {
         else
             o[i] = (~a[i]) & b[i];
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pcmpeq(CPU* cpu, const Dec& d, unsigned lane, bool gt) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     memset(o, 0, w);
     for (unsigned i = 0; i < w; i += lane) {
         uint64_t av = 0, bv = 0;
@@ -2162,14 +2183,14 @@ void exec_pcmpeq(CPU* cpu, const Dec& d, unsigned lane, bool gt) {
         if (hit)
             memset(o + i, 0xff, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_padd(CPU* cpu, const Dec& d, unsigned lane, bool sub) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += lane) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, lane);
@@ -2177,14 +2198,14 @@ void exec_padd(CPU* cpu, const Dec& d, unsigned lane, bool sub) {
         uint64_t r = sub ? av - bv : av + bv;
         memcpy(o + i, &r, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pmull(CPU* cpu, const Dec& d, unsigned lane) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += lane) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, lane);
@@ -2198,14 +2219,14 @@ void exec_pmull(CPU* cpu, const Dec& d, unsigned lane) {
             r = av * bv;
         memcpy(o + i, &r, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pminmax(CPU* cpu, const Dec& d, unsigned lane, bool is_signed, bool is_max) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += lane) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, lane);
@@ -2222,7 +2243,8 @@ void exec_pminmax(CPU* cpu, const Dec& d, unsigned lane, bool is_signed, bool is
         }
         memcpy(o + i, take_b ? b + i : a + i, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2230,9 +2252,8 @@ void exec_pmovmskb(CPU* cpu, const Dec& d) {
     unsigned w = d.ops[1].size / 8;
     if (w != 16 && w != 32 && w != 64)
         guest_error(cpu, "bad pmovmskb width");
-    uint8_t b[64];
-    bool vcb = false, vci = false;
-    vec_load_bytes(cpu, d, 1, b, w, &vcb, &vci);
+    VecVal b;
+    vec_load_bytes(cpu, d, 1, b, w);
     uint64_t mask = 0;
     for (unsigned i = 0; i < w; i++) {
         if (b[i] & 0x80)
@@ -2240,8 +2261,7 @@ void exec_pmovmskb(CPU* cpu, const Dec& d) {
     }
     Val out;
     out.v = mask;
-    out.cb = vcb;
-    out.ci = vci;
+    out.taint = b.taint;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -2249,7 +2269,7 @@ void exec_pmovmskb(CPU* cpu, const Dec& d) {
 void exec_movmskps(CPU* cpu, const Dec& d, bool is_pd) {
     unsigned w = d.ops[1].size / 8;
     unsigned lane = is_pd ? 8 : 4;
-    uint8_t b[64];
+    VecVal b;
     vec_load_bytes(cpu, d, 1, b, w);
     uint64_t mask = 0;
     for (unsigned i = 0; i < w; i += lane) {
@@ -2258,6 +2278,7 @@ void exec_movmskps(CPU* cpu, const Dec& d, bool is_pd) {
     }
     Val out;
     out.v = mask;
+    out.taint = b.taint;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
@@ -2265,9 +2286,8 @@ void exec_movmskps(CPU* cpu, const Dec& d, bool is_pd) {
 void exec_pshift_dq(CPU* cpu, const Dec& d, bool left) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], o[64];
-    bool vcb = false, vci = false;
-    vec_load_bytes(cpu, d, 0, a, w, &vcb, &vci);
+    VecVal a, o;
+    vec_load_bytes(cpu, d, 0, a, w);
     Val imm = op_load(cpu, d, n - 1);
     unsigned cnt = (unsigned)imm.v;
     // PSLLDQ/SRLDQ shift each 128-bit lane (Zydis: VEX128 single lane).
@@ -2284,7 +2304,8 @@ void exec_pshift_dq(CPU* cpu, const Dec& d, bool left) {
             }
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2292,14 +2313,12 @@ void exec_pshift_bits(CPU* cpu, const Dec& d, unsigned lane, int kind) {
     // kind: 0=left logical 1=right logical 2=right arithmetic
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], o[64];
-    bool vcb = false, vci = false;
-    vec_load_bytes(cpu, d, 0, a, w, &vcb, &vci);
+    VecVal a, o, c;
+    vec_load_bytes(cpu, d, 0, a, w);
     unsigned cnt;
     if (d.ops[n - 1].type == ZYDIS_OPERAND_TYPE_IMMEDIATE) {
         cnt = (unsigned)op_load(cpu, d, n - 1).v;
     } else {
-        uint8_t c[16];
         vec_load_bytes(cpu, d, n - 1, c, 16);
         cnt = c[0] | (c[1] << 8);
     }
@@ -2323,16 +2342,16 @@ void exec_pshift_bits(CPU* cpu, const Dec& d, unsigned lane, int kind) {
         }
         memcpy(o + i, &r, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | c.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pshufd(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], o[64];
-    bool vcb = false, vci = false;
-    vec_load_bytes(cpu, d, n - 2, a, w, &vcb, &vci);
+    VecVal a, o;
+    vec_load_bytes(cpu, d, n - 2, a, w);
     unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned lane = 0; lane < w; lane += 16) {
         for (unsigned i = 0; i < 4; i++) {
@@ -2340,30 +2359,30 @@ void exec_pshufd(CPU* cpu, const Dec& d) {
             memcpy(o + lane + i * 4, a + lane + sel * 4, 4);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pshufb(CPU* cpu, const Dec& d) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned lane = 0; lane < w; lane += 16) {
         for (unsigned i = 0; i < 16; i++) {
             uint8_t c = b[lane + i];
             o[lane + i] = (c & 0x80) ? 0 : a[lane + (c & 0xf)];
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_shufpd(CPU* cpu, const Dec& d, bool is_ps) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    vec_sources(cpu, d, a, b);
     unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
     unsigned lane = is_ps ? 4 : 8;
     // Per 128-bit lane (VEX256 keeps lanes independent for SHUFPS/PD).
@@ -2381,16 +2400,16 @@ void exec_shufpd(CPU* cpu, const Dec& d, bool is_ps) {
             }
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pshuflw(CPU* cpu, const Dec& d, bool high) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], o[64];
-    bool vcb = false, vci = false;
-    vec_load_bytes(cpu, d, n - 2, a, w, &vcb, &vci);
+    VecVal a, o;
+    vec_load_bytes(cpu, d, n - 2, a, w);
     unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned lane = 0; lane < w; lane += 16) {
         memcpy(o + lane, a + lane, 16);
@@ -2400,14 +2419,14 @@ void exec_pshuflw(CPU* cpu, const Dec& d, bool high) {
             memcpy(o + lane + base + i * 2, a + lane + base + sel * 2, 2);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_punpck(CPU* cpu, const Dec& d, unsigned lane, bool high) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     // Legacy PUNPCK interleaves within each 128-bit lane: dst = a, src = b.
     for (unsigned L = 0; L < w; L += 16) {
         unsigned elems = 16 / lane;
@@ -2418,7 +2437,8 @@ void exec_punpck(CPU* cpu, const Dec& d, unsigned lane, bool high) {
             memcpy(o + L + (2 * i + 1) * lane, b + L + k * lane, lane);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2426,12 +2446,10 @@ void exec_ptest(CPU* cpu, const Dec& d) {
     unsigned w = d.ops[0].size / 8;
     if (w != 16 && w != 32)
         guest_error(cpu, "bad ptest width");
-    uint8_t a[64], b[64];
-    bool pcb = false, pci = false, t1 = false, t2 = false;
-    vec_load_bytes(cpu, d, 0, a, w, &pcb, &pci);
-    vec_load_bytes(cpu, d, 1, b, w, &t1, &t2);
-    cpu->flags_cannot_branch = pcb || t1;
-    cpu->flags_cannot_index = pci || t2;
+    VecVal a, b;
+    vec_load_bytes(cpu, d, 0, a, w);
+    vec_load_bytes(cpu, d, 1, b, w);
+    cpu->flags_taint = a.taint | b.taint;
     bool zf = true, cf = true;
     for (unsigned i = 0; i < w; i++) {
         if ((a[i] & b[i]) != 0)
@@ -2534,7 +2552,7 @@ void exec_sse_scalar(CPU* cpu, const Dec& d, int kind) {
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VUCOMISD ||
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VCOMISD);
     int n = explicit_ops(d);
-    uint8_t ab[16], bb[16];
+    VecVal ab, bb;
     int dsti = -1, dstw = 0;
     if (!reg_to_vec(d.ops[0].reg.value, dsti, dstw))
         guest_error(cpu, "bad scalar fp dst");
@@ -2558,6 +2576,7 @@ void exec_sse_scalar(CPU* cpu, const Dec& d, int kind) {
             case 6: r = a < b ? a : b; break;
             }
             memcpy(cpu->xmm[dsti].bytes, &r, 8);
+            cpu->xmm[dsti].taint |= ab.taint | bb.taint;
             if (is_vex(d) && n >= 3) {
                 // VEX: copy upper lanes from src1.
                 memcpy(cpu->xmm[dsti].bytes + 8, ab + 8, 8);
@@ -2575,6 +2594,7 @@ void exec_sse_scalar(CPU* cpu, const Dec& d, int kind) {
             case 6: r = a < b ? a : b; break;
             }
             memcpy(cpu->xmm[dsti].bytes, &r, 4);
+            cpu->xmm[dsti].taint |= ab.taint | bb.taint;
             if (!(is_vex(d) && n >= 3)) {
                 // Legacy: preserve upper bytes (already in place).
             } else {
@@ -2600,6 +2620,7 @@ void exec_sse_scalar(CPU* cpu, const Dec& d, int kind) {
             }
             uint64_t m = r ? ~0ULL : 0;
             memcpy(cpu->xmm[dsti].bytes, &m, 8);
+            cpu->xmm[dsti].taint |= ab.taint | bb.taint;
         } else {
             float a = vec_f32(ab), b = vec_f32(bb);
             switch (pred) {
@@ -2614,6 +2635,7 @@ void exec_sse_scalar(CPU* cpu, const Dec& d, int kind) {
             }
             uint32_t m = r ? ~0u : 0;
             memcpy(cpu->xmm[dsti].bytes, &m, 4);
+            cpu->xmm[dsti].taint |= ab.taint | bb.taint;
         }
     }
     cpu->rip = next_rip(cpu, d);
@@ -2624,12 +2646,10 @@ void exec_ucomi(CPU* cpu, const Dec& d) {
                   d.insn.mnemonic == ZYDIS_MNEMONIC_COMISD ||
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VUCOMISD ||
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VCOMISD);
-    uint8_t a[16], b[16];
-    bool ucb = false, uci = false, t1 = false, t2 = false;
-    vec_load_bytes(cpu, d, 0, a, 16, &ucb, &uci);
-    vec_load_bytes(cpu, d, 1, b, 16, &t1, &t2);
-    cpu->flags_cannot_branch = ucb || t1;
-    cpu->flags_cannot_index = uci || t2;
+    VecVal a, b;
+    vec_load_bytes(cpu, d, 0, a, 16);
+    vec_load_bytes(cpu, d, 1, b, 16);
+    cpu->flags_taint = a.taint | b.taint;
     bool unordered = false, zf = false, cf = false;
     if (is_sd) {
         double x = vec_f64(a), y = vec_f64(b);
@@ -2683,7 +2703,7 @@ void exec_cvtsi2s(CPU* cpu, const Dec& d, bool to_sd) {
 
 void exec_cvtts2si(CPU* cpu, const Dec& d, bool from_sd) {
     int n = explicit_ops(d);
-    uint8_t b[16];
+    VecVal b;
     vec_load_bytes(cpu, d, n - 1, b, 16);
     int dw = d.ops[0].size / 8; // 4 or 8
     Val out;
@@ -2705,22 +2725,25 @@ void exec_cvtts2si(CPU* cpu, const Dec& d, bool from_sd) {
         else
             out.v = (int32_t)v;
     }
+    out.taint = b.taint;
     op_store(cpu, d, 0, out);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_cvtss2sd(CPU* cpu, const Dec& d, bool to_sd) {
     int n = explicit_ops(d);
-    uint8_t b[16];
+    VecVal b;
     vec_load_bytes(cpu, d, n - 1, b, 16);
     int dsti = -1, dstw = 0;
     reg_to_vec(d.ops[0].reg.value, dsti, dstw);
     if (to_sd) {
         double v = (double)vec_f32(b);
         memcpy(cpu->xmm[dsti].bytes, &v, 8);
+        cpu->xmm[dsti].taint |= b.taint;
     } else {
         float v = (float)vec_f64(b);
         memcpy(cpu->xmm[dsti].bytes, &v, 4);
+        cpu->xmm[dsti].taint |= b.taint;
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -2741,9 +2764,8 @@ void exec_packed_fp(CPU* cpu, const Dec& d, int kind) {
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VSQRTPD ||
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VMAXPD ||
                   d.insn.mnemonic == ZYDIS_MNEMONIC_VMINPD);
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     unsigned lane = is_pd ? 8 : 4;
     for (unsigned i = 0; i < w; i += lane) {
         if (is_pd) {
@@ -2778,7 +2800,8 @@ void exec_packed_fp(CPU* cpu, const Dec& d, int kind) {
             memcpy(o + i, &r, 4);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2958,7 +2981,7 @@ void exec_vbroadcast(CPU* cpu, const Dec& d) {
     // VBROADCASTSS/SD/F128 + VPBROADCASTB/W/D/Q.
     unsigned w = vec_width(d);
     int n = explicit_ops(d);
-    uint8_t src[64];
+    VecVal src;
     unsigned elem = 4;
     switch (d.insn.mnemonic) {
     case ZYDIS_MNEMONIC_VBROADCASTSS:
@@ -2970,7 +2993,6 @@ void exec_vbroadcast(CPU* cpu, const Dec& d) {
     case ZYDIS_MNEMONIC_VBROADCASTF128: elem = 16; break;
     default: guest_error(cpu, "bad broadcast");
     }
-    bool bcb = false, bci = false;
     {
         const auto& sop = d.ops[n - 1];
         int ridx, rwidth;
@@ -2979,16 +3001,16 @@ void exec_vbroadcast(CPU* cpu, const Dec& d) {
             // GPR source (e.g. vpbroadcastd ymm, eax).
             Val g = op_load(cpu, d, n - 1);
             memcpy(src, &g.v, elem);
-            bcb = g.cb;
-            bci = g.ci;
+            src.taint = g.taint;
         } else {
-            vec_load_bytes(cpu, d, n - 1, src, elem, &bcb, &bci);
+            vec_load_bytes(cpu, d, n - 1, src, elem);
         }
     }
-    uint8_t out[64];
+    VecVal out;
     for (unsigned i = 0; i < w; i += elem)
         memcpy(out + i, src, elem);
-    vec_store_bytes(cpu, d, 0, out, w, true, w, bcb, bci);
+    out.taint = src.taint;
+    vec_store_bytes(cpu, d, 0, out, w, true, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -2998,18 +3020,23 @@ void exec_vextract(CPU* cpu, const Dec& d, bool insert) {
     Val imm = op_load(cpu, d, n - 1);
     if (!insert) {
         // VEXTRACTF128/I128 xmm/mem, ymm, imm.
-        uint8_t src[64];
+        VecVal src;
         vec_load_bytes(cpu, d, 1, src, 32);
         unsigned off = ((unsigned)imm.v & 1) ? 16 : 0;
-        vec_store_bytes(cpu, d, 0, src + off, 16, false, 16);
+        {
+            Taint t = src.taint;
+            // Sub-vector store via raw pointer: need Taint explicitly.
+            vec_store_bytes(cpu, d, 0, (const uint8_t*)(src.bytes + off), 16, false, 16, t);
+        }
     } else {
         // VINSERTF128/I128 ymm, ymm, xmm/mem, imm.
-        uint8_t a[64], b[64], o[64];
+        VecVal a, b, o;
         vec_load_bytes(cpu, d, 1, a, 32);
         vec_load_bytes(cpu, d, 2, b, 16);
         memcpy(o, a, 32);
         unsigned off = ((unsigned)imm.v & 1) ? 16 : 0;
         memcpy(o + off, b, 16);
+        o.taint = a.taint | b.taint;
         vec_store_bytes(cpu, d, 0, o, 32, true, 32);
         (void)w;
     }
@@ -3019,7 +3046,7 @@ void exec_vextract(CPU* cpu, const Dec& d, bool insert) {
 void exec_vperm2(CPU* cpu, const Dec& d) {
     // VPERM2F128 / VPERM2I128.
     int n = explicit_ops(d);
-    uint8_t a[64], b[64], o[64];
+    VecVal a, b, o;
     vec_load_bytes(cpu, d, 1, a, 32);
     vec_load_bytes(cpu, d, 2, b, 32);
     unsigned sel = (unsigned)op_load(cpu, d, n - 1).v;
@@ -3032,6 +3059,7 @@ void exec_vperm2(CPU* cpu, const Dec& d) {
         else
             memcpy(o + i * 16, lanes[s], 16);
     }
+    o.taint = a.taint | b.taint;
     vec_store_bytes(cpu, d, 0, o, 32, true, 32);
     cpu->rip = next_rip(cpu, d);
 }
@@ -3041,17 +3069,13 @@ void exec_vpermil(CPU* cpu, const Dec& d, bool is_pd, bool var) {
     unsigned w = vec_width(d);
     if (n == 3 && d.ops[2].type == ZYDIS_OPERAND_TYPE_REGISTER)
         var = true;
-    uint8_t a[64], c[64], o[64];
-    bool vcb = false, vci = false;
+    VecVal a, c, o;
     unsigned lane = is_pd ? 8 : 4;
     if (var) {
-        bool c1 = false, c2 = false;
-        vec_load_bytes(cpu, d, n - 2, a, w, &vcb, &vci);
-        vec_load_bytes(cpu, d, n - 1, c, w, &c1, &c2);
-        vcb = vcb || c1;
-        vci = vci || c2;
+        vec_load_bytes(cpu, d, n - 2, a, w);
+        vec_load_bytes(cpu, d, n - 1, c, w);
     } else {
-        vec_load_bytes(cpu, d, n - 2, a, w, &vcb, &vci);
+        vec_load_bytes(cpu, d, n - 2, a, w);
         unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
         for (unsigned i = 0; i < 8; i++)
             c[i] = (order >> (i * (is_pd ? 1 : 2))) & (is_pd ? 1 : 3);
@@ -3063,19 +3087,21 @@ void exec_vpermil(CPU* cpu, const Dec& d, bool is_pd, bool var) {
             memcpy(o + L + i * lane, a + L + sel * lane, lane);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | c.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_vpermpd(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
-    uint8_t a[64], o[64];
+    VecVal a, o;
     vec_load_bytes(cpu, d, n - 2, a, 32);
     unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned i = 0; i < 4; i++) {
         unsigned sel = (order >> (i * 2)) & 3;
         memcpy(o + i * 8, a + sel * 8, 8);
     }
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, 32, true, 32);
     cpu->rip = next_rip(cpu, d);
 }
@@ -3083,13 +3109,14 @@ void exec_vpermpd(CPU* cpu, const Dec& d) {
 void exec_vpermq(CPU* cpu, const Dec& d) {
     // VPERMQ ymm, ymm/mem, imm.
     int n = explicit_ops(d);
-    uint8_t a[64], o[64];
+    VecVal a, o;
     vec_load_bytes(cpu, d, n - 2, a, 32);
     unsigned order = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned i = 0; i < 4; i++) {
         unsigned sel = (order >> (i * 2)) & 3;
         memcpy(o + i * 8, a + sel * 8, 8);
     }
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, 32, true, 32);
     cpu->rip = next_rip(cpu, d);
 }
@@ -3099,28 +3126,21 @@ void exec_pblendvb(CPU* cpu, const Dec& d) {
     // PBLENDVB / VPBLENDVB: mask from XMM0 (implicit) or op2 (VEX).
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], b[64], m[64], o[64];
-    bool vcb = false, vci = false;
+    VecVal a, b, m, o;
     if (is_vex(d) && n == 4) {
-        bool t1 = false, t2 = false;
-        vec_load_bytes(cpu, d, 1, a, w, &vcb, &vci);
-        vec_load_bytes(cpu, d, 2, b, w, &t1, &t2);
-        vcb = vcb || t1;
-        vci = vci || t2;
-        vec_load_bytes(cpu, d, 3, m, w, &t1, &t2);
-        vcb = vcb || t1;
-        vci = vci || t2;
+        vec_load_bytes(cpu, d, 1, a, w);
+        vec_load_bytes(cpu, d, 2, b, w);
+        vec_load_bytes(cpu, d, 3, m, w);
     } else {
-        vec_load_bytes(cpu, d, 0, a, w, &vcb, &vci);
-        bool t1 = false, t2 = false;
-        vec_load_bytes(cpu, d, 1, b, w, &t1, &t2);
-        vcb = vcb || t1 || cpu->xmm[0].cannot_branch;
-        vci = vci || t2 || cpu->xmm[0].cannot_index;
+        vec_load_bytes(cpu, d, 0, a, w);
+        vec_load_bytes(cpu, d, 1, b, w);
         memcpy(m, cpu->xmm[0].bytes, w);
+        m.taint = cpu->xmm[0].taint;
     }
     for (unsigned i = 0; i < w; i++)
         o[i] = (m[i] & 0x80) ? b[i] : a[i];
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint | m.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -3128,29 +3148,29 @@ void exec_blendps(CPU* cpu, const Dec& d, bool is_pd) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
     unsigned lane = is_pd ? 8 : 4;
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    vec_sources(cpu, d, a, b);
     unsigned sel = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned i = 0; i < w; i += lane) {
         bool take = (sel >> (i / lane)) & 1;
         memcpy(o + i, take ? b + i : a + i, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pblendw(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     unsigned sel = (unsigned)op_load(cpu, d, n - 1).v;
     for (unsigned i = 0; i < w; i += 2) {
         bool take = (sel >> (i / 2)) & 1;
         memcpy(o + i, take ? b + i : a + i, 2);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -3654,8 +3674,8 @@ void exec_shld_shrd(CPU* cpu, const Dec& d, bool is_shld) {
     unsigned bits = w * 8;
     uint64_t c = cnt.v & (bits == 64 ? 63 : 31);
     Val out;
-    out.cb = dst.cb || src.cb || cnt.cb;
-    out.ci = dst.ci || src.ci || cnt.ci;
+    out.taint.cannot_branch = dst.taint.cannot_branch || src.taint.cannot_branch || cnt.taint.cannot_branch;
+    out.taint.cannot_index = dst.taint.cannot_index || src.taint.cannot_index || cnt.taint.cannot_index;
     if (c == 0) {
         cpu->rip = next_rip(cpu, d);
         return;
@@ -3733,8 +3753,8 @@ void exec_bmi_simple(CPU* cpu, const Dec& d) {
     int w = common_int_width(d);
     uint64_t m = mask_for(w);
     Val out;
-    out.cb = s0.cb || s1.cb;
-    out.ci = s0.ci || s1.ci;
+    out.taint.cannot_branch = s0.taint.cannot_branch || s1.taint.cannot_branch;
+    out.taint.cannot_index = s0.taint.cannot_index || s1.taint.cannot_index;
     switch (d.insn.mnemonic) {
     case ZYDIS_MNEMONIC_ANDN:
         out.v = (~(s0.v & m) & s1.v) & m;
@@ -3785,8 +3805,8 @@ void exec_bmi_simple(CPU* cpu, const Dec& d) {
         cpu->set_flag(FLAG_ZF, out.v == 0);
         cpu->set_flag(FLAG_SF, (out.v >> (bits - 1)) & 1);
         cpu->set_flag(FLAG_OF, false);
-        out.cb = out.cb || idx.cb;
-        out.ci = out.ci || idx.ci;
+        out.taint.cannot_branch = out.taint.cannot_branch || idx.taint.cannot_branch;
+        out.taint.cannot_index = out.taint.cannot_index || idx.taint.cannot_index;
         break;
     }
     case ZYDIS_MNEMONIC_SHLX:
@@ -3807,8 +3827,8 @@ void exec_bmi_simple(CPU* cpu, const Dec& d) {
             else
                 out.v = t >> c;
         }
-        out.cb = out.cb || cnt.cb;
-        out.ci = out.ci || cnt.ci;
+        out.taint.cannot_branch = out.taint.cannot_branch || cnt.taint.cannot_branch;
+        out.taint.cannot_index = out.taint.cannot_index || cnt.taint.cannot_index;
         break;
     }
     case ZYDIS_MNEMONIC_RORX: {
@@ -3817,8 +3837,8 @@ void exec_bmi_simple(CPU* cpu, const Dec& d) {
         unsigned c = (unsigned)cnt.v & (bits - 1);
         uint64_t t = s0.v & m;
         out.v = ((t >> c) | (t << (bits - c))) & m;
-        out.cb = out.cb || cnt.cb;
-        out.ci = out.ci || cnt.ci;
+        out.taint.cannot_branch = out.taint.cannot_branch || cnt.taint.cannot_branch;
+        out.taint.cannot_index = out.taint.cannot_index || cnt.taint.cannot_index;
         break;
     }
     case ZYDIS_MNEMONIC_MULX: {
@@ -3935,7 +3955,7 @@ void exec_pinsr(CPU* cpu, const Dec& d, bool insert) {
 }
 
 void exec_pmovsx(CPU* cpu, const Dec& d, unsigned s_lane, unsigned d_lane, bool is_signed) {
-    uint8_t a[64], o[64];
+    VecVal a, o;
     unsigned w = d.ops[1].size / 8; // source mem/xmm width (8 or 16)
     vec_load_bytes(cpu, d, 1, a, w);
     unsigned elems = w / s_lane;
@@ -3956,14 +3976,14 @@ void exec_pmovsx(CPU* cpu, const Dec& d, unsigned s_lane, unsigned d_lane, bool 
         memcpy(o + i * d_lane, &sv, d_lane);
     }
     unsigned ow = elems * d_lane;
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, ow, is_vex(d), ow);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pack(CPU* cpu, const Dec& d, bool is_ss, unsigned lane) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     unsigned half = (lane == 2) ? 1 : (lane == 4 ? 2 : 4);
     (void)half;
     unsigned elems = w / lane; // per source
@@ -4002,14 +4022,14 @@ void exec_pack(CPU* cpu, const Dec& d, bool is_ss, unsigned lane) {
             oi += half;
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_padds(CPU* cpu, const Dec& d, unsigned lane, bool is_signed, bool add) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += lane) {
         int64_t av = 0, bv = 0;
         memcpy(&av, a + i, lane);
@@ -4034,15 +4054,15 @@ void exec_padds(CPU* cpu, const Dec& d, unsigned lane, bool is_signed, bool add)
         }
         memcpy(o + i, &r, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_palignr(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     unsigned cnt = (unsigned)op_load(cpu, d, n - 1).v;
     // Operands: dst, dst, src — concat = src:b || dst:a, shift right by cnt.
     for (unsigned L = 0; L < w; L += 16) {
@@ -4056,13 +4076,14 @@ void exec_palignr(CPU* cpu, const Dec& d) {
                 o[L + i] = 0;
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_cvtdq2ps(CPU* cpu, const Dec& d, int kind) {
     // kind 0: DQ2PS, 1: TTPS2DQ, 2: TPS2DQ
-    uint8_t a[64], o[64];
+    VecVal a, o;
     unsigned w = vec_width(d);
     vec_load_bytes(cpu, d, explicit_ops(d) - 1, a, w);
     for (unsigned i = 0; i < w; i += 4) {
@@ -4083,12 +4104,13 @@ void exec_cvtdq2ps(CPU* cpu, const Dec& d, int kind) {
             memcpy(o + i, &t, 4);
         }
     }
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, w, is_vex(d), w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_cvtpd(CPU* cpu, const Dec& d, bool to_ps) {
-    uint8_t a[64], o[64];
+    VecVal a, o;
     unsigned w = vec_width(d);
     if (to_ps) {
         // CVTPD2PS: w(src)=2*dwords... src width = 2x dst dwords.
@@ -4109,6 +4131,7 @@ void exec_cvtpd(CPU* cpu, const Dec& d, bool to_ps) {
             memcpy(o + i * 8, &dd, 8);
         }
     }
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, w, is_vex(d), w);
     cpu->rip = next_rip(cpu, d);
 }
@@ -4116,7 +4139,7 @@ void exec_cvtpd(CPU* cpu, const Dec& d, bool to_ps) {
 void exec_round(CPU* cpu, const Dec& d, bool is_pd, bool scalar) {
     int n = explicit_ops(d);
     unsigned w = scalar ? 16 : vec_width(d);
-    uint8_t a[64], o[64];
+    VecVal a, o;
     vec_load_bytes(cpu, d, n - 2, a, w);
     unsigned mode = (unsigned)op_load(cpu, d, n - 1).v;
     unsigned elems = scalar ? 1 : w / (is_pd ? 8 : 4);
@@ -4158,6 +4181,7 @@ void exec_round(CPU* cpu, const Dec& d, bool is_pd, bool scalar) {
         if (is_vex(d))
             memset(cpu->xmm[dsti].bytes + 16, 0, 48);
     } else {
+        o.taint = a.taint;
         vec_store_bytes(cpu, d, 0, o, w, is_vex(d), w);
     }
     (void)lane;
@@ -4166,12 +4190,10 @@ void exec_round(CPU* cpu, const Dec& d, bool is_pd, bool scalar) {
 
 void exec_vtest(CPU* cpu, const Dec& d) {
     unsigned w = vec_width(d);
-    uint8_t a[64], b[64];
-    bool qcb = false, qci = false, t1 = false, t2 = false;
-    vec_load_bytes(cpu, d, 0, a, w, &qcb, &qci);
-    vec_load_bytes(cpu, d, 1, b, w, &t1, &t2);
-    cpu->flags_cannot_branch = qcb || t1;
-    cpu->flags_cannot_index = qci || t2;
+    VecVal a, b;
+    vec_load_bytes(cpu, d, 0, a, w);
+    vec_load_bytes(cpu, d, 1, b, w);
+    cpu->flags_taint = a.taint | b.taint;
     (void)d;
     // ZF = (a AND b)==0 over sign bits; CF = (NOT a AND b)==0 over sign bits.
     bool zf = true, cf = true;
@@ -4196,25 +4218,26 @@ void exec_vtest(CPU* cpu, const Dec& d) {
 void exec_blendv(CPU* cpu, const Dec& d, bool is_pd) {
     unsigned w = vec_width(d);
     unsigned lane = is_pd ? 8 : 4;
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += lane) {
         bool take = (cpu->xmm[0].bytes[i + lane - 1] & 0x80) != 0;
         memcpy(o + i, take ? b + i : a + i, lane);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_movdup(CPU* cpu, const Dec& d, bool high) {
-    uint8_t a[64], o[64];
+    VecVal a, o;
     unsigned w = vec_width(d);
     vec_load_bytes(cpu, d, explicit_ops(d) - 1, a, w);
     for (unsigned i = 0; i < w; i += 8) {
         memcpy(o + i, a + i + (high ? 4 : 0), 4);
         memcpy(o + i + 4, a + i + (high ? 4 : 0), 4);
     }
+    o.taint = a.taint;
     vec_store_bytes(cpu, d, 0, o, w, is_vex(d), w);
     cpu->rip = next_rip(cpu, d);
 }
@@ -4222,7 +4245,7 @@ void exec_movdup(CPU* cpu, const Dec& d, bool high) {
 void exec_vpternlog(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
     unsigned w = vec_width(d);
-    uint8_t a[64], b[64], c[64], o[64];
+    VecVal a, b, c, o;
     vec_load_bytes(cpu, d, 1, a, w);
     vec_load_bytes(cpu, d, 2, b, w);
     vec_load_bytes(cpu, d, 3, c, w);
@@ -4242,6 +4265,7 @@ void exec_vpternlog(CPU* cpu, const Dec& d) {
         o[i] = (uint8_t)r;
         (void)idx;
     }
+    o.taint = a.taint | b.taint | c.taint;
     vec_store_bytes(cpu, d, 0, o, w, true, w);
     cpu->rip = next_rip(cpu, d);
 }
@@ -4295,88 +4319,118 @@ bool evex_broadcasting(const Dec& d) {
 // element size for embedded-broadcast detection (bytes); broadcasts replicate
 // one element across the full width. Static-broadcast instructions
 // (VBROADCAST*) are handled by their own exec and pass elem==0 (no ebroadcast).
-void evex_load(CPU* cpu, const Dec& d, int oi, uint8_t* out, unsigned w,
-               unsigned elem, bool* cb = nullptr, bool* ci = nullptr) {
+// Store an EVEX vector result with masking. For register dests, masked-off
+// elements merge (or zero with {z}); for memory dests (masked stores),
+// masked-off elements are not written. Taint ORs into reg sidecars and
+// mem_note_store for memory.
+// VecVal overloads for EVEX helpers (preferred): per-byte/per-element precise.
+// evex_load only touches enabled lanes for faults/taint; evex_store merges
+// old taint for merging-masked reg dests and only stores enabled lanes.
+void evex_load(CPU* cpu, const Dec& d, int oi, VecVal& out, unsigned w,
+               unsigned elem) {
+    out.taint.clear();
+    memset(out.bytes, 0, w);
     const auto& op = d.ops[oi];
-    if (cb)
-        *cb = false;
-    if (ci)
-        *ci = false;
+    uint64_t kbits = ~0ULL;
+    bool dummy_z = false;
+    if (elem)
+        kbits = evex_mask(cpu, d, w / elem, dummy_z);
     if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int idx, width;
-        if (reg_to_opmask(op.reg.value, width)) {
+        if (reg_to_opmask(op.reg.value, width))
             guest_error(cpu, "opmask used as vector source");
-        }
         if (!reg_to_vec(op.reg.value, idx, width))
             guest_error(cpu, "unsupported EVEX vector register");
-        memcpy(out, cpu->xmm[idx].bytes, w);
-        if (cb)
-            *cb = cpu->xmm[idx].cannot_branch;
-        if (ci)
-            *ci = cpu->xmm[idx].cannot_index;
+        memcpy(out.bytes, cpu->xmm[idx].bytes, w);
+        bool any_enabled = (elem == 0) ? true : (kbits != 0);
+        if (any_enabled)
+            out.taint = cpu->xmm[idx].taint;
         return;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
         if (elem && evex_broadcasting(d)) {
-            // Embedded broadcast: one element replicated.
-            uint8_t one[8];
-            uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
-            mem_load_bytes(cpu, addr, one, elem);
-            mem_get_taint(addr, elem, cb, ci);
-            for (unsigned i = 0; i < w; i += elem)
-                memcpy(out + i, one, elem);
+            if (kbits != 0) {
+                uint8_t one[8];
+                uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
+                mem_load_bytes(cpu, addr, one, elem);
+                mem_get_taint(addr, elem, &out.taint);
+                for (unsigned i = 0; i < w; i += elem)
+                    memcpy(out.bytes + i, one, elem);
+            }
             return;
         }
-        uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
-        mem_load_bytes(cpu, addr, out, w);
-        mem_get_taint(addr, w, cb, ci);
+        if (elem == 0) {
+            uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
+            mem_load_bytes(cpu, addr, out.bytes, w);
+            mem_get_taint(addr, w, &out.taint);
+            return;
+        }
+        uint64_t addr_base = resolve_mem(cpu, op, cpu->rip + d.insn.length);
+        unsigned lanes = w / elem;
+        for (unsigned i = 0; i < lanes; i++) {
+            if ((kbits >> i) & 1) {
+                uint64_t addr = addr_base + (uint64_t)i * elem;
+                mem_load_bytes(cpu, addr, out.bytes + i * elem, elem);
+                Taint t;
+                mem_get_taint(addr, elem, &t);
+                out.taint |= t;
+            }
+        }
         return;
     }
     guest_error(cpu, "unsupported EVEX source operand");
 }
 
-// Store an EVEX vector result with masking. For register dests, masked-off
-// elements merge (or zero with {z}); for memory dests (masked stores),
-// masked-off elements are not written. Taint ORs into reg sidecars and
-// mem_note_store for memory.
-void evex_store(CPU* cpu, const Dec& d, int oi, const uint8_t* res,
-                const uint8_t* old, unsigned w, unsigned elem, uint64_t kbits,
-                bool zeroing, bool cb = false, bool ci = false) {
+void evex_store(CPU* cpu, const Dec& d, int oi, const VecVal& res,
+                const VecVal& old, unsigned w, unsigned elem, uint64_t kbits,
+                bool zeroing) {
     const auto& op = d.ops[oi];
     if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int idx, width;
         if (!reg_to_vec(op.reg.value, idx, width))
             guest_error(cpu, "unsupported EVEX vector register");
-        uint8_t merged[64];
+        Taint oldt = cpu->xmm[idx].taint;
+        VecVal merged;
         unsigned lanes = w / elem;
+        uint64_t all = (lanes >= 64) ? ~0ULL : ((lanes == 0) ? 0 : ((1ULL << lanes) - 1));
+        bool fully_enabled = ((kbits & all) == all);
+        bool any_enabled = ((kbits & all) != 0);
         for (unsigned i = 0; i < lanes; i++) {
             if ((kbits >> i) & 1)
-                memcpy(merged + i * elem, res + i * elem, elem);
+                memcpy(merged.bytes + i * elem, res.bytes + i * elem, elem);
             else if (zeroing)
-                memset(merged + i * elem, 0, elem);
+                memset(merged.bytes + i * elem, 0, elem);
             else
-                memcpy(merged + i * elem, old + i * elem, elem);
+                memcpy(merged.bytes + i * elem, old.bytes + i * elem, elem);
         }
-        memcpy(cpu->xmm[idx].bytes, merged, w);
-        // VEX/EVEX semantics zero the upper bits above the vector length.
-        if (w < 64)
-            memset(cpu->xmm[idx].bytes + w, 0, 64 - w);
-        cpu->xmm[idx].cannot_branch = cb;
-        cpu->xmm[idx].cannot_index = ci;
+        memcpy(cpu->xmm[idx].bytes, merged.bytes, w);
+        if (w < MAX_VEC_BYTES)
+            memset(cpu->xmm[idx].bytes + w, 0, MAX_VEC_BYTES - w);
+        Taint out;
+        if (fully_enabled)
+            out = res.taint;
+        else if (zeroing)
+            out = any_enabled ? res.taint : Taint();
+        else
+            out = any_enabled ? (oldt | res.taint) : oldt;
+        cpu->xmm[idx].taint = out;
         return;
     }
     if (op.type == ZYDIS_OPERAND_TYPE_MEMORY) {
-        // Masked store: only masked-in elements hit memory.
         uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
         unsigned lanes = w / elem;
-        if (kbits == ((lanes >= 64) ? ~0ULL : ((1ULL << lanes) - 1))) {
-            mem_store_bytes(cpu, addr, res, w);
-            mem_note_store(cpu, addr, w, cb, ci);
+        uint64_t all = (lanes >= 64) ? ~0ULL : ((lanes == 0) ? 0 : ((1ULL << lanes) - 1));
+        if ((kbits & all) == all) {
+            mem_store_bytes(cpu, addr, res.bytes, w);
+            mem_note_store(cpu, addr, w, res.taint);
         } else {
             for (unsigned i = 0; i < lanes; i++) {
                 if ((kbits >> i) & 1) {
-                    mem_store_bytes(cpu, addr + i * elem, res + i * elem, elem);
-                    mem_note_store(cpu, addr + i * elem, elem, cb, ci);
+                    mem_store_bytes(cpu, addr + i * elem, res.bytes + i * elem, elem);
+                    // Per-element precise: only enabled bytes gain taint.
+                    // With whole-vector Taint, apply res taint only to
+                    // enabled lanes (disabled untouched).
+                    mem_note_store(cpu, addr + i * elem, elem, res.taint);
                 }
             }
         }
@@ -4385,17 +4439,18 @@ void evex_store(CPU* cpu, const Dec& d, int oi, const uint8_t* res,
     guest_error(cpu, "cannot store EVEX result to operand");
 }
 
-// Snapshot the current register dest (for merging); zeros if mem dest.
-void evex_old(CPU* cpu, const Dec& d, int oi, uint8_t* old, unsigned w) {
+void evex_old(CPU* cpu, const Dec& d, int oi, VecVal& old, unsigned w) {
+    old.taint.clear();
+    memset(old.bytes, 0, MAX_VEC_BYTES);
     const auto& op = d.ops[oi];
     if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
         int idx, width;
         if (!reg_to_vec(op.reg.value, idx, width))
             guest_error(cpu, "unsupported EVEX vector register");
-        memcpy(old, cpu->xmm[idx].bytes, w);
+        memcpy(old.bytes, cpu->xmm[idx].bytes, w);
+        old.taint = cpu->xmm[idx].taint;
         return;
     }
-    memset(old, 0, w);
 }
 
 // Find explicit operands by position among explicit (non-hidden) operands.
@@ -4872,13 +4927,12 @@ void exec_evex_move(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 2)
         guest_error(cpu, "evex move needs 2 operands");
-    uint8_t tmp[64], old[64];
-    bool cb = false, ci = false;
+    VecVal tmp, old;
     evex_old(cpu, d, ex[0], old, w);
-    evex_load(cpu, d, ex[1], tmp, w, 0, &cb, &ci);
+    evex_load(cpu, d, ex[1], tmp, w, elem);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], tmp, old, w, elem, kbits, zeroing, cb, ci);
+    evex_store(cpu, d, ex[0], tmp, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -4891,12 +4945,9 @@ void exec_evex_logic(CPU* cpu, const Dec& d, int kind) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex logic needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
-    c1 = c1 || t1;
-    c2 = c2 || t2;
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     // Self-xor clears taint.
     if (kind == 2) {
         const auto& o0 = d.ops[ex[0]];
@@ -4910,8 +4961,8 @@ void exec_evex_logic(CPU* cpu, const Dec& d, int kind) {
             evex_old(cpu, d, ex[0], old, w);
             bool zeroing = false;
             uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-            evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, false,
-                       false);
+            o.taint.clear();
+            evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
             cpu->rip = next_rip(cpu, d);
             return;
         }
@@ -4929,7 +4980,8 @@ void exec_evex_logic(CPU* cpu, const Dec& d, int kind) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1, c2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -4938,27 +4990,18 @@ void exec_evex_ternlog(CPU* cpu, const Dec& d) {
     int ex[5];
     int n = evex_explicit(d, ex);
     // EVEX: dst{k},src1,src2,src3/m,imm8. VEX: dst,src1,src2,imm8.
-    uint8_t a[64], b[64], c[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal a, b, c, o, old;
     unsigned lut = 0;
     if (n >= 5) {
-        evex_load(cpu, d, ex[1], a, w, 4, &cb, &ci);
-        evex_load(cpu, d, ex[2], b, w, 4, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
-        evex_load(cpu, d, ex[3], c, w, 4, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[1], a, w, 4);
+        evex_load(cpu, d, ex[2], b, w, 4);
+        evex_load(cpu, d, ex[3], c, w, 4);
         lut = (unsigned)kload(cpu, d, ex[4], 8);
     } else if (n == 4) {
-        evex_load(cpu, d, ex[1], a, w, 4, &cb, &ci);
-        evex_load(cpu, d, ex[2], b, w, 4, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[1], a, w, 4);
+        evex_load(cpu, d, ex[2], b, w, 4);
         // VEX dst doubles as third source.
-        evex_load(cpu, d, ex[0], c, w, 4, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[0], c, w, 4);
         lut = (unsigned)kload(cpu, d, ex[3], 8);
     } else {
         guest_error(cpu, "bad vpternlog operands");
@@ -4976,7 +5019,8 @@ void exec_evex_ternlog(CPU* cpu, const Dec& d) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / 4, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing, cb, ci);
+    o.taint = a.taint | b.taint | c.taint;
+    evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5013,7 +5057,7 @@ void exec_evex_vpcmp_core(CPU* cpu, const Dec& d, unsigned elem, bool us,
         if (n < 3)
             guest_error(cpu, "evex mask-compare needs 3 operands");
     }
-    uint8_t a[64], b[64];
+    VecVal a, b;
     evex_load(cpu, d, ex[1], a, w, elem);
     evex_load(cpu, d, ex[2], b, w, elem);
     unsigned lanes = w / elem;
@@ -5112,10 +5156,9 @@ void exec_evex_pcmpeq(CPU* cpu, const Dec& d, unsigned elem, bool gt) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex pcmpeq needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     memset(o, 0, w);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t av = 0, bv = 0;
@@ -5139,8 +5182,8 @@ void exec_evex_pcmpeq(CPU* cpu, const Dec& d, unsigned elem, bool gt) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1 || t1,
-               c2 || t2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5161,7 +5204,7 @@ void exec_evex_vptestm(CPU* cpu, const Dec& d, bool is_n) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "vptestm needs 3 operands");
-    uint8_t a[64], b[64];
+    VecVal a, b;
     evex_load(cpu, d, ex[1], a, w, elem);
     evex_load(cpu, d, ex[2], b, w, elem);
     unsigned lanes = w / elem;
@@ -5204,10 +5247,9 @@ void exec_evex_padd(CPU* cpu, const Dec& d, unsigned elem, bool sub) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex padd needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, elem);
@@ -5218,8 +5260,8 @@ void exec_evex_padd(CPU* cpu, const Dec& d, unsigned elem, bool sub) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1 || t1,
-               c2 || t2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5229,10 +5271,9 @@ void exec_evex_pmull(CPU* cpu, const Dec& d, unsigned elem) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex pmull needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     for (unsigned i = 0; i < w; i += elem) {
         if (elem == 8) {
             uint64_t av, bv;
@@ -5255,8 +5296,8 @@ void exec_evex_pmull(CPU* cpu, const Dec& d, unsigned elem) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1 || t1,
-               c2 || t2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5267,10 +5308,9 @@ void exec_evex_pminmax(CPU* cpu, const Dec& d, unsigned elem, bool is_signed,
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex minmax needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, elem);
@@ -5300,8 +5340,8 @@ void exec_evex_pminmax(CPU* cpu, const Dec& d, unsigned elem, bool is_signed,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1 || t1,
-               c2 || t2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5311,10 +5351,9 @@ void exec_evex_pavg_psad(CPU* cpu, const Dec& d, bool is_sad, unsigned elem) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex avg/sad needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool c1 = false, c2 = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     memset(o, 0, w);
     if (!is_sad) {
         for (unsigned i = 0; i < w; i += elem) {
@@ -5338,8 +5377,8 @@ void exec_evex_pavg_psad(CPU* cpu, const Dec& d, bool is_sad, unsigned elem) {
     bool zeroing = false;
     unsigned melem = is_sad ? 8 : elem;
     uint64_t kbits = evex_mask(cpu, d, w / melem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, melem, kbits, zeroing, c1 || t1,
-               c2 || t2);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, melem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5350,13 +5389,12 @@ void exec_evex_shift(CPU* cpu, const Dec& d, unsigned elem, int kind,
     unsigned w = evex_width(cpu, d);
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], o[64], old[64];
-    bool c1 = false, c2 = false;
+    VecVal a, o, old;
     if (!variable && (d.insn.mnemonic == ZYDIS_MNEMONIC_VPSLLDQ ||
                       d.insn.mnemonic == ZYDIS_MNEMONIC_VPSRLDQ)) {
         if (n < 3)
             guest_error(cpu, "evex dq-shift needs 3 operands");
-        evex_load(cpu, d, ex[1], a, w, 1, &c1, &c2);
+        evex_load(cpu, d, ex[1], a, w, 1);
         unsigned cnt = (unsigned)kload(cpu, d, ex[2], 8);
         bool left = (d.insn.mnemonic == ZYDIS_MNEMONIC_VPSLLDQ);
         memset(o, 0, w);
@@ -5373,26 +5411,24 @@ void exec_evex_shift(CPU* cpu, const Dec& d, unsigned elem, int kind,
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, w, zeroing);
-        evex_store(cpu, d, ex[0], o, old, w, 1, kbits, zeroing, c1, c2);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 1, kbits, zeroing);
         cpu->rip = next_rip(cpu, d);
         return;
     }
     if (n < (variable ? 3 : 3))
         guest_error(cpu, "evex shift needs 3 operands");
-    bool t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &c1, &c2);
-    uint8_t cntv[64];
-    memset(cntv, 0, sizeof(cntv));
+    evex_load(cpu, d, ex[1], a, w, elem);
+    VecVal cntv;
+    cntv.clear();
     if (variable)
-        evex_load(cpu, d, ex[2], cntv, w, elem, &t1, &t2);
+        evex_load(cpu, d, ex[2], cntv, w, elem);
     else {
         unsigned cnt = (unsigned)kload(cpu, d, ex[2], 8);
         memset(cntv, (int)(cnt & 0xff), 8);
         for (unsigned i = 0; i < w; i++)
             cntv[i] = (uint8_t)cnt;
     }
-    c1 = c1 || t1;
-    c2 = c2 || t2;
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t v = 0;
         memcpy(&v, a + i, elem);
@@ -5423,7 +5459,8 @@ void exec_evex_shift(CPU* cpu, const Dec& d, unsigned elem, int kind,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, c1, c2);
+    o.taint = a.taint | cntv.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5468,9 +5505,8 @@ void exec_evex_broadcast(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 2)
         guest_error(cpu, "broadcast needs 2 operands");
-    uint8_t src[64], out[64], old[64];
-    memset(src, 0, sizeof(src));
-    bool cb = false, ci = false;
+    VecVal src, out, old;
+    src.clear();
     const auto& sop = d.ops[ex[1]];
     if (from_mask) {
         // Mask source: the last explicit k-reg (the write mask itself is
@@ -5492,28 +5528,27 @@ void exec_evex_broadcast(CPU* cpu, const Dec& d) {
         int idx, width;
         if (reg_to_vec(sop.reg.value, idx, width)) {
             memcpy(src, cpu->xmm[idx].bytes, srcn);
-            cb = cpu->xmm[idx].cannot_branch;
-            ci = cpu->xmm[idx].cannot_index;
+            src.taint = cpu->xmm[idx].taint;
         } else {
             // GPR source (e.g. vpbroadcastb zmm, esi): low bytes.
             Val g = op_load(cpu, d, ex[1]);
             memcpy(src, &g.v, srcn);
-            cb = g.cb;
-            ci = g.ci;
+            src.taint = g.taint;
         }
     } else if (sop.type == ZYDIS_OPERAND_TYPE_MEMORY) {
         uint64_t addr = resolve_mem(cpu, sop, cpu->rip + d.insn.length);
         mem_load_bytes(cpu, addr, src, srcn);
-        mem_get_taint(addr, srcn, &cb, &ci);
+        mem_get_taint(addr, srcn, &src.taint);
     } else {
         guest_error(cpu, "bad broadcast source");
     }
     for (unsigned i = 0; i < w; i += srcn)
         memcpy(out + i, src, srcn);
+    out.taint = src.taint;
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], out, old, w, elem, kbits, zeroing, cb, ci);
+    evex_store(cpu, d, ex[0], out, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5524,13 +5559,12 @@ void exec_evex_perm(CPU* cpu, const Dec& d, int kind) {
     unsigned w = evex_width(cpu, d);
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
-    memset(b, 0, sizeof(b));
+    VecVal a, b, o, old;
+    b.clear();
     if (kind == 4 || kind == 5) {
         if (n < 3)
             guest_error(cpu, "perm needs 3 operands");
-        evex_load(cpu, d, ex[1], a, w, kind == 4 ? 8 : 4, &cb, &ci);
+        evex_load(cpu, d, ex[1], a, w, kind == 4 ? 8 : 4);
         unsigned order = (unsigned)kload(cpu, d, ex[2], 8);
         if (kind == 5) {
             for (unsigned lane = 0; lane < w; lane += 16)
@@ -5548,7 +5582,8 @@ void exec_evex_perm(CPU* cpu, const Dec& d, int kind) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, w / 8, zeroing);
-        evex_store(cpu, d, ex[0], o, old, w, 8, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 8, kbits, zeroing);
         cpu->rip = next_rip(cpu, d);
         return;
     }
@@ -5559,10 +5594,8 @@ void exec_evex_perm(CPU* cpu, const Dec& d, int kind) {
         elem = (d.insn.mnemonic == ZYDIS_MNEMONIC_VPERMQ) ? 8 : 4;
     if (kind == 6)
         elem = 4;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     if (kind == 0 || kind == 1 || kind == 2) {
         // Variable permutes (VPERMB/W/D/Q): the INDEX vector is the first
         // source, data the second: dst[i] = data[idx[i]] (verified on HW).
@@ -5590,10 +5623,8 @@ void exec_evex_perm(CPU* cpu, const Dec& d, int kind) {
         // VSHUFPS/PD EVEX: dst,src1,src2,imm.
         if (n < 4)
             guest_error(cpu, "vshuf needs 4 operands");
-        uint8_t c[64];
-        evex_load(cpu, d, ex[2], c, w, elem, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        VecVal c;
+        evex_load(cpu, d, ex[2], c, w, elem);
         unsigned order = (unsigned)kload(cpu, d, ex[3], 8);
         bool is_ps = (d.insn.mnemonic == ZYDIS_MNEMONIC_VSHUFPS);
         unsigned lane = is_ps ? 4 : 8;
@@ -5615,7 +5646,8 @@ void exec_evex_perm(CPU* cpu, const Dec& d, int kind) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, cb, ci);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5635,12 +5667,9 @@ void exec_evex_blend(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "blend needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
     // Blend selects per the write mask itself (no separate dest merge):
@@ -5654,7 +5683,8 @@ void exec_evex_blend(CPU* cpu, const Dec& d) {
             memcpy(o + i * elem, a + i * elem, elem);
     }
     evex_old(cpu, d, ex[0], old, w);
-    evex_store(cpu, d, ex[0], o, old, w, elem, ~0ULL, false, cb, ci);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, ~0ULL, false);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5667,11 +5697,10 @@ void exec_evex_pmovsx(CPU* cpu, const Dec& d, unsigned s_lane, unsigned d_lane,
     int n = evex_explicit(d, ex);
     if (n < 2)
         guest_error(cpu, "evex pmovsx needs 2 operands");
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
+    VecVal a, o, old;
     // Source occupies w*d_lane/s_lane... actually source width = w*s_lane/d_lane.
     unsigned sw = w * s_lane / d_lane;
-    evex_load(cpu, d, ex[1], a, sw > 64 ? 64 : sw, s_lane, &cb, &ci);
+    evex_load(cpu, d, ex[1], a, sw > MAX_VEC_BYTES ? MAX_VEC_BYTES : sw, s_lane);
     memset(o, 0, w);
     for (unsigned i = 0; i < w / d_lane; i++) {
         uint64_t v = 0;
@@ -5692,7 +5721,8 @@ void exec_evex_pmovsx(CPU* cpu, const Dec& d, unsigned s_lane, unsigned d_lane,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / d_lane, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, d_lane, kbits, zeroing, cb, ci);
+    o.taint = a.taint;
+    evex_store(cpu, d, ex[0], o, old, w, d_lane, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5713,9 +5743,8 @@ void exec_evex_pmov_down(CPU* cpu, const Dec& d, unsigned s_lane,
     unsigned sw = lanes * s_lane;
     if (sw > 64)
         sw = 64;
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, ex[1], a, sw, s_lane, &cb, &ci);
+    VecVal a, o, old;
+    evex_load(cpu, d, ex[1], a, sw, s_lane);
     memset(o, 0, w);
     for (unsigned i = 0; i < lanes; i++) {
         uint64_t v = 0;
@@ -5763,7 +5792,8 @@ void exec_evex_pmov_down(CPU* cpu, const Dec& d, unsigned s_lane,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, d_lane, kbits, zeroing, cb, ci);
+    o.taint = a.taint;
+    evex_store(cpu, d, ex[0], o, old, w, d_lane, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5808,21 +5838,19 @@ void exec_evex_movm(CPU* cpu, const Dec& d, bool to_vec) {
             else
                 bits = kload(cpu, d, ex[1], 64);
         }
-        uint8_t o[64], old[64];
+        VecVal o, old;
         for (unsigned i = 0; i < lanes; i++)
             memset(o + i * elem, ((bits >> i) & 1) ? 0xff : 0, elem);
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
+        o.taint.clear();
         evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
         cpu->rip = next_rip(cpu, d);
         return;
     }
-    uint8_t a[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
-    (void)cb;
-    (void)ci;
+    VecVal a;
+    evex_load(cpu, d, ex[1], a, w, elem);
     uint64_t res = 0;
     for (unsigned i = 0; i < lanes; i++) {
         uint64_t v = 0;
@@ -5848,9 +5876,8 @@ void exec_evex_popcnt_lzcnt(CPU* cpu, const Dec& d, bool is_lzcnt) {
     int n = evex_explicit(d, ex);
     if (n < 2)
         guest_error(cpu, "popcnt needs 2 operands");
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
+    VecVal a, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t v = 0;
         memcpy(&v, a + i, elem);
@@ -5872,7 +5899,8 @@ void exec_evex_popcnt_lzcnt(CPU* cpu, const Dec& d, bool is_lzcnt) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, cb, ci);
+    o.taint = a.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5889,9 +5917,8 @@ void exec_evex_vpabs(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 2)
         guest_error(cpu, "vpabs needs 2 operands");
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
+    VecVal a, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t v = 0;
         memcpy(&v, a + i, elem);
@@ -5909,7 +5936,8 @@ void exec_evex_vpabs(CPU* cpu, const Dec& d) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, cb, ci);
+    o.taint = a.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -5922,7 +5950,7 @@ void exec_evex_p2intersect(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "vp2intersect needs 3 operands");
-    uint8_t a[64], b[64];
+    VecVal a, b;
     evex_load(cpu, d, ex[1], a, w, elem);
     evex_load(cpu, d, ex[2], b, w, elem);
     unsigned lanes = w / elem;
@@ -5968,12 +5996,9 @@ void exec_evex_unpack(CPU* cpu, const Dec& d, int kind) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "evex unpack needs 3 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     if (kind == 0) {
         for (unsigned lane = 0; lane < w; lane += 16) {
             unsigned half = 8 / elem;
@@ -5999,14 +6024,15 @@ void exec_evex_unpack(CPU* cpu, const Dec& d, int kind) {
         // pblendvb EVEX: mask from implicit XMM0.
         for (unsigned i = 0; i < w; i++)
             o[i] = (cpu->xmm[0].bytes[i] & 0x80) ? b[i] : a[i];
-        cb = cb || cpu->xmm[0].cannot_branch;
-        ci = ci || cpu->xmm[0].cannot_index;
+        o.taint = a.taint | b.taint | cpu->xmm[0].taint;
     }
-    unsigned melem = (kind == 0) ? 1 : 1;
+    unsigned melem = 1;
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / melem, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, melem, kbits, zeroing, cb, ci);
+    if (kind != 3)
+        o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, melem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6035,14 +6061,14 @@ uint64_t vsib_base(CPU* cpu, const ZydisDecodedOperand& mop, int& vidx) {
     int vw;
     if (!reg_to_vec(mop.mem.index, vidx, vw))
         guest_error(cpu, "bad gather/scatter index register");
-    if (cpu->xmm[vidx].cannot_index)
+    if (cpu->xmm[vidx].taint.cannot_index)
         guest_error(cpu, "tainted (cannot-index) gather/scatter index");
     uint64_t base = 0;
     if (mop.mem.base != ZYDIS_REGISTER_NONE) {
         int idx, size, shift;
         if (!reg_to_gpr(mop.mem.base, idx, size, shift))
             guest_error(cpu, "bad gather/scatter base register");
-        if (cpu->gpr[idx].cannot_index)
+        if (cpu->gpr[idx].taint.cannot_index)
             guest_error(cpu, "tainted (cannot-index) gather/scatter base");
         base = cpu->gpr[idx].val;
     }
@@ -6064,20 +6090,40 @@ void exec_evex_gather(CPU* cpu, const Dec& d, unsigned idx_elem,
     }
     if (dsti < 0 || memi < 0)
         guest_error(cpu, "bad gather operands");
+    unsigned lanes = w / data_elem;
+    VecVal o, old;
+    evex_old(cpu, d, dsti, old, w);
+    bool zeroing = false;
+    uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
+    uint64_t all_g = (lanes >= 64) ? ~0ULL : ((lanes == 0) ? 0 : ((1ULL << lanes) - 1));
+    if ((kbits & all_g) == 0) {
+        // Fully masked: no lanes enabled, no faults (including index/base
+        // taint) and no mem taint. Dest merges old (or zeroes).
+        VecVal tmp;
+        if (zeroing)
+            tmp.clear();
+        else
+            tmp = old;
+        // evex_store with empty mask preserves old/clears correctly for taint.
+        evex_store(cpu, d, dsti, tmp, old, w, data_elem, kbits, zeroing);
+        cpu->rip = next_rip(cpu, d);
+        return;
+    }
     const auto& mop = d.ops[memi];
     int vidx = 0;
     uint64_t base = vsib_base(cpu, mop, vidx);
     int64_t disp = mop.mem.disp.has_displacement ? mop.mem.disp.value : 0;
     uint64_t scale = mop.mem.scale ? mop.mem.scale : 1;
-    unsigned lanes = w / data_elem;
-    uint8_t o[64], old[64];
-    evex_old(cpu, d, dsti, old, w);
-    bool cb = false, ci = false;
-    bool zeroing = false;
-    uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-    uint8_t idxb[64];
-    memcpy(idxb, cpu->xmm[vidx].bytes, sizeof(idxb));
-    cb = cpu->xmm[vidx].cannot_branch;
+    VecVal idxb;
+    memcpy(idxb, cpu->xmm[vidx].bytes, MAX_VEC_BYTES);
+    // Per-element precise: only enabled lanes fault/taint. Index taint
+    // contributes only if some lane enabled; mem taint ORed per enabled lane.
+    uint64_t all = (lanes >= 64) ? ~0ULL : ((lanes == 0) ? 0 : ((1ULL << lanes) - 1));
+    bool any_enabled = ((kbits & all) != 0);
+    Taint idx_taint;
+    if (any_enabled)
+        idx_taint = cpu->xmm[vidx].taint;
+    Taint mem_taint;
     for (unsigned i = 0; i < lanes; i++) {
         if ((kbits >> i) & 1) {
             uint64_t ix = 0;
@@ -6089,10 +6135,9 @@ void exec_evex_gather(CPU* cpu, const Dec& d, unsigned idx_elem,
             uint64_t addr = base + ix * scale + (uint64_t)disp;
             uint8_t tmp[8];
             mem_load_bytes(cpu, addr, tmp, data_elem);
-            bool t1 = false, t2 = false;
-            mem_get_taint(addr, data_elem, &t1, &t2);
-            cb = cb || t1;
-            ci = ci || t2;
+            Taint t;
+            mem_get_taint(addr, data_elem, &t);
+            mem_taint |= t;
             memcpy(o + i * data_elem, tmp, data_elem);
         } else if (zeroing) {
             memset(o + i * data_elem, 0, data_elem);
@@ -6100,7 +6145,12 @@ void exec_evex_gather(CPU* cpu, const Dec& d, unsigned idx_elem,
             memcpy(o + i * data_elem, old + i * data_elem, data_elem);
         }
     }
-    evex_store(cpu, d, dsti, o, old, w, data_elem, ~0ULL, false, cb, ci);
+    Taint src_taint = idx_taint | mem_taint;
+    if (zeroing)
+        o.taint = any_enabled ? src_taint : Taint();
+    else
+        o.taint = any_enabled ? (old.taint | src_taint) : old.taint;
+    evex_store(cpu, d, dsti, o, old, w, data_elem, ~0ULL, false);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6119,20 +6169,27 @@ void exec_evex_scatter(CPU* cpu, const Dec& d, unsigned idx_elem,
     }
     if (dsti < 0 || srci < 0)
         guest_error(cpu, "bad scatter operands");
+    unsigned lanes = w / data_elem;
+    bool zeroing_s = false;
+    uint64_t kbits_s = evex_mask(cpu, d, lanes, zeroing_s);
+    uint64_t all_s = (lanes >= 64) ? ~0ULL : ((lanes == 0) ? 0 : ((1ULL << lanes) - 1));
+    if ((kbits_s & all_s) == 0) {
+        // Fully masked scatter: no stores, no faults (including index/base).
+        cpu->rip = next_rip(cpu, d);
+        return;
+    }
     const auto& mop = d.ops[dsti];
     int vidx = 0;
     uint64_t base = vsib_base(cpu, mop, vidx);
     int64_t disp = mop.mem.disp.has_displacement ? mop.mem.disp.value : 0;
     uint64_t scale = mop.mem.scale ? mop.mem.scale : 1;
-    unsigned lanes = w / data_elem;
-    uint8_t src[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, srci, src, w, data_elem, &cb, &ci);
+    VecVal src;
+    evex_load(cpu, d, srci, src, w, data_elem);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
     (void)zeroing;
-    uint8_t idxb[64];
-    memcpy(idxb, cpu->xmm[vidx].bytes, sizeof(idxb));
+    VecVal idxb;
+    memcpy(idxb, cpu->xmm[vidx].bytes, MAX_VEC_BYTES);
     for (unsigned i = 0; i < lanes; i++) {
         if ((kbits >> i) & 1) {
             uint64_t ix = 0;
@@ -6143,7 +6200,7 @@ void exec_evex_scatter(CPU* cpu, const Dec& d, unsigned idx_elem,
                 ix = (uint64_t)(int64_t)ix;
             uint64_t addr = base + ix * scale + (uint64_t)disp;
             mem_store_bytes(cpu, addr, src + i * data_elem, data_elem);
-            mem_note_store(cpu, addr, data_elem, cb, ci);
+            mem_note_store(cpu, addr, data_elem, src.taint);
         }
     }
     cpu->rip = next_rip(cpu, d);
@@ -6181,6 +6238,10 @@ void exec_vex_gather(CPU* cpu, const Dec& d, unsigned idx_elem,
         guest_error(cpu, "bad vex gather registers");
     unsigned lanes = w / data_elem;
     unsigned step = data_elem; // mask elements match data width
+    // Per-element precise: only enabled lanes fault/taint.
+    Taint dest_taint = cpu->xmm[didx].taint;
+    Taint mask_taint = cpu->xmm[midx].taint;
+    Taint idx_taint = cpu->xmm[vidx].taint;
     for (unsigned i = 0; i < lanes; i++) {
         uint64_t mb = 0;
         memcpy(&mb, cpu->xmm[midx].bytes + i * step, step);
@@ -6196,9 +6257,18 @@ void exec_vex_gather(CPU* cpu, const Dec& d, unsigned idx_elem,
         uint64_t addr = base + ix * scale + (uint64_t)disp;
         uint8_t tmp[8];
         mem_load_bytes(cpu, addr, tmp, data_elem);
+        Taint t;
+        mem_get_taint(addr, data_elem, &t);
+        dest_taint |= mask_taint | idx_taint | t;
         memcpy(cpu->xmm[didx].bytes + i * data_elem, tmp, data_elem);
         memset(cpu->xmm[midx].bytes + i * step, 0, step);
     }
+    // Mask register taint: completed elements cleared, but overall mask
+    // taint persists? Completed lanes cleared to zero (clean for those lanes),
+    // but with whole-vector Taint, preserve mask taint if any lane remains?
+    // Conservative: keep original mask taint (clearing is per-lane zeroing,
+    // but taint whole). Dest gains OR above.
+    cpu->xmm[didx].taint = dest_taint;
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6217,62 +6287,61 @@ void exec_maskmov(CPU* cpu, const Dec& d) {
         guest_error(cpu, "maskmov needs 3 operands");
     bool is_store = (d.ops[ex[0]].type == ZYDIS_OPERAND_TYPE_MEMORY);
     uint64_t addr = 0;
-    uint8_t data[64], mask[64];
+    VecVal data, mask;
     unsigned w = 0;
-    bool cb = false, ci = false, t1 = false, t2 = false;
     if (is_store) {
-        // [mem, mask, src].
+        // [mem, mask, src]. Per-element precise: only enabled elements
+        // fault (mem_check via mem_store_bytes) and gain taint.
         addr = resolve_mem(cpu, d.ops[ex[0]], cpu->rip + d.insn.length);
         w = d.ops[ex[2]].size / 8;
         if (w != 16 && w != 32)
             guest_error(cpu, "bad maskmov width");
-        vec_load_bytes(cpu, d, ex[1], mask, w, &cb, &ci);
-        vec_load_bytes(cpu, d, ex[2], data, w, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        vec_load_bytes(cpu, d, ex[1], mask, w);
+        vec_load_bytes(cpu, d, ex[2], data, w);
+        Taint src_taint = mask.taint | data.taint;
         for (unsigned i = 0; i < w; i += elem) {
             uint64_t mv = 0;
             memcpy(&mv, mask + i, elem);
             if ((mv >> (elem * 8 - 1)) & 1) {
                 mem_store_bytes(cpu, addr + i, data + i, elem);
-                mem_note_store(cpu, addr + i, elem, cb, ci);
+                mem_note_store(cpu, addr + i, elem, src_taint);
             }
         }
     } else {
-        // [dst, mask, mem].
+        // [dst, mask, mem]. Only enabled elements fault/taint.
         addr = resolve_mem(cpu, d.ops[ex[2]], cpu->rip + d.insn.length);
         w = d.ops[ex[0]].size / 8;
         if (w != 16 && w != 32)
             guest_error(cpu, "bad maskmov width");
-        vec_load_bytes(cpu, d, ex[1], mask, w, &cb, &ci);
-        uint8_t old[64];
+        vec_load_bytes(cpu, d, ex[1], mask, w);
+        VecVal old;
         vec_load_bytes(cpu, d, ex[0], old, w);
-        bool ocb = cpu->xmm[0].cannot_branch, oci = cpu->xmm[0].cannot_index;
-        (void)ocb;
-        (void)oci;
         // Preserve old dest taint where known: re-read below.
-        uint8_t out[64];
-        memcpy(out, old, w);
+        VecVal out;
+        memcpy(out.bytes, old.bytes, w);
+        out.taint = old.taint;
         // Fetch current dest taint via register lookup.
         int didx = 0, dw = 0;
-        bool dcb = false, dci = false;
+        Taint dest_taint;
         if (d.ops[ex[0]].type == ZYDIS_OPERAND_TYPE_REGISTER &&
             reg_to_vec(d.ops[ex[0]].reg.value, didx, dw)) {
-            dcb = cpu->xmm[didx].cannot_branch;
-            dci = cpu->xmm[didx].cannot_index;
+            dest_taint = cpu->xmm[didx].taint;
+            out.taint = dest_taint;
+        } else {
+            dest_taint = old.taint;
         }
         for (unsigned i = 0; i < w; i += elem) {
             uint64_t mv = 0;
             memcpy(&mv, mask + i, elem);
             if ((mv >> (elem * 8 - 1)) & 1) {
                 mem_load_bytes(cpu, addr + i, out + i, elem);
-                bool t3 = false, t4 = false;
-                mem_get_taint(addr + i, elem, &t3, &t4);
-                dcb = dcb || cb || t3;
-                dci = dci || ci || t4;
+                Taint t;
+                mem_get_taint(addr + i, elem, &t);
+                dest_taint |= mask.taint | t;
             }
         }
-        vec_store_bytes(cpu, d, ex[0], out, w, true, w, dcb, dci);
+        out.taint = dest_taint;
+        vec_store_bytes(cpu, d, ex[0], out, w, true, w);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -6608,30 +6677,28 @@ __attribute__((target("sse4.1,aes,avx2"))) void exec_aes(CPU* cpu,
     }
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t st[64], ky[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal st, ky, o, old;
     unsigned imm = 0;
     if (!is_vaes) {
         if (n < 2)
             guest_error(cpu, "aes needs 2 operands");
         // AESKEYGENASSIST uses only src+imm (dst is not a source).
         int sti = (m == ZYDIS_MNEMONIC_AESKEYGENASSIST) ? ex[1] : ex[0];
-        vec_load_bytes(cpu, d, sti, st, 16, &cb, &ci);
-        vec_load_bytes(cpu, d, ex[1], ky, 16, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        vec_load_bytes(cpu, d, sti, st, 16);
+        vec_load_bytes(cpu, d, ex[1], ky, 16);
         if (m == ZYDIS_MNEMONIC_AESKEYGENASSIST)
             imm = (unsigned)op_load(cpu, d, ex[2]).v;
-        __m128i r = aes_lane(m, ((__m128i*)st)[0], ((__m128i*)ky)[0], imm);
+        __m128i r = aes_lane(m, ((__m128i*)st.bytes)[0], ((__m128i*)ky.bytes)[0], imm);
         memcpy(o, &r, 16);
         bool vex = is_vex(d);
-        vec_store_bytes(cpu, d, ex[0], o, 16, vex, 16, cb, ci);
+        o.taint = st.taint | ky.taint;
+        vec_store_bytes(cpu, d, ex[0], o, 16, vex, 16);
         cpu->rip = next_rip(cpu, d);
         return;
     }
     if (n < 3 && m != ZYDIS_MNEMONIC_VAESIMC)
         guest_error(cpu, "vaes needs 3 operands");
-    evex_load(cpu, d, ex[1], st, w, 0, &cb, &ci);
+    evex_load(cpu, d, ex[1], st, w, 16);
     if (m == ZYDIS_MNEMONIC_VAESIMC) {
         // 2-operand form: key schedule assist on the state alone.
         for (unsigned lane = 0; lane < w; lane += 16) {
@@ -6648,9 +6715,7 @@ __attribute__((target("sse4.1,aes,avx2"))) void exec_aes(CPU* cpu,
             memcpy(o + lane, &r, 16);
         }
     } else {
-        evex_load(cpu, d, ex[2], ky, w, 0, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[2], ky, w, 16);
         for (unsigned lane = 0; lane < w; lane += 16) {
             __m128i r = aes_lane(m, ((__m128i*)(st + lane))[0],
                                  ((__m128i*)(ky + lane))[0], 0);
@@ -6660,7 +6725,8 @@ __attribute__((target("sse4.1,aes,avx2"))) void exec_aes(CPU* cpu,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, w / 16, zeroing) : ~0ULL;
-    evex_store(cpu, d, ex[0], o, old, w, 16, kbits, zeroing, cb, ci);
+    o.taint = st.taint | ky.taint;
+    evex_store(cpu, d, ex[0], o, old, w, 16, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6692,29 +6758,25 @@ __attribute__((target("sse4.1,pclmul,avx2"))) void exec_pclmul(CPU* cpu,
     // imm8 selects halves: bit0 -> a-hi/lo? _mm_clmulepi64_si128(a,b,imm):
     // imm 0x00=a[63:0]*b[63:0] 0x01=a[63:0]*b[127:64] 0x10=a[127:64]*b[63:0]
     // 0x11=a[127:64]*b[127:64].
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal a, b, o, old;
     unsigned imm = 0;
     if (!is_v) {
         if (n < 3)
             guest_error(cpu, "pclmulqdq needs 3 operands");
-        vec_load_bytes(cpu, d, ex[0], a, 16, &cb, &ci);
-        vec_load_bytes(cpu, d, ex[1], b, 16, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        vec_load_bytes(cpu, d, ex[0], a, 16);
+        vec_load_bytes(cpu, d, ex[1], b, 16);
         imm = (unsigned)op_load(cpu, d, ex[2]).v & 0xff;
-        __m128i r = pclmul_lane(((__m128i*)a)[0], ((__m128i*)b)[0], imm);
+        __m128i r = pclmul_lane(((__m128i*)a.bytes)[0], ((__m128i*)b.bytes)[0], imm);
         memcpy(o, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], o, 16, false, 16, cb, ci);
+        o.taint = a.taint | b.taint;
+        vec_store_bytes(cpu, d, ex[0], o, 16, false, 16);
         cpu->rip = next_rip(cpu, d);
         return;
     }
     if (n < 4)
         guest_error(cpu, "vpclmulqdq needs 4 operands");
-    evex_load(cpu, d, ex[1], a, w, 0, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, 0, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    evex_load(cpu, d, ex[1], a, w, 16);
+    evex_load(cpu, d, ex[2], b, w, 16);
     imm = (unsigned)kload(cpu, d, ex[3], 8) & 0x11;
     for (unsigned lane = 0; lane < w; lane += 16) {
         __m128i r = pclmul_lane(((__m128i*)(a + lane))[0],
@@ -6724,7 +6786,8 @@ __attribute__((target("sse4.1,pclmul,avx2"))) void exec_pclmul(CPU* cpu,
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, w / 16, zeroing) : ~0ULL;
-    evex_store(cpu, d, ex[0], o, old, w, 16, kbits, zeroing, cb, ci);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, 16, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6782,8 +6845,7 @@ void exec_gfni(CPU* cpu, const Dec& d) {
     }
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], x[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal a, x, o, old;
     unsigned imm = 0;
     bool is_vex = (m == ZYDIS_MNEMONIC_VGF2P8AFFINEQB ||
                    m == ZYDIS_MNEMONIC_VGF2P8AFFINEINVQB ||
@@ -6811,13 +6873,11 @@ void exec_gfni(CPU* cpu, const Dec& d) {
         // VEX/EVEX: matrix from first source (ex[1]), bytes from second
         // (ex[2]); verified against hardware.
         // Matrix source holds one 64-bit matrix per 64-bit lane.
-        unsigned aw = w > 64 ? 64 : w;
+        unsigned aw = w > MAX_VEC_BYTES ? MAX_VEC_BYTES : w;
         if (aw < 16)
             aw = 16;
-        evex_load(cpu, d, ai, a, aw, 0, &cb, &ci);
-        evex_load(cpu, d, xi, x, w, 0, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ai, a, aw, 1);
+        evex_load(cpu, d, xi, x, w, 1);
         imm = (unsigned)kload(cpu, d, imi, 8);
         uint64_t A = 0;
         memcpy(&A, a, 8);
@@ -6849,17 +6909,16 @@ void exec_gfni(CPU* cpu, const Dec& d) {
         // x from src (ex[1]). VEX has separate dst/src1/src2.
         int ai = is_vex ? ex[1] : ex[0];
         int xi = is_vex ? ex[2] : ex[1];
-        evex_load(cpu, d, ai, a, w, 0, &cb, &ci);
-        evex_load(cpu, d, xi, x, w, 0, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ai, a, w, 1);
+        evex_load(cpu, d, xi, x, w, 1);
         for (unsigned i = 0; i < w; i++)
             o[i] = gf_mul(a[i], x[i]);
     }
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, w, zeroing) : ~0ULL;
-    evex_store(cpu, d, ex[0], o, old, w, 1, kbits, zeroing, cb, ci);
+    o.taint = a.taint | x.taint;
+    evex_store(cpu, d, ex[0], o, old, w, 1, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -6869,31 +6928,29 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
     int ex[5];
     int n = evex_explicit(d, ex);
     uint8_t a[16], b[16], c[16];
-    bool cb = false, ci = false, t1 = false, t2 = false, t3 = false, t4 = false;
-    auto load16 = [&](int oi, uint8_t* out, bool* pcb, bool* pci) {
+    Taint cb, t1, t3;
+    auto load16 = [&](int oi, uint8_t* out, Taint* pt) {
         const auto& op = d.ops[oi];
         if (op.type == ZYDIS_OPERAND_TYPE_REGISTER) {
             int idx, width;
             if (!reg_to_vec(op.reg.value, idx, width))
                 guest_error(cpu, "bad sha register");
             memcpy(out, cpu->xmm[idx].bytes, 16);
-            if (pcb)
-                *pcb = cpu->xmm[idx].cannot_branch;
-            if (pci)
-                *pci = cpu->xmm[idx].cannot_index;
+            if (pt)
+                *pt = cpu->xmm[idx].taint;
             return;
         }
         uint64_t addr = resolve_mem(cpu, op, cpu->rip + d.insn.length);
         mem_load_bytes(cpu, addr, out, 16);
-        mem_get_taint(addr, 16, pcb, pci);
+        mem_get_taint(addr, 16, pt);
     };
     __m128i r;
     switch (m) {
     case ZYDIS_MNEMONIC_SHA1RNDS4: {
         if (n < 3)
             guest_error(cpu, "sha1rnds4 needs 3 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         unsigned f = (unsigned)kload(cpu, d, ex[2], 8) & 3;
         // func is a compile-time constant for the intrinsic: dispatch.
         __m128i aa = ((__m128i*)a)[0], bb = ((__m128i*)b)[0];
@@ -6906,37 +6963,37 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
         else
             r = _mm_sha1rnds4_epu32(aa, bb, 3);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     case ZYDIS_MNEMONIC_SHA1NEXTE: {
         if (n < 2)
             guest_error(cpu, "sha1nexte needs 2 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         r = _mm_sha1nexte_epu32(((__m128i*)a)[0], ((__m128i*)b)[0]);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     case ZYDIS_MNEMONIC_SHA1MSG1: {
         if (n < 2)
             guest_error(cpu, "sha1msg1 needs 2 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         r = _mm_sha1msg1_epu32(((__m128i*)a)[0], ((__m128i*)b)[0]);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     case ZYDIS_MNEMONIC_SHA1MSG2: {
         if (n < 2)
             guest_error(cpu, "sha1msg2 needs 2 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         r = _mm_sha1msg2_epu32(((__m128i*)a)[0], ((__m128i*)b)[0]);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     case ZYDIS_MNEMONIC_SHA256RNDS2: {
@@ -6945,8 +7002,8 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
         // against GCC's emission (b/k swapped vs Intel operand order).
         if (n < 2)
             guest_error(cpu, "sha256rnds2 needs operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         bool found = false;
         for (int i = 0; i < d.insn.operand_count; i++) {
             if (d.ops[i].visibility == ZYDIS_OPERAND_VISIBILITY_HIDDEN &&
@@ -6954,8 +7011,7 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
                 int idx, width;
                 if (reg_to_vec(d.ops[i].reg.value, idx, width)) {
                     memcpy(c, cpu->xmm[idx].bytes, 16);
-                    t3 = cpu->xmm[idx].cannot_branch;
-                    t4 = cpu->xmm[idx].cannot_index;
+                    t3 = cpu->xmm[idx].taint;
                     found = true;
                     break;
                 }
@@ -6967,28 +7023,27 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
                                   ((__m128i*)c)[0]);
         uint8_t o[16];
         memcpy(o, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], o, 16, false, 16, cb || t1 || t3,
-                        ci || t2 || t4);
+        vec_store_bytes(cpu, d, ex[0], o, 16, false, 16, cb | t1 | t3);
         break;
     }
     case ZYDIS_MNEMONIC_SHA256MSG1: {
         if (n < 2)
             guest_error(cpu, "sha256msg1 needs 2 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         r = _mm_sha256msg1_epu32(((__m128i*)a)[0], ((__m128i*)b)[0]);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     case ZYDIS_MNEMONIC_SHA256MSG2: {
         if (n < 2)
             guest_error(cpu, "sha256msg2 needs 2 operands");
-        load16(ex[0], a, &cb, &ci);
-        load16(ex[1], b, &t1, &t2);
+        load16(ex[0], a, &cb);
+        load16(ex[1], b, &t1);
         r = _mm_sha256msg2_epu32(((__m128i*)a)[0], ((__m128i*)b)[0]);
         memcpy(c, &r, 16);
-        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb || t1, ci || t2);
+        vec_store_bytes(cpu, d, ex[0], c, 16, false, 16, cb | t1);
         break;
     }
     default: guest_error(cpu, "unsupported SHA operation");
@@ -7000,9 +7055,8 @@ __attribute__((target("sse4.1,sha"))) void exec_sha(CPU* cpu, const Dec& d) {
 // All use vec_sources/vec_store_dst, so legacy + VEX forms share one path.
 
 void exec_pmadd(CPU* cpu, const Dec& d, bool is_ubsw) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     if (!is_ubsw) {
         // PMADDWD: 4 signed words -> 2 signed dwords.
         for (unsigned i = 0; i < w; i += 4) {
@@ -7023,14 +7077,14 @@ void exec_pmadd(CPU* cpu, const Dec& d, bool is_ubsw) {
             o[i + 1] = (uint8_t)((t >> 8) & 0xff);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pavg(CPU* cpu, const Dec& d, unsigned elem) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     for (unsigned i = 0; i < w; i += elem) {
         uint64_t av = 0, bv = 0;
         memcpy(&av, a + i, elem);
@@ -7038,14 +7092,14 @@ void exec_pavg(CPU* cpu, const Dec& d, unsigned elem) {
         uint64_t r = (av + bv + 1) >> 1;
         memcpy(o + i, &r, elem);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_psadbw(CPU* cpu, const Dec& d) {
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     memset(o, 0, w);
     for (unsigned blk = 0; blk < w; blk += 8) {
         uint64_t sum = 0;
@@ -7054,15 +7108,15 @@ void exec_psadbw(CPU* cpu, const Dec& d) {
                                                       : b[blk + i] - a[blk + i]);
         memcpy(o + blk, &sum, 8);
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_pmulh(CPU* cpu, const Dec& d, int kind) {
     // kind 0=PMULHUW 1=PMULHW 2=PMULUDQ 3=PMULDQ
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     if (kind <= 1) {
         for (unsigned i = 0; i < w; i += 2) {
             uint16_t av = a[i] | (a[i + 1] << 8), bv = b[i] | (b[i + 1] << 8);
@@ -7087,15 +7141,15 @@ void exec_pmulh(CPU* cpu, const Dec& d, int kind) {
             memcpy(o + i, &r, 8);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_phadd(CPU* cpu, const Dec& d, int kind) {
     // kind 0=PHADDW 1=PHADDD 2=PHSUBW 3=PHSUBD 4=PHADDSW 5=PHSUBSW
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     unsigned elem = (kind == 1) ? 4 : 2;
     bool sub = (kind == 2 || kind == 3 || kind == 5);
     bool sat = (kind == 4 || kind == 5);
@@ -7143,15 +7197,15 @@ void exec_phadd(CPU* cpu, const Dec& d, int kind) {
             }
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_mpsadbw(CPU* cpu, const Dec& d) {
     int n = explicit_ops(d);
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     if (w != 16 && w != 32)
         guest_error(cpu, "bad mpsadbw width");
     unsigned imm = (unsigned)op_load(cpu, d, n - 1).v;
@@ -7178,46 +7232,45 @@ void exec_mpsadbw(CPU* cpu, const Dec& d) {
             o[lane + i * 2 + 1] = (uint8_t)((sum >> 8) & 0xff);
         }
     }
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
 void exec_extractps(CPU* cpu, const Dec& d, bool insert) {
     int n = explicit_ops(d);
     if (!insert) {
-        uint8_t a[16];
-        bool cb = false, ci = false;
-        vec_load_bytes(cpu, d, 1, a, 16, &cb, &ci);
+        VecVal a;
+        vec_load_bytes(cpu, d, 1, a, 16);
         unsigned sel = (unsigned)op_load(cpu, d, 2).v & 3;
         Val out;
         memcpy(&out.v, a + sel * 4, 4);
-        out.cb = cb;
-        out.ci = ci;
+        out.taint = a.taint;
         op_store(cpu, d, 0, out);
     } else {
-        uint8_t a[16], o[16];
-        bool cb = false, ci = false, t1 = false, t2 = false;
-        vec_load_bytes(cpu, d, 0, a, 16, &cb, &ci);
+        VecVal a, o, sb;
+        vec_load_bytes(cpu, d, 0, a, 16);
         memcpy(o, a, 16);
+        o.taint = a.taint;
         unsigned imm = (unsigned)op_load(cpu, d, n - 1).v;
         // INSERTPS imm8: COUNT_S=bits[7:6], COUNT_D=bits[5:4], ZMASK=bits[3:0].
         unsigned cnt_s = (imm >> 6) & 3, cnt_d = (imm >> 4) & 3, zmask = imm & 0xf;
-        uint8_t sb[16];
         if (d.ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-            vec_load_bytes(cpu, d, 1, sb, 16, &t1, &t2);
+            vec_load_bytes(cpu, d, 1, sb, 16);
+            o.taint |= sb.taint;
         } else {
             uint64_t addr = resolve_mem(cpu, d.ops[1], cpu->rip + d.insn.length);
             mem_load_bytes(cpu, addr, sb, 4);
-            mem_get_taint(addr, 4, &t1, &t2);
+            Taint t;
+            mem_get_taint(addr, 4, &t);
+            o.taint |= t;
         }
-        cb = cb || t1;
-        ci = ci || t2;
         memcpy(o + cnt_d * 4, sb + cnt_s * 4, 4);
         for (unsigned i = 0; i < 4; i++) {
             if ((zmask >> i) & 1)
                 memset(o + i * 4, 0, 4);
         }
-        vec_store_bytes(cpu, d, 0, o, 16, false, 16, cb, ci);
+        vec_store_bytes(cpu, d, 0, o, 16, false, 16);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -7225,9 +7278,8 @@ void exec_extractps(CPU* cpu, const Dec& d, bool insert) {
 // HADDPS/PD, HSUBPS/PD, ADDSUBPS/PD (legacy + VEX).
 void exec_hadd_fp(CPU* cpu, const Dec& d, int kind) {
     // kind 0=haddps 1=haddpd 2=hsubps 3=hsubpd 4=addsubps 5=addsubpd
-    uint8_t a[64], b[64], o[64];
-    bool vcb = false, vci = false;
-    unsigned w = vec_sources(cpu, d, a, b, &vcb, &vci);
+    VecVal a, b, o;
+    unsigned w = vec_sources(cpu, d, a, b);
     bool is_pd = (kind == 1 || kind == 3 || kind == 5);
     unsigned elem = is_pd ? 8 : 4;
     for (unsigned lane = 0; lane < w; lane += 16) {
@@ -7276,7 +7328,8 @@ void exec_hadd_fp(CPU* cpu, const Dec& d, int kind) {
         }
     }
     (void)elem;
-    vec_store_dst(cpu, d, o, w, vcb, vci);
+    o.taint = a.taint | b.taint;
+    vec_store_dst(cpu, d, o, w);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -7292,8 +7345,8 @@ void exec_bextr(CPU* cpu, const Dec& d) {
     unsigned start = (unsigned)ctl.v & 0xff;
     unsigned len = ((unsigned)ctl.v >> 8) & 0xff;
     Val out;
-    out.cb = src.cb || ctl.cb;
-    out.ci = src.ci || ctl.ci;
+    out.taint.cannot_branch = src.taint.cannot_branch || ctl.taint.cannot_branch;
+    out.taint.cannot_index = src.taint.cannot_index || ctl.taint.cannot_index;
     if (start >= bits) {
         out.v = 0;
         cpu->set_flag(FLAG_ZF, true);
@@ -7330,22 +7383,22 @@ void exec_pcmpestri(CPU* cpu, const Dec& d, bool want_index) {
     //   PCMPESTRM xmm1, xmm2/m128, imm8
     int src1i = 0, src2i = 1;
     uint8_t A[32], B[32];
-    bool acb = false, aci = false, bcb = false, bci = false;
+    Taint ataint, btaint;
     // src1 is op0 when register, else (mem dst?) — PCMPESTRM can store to
     // xmm0? No: PCMPESTRM writes XMM0 implicitly. op0 is always a source.
     if (d.ops[src1i].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-        vec_load_bytes(cpu, d, src1i, A, w, &acb, &aci);
+        vec_load_bytes(cpu, d, src1i, A, w, &ataint);
     } else {
         uint64_t addr = resolve_mem(cpu, d.ops[src1i], cpu->rip + d.insn.length);
         mem_load_bytes(cpu, addr, A, w);
-        mem_get_taint(addr, w, &acb, &aci);
+        mem_get_taint(addr, w, &ataint);
     }
     if (d.ops[src2i].type == ZYDIS_OPERAND_TYPE_REGISTER) {
-        vec_load_bytes(cpu, d, src2i, B, w, &bcb, &bci);
+        vec_load_bytes(cpu, d, src2i, B, w, &btaint);
     } else {
         uint64_t addr = resolve_mem(cpu, d.ops[src2i], cpu->rip + d.insn.length);
         mem_load_bytes(cpu, addr, B, w);
-        mem_get_taint(addr, w, &bcb, &bci);
+        mem_get_taint(addr, w, &btaint);
     }
     // Lengths in EAX (src1) / EDX (src2) as element counts.
     unsigned mode = imm & 3;
@@ -7498,24 +7551,21 @@ void exec_pcmpestri(CPU* cpu, const Dec& d, bool want_index) {
     cpu->set_flag(FLAG_OF, (final_mask & 1) != 0);
     cpu->set_flag(FLAG_AF, false);
     cpu->set_flag(FLAG_PF, false);
-    cpu->flags_cannot_branch = acb || bcb;
-    cpu->flags_cannot_index = aci || bci;
+    cpu->flags_taint = ataint | btaint;
     if (want_index) {
         Val out;
         out.v = any ? (uint64_t)final_idx : (uint64_t)elems;
-        out.cb = acb || bcb;
-        out.ci = aci || bci;
+        out.taint = ataint | btaint;
         cpu->gpr[ZG_RCX].val = out.v;
-        cpu->gpr[ZG_RCX].cannot_branch = out.cb;
-        cpu->gpr[ZG_RCX].cannot_index = out.ci;
+        cpu->gpr[ZG_RCX].taint.cannot_branch = out.taint.cannot_branch;
+        cpu->gpr[ZG_RCX].taint.cannot_index = out.taint.cannot_index;
     } else {
         // PCMPESTRM: XMM0 = mask (zero-extended to 128 bits).
         uint8_t mout[16] = {0};
         memcpy(mout, &final_mask, sizeof(final_mask));
         memcpy(cpu->xmm[0].bytes, mout, 16);
         memset(cpu->xmm[0].bytes + 16, 0, 48);
-        cpu->xmm[0].cannot_branch = acb || bcb;
-        cpu->xmm[0].cannot_index = aci || bci;
+        cpu->xmm[0].taint = ataint | btaint;
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -7602,15 +7652,10 @@ void exec_fma(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 3)
         guest_error(cpu, "fma needs 3 operands");
-    uint8_t ab[64], bb[64], cb2[64], o[64], old[64];
-    bool tcb = false, tci = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[0], ab, w, elem, &tcb, &tci); // dst doubles as an operand
-    evex_load(cpu, d, ex[1], bb, w, elem, &t1, &t2);
-    tcb = tcb || t1;
-    tci = tci || t2;
-    evex_load(cpu, d, ex[2], cb2, w, elem, &t1, &t2);
-    tcb = tcb || t1;
-    tci = tci || t2;
+    VecVal ab, bb, cb2, o, old;
+    evex_load(cpu, d, ex[0], ab, w, elem); // dst doubles as an operand
+    evex_load(cpu, d, ex[1], bb, w, elem);
+    evex_load(cpu, d, ex[2], cb2, w, elem);
     // Map 132/213/231 to (x,y,z) with r = +/-x*y +/- z.
     uint8_t *x = ab, *y = bb, *z = cb2;
     if (form == 132) {
@@ -7658,14 +7703,15 @@ void exec_fma(CPU* cpu, const Dec& d) {
         // VEX scalar: upper bits of dest preserved from old dst (already in o via memcpy from z? No: z for 231 is ab=old dst. For 132/213, z=bb/cb2... fix: upper lanes must come from OLD DEST (ab)).
         if (form != 231)
             memcpy(o + elem, ab + elem, w - elem);
-        vec_store_bytes(cpu, d, ex[0], o, w, true, w, tcb, tci);
+        o.taint = ab.taint | bb.taint | cb2.taint;
+        vec_store_bytes(cpu, d, ex[0], o, w, true, w);
     } else {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, scalar ? 1 : w / elem, zeroing) : ~0ULL;
         if (scalar && is_evex(d)) {
             // EVEX scalar: only lane 0 masked; upper lanes from old dest.
-            uint8_t merged[64];
+            VecVal merged;
             memcpy(merged, old, w);
             if ((kbits & 1) || true) {
                 if ((kbits & 1))
@@ -7673,9 +7719,11 @@ void exec_fma(CPU* cpu, const Dec& d) {
                 else if (zeroing)
                     memset(merged, 0, elem);
             }
-            evex_store(cpu, d, ex[0], merged, old, w, w, ~0ULL, false, tcb, tci);
+            merged.taint = ab.taint | bb.taint | cb2.taint;
+            evex_store(cpu, d, ex[0], merged, old, w, w, ~0ULL, false);
         } else {
-            evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, tcb, tci);
+            o.taint = ab.taint | bb.taint | cb2.taint;
+            evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
         }
     }
     cpu->rip = next_rip(cpu, d);
@@ -7700,14 +7748,13 @@ __attribute__((target("avx,f16c"))) void exec_cvtph(CPU* cpu, const Dec& d) {
     }
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
+    VecVal a, o, old;
     if (to_ps) {
         // src half-words: w/2 bytes (128-bit mem for 256-bit dst etc.).
         if (n < 2)
             guest_error(cpu, "cvtph2ps needs 2 operands");
         unsigned sw = w / 2;
-        evex_load(cpu, d, ex[1], a, sw > 64 ? 64 : sw, 2, &cb, &ci);
+        evex_load(cpu, d, ex[1], a, sw > MAX_VEC_BYTES ? MAX_VEC_BYTES : sw, 2);
         for (unsigned i = 0; i < w / 4; i++) {
             uint16_t h = 0;
             memcpy(&h, a + i * 2, 2);
@@ -7717,11 +7764,12 @@ __attribute__((target("avx,f16c"))) void exec_cvtph(CPU* cpu, const Dec& d) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, w / 4, zeroing) : ~0ULL;
-        evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing);
     } else {
         if (n < 3)
             guest_error(cpu, "cvtps2ph needs 3 operands");
-        evex_load(cpu, d, ex[1], a, w, 4, &cb, &ci);
+        evex_load(cpu, d, ex[1], a, w, 4);
         unsigned imm = (unsigned)kload(cpu, d, ex[2], 8);
         (void)imm; // rounding per MXCSR approximation (documented)
         for (unsigned i = 0; i < w / 4; i++) {
@@ -7734,7 +7782,8 @@ __attribute__((target("avx,f16c"))) void exec_cvtph(CPU* cpu, const Dec& d) {
         bool zeroing = false;
         uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, w / 4, zeroing) : ~0ULL;
         // Dest is half-width; store via evex_store with elem=2 over w/2 bytes.
-        evex_store(cpu, d, ex[0], o, old, w / 2, 2, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w / 2, 2, kbits, zeroing);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -7752,13 +7801,12 @@ void exec_cvtnebf16(CPU* cpu, const Dec& d) {
     }
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal a, b, o, old;
     unsigned lanes = 0; // bf16 outputs
     if (!pair) {
         if (n < 2)
             guest_error(cpu, "cvtneps2bf16 needs 2 operands");
-        evex_load(cpu, d, ex[1], a, w * 2 > 64 ? 64 : w * 2, 4, &cb, &ci);
+        evex_load(cpu, d, ex[1], a, w * 2 > MAX_VEC_BYTES ? MAX_VEC_BYTES : w * 2, 4);
         lanes = w / 2;
         for (unsigned i = 0; i < lanes; i++) {
             uint32_t x = 0;
@@ -7776,14 +7824,13 @@ void exec_cvtnebf16(CPU* cpu, const Dec& d) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, lanes, zeroing) : ~0ULL;
-        evex_store(cpu, d, ex[0], o, old, w, 2, kbits, zeroing, cb, ci);
+        o.taint = a.taint | b.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 2, kbits, zeroing);
     } else {
         if (n < 3)
             guest_error(cpu, "cvtne2ps2bf16 needs 3 operands");
-        evex_load(cpu, d, ex[1], a, w, 4, &cb, &ci);
-        evex_load(cpu, d, ex[2], b, w, 4, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[1], a, w, 4);
+        evex_load(cpu, d, ex[2], b, w, 4);
         lanes = w / 2;
         for (unsigned i = 0; i < lanes / 2; i++) {
             for (unsigned j = 0; j < 2; j++) {
@@ -7802,7 +7849,8 @@ void exec_cvtnebf16(CPU* cpu, const Dec& d) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = is_evex(d) ? evex_mask(cpu, d, lanes, zeroing) : ~0ULL;
-        evex_store(cpu, d, ex[0], o, old, w, 2, kbits, zeroing, cb, ci);
+        o.taint = a.taint | b.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 2, kbits, zeroing);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -7826,12 +7874,13 @@ void exec_evex_compress(CPU* cpu, const Dec& d, bool expand) {
         guest_error(cpu, "compress needs 2 operands");
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, w / elem, zeroing);
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
+    VecVal a, o, old;
     if (!expand) {
         // Compress: enabled elements packed to low (reg) or contiguous (mem).
-        evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
+        // Per-element precise: evex_load only faults/taints enabled lanes.
+        evex_load(cpu, d, ex[1], a, w, elem);
         memset(o, 0, w);
+        o.taint = a.taint;
         unsigned out = 0;
         for (unsigned i = 0; i < w / elem; i++) {
             if ((kbits >> i) & 1) {
@@ -7843,14 +7892,17 @@ void exec_evex_compress(CPU* cpu, const Dec& d, bool expand) {
         if (dop.type == ZYDIS_OPERAND_TYPE_REGISTER) {
             // Upper lanes: zero (or merge? compress to reg zeroes upper).
             evex_old(cpu, d, ex[0], old, w);
-            evex_store(cpu, d, ex[0], o, old, w, w, ~0ULL, false, cb, ci);
+            o.taint = a.taint;
+            evex_store(cpu, d, ex[0], o, old, w, w, ~0ULL, false);
         } else {
             uint64_t addr = resolve_mem(cpu, dop, cpu->rip + d.insn.length);
             mem_store_bytes(cpu, addr, o, out * elem);
-            mem_note_store(cpu, addr, out * elem, cb, ci);
+            // Only bytes actually written gain taint (enabled lanes only).
+            mem_note_store(cpu, addr, out * elem, o.taint);
         }
     } else {
         // Expand: contiguous (reg low / mem) loaded into enabled lanes.
+        // Only bytes/elements actually read participate in taint.
         const auto& sop = d.ops[ex[1]];
         unsigned in = 0;
         for (unsigned i = 0; i < w / elem; i++)
@@ -7861,15 +7913,25 @@ void exec_evex_compress(CPU* cpu, const Dec& d, bool expand) {
             if (!reg_to_vec(sop.reg.value, idx, width))
                 guest_error(cpu, "bad expand source");
             memcpy(a, cpu->xmm[idx].bytes, w);
-            cb = cpu->xmm[idx].cannot_branch;
-            ci = cpu->xmm[idx].cannot_index;
+            // Only low in*elem bytes are read; disabled high bytes ignored.
+            // With whole-vector Taint, propagate only if something read.
+            if (in > 0)
+                a.taint = cpu->xmm[idx].taint;
+            else
+                a.taint.clear();
         } else {
             uint64_t addr = resolve_mem(cpu, sop, cpu->rip + d.insn.length);
-            mem_load_bytes(cpu, addr, a, in * elem);
-            mem_get_taint(addr, in * elem, &cb, &ci);
+            memset(a, 0, w);
+            if (in > 0) {
+                mem_load_bytes(cpu, addr, a, in * elem);
+                mem_get_taint(addr, in * elem, &a.taint);
+            } else {
+                a.taint.clear();
+            }
         }
         evex_old(cpu, d, ex[0], old, w);
         memcpy(o, old, w);
+        o.taint = a.taint;
         unsigned inp = 0;
         for (unsigned i = 0; i < w / elem; i++) {
             if ((kbits >> i) & 1)
@@ -7877,7 +7939,8 @@ void exec_evex_compress(CPU* cpu, const Dec& d, bool expand) {
             else if (zeroing)
                 memset(o + i * elem, 0, elem);
         }
-        evex_store(cpu, d, ex[0], o, old, w, elem, ~0ULL, false, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -7890,12 +7953,9 @@ void exec_evex_align(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 4)
         guest_error(cpu, "valign needs 4 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, elem, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, elem, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, elem);
+    evex_load(cpu, d, ex[2], b, w, elem);
     unsigned lanes = w / elem;
     unsigned sh = (unsigned)kload(cpu, d, ex[3], 8) % (lanes + 1);
     for (unsigned i = 0; i < lanes; i++) {
@@ -7908,7 +7968,8 @@ void exec_evex_align(CPU* cpu, const Dec& d) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing, cb, ci);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, elem, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -7927,10 +7988,9 @@ void exec_evex_cvt(CPU* cpu, const Dec& d, int kind) {
     unsigned sw = d.ops[ex[1]].size / 8;
     if (sw != 16 && sw != 32 && sw != 64)
         sw = w;
-    uint8_t a[64], o[64], old[64];
-    bool cb = false, ci = false;
-    evex_load(cpu, d, ex[1], a, sw, elem == 8 ? 8 : 4, &cb, &ci);
-    memset(o, 0, sizeof(o));
+    VecVal a, o, old;
+    evex_load(cpu, d, ex[1], a, sw, elem == 8 ? 8 : 4);
+    memset(o, 0, MAX_VEC_BYTES);
     if (kind <= 2) {
         unsigned lanes = w / 4;
         for (unsigned i = 0; i < lanes; i++) {
@@ -7955,7 +8015,8 @@ void exec_evex_cvt(CPU* cpu, const Dec& d, int kind) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-        evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w, 4, kbits, zeroing);
     } else if (kind == 3) {
         // pd2ps: w/2 bytes of floats from w bytes of doubles.
         unsigned lanes = w / 8;
@@ -7968,7 +8029,8 @@ void exec_evex_cvt(CPU* cpu, const Dec& d, int kind) {
         evex_old(cpu, d, ex[0], old, w / 2);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-        evex_store(cpu, d, ex[0], o, old, w / 2, 4, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, w / 2, 4, kbits, zeroing);
     } else {
         // ps2pd: w*2 bytes of doubles from w bytes of floats.
         unsigned lanes = sw / 4;
@@ -7984,7 +8046,8 @@ void exec_evex_cvt(CPU* cpu, const Dec& d, int kind) {
         evex_old(cpu, d, ex[0], old, dw);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, lanes, zeroing);
-        evex_store(cpu, d, ex[0], o, old, dw, 8, kbits, zeroing, cb, ci);
+        o.taint = a.taint;
+        evex_store(cpu, d, ex[0], o, old, dw, 8, kbits, zeroing);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -8006,12 +8069,11 @@ void exec_evex_ins_extract(CPU* cpu, const Dec& d, bool insert) {
     unsigned w = evex_width(cpu, d);
     int ex[5];
     int n = evex_explicit(d, ex);
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
+    VecVal a, b, o, old;
     if (!insert) {
         if (n < 3)
             guest_error(cpu, "vextract needs 3 operands");
-        evex_load(cpu, d, ex[1], a, w, sub, &cb, &ci);
+        evex_load(cpu, d, ex[1], a, w, sub);
         unsigned sel = (unsigned)kload(cpu, d, ex[2], 8);
         unsigned off = (sel * sub) % w;
         memcpy(o, a + off, sub);
@@ -8020,23 +8082,21 @@ void exec_evex_ins_extract(CPU* cpu, const Dec& d, bool insert) {
         uint64_t kbits = evex_mask(cpu, d, 1, zeroing);
         // Single sub-vector: mask bit 0 decides all-or-merge.
         if ((kbits & 1) || zeroing) {
-            uint8_t full[64];
+            VecVal full;
             memcpy(full, (kbits & 1) ? o : old, sub);
             if (zeroing && !(kbits & 1))
                 memset(full, 0, sub);
-            evex_store(cpu, d, ex[0], full, old, sub, sub, ~0ULL, false, cb,
-                       ci);
+            full.taint = a.taint | b.taint;
+            evex_store(cpu, d, ex[0], full, old, sub, sub, ~0ULL, false);
         } else {
-            evex_store(cpu, d, ex[0], old, old, sub, sub, ~0ULL, false, cb,
-                       ci);
+            old.taint = a.taint | b.taint;
+            evex_store(cpu, d, ex[0], old, old, sub, sub, ~0ULL, false);
         }
     } else {
         if (n < 4)
             guest_error(cpu, "vinsert needs 4 operands");
-        evex_load(cpu, d, ex[1], a, w, sub, &cb, &ci);
-        evex_load(cpu, d, ex[2], b, sub, sub, &t1, &t2);
-        cb = cb || t1;
-        ci = ci || t2;
+        evex_load(cpu, d, ex[1], a, w, sub);
+        evex_load(cpu, d, ex[2], b, sub, sub);
         unsigned sel = (unsigned)kload(cpu, d, ex[3], 8);
         unsigned off = (sel * sub) % w;
         memcpy(o, a, w);
@@ -8044,7 +8104,8 @@ void exec_evex_ins_extract(CPU* cpu, const Dec& d, bool insert) {
         evex_old(cpu, d, ex[0], old, w);
         bool zeroing = false;
         uint64_t kbits = evex_mask(cpu, d, w / sub, zeroing);
-        evex_store(cpu, d, ex[0], o, old, w, sub, kbits, zeroing, cb, ci);
+        o.taint = a.taint | b.taint;
+        evex_store(cpu, d, ex[0], o, old, w, sub, kbits, zeroing);
     }
     cpu->rip = next_rip(cpu, d);
 }
@@ -8062,12 +8123,9 @@ void exec_evex_shufx(CPU* cpu, const Dec& d) {
     int n = evex_explicit(d, ex);
     if (n < 4)
         guest_error(cpu, "vshufx needs 4 operands");
-    uint8_t a[64], b[64], o[64], old[64];
-    bool cb = false, ci = false, t1 = false, t2 = false;
-    evex_load(cpu, d, ex[1], a, w, sub, &cb, &ci);
-    evex_load(cpu, d, ex[2], b, w, sub, &t1, &t2);
-    cb = cb || t1;
-    ci = ci || t2;
+    VecVal a, b, o, old;
+    evex_load(cpu, d, ex[1], a, w, sub);
+    evex_load(cpu, d, ex[2], b, w, sub);
     unsigned order = (unsigned)kload(cpu, d, ex[3], 8);
     unsigned nsub = w / sub;
     for (unsigned i = 0; i < nsub; i++) {
@@ -8082,7 +8140,8 @@ void exec_evex_shufx(CPU* cpu, const Dec& d) {
     evex_old(cpu, d, ex[0], old, w);
     bool zeroing = false;
     uint64_t kbits = evex_mask(cpu, d, nsub, zeroing);
-    evex_store(cpu, d, ex[0], o, old, w, sub, kbits, zeroing, cb, ci);
+    o.taint = a.taint | b.taint;
+    evex_store(cpu, d, ex[0], o, old, w, sub, kbits, zeroing);
     cpu->rip = next_rip(cpu, d);
 }
 
@@ -8521,30 +8580,32 @@ void exec_evex_movd(CPU* cpu, const Dec& d, bool is_q) {
     bool dst_is_gpr = (dop.type == ZYDIS_OPERAND_TYPE_REGISTER &&
                        reg_to_gpr(dop.reg.value, gidx, gsize, gshift));
     if (dst_is_gpr) {
-        // GPR <- xmm/mem.
+        // GPR <- xmm/mem. Per-element precise: disabled lanes (masked-off)
+        // do not fault and do not taint; merging preserves old GPR taint.
         uint8_t tmp[8] = {0};
-        bool cb = false, ci = false;
+        Taint t;
         if (sop.type == ZYDIS_OPERAND_TYPE_REGISTER) {
             int idx, width;
             if (!reg_to_vec(sop.reg.value, idx, width))
                 guest_error(cpu, "bad evex movd source");
+            // Register source always readable; taint only if enabled.
             memcpy(tmp, cpu->xmm[idx].bytes, elem);
-            cb = cpu->xmm[idx].cannot_branch;
-            ci = cpu->xmm[idx].cannot_index;
+            if (enabled)
+                t = cpu->xmm[idx].taint;
         } else if (sop.type == ZYDIS_OPERAND_TYPE_MEMORY) {
             uint64_t addr = resolve_mem(cpu, sop, cpu->rip + d.insn.length);
-            if (enabled)
+            if (enabled) {
                 mem_load_bytes(cpu, addr, tmp, elem);
-            mem_get_taint(addr, elem, &cb, &ci);
-            if (!enabled) {
+                mem_get_taint(addr, elem, &t);
+            } else {
+                // Disabled: no fault, no mem taint.
                 if (zeroing)
                     memset(tmp, 0, elem);
                 else {
                     // Merge: keep old GPR value.
                     Val old = op_load(cpu, d, ex[0]);
                     memcpy(tmp, &old.v, elem);
-                    cb = old.cb;
-                    ci = old.ci;
+                    t = old.taint;
                 }
             }
         } else {
@@ -8552,29 +8613,26 @@ void exec_evex_movd(CPU* cpu, const Dec& d, bool is_q) {
         }
         Val out;
         memcpy(&out.v, tmp, elem);
-        out.cb = cb;
-        out.ci = ci;
+        out.taint = t;
         op_store(cpu, d, ex[0], out);
     } else {
-        // xmm/mem <- GPR or xmm/mem (low element).
+        // xmm/mem <- GPR or xmm/mem (low element). Precise for masking.
         uint8_t tmp[8] = {0};
-        bool cb = false, ci = false;
+        Taint t;
         if (sop.type == ZYDIS_OPERAND_TYPE_REGISTER) {
             int idx, width;
             if (reg_to_vec(sop.reg.value, idx, width)) {
                 memcpy(tmp, cpu->xmm[idx].bytes, elem);
-                cb = cpu->xmm[idx].cannot_branch;
-                ci = cpu->xmm[idx].cannot_index;
+                t = cpu->xmm[idx].taint;
             } else {
                 Val g = op_load(cpu, d, ex[1]);
                 memcpy(tmp, &g.v, elem);
-                cb = g.cb;
-                ci = g.ci;
+                t = g.taint;
             }
         } else if (sop.type == ZYDIS_OPERAND_TYPE_MEMORY) {
             uint64_t addr = resolve_mem(cpu, sop, cpu->rip + d.insn.length);
             mem_load_bytes(cpu, addr, tmp, elem);
-            mem_get_taint(addr, elem, &cb, &ci);
+            mem_get_taint(addr, elem, &t);
         } else {
             guest_error(cpu, "bad evex movd source");
         }
@@ -8582,25 +8640,32 @@ void exec_evex_movd(CPU* cpu, const Dec& d, bool is_q) {
             int idx, width;
             if (!reg_to_vec(dop.reg.value, idx, width))
                 guest_error(cpu, "bad evex movd dest");
-            uint8_t old[64];
-            memcpy(old, cpu->xmm[idx].bytes, 64);
-            uint8_t merged[64];
-            memcpy(merged, old, 64);
+            Taint oldt = cpu->xmm[idx].taint;
+            VecVal old;
+            memcpy(old, cpu->xmm[idx].bytes, MAX_VEC_BYTES);
+            VecVal merged;
+            memcpy(merged, old, MAX_VEC_BYTES);
             if (enabled)
                 memcpy(merged, tmp, elem);
             else if (zeroing)
                 memset(merged, 0, elem);
             // AVX semantics: zero upper bits beyond elem? VMOVQ zeroes
             // bits above 64; VMOVD zeroes above 32.
-            memset(merged + elem, 0, 64 - elem);
-            memcpy(cpu->xmm[idx].bytes, merged, 64);
-            cpu->xmm[idx].cannot_branch = cb;
-            cpu->xmm[idx].cannot_index = ci;
+            memset(merged + elem, 0, MAX_VEC_BYTES - elem);
+            memcpy(cpu->xmm[idx].bytes, merged, MAX_VEC_BYTES);
+            if (!enabled && !zeroing)
+                cpu->xmm[idx].taint = oldt;
+            else if (zeroing && !enabled)
+                cpu->xmm[idx].taint.clear();
+            else if (enabled && !zeroing)
+                cpu->xmm[idx].taint = oldt | t;
+            else
+                cpu->xmm[idx].taint = t;
         } else if (dop.type == ZYDIS_OPERAND_TYPE_MEMORY) {
             uint64_t addr = resolve_mem(cpu, dop, cpu->rip + d.insn.length);
             if (enabled) {
                 mem_store_bytes(cpu, addr, tmp, elem);
-                mem_note_store(cpu, addr, elem, cb, ci);
+                mem_note_store(cpu, addr, elem, t);
             }
         } else {
             guest_error(cpu, "bad evex movd dest");
@@ -8627,10 +8692,10 @@ void exec_pkru(CPU* cpu, const Dec& d, bool write) {
         asm volatile("rdpkru" : "=a"(lo), "=d"(hi) : "c"(0u));
         cpu->gpr[ZG_RAX].val = lo;
         cpu->gpr[ZG_RDX].val = hi;
-        cpu->gpr[ZG_RAX].cannot_branch = false;
-        cpu->gpr[ZG_RAX].cannot_index = false;
-        cpu->gpr[ZG_RDX].cannot_branch = false;
-        cpu->gpr[ZG_RDX].cannot_index = false;
+        cpu->gpr[ZG_RAX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RAX].taint.cannot_index = false;
+        cpu->gpr[ZG_RDX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RDX].taint.cannot_index = false;
     }
     cpu->rip = next_rip(cpu, d);
 }

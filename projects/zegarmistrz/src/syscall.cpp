@@ -575,8 +575,8 @@ static uint64_t do_clone3(CPU* cpu, uint64_t uaddr, uint64_t usize) {
     ChildStart2* st = new ChildStart2();
     st->child_cpu = *cpu; // copies regs incl. already-advanced RIP
     st->child_cpu.gpr[ZG_RAX].val = 0;
-    st->child_cpu.gpr[ZG_RAX].cannot_branch = false;
-    st->child_cpu.gpr[ZG_RAX].cannot_index = false;
+    st->child_cpu.gpr[ZG_RAX].taint.cannot_branch = false;
+    st->child_cpu.gpr[ZG_RAX].taint.cannot_index = false;
     st->child_cpu.clear_ctid_addr = 0;
     if (flags & CLONE_SETTLS)
         st->child_cpu.fs_base = ca.tls;
@@ -621,8 +621,8 @@ static uint64_t do_clone(CPU* cpu, uint64_t flags, uint64_t stack,
     ChildStart2* st = new ChildStart2();
     st->child_cpu = *cpu;
     st->child_cpu.gpr[ZG_RAX].val = 0;
-    st->child_cpu.gpr[ZG_RAX].cannot_branch = false;
-    st->child_cpu.gpr[ZG_RAX].cannot_index = false;
+    st->child_cpu.gpr[ZG_RAX].taint.cannot_branch = false;
+    st->child_cpu.gpr[ZG_RAX].taint.cannot_index = false;
     st->child_cpu.clear_ctid_addr = 0;
     if (flags & CLONE_SETTLS)
         st->child_cpu.fs_base = tls;
@@ -675,7 +675,7 @@ void emulate_syscall(CPU* cpu, unsigned insn_len) {
         const int regs[7] = {ZG_RAX, ZG_RDI, ZG_RSI, ZG_RDX,
                              ZG_R10, ZG_R8, ZG_R9};
         for (int i = 0; i < 7; i++) {
-            if (cpu->gpr[regs[i]].cannot_branch || cpu->gpr[regs[i]].cannot_index)
+            if (cpu->gpr[regs[i]].taint.cannot_branch || cpu->gpr[regs[i]].taint.cannot_index)
                 guest_error(cpu, "tainted value passed to syscall");
         }
     }
@@ -720,15 +720,15 @@ void emulate_syscall(CPU* cpu, unsigned insn_len) {
         // it (with RAX=0), not re-execute it.
         cpu->rip += insn_len;
         cpu->gpr[ZG_RCX].val = cpu->rip;
-        cpu->gpr[ZG_RCX].cannot_branch = false;
-        cpu->gpr[ZG_RCX].cannot_index = false;
+        cpu->gpr[ZG_RCX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RCX].taint.cannot_index = false;
         cpu->gpr[ZG_R11].val = cpu->rflags;
-        cpu->gpr[ZG_R11].cannot_branch = false;
-        cpu->gpr[ZG_R11].cannot_index = false;
+        cpu->gpr[ZG_R11].taint.cannot_branch = false;
+        cpu->gpr[ZG_R11].taint.cannot_index = false;
         ret = do_clone3(cpu, a1, a2);
         cpu->gpr[ZG_RAX].val = ret;
-        cpu->gpr[ZG_RAX].cannot_branch = false;
-        cpu->gpr[ZG_RAX].cannot_index = false;
+        cpu->gpr[ZG_RAX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RAX].taint.cannot_index = false;
         if (cpu->emu->trace_syscall) {
             fprintf(stderr, "[zegarmistrz:tid=%d]  -> %#lx\n", cpu->tid, ret);
             fflush(stderr);
@@ -739,15 +739,15 @@ void emulate_syscall(CPU* cpu, unsigned insn_len) {
         // clone(flags, stack, parent_tid, tls, child_tid)
         cpu->rip += insn_len;
         cpu->gpr[ZG_RCX].val = cpu->rip;
-        cpu->gpr[ZG_RCX].cannot_branch = false;
-        cpu->gpr[ZG_RCX].cannot_index = false;
+        cpu->gpr[ZG_RCX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RCX].taint.cannot_index = false;
         cpu->gpr[ZG_R11].val = cpu->rflags;
-        cpu->gpr[ZG_R11].cannot_branch = false;
-        cpu->gpr[ZG_R11].cannot_index = false;
+        cpu->gpr[ZG_R11].taint.cannot_branch = false;
+        cpu->gpr[ZG_R11].taint.cannot_index = false;
         ret = do_clone(cpu, a1, a2, a3, a4, a5);
         cpu->gpr[ZG_RAX].val = ret;
-        cpu->gpr[ZG_RAX].cannot_branch = false;
-        cpu->gpr[ZG_RAX].cannot_index = false;
+        cpu->gpr[ZG_RAX].taint.cannot_branch = false;
+        cpu->gpr[ZG_RAX].taint.cannot_index = false;
         if (cpu->emu->trace_syscall) {
             fprintf(stderr, "[zegarmistrz:tid=%d]  -> %#lx\n", cpu->tid, ret);
             fflush(stderr);
@@ -910,16 +910,16 @@ void emulate_syscall(CPU* cpu, unsigned insn_len) {
     }
 
     cpu->gpr[ZG_RAX].val = ret;
-    cpu->gpr[ZG_RAX].cannot_branch = false;
-    cpu->gpr[ZG_RAX].cannot_index = false;
+    cpu->gpr[ZG_RAX].taint.cannot_branch = false;
+    cpu->gpr[ZG_RAX].taint.cannot_index = false;
     // syscall ABI: RCX = return RIP, R11 = RFLAGS.
     cpu->rip += insn_len;
     cpu->gpr[ZG_RCX].val = cpu->rip;
-    cpu->gpr[ZG_RCX].cannot_branch = false;
-    cpu->gpr[ZG_RCX].cannot_index = false;
+    cpu->gpr[ZG_RCX].taint.cannot_branch = false;
+    cpu->gpr[ZG_RCX].taint.cannot_index = false;
     cpu->gpr[ZG_R11].val = cpu->rflags;
-    cpu->gpr[ZG_R11].cannot_branch = false;
-    cpu->gpr[ZG_R11].cannot_index = false;
+    cpu->gpr[ZG_R11].taint.cannot_branch = false;
+    cpu->gpr[ZG_R11].taint.cannot_index = false;
 
     if (cpu->emu->trace_syscall) {
         fprintf(stderr, "[zegarmistrz:tid=%d]  -> %#lx\n", cpu->tid, ret);

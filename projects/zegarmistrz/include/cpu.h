@@ -25,6 +25,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "mem.h"
+
 // GPR index convention: 0=RAX 1=RCX 2=RDX 3=RBX 4=RSP 5=RBP 6=RSI 7=RDI
 //                       8..15 = R8..R15
 enum : int {
@@ -45,22 +47,39 @@ enum : uint64_t {
     FLAG_OF = 1ULL << 11,
 };
 
-// A general-purpose register value with Fil-C-style sidecar taint bits.
-// cannot_branch: value must not influence a branch target/condition.
-// cannot_index: value must not be used in any memory address computation
-//   (nor passed to syscalls).
+// A general-purpose register value with Fil-C-style sidecar taint.
 struct GPRValue {
     uint64_t val = 0;
-    bool cannot_branch = false;
-    bool cannot_index = false;
+    Taint taint;
 };
 
-// A vector register value: 64 bytes of storage (ZMM width) plus taint.
+// A vector register value: MAX_VEC_BYTES bytes of storage (ZMM width) plus taint.
 struct XMMValue {
-    uint8_t bytes[64];
-    bool cannot_branch = false;
-    bool cannot_index = false;
+    uint8_t bytes[MAX_VEC_BYTES];
+    Taint taint;
     XMMValue() { memset(bytes, 0, sizeof(bytes)); }
+};
+
+// General vector temporary: bytes + taint. Sized by MAX_VEC_BYTES so wider
+// vectors only require bumping the constant. Provides byte access plus
+// helpers to keep decode_exec free of raw [MAX_VEC_BYTES] arrays.
+struct VecVal {
+    uint8_t bytes[MAX_VEC_BYTES];
+    Taint taint;
+    VecVal() { memset(bytes, 0, sizeof(bytes)); }
+    uint8_t& operator[](size_t i) { return bytes[i]; }
+    const uint8_t& operator[](size_t i) const { return bytes[i]; }
+    uint8_t* data() { return bytes; }
+    const uint8_t* data() const { return bytes; }
+    // Implicit decay to byte pointer so legacy memcpy/memset/pointer-arith
+    // call sites keep working after uint8_t[N] -> VecVal migration. The
+    // taint sidecar must still be handled explicitly via .taint.
+    operator uint8_t*() { return bytes; }
+    operator const uint8_t*() const { return bytes; }
+    void clear() {
+        memset(bytes, 0, sizeof(bytes));
+        taint.clear();
+    }
 };
 
 struct Emulator; // forward
@@ -94,9 +113,7 @@ struct CPU {
 
     // flags consumes a tainted input. Checked on Jcc/JCXZ/LOOP.
 
-    bool flags_cannot_branch = false;
-
-    bool flags_cannot_index = false;
+    Taint flags_taint;
 
     // Thread bookkeeping for clone emulation.
     int tid = 0;                 // guest tid (== host gettid())
@@ -109,10 +126,9 @@ struct CPU {
     Emulator* emu = nullptr;
 
     uint64_t rsp() const { return gpr[ZG_RSP].val; }
-    void set_rsp(uint64_t v, bool cb = false, bool ci = false) {
+    void set_rsp(uint64_t v, Taint t = Taint()) {
         gpr[ZG_RSP].val = v;
-        gpr[ZG_RSP].cannot_branch = cb;
-        gpr[ZG_RSP].cannot_index = ci;
+        gpr[ZG_RSP].taint = t;
     }
     bool df() const { return (rflags & FLAG_DF) != 0; }
     bool cf() const { return (rflags & FLAG_CF) != 0; }

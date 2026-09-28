@@ -28,6 +28,40 @@
 struct CPU;
 struct Emulator;
 
+// Maximum vector width in bytes (ZMM = 64). Centralized so future wider
+// vectors only require changing this constant (plus VecVal storage).
+constexpr size_t MAX_VEC_BYTES = 64;
+
+// Abstract taint bits for poison tracking. cannot_branch: value must not
+// influence a branch target/condition. cannot_index: value must not be used
+// in any memory address computation (nor passed to syscalls).
+struct Taint {
+    bool cannot_branch = false;
+    bool cannot_index = false;
+    Taint() = default;
+    Taint(bool cb, bool ci) : cannot_branch(cb), cannot_index(ci) {}
+    bool any() const { return cannot_branch || cannot_index; }
+    bool empty() const { return !any(); }
+    void clear() { cannot_branch = false; cannot_index = false; }
+    void merge(const Taint& o) {
+        cannot_branch = cannot_branch || o.cannot_branch;
+        cannot_index = cannot_index || o.cannot_index;
+    }
+    Taint operator|(const Taint& o) const {
+        Taint r = *this;
+        r.merge(o);
+        return r;
+    }
+    Taint& operator|=(const Taint& o) {
+        merge(o);
+        return *this;
+    }
+    bool operator==(const Taint& o) const {
+        return cannot_branch == o.cannot_branch && cannot_index == o.cannot_index;
+    }
+    bool operator!=(const Taint& o) const { return !(*this == o); }
+};
+
 // Common memory pipeline. Guest VA == host VA, so the fast path is memcpy,
 // but every access goes through here so poisoning / fault translation can
 // hook in one place. All functions take CPU* for future per-thread checks.
@@ -83,16 +117,19 @@ void mem_check_load(CPU* cpu, uint64_t addr, size_t size);
 void mem_check_store(CPU* cpu, uint64_t addr, size_t size);
 
 // Taint side of poisoning: OR the cannot-branch/index bits of [addr,size)
-// into *cb/*ci (false if unpoisoned). Used to taint loaded register values.
-void mem_get_taint(uint64_t addr, size_t size, bool* cb, bool* ci);
+// into *out (cleared if unpoisoned). Used to taint loaded register values.
+void mem_get_taint(uint64_t addr, size_t size, Taint* out);
+inline void mem_get_taint(uint64_t addr, size_t size, Taint& out) {
+    mem_get_taint(addr, size, &out);
+}
 
-// Called after a successful store of a value with taint (cb,ci) to
+// Called after a successful store of a value with taint t to
 // [addr,size): the destination bytes gain the value's cannot-branch/index
 // bits (plus the matching clear-on-store bit, so a later store clears the
 // taint). If the destination already carries a clear-on-store bit for a
 // tainted value, that value bit is cleared instead (store sanitizes).
 // Load/store poison bits and clear bits are sticky.
-void mem_note_store(CPU* cpu, uint64_t addr, size_t size, bool cb, bool ci);
+void mem_note_store(CPU* cpu, uint64_t addr, size_t size, Taint t);
 
 // Poisoning client request (magic call 0x1410141014101410):
 //   RDI=op, RSI=ptr, RDX=size, RCX=flags.

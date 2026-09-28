@@ -100,6 +100,7 @@
 local x86_64_isa = require("./x86_64_isa")
 local sig = require("./sig")
 local transform = require("./transform")
+local err = require("./err")
 
 local tailcall = {}
 
@@ -354,7 +355,7 @@ function tailcall.computeRegion(ctx, srcName, srcStmts, srcEntryName, entryLabel
 							local t = branchTargetSym(st)
 							if t then
 								if t == srcEntryName then
-									error("sarcasm: branch to '" .. t .. "' in the shared tail of '"
+									err.at(st, "branch to '" .. t .. "' in the shared tail of '"
 										.. srcName .. "' re-enters the function's entry (cannot be"
 										.. " cloned): " .. (st.raw or st.mnemonic))
 								end
@@ -362,14 +363,14 @@ function tailcall.computeRegion(ctx, srcName, srcStmts, srcEntryName, entryLabel
 									local exit = resolveExit(t)
 									if exit then
 										if isLoop then
-											error("sarcasm: loop branch to '" .. t .. "' in the shared tail of '"
+											err.at(st, "loop branch to '" .. t .. "' in the shared tail of '"
 												.. srcName .. "' (joined from '" .. jumperName .. "') leaves"
 												.. " the region (cross-function loop branches are not"
 												.. " supported): " .. (st.raw or st.mnemonic))
 										end
 										exitsByPos[pos] = { target = t, jk = jk, exit = exit }
 									else
-										error("sarcasm: branch to '" .. t .. "' in the shared tail of '"
+										err.at(st, "branch to '" .. t .. "' in the shared tail of '"
 											.. srcName .. "' (joined from '" .. jumperName .. "') leaves"
 											.. " the region (nested cross-function jumps are not"
 											.. " supported): " .. (st.raw or st.mnemonic))
@@ -391,7 +392,7 @@ function tailcall.computeRegion(ctx, srcName, srcStmts, srcEntryName, entryLabel
 		end
 	end
 	if reachable[#srcStmts + 1] then
-		error("sarcasm: the shared tail of '" .. srcName .. "' from '" .. entryLabel
+		err.plain("the shared tail of '" .. srcName .. "' from '" .. entryLabel
 			.. "' (joined from '" .. jumperName .. "') can fall off its end; every"
 			.. " control-flow path must end with a ret instruction")
 	end
@@ -558,7 +559,7 @@ function tailcall.rewriteFunction(fnName, body, ctx, locals, userLabels)
 		return nm
 	end
 
-	local mySig = sig.parseSignature(ctx.fnSigs[fnName])
+	local mySig = sig.parseSignature(ctx.fnSigs[fnName], body[1])
 	local tailRet = nil
 	local function ensureTailRet()
 		if not tailRet then tailRet = fresh(".Ltailret_" .. fnName) end
@@ -569,9 +570,9 @@ function tailcall.rewriteFunction(fnName, body, ctx, locals, userLabels)
 		-- one: the callee's result would become the jumper's return value with a
 		-- silently-null capability. (Every other return-shape combination is
 		-- hardware-faithful — the result registers pass through unchanged.)
-		local cs = sig.parseSignature(site.sigAnn)
+		local cs = sig.parseSignature(site.sigAnn, site.stmt)
 		if mySig.retIsPtr and not cs.retIsPtr then
-			error("sarcasm: tail call to '" .. site.callTarget .. "' in function '" .. fnName
+			err.at(site.stmt, "tail call to '" .. site.callTarget .. "' in function '" .. fnName
 				.. "' does not return a pointer, but '" .. fnName .. "' returns one (the"
 				.. " callee's return value becomes the caller's): " .. (site.stmt.raw or ""))
 		end

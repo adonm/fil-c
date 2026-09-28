@@ -77,6 +77,7 @@
 local x86_64_parse = require("./x86_64_parse")
 local x86_64_isa = require("./x86_64_isa")
 local tailcall = require("./tailcall")
+local err = require("./err")
 
 local localcall = {}
 
@@ -323,7 +324,7 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 		table.insert(order, name)
 	end
 	local function localMismatch(cs)
-		error("sarcasm: `local` annotation on call to '" .. cs.target
+		err.at(cs.stmt, "`local` annotation on call to '" .. cs.target
 			.. "', which does not resolve to a local subroutine: "
 			.. (cs.stmt.raw or cs.target))
 	end
@@ -358,7 +359,13 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 	-- materialized with adrp/add into a web, compare-chain dispatch); for now
 	-- it is a clean compile-time rejection.
 	if arch == "arm64" then
-		error("sarcasm: local functions are not yet supported on arm64"
+		-- Locate a callsite statement that claimed the first subroutine so the
+		-- rejection names where the unsupported local call happens.
+		local firstCsStmt
+		for _, cs in fnCallsites do
+			if cs.target == order[1] then firstCsStmt = cs.stmt break end
+		end
+		err.at(firstCsStmt, "local functions are not yet supported on arm64"
 			.. " (local subroutine '" .. order[1] .. "' is called with a custom"
 			.. " register convention)")
 	end
@@ -490,7 +497,7 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 								-- was not written against. Fail closed; the mont5 shape
 								-- (a jump from a top-level subroutine) is unaffected.
 								if sub.midOwner then
-									error("sarcasm: branch to '" .. op.text .. "' in local subroutine '"
+									err.at(st, "branch to '" .. op.text .. "' in local subroutine '"
 										.. name .. "' (a mid-body clone of function '" .. sub.midOwner
 										.. "') leaves the function; a tail join into another local"
 										.. " subroutine is not supported from a mid-body clone: "
@@ -569,7 +576,7 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 		if sub.midOwner and frameTouching(sub) then
 			for _, cs in fnCallsites do
 				if cs.target == name and cs.fn.name ~= sub.midOwner then
-					error("sarcasm: localcall to '" .. name .. "', a mid-body label inside"
+					err.at(cs.stmt, "localcall to '" .. name .. "', a mid-body label inside"
 						.. " function '" .. sub.midOwner .. "', cannot be cloned into function '"
 						.. cs.fn.name .. "': the cloned code addresses " .. sub.midOwner
 						.. "'s stack frame (rsp/rbp-relative), which only exists in its own"
@@ -581,7 +588,7 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 			for _, css in pairs(callsBySub) do
 				for _, cs in css do
 					if cs.target == name then
-						error("sarcasm: localcall to '" .. name .. "', a mid-body label inside"
+						err.at(cs.stmt, "localcall to '" .. name .. "', a mid-body label inside"
 							.. " function '" .. sub.midOwner .. "', from inside another local"
 							.. " subroutine's clone would address " .. sub.midOwner
 							.. "'s stack frame one return-address push off (the clone model"
@@ -617,7 +624,19 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 						if rec then table.insert(cyc, s) end
 					end
 					table.insert(cyc, m)
-					error("sarcasm: recursive local subroutine calls are not supported ("
+					-- Locate the callsite statement whose edge closes the cycle
+					-- (falls back to any callsite in the closing subroutine,
+					-- then to an unlocated message via err.at's nil tolerance —
+					-- tail-join edges have no per-callsite record).
+					local cycStmt
+					for _, c in (callsBySub[n] or {}) do
+						if c.target == m then cycStmt = c.stmt break end
+					end
+					if not cycStmt then
+						local l = callsBySub[n] or {}
+						cycStmt = l[1] and l[1].stmt or nil
+					end
+					err.at(cycStmt, "recursive local subroutine calls are not supported ("
 						.. table.concat(cyc, " calls ") .. ")")
 				elseif color[m] ~= BLACK then
 					visit(m, stack)
@@ -658,7 +677,7 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 							if tj.stmt == st then isTailjoin = true break end
 						end
 						if not isTailjoin then
-							error("sarcasm: branch to '" .. op.text .. "' in local subroutine '"
+							err.at(st, "branch to '" .. op.text .. "' in local subroutine '"
 								.. name .. "' leaves the subroutine (cross-function jumps to"
 								.. " function entries are not supported from subroutines; mid-body"
 								.. " tail joins into another local subroutine are): "
@@ -673,15 +692,17 @@ function localcall.discover(stmts, consumed, globals, arch, opts)
 			-- end of a run of legacy AES/SHA encodings hides the ret): name that
 			-- likely cause in the message.
 			local hint = ""
+			local lastStmt
 			for _, pos in sub.clonePos do
 				local st = r.stmts[pos]
+				lastStmt = st
 				if st.kind == "directive" and st.name == ".byte" then
 					hint = " (the region contains undecodable .byte encodings,"
 						.. " which may hide the ret)"
 					break
 				end
 			end
-			error("sarcasm: local subroutine '" .. name .. "' can fall off its end;"
+			err.at(lastStmt, "local subroutine '" .. name .. "' can fall off its end;"
 				.. " every control-flow path must end with a ret instruction" .. hint)
 		end
 	end

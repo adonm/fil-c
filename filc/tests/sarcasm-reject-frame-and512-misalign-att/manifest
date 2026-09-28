@@ -4,3 +4,5 @@ only-on-platform:
   x86_64
 needsAVX512:
   true
+output-includes:
+  - "reject.s:12:"

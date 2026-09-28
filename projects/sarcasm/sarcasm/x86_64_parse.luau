@@ -11,6 +11,7 @@
 --                  dispSym=<str?>, size=<bytes?>, indirect=<bool?> }
 
 local numlabel = require("./numlabel")
+local err = require("./err")
 
 local x86parse = {}
 
@@ -87,7 +88,7 @@ local function classifyReg(name)
 	local stripped = string.match(name, "^%%?[Ff][Ii][Ll]_(.*)$")
 	if stripped ~= nil then
 		if not string.match(stripped, "^[0-9a-zA-Z_]+$") then
-			error("sarcasm: bad pseudoregister name `" .. name .. "` (expected `%fil_<ident>` with <ident> matching [0-9a-zA-Z_]+)")
+			err.here("bad pseudoregister name `" .. name .. "` (expected `%fil_<ident>` with <ident> matching [0-9a-zA-Z_]+)")
 		end
 		-- Canonicalize the Intel `%`-spelling (and any prefix-case spelling) to
 		-- the bare lowercase-prefix name so all spellings share one register (a
@@ -252,7 +253,7 @@ local function parseDispExpr(text, what)
 			end
 		elseif c == "<" or c == ">" then
 			if string.sub(text, i + 1, i + 1) ~= c then
-				error("sarcasm: unsupported operator '" .. c .. "' in " .. what
+				err.here("unsupported operator '" .. c .. "' in " .. what
 					.. " expression: " .. text)
 			end
 			table.insert(tokens, c .. c)
@@ -262,12 +263,12 @@ local function parseDispExpr(text, what)
 			table.insert(tokens, c)
 			i += 1
 		else
-			error("sarcasm: unexpected character '" .. c .. "' in " .. what
+			err.here("unexpected character '" .. c .. "' in " .. what
 				.. " expression: " .. text)
 		end
 	end
 	if #tokens == 0 then
-		error("sarcasm: empty " .. what .. " expression")
+		err.here("empty " .. what .. " expression")
 	end
 
 	-- Recursive descent. Every value is { const = n } or { sym = name, const = n }:
@@ -281,7 +282,7 @@ local function parseDispExpr(text, what)
 
 	local function constOf(v, opname)
 		if v.sym then
-			error("sarcasm: symbol '" .. v.sym .. "' cannot appear in a '" .. opname
+			err.here("symbol '" .. v.sym .. "' cannot appear in a '" .. opname
 				.. "' " .. what .. " expression: " .. text)
 		end
 		return v.const
@@ -290,12 +291,12 @@ local function parseDispExpr(text, what)
 	local function parseFactor()
 		local t = take()
 		if t == nil then
-			error("sarcasm: missing operand in " .. what .. " expression: " .. text)
+			err.here("missing operand in " .. what .. " expression: " .. text)
 		end
 		if t == "(" then
 			local v = parseExpr()
 			if take() ~= ")" then
-				error("sarcasm: missing ')' in " .. what .. " expression: " .. text)
+				err.here("missing ')' in " .. what .. " expression: " .. text)
 			end
 			return v
 		end
@@ -304,7 +305,7 @@ local function parseDispExpr(text, what)
 		-- unary bitwise NOT (gas: ~x = -x - 1, exact in integer range)
 		if t == "~" then return { const = -1 - constOf(parseFactor(), "~") } end
 		if type(t) == "table" then return { sym = t.sym, const = t.num or 0 } end
-		error("sarcasm: unexpected '" .. tostring(t) .. "' in " .. what .. " expression: " .. text)
+		err.here("unexpected '" .. tostring(t) .. "' in " .. what .. " expression: " .. text)
 	end
 
 	local function parseTerm()
@@ -318,12 +319,12 @@ local function parseDispExpr(text, what)
 			if op == "*" then v = { const = lhs * rhs }
 			elseif op == "<<" or op == ">>" then
 				if rhs < 0 then
-					error("sarcasm: negative shift count in " .. what .. " expression: " .. text)
+					err.here("negative shift count in " .. what .. " expression: " .. text)
 				end
 				if op == "<<" then v = { const = lhs * 2^rhs }
 				else v = { const = math.floor(lhs / 2^rhs) } end
 			elseif rhs == 0 then
-				error("sarcasm: division by zero in " .. what .. " expression: " .. text)
+				err.here("division by zero in " .. what .. " expression: " .. text)
 			else
 				local q = lhs / rhs
 				local qt = q >= 0 and math.floor(q) or math.ceil(q)
@@ -341,13 +342,13 @@ local function parseDispExpr(text, what)
 			local rhs = parseTerm()
 			if op == "+" then
 				if v.sym and rhs.sym then
-					error("sarcasm: more than one symbol in " .. what .. " expression ('"
+					err.here("more than one symbol in " .. what .. " expression ('"
 						.. v.sym .. "', '" .. rhs.sym .. "'): " .. text)
 				end
 				v = { sym = v.sym or rhs.sym, const = v.const + rhs.const }
 			else
 				if rhs.sym then
-					error("sarcasm: subtracting symbol '" .. rhs.sym .. "' in a " .. what
+					err.here("subtracting symbol '" .. rhs.sym .. "' in a " .. what
 						.. " expression is not a displacement: " .. text)
 				end
 				v = { sym = v.sym, const = v.const - rhs.const }
@@ -357,7 +358,7 @@ local function parseDispExpr(text, what)
 
 	local result = parseExpr()
 	if pos ~= #tokens then
-		error("sarcasm: unexpected trailing text in " .. what .. " expression: " .. text)
+		err.here("unexpected trailing text in " .. what .. " expression: " .. text)
 	end
 	-- folded: real evaluation happened (the fast paths above leave it nil), so a
 	-- caller that re-renders the text (the $-immediate path) canonicalizes it.
@@ -532,7 +533,7 @@ local function parseIntelOperandRaw(field)
 	-- whitespace-dodged forms (`( %rdi )`). The ONLY legitimate parens in an
 	-- Intel operand are the x87 stack-register name st(N).
 	if string.find(field, "[()]") and not string.match(string.lower(field), "^st%(%d+%)$") then
-		error("sarcasm: AT&T-style operand in Intel-syntax input"
+		err.here("AT&T-style operand in Intel-syntax input"
 			.. " (use [bracket] memory operands): " .. field)
 	end
 	local indirect = false
@@ -610,11 +611,11 @@ local function parseIntelOperandRaw(field)
 					local e = parseDispExpr(t, "displacement")
 					if e.sym then
 						if term.sign < 0 then
-							error("sarcasm: subtracting symbol '" .. e.sym
+							err.here("subtracting symbol '" .. e.sym
 								.. "' in a displacement expression is not a displacement: " .. field)
 						end
 						if mem.dispSym then
-							error("sarcasm: more than one displacement symbol in memory operand ('"
+							err.here("more than one displacement symbol in memory operand ('"
 								.. mem.dispSym .. "', '" .. e.sym .. "'): " .. field)
 						end
 						mem.dispSym = e.sym
@@ -766,7 +767,7 @@ local function parseInsnText(t, syntax)
 		local inner = string.lower(string.sub(pfx, 2, -2))
 		if inner ~= "vex" and inner ~= "vex2" and inner ~= "vex3"
 			and inner ~= "evex" and inner ~= "np" then
-			error("sarcasm: unsupported encoding-hint prefix '" .. pfx
+			err.here("unsupported encoding-hint prefix '" .. pfx
 				.. "' (only {vex}/{vex2}/{vex3}/{evex}/{np} are recognized): " .. t)
 		end
 		t = restP
@@ -778,7 +779,7 @@ local function parseInsnText(t, syntax)
 		-- and so stays in the code part). Raise a normal parse error rather than
 		-- choking on string.sub(nil, ...) below (a latent crash for such lines
 		-- before markers existed).
-		error("sarcasm: cannot parse line: " .. t)
+		err.here("cannot parse line: " .. t)
 	end
 	rest = trim(rest or "")
 	-- `lock` is an instruction PREFIX, not a mnemonic: gas emits it as a leading
@@ -792,7 +793,7 @@ local function parseInsnText(t, syntax)
 		local r2 = (string.gsub(rest, "^%s*;%s*", ""))
 		local m2, rest2 = string.match(r2, "^([%.%w_][%w_.]*)%s*(.*)$")
 		if not m2 then
-			error("sarcasm: `lock` prefix with no following instruction: " .. t)
+			err.here("`lock` prefix with no following instruction: " .. t)
 		end
 		mnem, rest = m2, trim(rest2 or "")
 		lockPrefix = true
@@ -812,7 +813,7 @@ local function parseInsnText(t, syntax)
 			local r2 = (string.gsub(rest, "^%s*;%s*", ""))
 			local m2, rest2 = string.match(r2, "^([%.%w_][%w_.]*)%s*(.*)$")
 			if not m2 then
-				error("sarcasm: `" .. low .. "` prefix with no following instruction: " .. t)
+				err.here("`" .. low .. "` prefix with no following instruction: " .. t)
 			end
 			mnem, rest = m2, trim(rest2 or "")
 			repPrefix = low
@@ -849,17 +850,17 @@ end
 local function parseDotAlloca(rest, syntax, t)
 	local fields = splitOperands(rest)
 	if #fields ~= 3 then
-		error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
+		err.here("`.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
 	end
 	local ops = {}
 	for k, f in fields do
 		if f == "" then
-			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
+			err.here("`.alloca` takes exactly 3 operands (size, alignment, result): " .. t)
 		end
 		local op = syntax == "att" and parseAttOperand(f) or parseIntelOperand(f)
 		if op.kind == "imm" then op.absAddr = nil end
 		if op.kind == "sym" or op.kind == "numref" then
-			error("sarcasm: `.alloca` operand is a symbol, but size/alignment must be a register, spill slot, or immediate"
+			err.here("`.alloca` operand is a symbol, but size/alignment must be a register, spill slot, or immediate"
 				.. " and result a register, pseudo-register, or spill slot: " .. t)
 		end
 		ops[k] = op
@@ -867,7 +868,8 @@ local function parseDotAlloca(rest, syntax, t)
 	return { kind = "insn", mnemonic = "alloca", operands = ops, raw = t, syntax = syntax, dotAlloca = true }
 end
 
-function x86parse.parseString(text, syntax)
+function x86parse.parseString(text, syntax, fileName)
+	err.beginParse(fileName)
 	-- Per-file pseudo-registry reset. pseudoNums/numPseudos live at module scope
 	-- (the require cache persists them across files in one process), so
 	-- reinitialize them here for deterministic per-file numbering from
@@ -881,6 +883,7 @@ function x86parse.parseString(text, syntax)
 	local lineNo = 0
 	for raw in (text .. "\n"):gmatch("(.-)\n") do
 		lineNo += 1
+		err.atParseLine(lineNo)
 		-- Split the annotation marker (`;!` everywhere, or `#!` — on x86_64 `#` is
 		-- the comment introducer, so `#!` is "a comment that means more") off the
 		-- line, string-aware. Comment text must never fabricate an annotation: a
@@ -917,7 +920,7 @@ function x86parse.parseString(text, syntax)
 					-- NOT a marker on x86_64 and so stays in the code part). Raise a
 					-- normal parse error rather than choking on string.sub(nil, ...)
 					-- below (a latent crash for such lines before markers existed).
-					error("sarcasm: cannot parse line: " .. t)
+					err.here("cannot parse line: " .. t)
 				end
 				rest = trim(rest or "")
 					if string.sub(mnem, 1, 1) == "." then
@@ -932,8 +935,12 @@ function x86parse.parseString(text, syntax)
 			end
 		end
 		if annotation and #out > before then out[#out].annotation = annotation end
-		for k = before + 1, #out do out[k].line = out[k].line or lineNo end
+		for k = before + 1, #out do
+			out[k].line = out[k].line or lineNo
+			out[k].file = out[k].file or fileName
+		end
 	end
+	err.endParse()
 	numlabel.resolve(out)
 	return out
 end
@@ -2480,7 +2487,7 @@ local decodedLabelSeq = 0
 -- Returns nil when any instruction text does not re-parse or a branch target is
 -- not an instruction boundary inside the run (the whole run then stays data —
 -- a decoded text must be exactly as parseable as a spelled one).
-local function buildRunStatements(insns, bytes, lines)
+local function buildRunStatements(insns, bytes, lines, file)
 	-- every branch target must be an instruction boundary INSIDE the run
 	local starts = {}
 	for _, in_ in insns do starts[in_.start] = true end
@@ -2498,7 +2505,7 @@ local function buildRunStatements(insns, bytes, lines)
 	local out = {}
 	for _, in_ in insns do
 		if labels[in_.start] then
-			table.insert(out, { kind = "label", name = labels[in_.start], line = in_.line })
+			table.insert(out, { kind = "label", name = labels[in_.start], line = in_.line, file = file })
 		end
 		local text = in_.text
 		if in_.rel then
@@ -2507,6 +2514,7 @@ local function buildRunStatements(insns, bytes, lines)
 		local ok, insn = pcall(parseInsnText, text, "att")
 		if not ok then return nil end
 		insn.line = in_.line
+		insn.file = file
 		table.insert(out, insn)
 	end
 	return out
@@ -2517,9 +2525,11 @@ end
 -- emitted (an undecodable tail would silently become data mid-body, and the
 -- whole run must keep its original spelling for the downstream rejection).
 -- bytes/lines are parallel 1-based arrays; lines[i] is the source line of
--- bytes[i] (feeding the decoded statements' origins). A second return value is
+-- bytes[i] (feeding the decoded statements' origins). file is the input path
+-- stamped on the run's source statements (carried onto the decoded ones). A
+-- second return value is
 -- the buffer position of an unjoined trailing lock byte (nil otherwise).
-local function decodeRunStatements(bytes, lines)
+local function decodeRunStatements(bytes, lines, file)
 	local insns = {}
 	local pos = 1
 	local lockPos = nil   -- buffer position of a pending (unjoined) lock byte
@@ -2562,7 +2572,7 @@ local function decodeRunStatements(bytes, lines)
 	-- a lock byte pending at the run's end never joined anything: report it so
 	-- the caller can try joining it with the spelled instruction that follows
 	if lockPos then return nil, lockPos end
-	return buildRunStatements(insns, bytes, lines)
+	return buildRunStatements(insns, bytes, lines, file)
 end
 
 
@@ -2632,7 +2642,7 @@ function x86parse.decodeByteInsns(body)
 				end
 			end
 			local decoded = (not overflow and #bytes > 0 and not lockJoined)
-				and decodeRunStatements(bytes, lines) or nil
+				and decodeRunStatements(bytes, lines, body[i].file) or nil
 			if decoded then
 				for _, dst in decoded do table.insert(out, dst) end
 				if ann then

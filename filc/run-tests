@@ -487,6 +487,25 @@ $testDirectory.each_entry {
                 outp.puts "fi"
             end
         }
+        if expectedReturn == "compileFailure"
+            expectedOutputs.each {
+                | expectedOutput |
+                outp.puts "grep -F -- #{Shellwords.shellescape(expectedOutput)} #{Shellwords.shellescape(compilerOutput)} > /dev/null || {"
+                outp.puts "    echo " + Shellwords.shellescape("FAIL: expected compiler output to contain #{expectedOutput}")
+                outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
+                outp.puts "    exit 1"
+                outp.puts "}"
+            }
+            forbiddenOutputs.each {
+                | forbiddenOutput |
+                outp.puts "grep -F -- #{Shellwords.shellescape(forbiddenOutput)} #{Shellwords.shellescape(compilerOutput)} > /dev/null && {"
+                outp.puts "    echo " + Shellwords.shellescape("FAIL: expected compiler output to NOT contain #{forbiddenOutput}")
+                outp.puts "    cat #{Shellwords.shellescape(compilerOutput)}"
+                outp.puts "    exit 1"
+                outp.puts "}"
+            }
+            outp.puts ":"
+        end
         break if expectedReturn == "compileFailure" or expectedReturn == "compileOnly"
         if libraries
             libraries.each_pair {

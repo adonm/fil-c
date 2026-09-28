@@ -130,6 +130,7 @@ local x86parse = require("./x86_64_parse")
 local fp = require("./x86_64_fp")
 local sig = require("./sig")
 local frameShared = require("./frame")
+local err = require("./err")
 
 local x86_64_frame = {}
 
@@ -351,7 +352,7 @@ local yoloBase = nil
 -- the pre-pass could not see — is a compile error, never a miscompile).
 --
 -- Module state, same single-threaded discipline as D0 above:
-local sbCanon = nil       -- id -> { lo = loN, hi = hiN, fn = <declaring function> }
+local sbCanon = nil       -- id -> { lo = loN, hi = hiN, fn = <declaring function>, st = <declaring statement> }
 local sbResolving = false -- true during the driver pre-pass (long forms only)
 local sbLayout = nil      -- { groups = { {lo, hi, areq, base} }, bytes = total } (this function)
 
@@ -377,8 +378,11 @@ function x86_64_frame.stackBufCanonOf(id)
 	return nil
 end
 
-function x86_64_frame.recordStackBufCanon(id, lo, hi, fnName, isSub)
-	sbCanon[id] = { lo = lo, hi = hi, fn = fnName, sub = isSub and true or nil }
+-- Record the file-wide canonical normalized range for buffer `id`, declared by
+-- the long form on statement `st` (kept so a later mismatching declaration
+-- can name the FIRST declaration's location in its message).
+function x86_64_frame.recordStackBufCanon(id, lo, hi, fnName, isSub, st)
+	sbCanon[id] = { lo = lo, hi = hi, fn = fnName, sub = isSub and true or nil, st = st }
 end
 
 -- The buffer layout of the most recently analyzed function: groups (merged,
@@ -392,12 +396,12 @@ end
 -- normalized range [lo, hi). Used by the transform's rep lowering.
 function x86_64_frame.stackBufGroupBaseFor(lo, hi)
 	if not sbLayout then
-		error("sarcasm: internal error: no stack buffer layout for the rep alias")
+		err.plain("internal error: no stack buffer layout for the rep alias")
 	end
 	for _, g in sbLayout.groups do
 		if lo >= g.lo and hi <= g.hi then return g.base end
 	end
-	error("sarcasm: internal error: stack buffer range [" .. tostring(lo) .. ", "
+	err.plain("internal error: stack buffer range [" .. tostring(lo) .. ", "
 		.. tostring(hi) .. ") is not covered by any lowered buffer group")
 end
 
@@ -437,7 +441,7 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 	local loN, hiN
 	if sb.short then
 		if st.b2clone then
-			error("sarcasm: `stack buffer (" .. sb.id .. ")` short form on a"
+			err.at(st, "`stack buffer (" .. sb.id .. ")` short form on a"
 				.. " shared-tail clone statement is not supported (a clone's"
 				.. " buffer window is private to the clone's own frame context;"
 				.. " declare it with the long form `#! stack buffer (" .. sb.id
@@ -447,13 +451,13 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 		local canon = sbCanon and sbCanon[sb.id] or nil
 		if canon == nil then
 			if sbResolving then return nil end
-			error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long form"
+			err.at(st, "`stack buffer (" .. sb.id .. ")` short form has no long form"
 				.. " anywhere in this file (declare the buffer with e.g. `#! stack buffer ("
 				.. sb.id .. ", %rsp, %rsp + N)` on a buffer access in some function): "
 				.. (st.raw or st.mnemonic))
 		end
 		if canon.sub and not st.localClone then
-			error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+			err.at(st, "`stack buffer (" .. sb.id .. ")` is declared inside local"
 				.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
 				.. " subroutine's own frame); only that subroutine's cloned code"
 				.. " addresses it - declare a buffer in this function with the"
@@ -462,11 +466,11 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 		loN, hiN = canon.lo, canon.hi
 	else
 		if d == nil then
-			error("sarcasm: `stack buffer` annotation on an unreachable (dead-code)"
+			err.at(st, "`stack buffer` annotation on an unreachable (dead-code)"
 				.. " statement cannot be resolved: " .. (st.raw or st.mnemonic))
 		end
 		if st.localClone and sb.base ~= "rsp" then
-			error("sarcasm: `stack buffer` annotation on a local subroutine clone"
+			err.at(st, "`stack buffer` annotation on a local subroutine clone"
 				.. " statement must use %rsp as its base (%" .. sb.base
 				.. " names a register whose clone-context binding the analysis"
 				.. " cannot attribute to the clone's own frame): "
@@ -475,7 +479,7 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 		local k
 		if sb.base == "rsp" then
 			if isDynDepth(d) then
-				error("sarcasm: `stack buffer` annotation at an unprovable (dynamic or"
+				err.at(st, "`stack buffer` annotation at an unprovable (dynamic or"
 					.. " unknown) stack depth cannot be resolved: " .. (st.raw or st.mnemonic))
 			end
 			if st.b2clone then
@@ -507,14 +511,14 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 					-- prefix statement AT the frame-base depth (the leaf-function
 					-- shape: a straight-line body the prologue scan never exits) is
 					-- fine.
-					error("sarcasm: `stack buffer` annotation inside the prologue prefix"
+					err.at(st, "`stack buffer` annotation inside the prologue prefix"
 						.. " at a perturbed stack depth is not supported: "
 						.. (st.raw or st.mnemonic))
 				end
 				k = D0 - d
 			end
 		elseif st.b2clone then
-			error("sarcasm: `stack buffer` annotation on a shared-tail clone"
+			err.at(st, "`stack buffer` annotation on a shared-tail clone"
 				.. " statement must use %rsp as its base (%" .. sb.base
 				.. " names a register whose clone-context binding the analysis"
 				.. " cannot attribute to the clone's own frame): " .. (st.raw or st.mnemonic))
@@ -524,7 +528,7 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 			else
 				local e = smap and smap["rbp"] or nil
 				if not (e and not e.redefined and not e.slot and not e.roff and not e.conflict) then
-					error("sarcasm: `stack buffer` annotation base %rbp is neither an"
+					err.at(st, "`stack buffer` annotation base %rbp is neither an"
 						.. " established frame pointer nor a live saved-rsp carrier here: "
 						.. (st.raw or st.mnemonic))
 				end
@@ -533,7 +537,7 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 		else
 			local e = smap and smap[sb.base] or nil
 			if not (e and not e.redefined and not e.slot and not e.roff and not e.conflict) then
-				error("sarcasm: `stack buffer` annotation base %" .. sb.base .. " is not a"
+				err.at(st, "`stack buffer` annotation base %" .. sb.base .. " is not a"
 					.. " live saved-rsp stack alias at this statement (create one with"
 					.. " `mov %" .. "rsp, %" .. sb.base .. "` or `lea K(%rsp), %" .. sb.base
 					.. "`): " .. (st.raw or st.mnemonic))
@@ -545,9 +549,10 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 			local canon = sbCanon and sbCanon[sb.id] or nil
 			if canon then
 				if canon.lo ~= loN or canon.hi ~= hiN then
-					error("sarcasm: `stack buffer (" .. sb.id .. ")` long forms disagree: the"
-						.. " declaration in function '" .. tostring(canon.fn) .. "' resolves"
-						.. " to [" .. tostring(canon.lo) .. ", " .. tostring(canon.hi)
+					local firstLoc = err.locStr(canon.st)
+					err.at(st, "`stack buffer (" .. sb.id .. ")` long forms disagree: the declaration in function '"
+						.. tostring(canon.fn) .. "' at " .. (firstLoc or "?")
+						.. " resolves to [" .. tostring(canon.lo) .. ", " .. tostring(canon.hi)
 						.. ") but this one resolves to [" .. tostring(loN) .. ", "
 						.. tostring(hiN) .. ") (the offsets must match): "
 						.. (st.raw or st.mnemonic))
@@ -555,14 +560,14 @@ local function resolveBufRangeAt(st, d, smap, fpState, inPrologue)
 			elseif not sbResolving then
 				-- The driver pre-pass records every long form it can see (function
 				-- bodies). A miss here means this declaration was invisible to it.
-				error("sarcasm: `stack buffer (" .. sb.id .. ")` long form was not seen by"
+				err.at(st, "`stack buffer (" .. sb.id .. ")` long form was not seen by"
 					.. " the file-wide declaration scan (long forms inside local subroutine"
 					.. " bodies are not supported): " .. (st.raw or st.mnemonic))
 			end
 		end
 	end
 	if hiN <= loN then
-		error("sarcasm: `stack buffer (" .. sb.id .. ")` declares an empty range: "
+		err.at(st, "`stack buffer (" .. sb.id .. ")` declares an empty range: "
 			.. (st.raw or st.mnemonic))
 	end
 	return loN, hiN
@@ -2323,7 +2328,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						local afpe = fpKnowledge.lookup(string.lower(st.mnemonic))
 						local aw = nil
 						if isFpInsn(afpe, st) then
-							aw = fpKnowledge.accessWidth(string.lower(st.mnemonic), ops, st.raw)
+							aw = fpKnowledge.accessWidth(string.lower(st.mnemonic), ops, st.raw, st)
 						else
 							aw = gprStackWidth(string.lower(st.mnemonic), amem)
 						end
@@ -2386,7 +2391,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- localcall clone: the clone's +8 keying would need its own
 					-- alias-side model (the carrier's parked depth and the
 					-- rep's dynamic count check both shift), which is not built.
-					error("sarcasm: `stack buffer` annotation on a rep string op inside"
+					err.at(st, "`stack buffer` annotation on a rep string op inside"
 						.. " a local subroutine clone is not supported (the clone's"
 						.. " return-address compensation would need its own rep alias"
 						.. " model): " .. (st.raw or st.mnemonic))
@@ -2411,7 +2416,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						else
 							local k = D0 - e.depth
 							if k < loN then
-								error("sarcasm: rep string's stack-alias side %" .. name
+								err.at(st, "rep string's stack-alias side %" .. name
 									.. " (stack offset " .. tostring(k) .. ") is below the"
 									.. " stack buffer (" .. st.stackBufAnno.id .. ") range ["
 									.. tostring(loN) .. ", " .. tostring(hiN) .. "): "
@@ -2445,7 +2450,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- resolution reads it. The use falls through to the ordinary
 					-- def-marking (a redefining use kills the carrier, as today).
 					if not (bufProbeSuppress and e.form ~= nil) then
-						error("sarcasm: reading %" .. name .. " while it holds the prologue"
+						err.at(st, "reading %" .. name .. " while it holds the prologue"
 						.. " `" .. (e.form or "movq %rsp") .. ", %" .. name .. "` save cannot be proven safe (the"
 						.. " save is dropped by the rewrite — the register's stack value"
 						.. " does not exist in the output; recover %rsp from it first or"
@@ -2492,7 +2497,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					local w = nil
 					-- (fpKnowledge, not the `fp` frame-pointer state parameter.)
 					local fpe = fpKnowledge.lookup(string.lower(st.mnemonic))
-					if isFpInsn(fpe, st) then w = fpKnowledge.accessWidth(string.lower(st.mnemonic), ops, st.raw)
+					if isFpInsn(fpe, st) then w = fpKnowledge.accessWidth(string.lower(st.mnemonic), ops, st.raw, st)
 					else w = gprStackWidth(string.lower(st.mnemonic), o) end
 					for k, e in pairs(smap) do
 						if e.slot and not e.redefined and e.space == space and w
@@ -2506,7 +2511,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 								end
 								out[k] = nil
 							else
-								error("sarcasm: stack access into a frame slot that holds the"
+								err.at(st, "stack access into a frame slot that holds the"
 									.. " saved stack pointer cannot be proven safe (the save is"
 									.. " phantom — the slot's value does not exist in the output;"
 									.. " overwrite the slot first): " .. (st.raw or st.mnemonic))
@@ -3200,7 +3205,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			local c = classOf(st)
 			for _, u in c.uses do
 				if u.kind == "reg" and u.rc == "gpr" and u.num == save.num then
-					error("sarcasm: register " .. save.name .. " is read after the"
+					err.at(st, "register " .. save.name .. " is read after the"
 						.. " " .. (why or ("transient-pad pop that restores its save (the"
 							.. " register was redefined between its push and that pop, so the"
 							.. " pop's reload cannot be modeled and this read would see the"
@@ -3333,7 +3338,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				if rs then
 					if rs.redefined then
 						if retIsGpr and st.operands[1].num == 0 then
-							error("sarcasm: epilogue restore load into the integer return"
+							err.at(st, "epilogue restore load into the integer return"
 								.. " register cannot be modeled (the register was redefined"
 								.. " after its save, so the restore's value and the web's"
 								.. " value disagree): " .. (st.raw or st.mnemonic))
@@ -3514,7 +3519,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				and not st.tailRet and retIsGpr and smapIn[i] then
 				local e = smapIn[i]["rax"]
 				if e and not e.redefined and not e.slot then
-					error("sarcasm: returning while %rax holds the saved stack pointer cannot"
+					err.at(st, "returning while %rax holds the saved stack pointer cannot"
 						.. " be proven safe (the return value would be the live stack"
 						.. " address; redefine %rax or recover %rsp from it first): "
 						.. (st.raw or st.mnemonic))
@@ -3918,7 +3923,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						crosses = not (sIdx > prevAnd)
 					end
 					if crosses then
-						error("sarcasm: stack access through a saved stack-pointer register"
+						err.at(st, "stack access through a saved stack-pointer register"
 							.. " crossing a mid-function `and $-N, %rsp` cannot be proven safe"
 							.. " (the save was before the and but the use is after it, and"
 							.. " pre- and post-and traffic share one numbering while the and"
@@ -4140,10 +4145,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- Unreached ret (dead code) needs no balance proof; a
 					-- CFG-reachable ret with no depth is an analysis gap: fail closed.
 					if reachable[i] then
-						error(isClone
-							and ("sarcasm: shared-tail clone returns with an unprovable stack-pointer"
+						err.at(st, isClone
+							and ("shared-tail clone returns with an unprovable stack-pointer"
 								.. " depth (no depth could be proven for the `ret` itself): " .. (st.raw or st.mnemonic))
-							or ("sarcasm: local subroutine returns with an unprovable stack-pointer"
+							or ("local subroutine returns with an unprovable stack-pointer"
 								.. " depth (no depth could be proven for the `ret` itself): " .. (st.raw or st.mnemonic)))
 					else
 						continue
@@ -4154,11 +4159,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- depth: the entry is unreached, missing, or unprovable, so
 					-- balance cannot be proven. Fail closed (dead rets already
 					-- continued above).
-					error(isClone
-						and ("sarcasm: shared-tail clone returns with an unprovable clone-entry"
+					err.at(st, isClone
+						and ("shared-tail clone returns with an unprovable clone-entry"
 							.. " depth (cannot prove the clone's inner frame was torn"
 							.. " down before `ret`): " .. (st.raw or st.mnemonic))
-						or ("sarcasm: local subroutine returns with an unprovable clone-entry"
+						or ("local subroutine returns with an unprovable clone-entry"
 							.. " depth (cannot prove the subroutine's scratch frame was torn"
 							.. " down before `ret`): " .. (st.raw or st.mnemonic)))
 				end
@@ -4195,23 +4200,23 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					(not depthEq(dRet, dEntry) and not (isClone and dRet == 0 and st.x86_teardown)
 						and not (isClone and carrierToZeroOk(i, e, st))) then
 					if isDynDepth(dRet) or isDynDepth(dEntry) then
-						error(isClone
-							and ("sarcasm: shared-tail clone returns with an unknown stack-pointer"
+						err.at(st, isClone
+							and ("shared-tail clone returns with an unknown stack-pointer"
 								.. " depth (cannot prove the clone's inner frame was torn"
 								.. " down before `ret`): " .. (st.raw or st.mnemonic))
-							or ("sarcasm: local subroutine returns with an unknown stack-pointer"
+							or ("local subroutine returns with an unknown stack-pointer"
 								.. " depth (cannot prove the subroutine's scratch frame was torn"
 								.. " down before `ret`): " .. (st.raw or st.mnemonic)))
 					else
-						error(isClone
-							and ("sarcasm: shared-tail clone returns with an unbalanced stack frame"
+						err.at(st, isClone
+							and ("shared-tail clone returns with an unbalanced stack frame"
 								.. " (the clone must undo every `sub $N,%rsp` on every path before"
 								.. " `ret` — back to its clone-entry depth, or all the way to the"
 								.. " entry rsp inside a verified epilogue teardown span (one constant"
 								.. " `add` plus paired callee-saved pops leading straight to `ret`)"
 								.. " when it carries its owner's whole epilogue): "
 								.. (st.raw or st.mnemonic))
-							or ("sarcasm: local subroutine returns with an unbalanced stack frame"
+							or ("local subroutine returns with an unbalanced stack frame"
 								.. " (a `sub $N,%rsp` scratch frame inside the subroutine must be"
 								.. " torn down with a matching `add $N,%rsp` on every path before"
 								.. " `ret`; the continuation resumes at the caller's depth): "
@@ -4272,7 +4277,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 		if not hit then continue end
 		if retIsGpr and ops[1].num == 0 then
-			error("sarcasm: epilogue restore load into the integer return register"
+			err.at(st, "epilogue restore load into the integer return register"
 				.. " cannot be modeled (the register was redefined after its save,"
 				.. " so the restore's value and the web's value disagree): "
 				.. (st.raw or st.mnemonic))
@@ -4436,7 +4441,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					local fpe = fp.lookup(m)
 					local w = nil
 					if isFpInsn(fpe, st) then
-						local okW, ww = pcall(fp.accessWidth, m, st.operands, st.raw)
+						local okW, ww = pcall(fp.accessWidth, m, st.operands, st.raw, st)
 						w = okW and ww or nil
 					else
 						w = gprStackWidth(m, mem)
@@ -4602,7 +4607,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				frameFloor = frameFloor - 8
 			end
 			if loN < frameFloor then
-				error("sarcasm: stack buffer (" .. id .. ") reaches below the"
+				err.at(st, "stack buffer (" .. id .. ") reaches below the"
 					.. " function's own allocated stack (normalized offset "
 					.. tostring(loN) .. " < floor " .. tostring(frameFloor)
 					.. (frameFloor == 0
@@ -4626,7 +4631,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				local andTop = (frameAndDepth ~= 0 and maxSaves == 0)
 					and frameSize or nil
 				if not (andTop ~= nil and homeHi <= andTop) then
-					error("sarcasm: stack buffer (" .. id .. ") extends to normalized"
+					err.at(st, "stack buffer (" .. id .. ") extends to normalized"
 						.. " offset " .. tostring(homeHi) .. ", past the frame's usable top "
 						.. tostring(pushTop) .. " (the frame is [0, " .. tostring(D0)
 						.. ") and its top " .. tostring(8 * maxSaves) .. " bytes are the"
@@ -4645,7 +4650,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				local ed = cloneEntryDepth[st.localClone]
 				local cloneTop = (ed ~= nil) and (D0 - ed - 8) or nil
 				if cloneTop == nil or hiN > cloneTop then
-					error("sarcasm: stack buffer (" .. id .. ") is declared inside a"
+					err.at(st, "stack buffer (" .. id .. ") is declared inside a"
 						.. " local subroutine clone but reaches normalized offset "
 						.. tostring(hiN) .. ", above the clone's own sub-frame (top "
 						.. tostring(cloneTop) .. "); a clone-declared buffer must live"
@@ -4670,7 +4675,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			if st then
 				local sv = st.x86_saves
 				if sv == "dyn" then
-					error("sarcasm: stack buffer (" .. id .. ") is declared at a"
+					err.at(st, "stack buffer (" .. id .. ") is declared at a"
 						.. " statement whose outstanding-save state cannot be proven"
 						.. " (the buffer's bytes must be provably disjoint from every"
 						.. " pushed-register save slot): " .. (st.raw or st.mnemonic))
@@ -4680,7 +4685,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if s.spill then continue end  -- a spill slot is an ordinary slot
 						local slo, shi = D0 - s.depth, D0 - s.depth + 8
 						if loN < shi and hiN > slo then
-							error("sarcasm: stack buffer (" .. id .. ") overlaps a"
+							err.at(st, "stack buffer (" .. id .. ") overlaps a"
 								.. " pushed register's save slot at normalized ["
 								.. tostring(slo) .. ", " .. tostring(shi) .. ") (the"
 								.. " slot's bytes are the pushed register's web while"
@@ -4694,13 +4699,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			-- sbOutgoing): a buffer entirely below the frame base (an inner-frame
 			-- buffer, see the frameFloor comment) cannot overlap it.
 			if homeLo < sbOutgoing and homeHi > 0 then
-				error("sarcasm: stack buffer (" .. id .. ") overlaps the outgoing"
+				err.at(st, "stack buffer (" .. id .. ") overlaps the outgoing"
 					.. " call-argument area [0, " .. tostring(sbOutgoing)
 					.. "): " .. tostring(homeLo) .. " < " .. tostring(sbOutgoing))
 			end
 			for _, r in (regions or {}) do
 				if not r.anchored and r.base < homeHi and r.base + r.size > homeLo then
-					error("sarcasm: stack buffer (" .. id .. ") overlaps a fixed"
+					err.at(st, "stack buffer (" .. id .. ") overlaps a fixed"
 						.. " alloca region at normalized offsets ["
 						.. tostring(math.max(r.base, homeLo)) .. ", "
 						.. tostring(math.min(r.base + r.size, homeHi))
@@ -4713,7 +4718,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			local m = string.lower(st.mnemonic)
 			local fpe = fp.lookup(m)
 			if isFpInsn(fpe, st) then
-				local fw, fa = fp.accessWidth(m, st.operands, st.raw)
+				local fw, fa = fp.accessWidth(m, st.operands, st.raw, st)
 				if fw == nil then return nil, nil end
 				return fw, fa
 			end
@@ -4733,13 +4738,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				local r = cm and cm[sb.id] or nil
 				if r then return r.lo, r.hi end
 				if canon == nil then
-					error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long"
+					err.at(st, "`stack buffer (" .. sb.id .. ")` short form has no long"
 						.. " form anywhere in this file (declare the buffer with e.g."
 						.. " `#! stack buffer (" .. sb.id .. ", %rsp, %rsp + N)` on a buffer"
 						.. " access in some function): " .. (st.raw or st.mnemonic))
 				end
 				if not ownDeclIds[sb.id] then
-					error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+					err.at(st, "`stack buffer (" .. sb.id .. ")` is declared inside local"
 						.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
 						.. " subroutine's own frame); only that subroutine's cloned code"
 						.. " addresses it - declare a buffer in this function with the"
@@ -4749,13 +4754,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			end
 			if canon == nil then
 				if sbResolving then return nil, nil end
-				error("sarcasm: `stack buffer (" .. sb.id .. ")` short form has no long form"
+				err.at(st, "`stack buffer (" .. sb.id .. ")` short form has no long form"
 					.. " anywhere in this file (declare the buffer with e.g. `#! stack buffer ("
 					.. sb.id .. ", %rsp, %rsp + N)` on a buffer access in some function): "
 					.. (st.raw or st.mnemonic))
 			end
 			if canon.sub then
-				error("sarcasm: `stack buffer (" .. sb.id .. ")` is declared inside local"
+				err.at(st, "`stack buffer (" .. sb.id .. ")` is declared inside local"
 					.. " subroutine '" .. tostring(canon.fn) .. "' (its bytes live in that"
 					.. " subroutine's own frame); only that subroutine's cloned code"
 					.. " addresses it - declare a buffer in this function with the"
@@ -4780,7 +4785,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					st.x86_fp, st.x86_prologue == true)
 				if loN then
 					if string.lower(st.mnemonic) == "lea" then
-						error("sarcasm: `stack buffer` annotation on a lea is not"
+						err.at(st, "`stack buffer` annotation on a lea is not"
 							.. " supported (a lea takes no memory access; annotate the"
 							.. " accesses or the rep instead): " .. (st.raw or st.mnemonic))
 					end
@@ -4926,7 +4931,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if wPre then
 							for _, r in sbRanges do
 								if off < r.hi and off + wPre > r.lo then
-									error("sarcasm: stack access before a mid-function"
+									err.at(st, "stack access before a mid-function"
 										.. " `and $-N, %rsp` overlaps a stack buffer"
 										.. " (pre-and numbering and the buffer's"
 										.. " coordinate system name different real"
@@ -4981,7 +4986,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							end
 						end
 						if straddles then
-							error("sarcasm: stack access straddles a stack buffer"
+							err.at(st, "stack access straddles a stack buffer"
 								.. " boundary (normalized [" .. tostring(off) .. ", "
 								.. tostring(off + wb) .. ") partially overlaps a declared"
 								.. " buffer; it cannot be proven which side it is on): "
@@ -4999,7 +5004,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 										st.x86_smap, st.x86_fp, st.x86_prologue == true)
 								end
 								if loN and not (off >= loN + band and off + wb <= hiN + band) then
-									error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+									err.at(st, "`stack buffer (" .. st.stackBufAnno.id
 										.. ")`-annotated access at normalized ["
 										.. tostring(off) .. ", " .. tostring(off + wb)
 										.. ") lies outside the buffer's declared range ["
@@ -5009,7 +5014,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							end
 							-- capabilities never live in buffer memory
 							if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-								error("sarcasm: `" .. st.annotation .. "` on a stack access"
+								err.at(st, "`" .. st.annotation .. "` on a stack access"
 									.. " inside a stack buffer is not supported (buffer"
 									.. " slots cannot hold capabilities; loading from a"
 									.. " buffer always yields a null capability): "
@@ -5221,7 +5226,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							or (e2 and not e2.redefined and not e2.slot
 								and not e2.roff and not e2.conflict)
 						if not isStack and rc == "gpr" then
-							error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+							err.at(st, "`stack buffer (" .. st.stackBufAnno.id
 								.. ")`-annotated indexed access through %" .. bn
 								.. " cannot be bounds-checked (the index is unbounded"
 								.. " and the base is only known at runtime; use the"
@@ -5239,7 +5244,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- declaration must be carried by an access that at least
 						-- names a register to check; an absolute address is no
 						-- by-address shape (the historical (b) rejection).
-						error("sarcasm: `stack buffer`-annotated access does not address"
+						err.at(st, "`stack buffer`-annotated access does not address"
 							.. " the stack through %rsp, %rbp or a live saved-rsp alias"
 							.. " register (a long-form declaration must name stack"
 							.. " bytes; use the short form `#! stack buffer ("
@@ -5257,7 +5262,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							-- or frame-pointer state is unprovable. There is no web
 							-- to check and no static home: reject precisely.
 							if st.stackBufAnno then
-								error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+								err.at(st, "`stack buffer (" .. st.stackBufAnno.id
 									.. ")`-annotated access through %" .. bn
 									.. " cannot be proven to address the stack here (the"
 									.. " stack depth or frame pointer is unprovable, so"
@@ -5265,7 +5270,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 									.. " exists): " .. (st.raw or st.mnemonic))
 							end
 						elseif rc ~= "gpr" then
-							error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+							err.at(st, "`stack buffer (" .. st.stackBufAnno.id
 								.. ")`-annotated access base %" .. bn
 								.. " is not a general register (a by-address buffer"
 								.. " access bounds-checks a byte address held in a"
@@ -5284,7 +5289,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 									tainted = t[mem.base.num] and true or false
 								end
 								if not tainted then
-									error("sarcasm: `stack buffer`-annotated access does"
+									err.at(st, "`stack buffer`-annotated access does"
 										.. " not address the stack through %rsp, %rbp or a"
 										.. " live saved-rsp alias register (a long-form"
 										.. " declaration must name stack bytes and must"
@@ -5298,12 +5303,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							-- the by-address mark
 							local wb, fa = widthOf(st, mem)
 							if not wb then
-								error("sarcasm: cannot determine the access width of a"
+								err.at(st, "cannot determine the access width of a"
 									.. " by-address `stack buffer (" .. st.stackBufAnno.id
 									.. ")` access: " .. (st.raw or st.mnemonic))
 							end
 							if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-								error("sarcasm: `" .. st.annotation .. "` on a"
+								err.at(st, "`" .. st.annotation .. "` on a"
 									.. " by-address stack-buffer access is not supported"
 									.. " (buffer slots cannot hold capabilities; loading"
 									.. " from a buffer always yields a null capability): "
@@ -5323,7 +5328,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 								loN, hiN = resolveBufRangeAt(st, st.x86_depth,
 									st.x86_smap, st.x86_fp, st.x86_prologue == true)
 								if loN == nil then
-									error("sarcasm: internal error: long-form by-address"
+									err.at(st, "internal error: long-form by-address"
 										.. " access with an unresolvable declaration: "
 										.. (st.raw or st.mnemonic))
 								end
@@ -5335,7 +5340,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 								if loN >= gr.lo and hiN <= gr.hi then g = gr break end
 							end
 							if g == nil then
-								error("sarcasm: `stack buffer (" .. st.stackBufAnno.id
+								err.at(st, "`stack buffer (" .. st.stackBufAnno.id
 									.. ")` is not declared in this function (a by-address"
 									.. " access checks against the buffer's lowered"
 									.. " range, which a long form in this function or in"
@@ -5354,7 +5359,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 								if not (isFpInsn(fp.lookup(mnem), st) and bufMaskScratch
 									and MASKED_STACK_MOVE[mnem]) or mem.bcastN
 									or string.find(deco.deco, "{1to", 1, true) then
-									error("sarcasm: AVX512 mask-register ({k}) by-address"
+									err.at(st, "AVX512 mask-register ({k}) by-address"
 										.. " stack-buffer access is not supported for '"
 										.. st.mnemonic .. "' (only the masked vector moves"
 										.. " lower; masked-off lanes may not touch"
@@ -5385,12 +5390,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				if mem and mem.index then
 					local d = st.x86_depth
 					if d == nil or isDynDepth(d) then
-						error("sarcasm: `stack buffer`-annotated indexed access at an"
+						err.at(st, "`stack buffer`-annotated indexed access at an"
 							.. " unprovable stack depth is not supported: "
 							.. (st.raw or st.mnemonic))
 					end
 					if st.x86_preAnd then
-						error("sarcasm: `stack buffer`-annotated indexed access before a"
+						err.at(st, "`stack buffer`-annotated indexed access before a"
 							.. " mid-function `and $-N, %rsp` cannot be proven safe: "
 							.. (st.raw or st.mnemonic))
 					end
@@ -5417,13 +5422,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						local e = st.x86_smap[mem.base.name]
 						if not (e and not e.redefined and not e.slot and not e.roff
 							and not e.conflict) then
-							error("sarcasm: indexed access base %" .. tostring(mem.base.name)
+							err.at(st, "indexed access base %" .. tostring(mem.base.name)
 								.. " is not a live saved-rsp stack alias: "
 								.. (st.raw or st.mnemonic))
 						end
 						kBase = D0 - e.depth
 					else
-						error("sarcasm: `stack buffer`-annotated indexed access through %"
+						err.at(st, "`stack buffer`-annotated indexed access through %"
 							.. tostring(mem.base and mem.base.name or "?") .. " is not"
 							.. " supported (the base must be %rsp, %rbp or a live saved-rsp"
 							.. " alias; an unprovable base register cannot bounds-check an"
@@ -5433,12 +5438,12 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					end
 					local scale = mem.scale or 1
 					if scale ~= 1 and scale ~= 2 and scale ~= 4 and scale ~= 8 then
-						error("sarcasm: indexed buffer access has scale " .. tostring(scale)
+						err.at(st, "indexed buffer access has scale " .. tostring(scale)
 							.. " (only 1/2/4/8 are encodable): " .. (st.raw or st.mnemonic))
 					end
 					local wb, fa = widthOf(st, mem)
 					if not wb then
-						error("sarcasm: cannot determine the access width of an indexed"
+						err.at(st, "cannot determine the access width of an indexed"
 							.. " buffer access: " .. (st.raw or st.mnemonic))
 					end
 					local loN, hiN
@@ -5466,13 +5471,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- the size check below).
 					loN, hiN = loN + band, hiN + band
 					if wb > hiN - loN then
-						error("sarcasm: indexed buffer access is " .. tostring(wb)
+						err.at(st, "indexed buffer access is " .. tostring(wb)
 							.. " bytes but the buffer (" .. st.stackBufAnno.id .. ") is only "
 							.. tostring(hiN - loN) .. " bytes: " .. (st.raw or st.mnemonic))
 					end
 					-- capabilities never live in buffer memory
 					if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-						error("sarcasm: `" .. st.annotation .. "` on a stack-buffer access"
+						err.at(st, "`" .. st.annotation .. "` on a stack-buffer access"
 							.. " is not supported (buffer slots cannot hold capabilities;"
 							.. " loading from a buffer always yields a null capability): "
 							.. (st.raw or st.mnemonic))
@@ -5600,7 +5605,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 									local dRes = ((res - anchor.res) % n + n) % n
 									local dLo = ((dm.lo - anchor.lo) % n + n) % n
 									if dRes ~= dLo then
-										error("sarcasm: stack buffer group ["
+										err.at(body[dm.declIdx], "stack buffer group ["
 											.. tostring(g.lo) .. ", " .. tostring(g.hi)
 											.. ") holds declarations whose absolute"
 											.. " alignment identities disagree (the"
@@ -5703,7 +5708,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- Intel mem.size must never under-size the slot, and
 						-- accessWidth cleanly rejects a contradicting PTR
 						-- annotation. nil: the rewrite produces the clean error.
-						local fw, fa = fp.accessWidth(m, st.operands, st.raw)
+						local fw, fa = fp.accessWidth(m, st.operands, st.raw, st)
 						w = fw
 						if fa and fa > 1 then areq = math.min(fa, 64) end  -- cap at 64
 					else
@@ -5746,7 +5751,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- misalign it, so fail closed here rather than emit
 						-- a bad frame.
 						if areq ~= 1 and 64 % areq ~= 0 then
-							error("sarcasm: stack access with a " .. areq .. "-byte alignment"
+							err.at(st, "stack access with a " .. areq .. "-byte alignment"
 								.. " requirement cannot be proven safe (B2 shared-tail bands"
 								.. " are multiples of 64, which preserves only alignment"
 								.. " requirements that divide 64): "
@@ -5760,7 +5765,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						if isFP and areq > 16 then
 							local alignedOff = ((off - (D0 - frameAndDepth)) % areq + areq) % areq == 0
 							if frameAlignReq < areq or not alignedOff then
-								error("sarcasm: aligned " .. areq .. "-byte stack access cannot be proven safe"
+								err.at(st, "aligned " .. areq .. "-byte stack access cannot be proven safe"
 									.. " (the stack is only guaranteed 16-byte aligned;"
 									.. (frameAlignReq < areq
 										and " align the frame with `and $-" .. areq .. ", %rsp` in the prologue, or else"
@@ -5890,7 +5895,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		if not iv.pre then continue end
 		for _, jv in intervals do
 			if jv ~= iv and jv.slack0 and iv.lo < jv.hi and iv.hi > jv.lo then
-				error("sarcasm: stack access before a mid-function `and $-N, %rsp`"
+				err.at(body[iv.si], "stack access before a mid-function `and $-N, %rsp`"
 					.. " overlaps post-and traffic in the modeled frame (pre-and keys"
 					.. " true entry-relative coordinates while post-and keys the and's"
 					.. " slack=0 convention, so one modeled range would name two real"
@@ -5928,7 +5933,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- mixing them has no single correct placement (fail closed;
 					-- the old code silently picked the SysV base and could emit
 					-- a misaligned movdqa-class access that traps at runtime).
-					error("sarcasm: stack accesses through different coordinate systems"
+					err.at(body[iv.si], "stack accesses through different coordinate systems"
 						.. " (post-`and` rsp-relative and absolute/rbp-relative) share one"
 						.. " materialized cluster and cannot be proven safe (split the"
 						.. " vector scratch area): "
@@ -5972,7 +5977,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					local slo, shi = D0 - e.depth, D0 - e.depth + 8
 					if iv.lo < shi and iv.hi > slo
 						and not body[iv.si].x86_dropRestore then
-						error("sarcasm: FP/vector stack traffic overlapping a live spill"
+						err.at(body[iv.si], "FP/vector stack traffic overlapping a live spill"
 							.. " slot cannot be proven safe (the slot is virtual while the"
 							.. " vector range is materialized into real frame memory; move"
 							.. " the spill outside the vector scratch area): "
@@ -6117,7 +6122,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- mark every slot the access can touch: a wider-than-8-byte
 						-- read (movaps/movups/vmovdqu...) spans consecutive slots —
 						-- the entry unpack must fill them all.
-						local w = fp.accessWidth(string.lower(st.mnemonic), st.operands, st.raw) or 8
+						local w = fp.accessWidth(string.lower(st.mnemonic), st.operands, st.raw, st) or 8
 						local last = math.min(yoloCount - 1, i + math.ceil(w / 8) - 1)
 						for j = i, last do fpYolo[j] = true end
 						hasFpYolo = true
@@ -6175,9 +6180,10 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		end
 		local sbCursor = 0
 		for _, g in sbGroups do
+			local gDeclSt = (g.decls and g.decls[1]) and body[g.decls[1].declIdx] or nil
 			if g.areq > 1 then
 				if g.areq > alignA or alignA % g.areq ~= 0 then
-					error("sarcasm: stack buffer group ["
+					err.at(gDeclSt, "stack buffer group ["
 						.. tostring(g.lo) .. ", " .. tostring(g.hi)
 						.. ") needs " .. tostring(g.areq) .. "-byte alignment but"
 						.. " the synthesized frame only guarantees "
@@ -6198,7 +6204,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					want, wantMod = w2, a.areq
 				elseif a.areq >= wantMod then
 					if w2 % wantMod ~= want then
-						error("sarcasm: stack buffer group ["
+						err.at(gDeclSt, "stack buffer group ["
 							.. tostring(g.lo) .. ", " .. tostring(g.hi)
 							.. ") holds aligned accesses whose offsets cannot all"
 							.. " land on aligned bytes (one output base exists but"
@@ -6208,7 +6214,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					want, wantMod = w2, a.areq
 				else
 					if want % a.areq ~= w2 then
-						error("sarcasm: stack buffer group ["
+						err.at(gDeclSt, "stack buffer group ["
 							.. tostring(g.lo) .. ", " .. tostring(g.hi)
 							.. ") holds aligned accesses whose offsets cannot all"
 							.. " land on aligned bytes (one output base exists but"
@@ -6245,7 +6251,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					if lv.off >= gr.lo and lv.off < gr.hi then g2 = gr break end
 				end
 				if g2 == nil then
-					error("sarcasm: internal error: buffer value lea at normalized "
+					err.at(st, "internal error: buffer value lea at normalized "
 						.. tostring(lv.off) .. " has no lowered group: "
 						.. (st.raw or st.mnemonic))
 				end
@@ -6266,7 +6272,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 			for _, g in sbGroups do
 				if lo >= g.lo and hi <= g.hi then return g.base end
 			end
-			error("sarcasm: internal error: rep buffer range has no group")
+			err.plain("internal error: rep buffer range has no group")
 		end
 		for _, st in body do
 			if st.kind == "insn" and st.x86StackBufRep then
@@ -6285,13 +6291,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							okSave = true
 						end
 						if not okSave then
-							error("sarcasm: cannot materialize the defining stack-alias"
+							err.at(st, "cannot materialize the defining stack-alias"
 								.. " save for a rep's %" .. reg .. " side: "
 								.. (st.raw or st.mnemonic))
 						end
 						local disp = base + (side.K - rep.lo)
 						if saveSt.x86StackBufLea and saveSt.x86StackBufLea.disp ~= disp then
-							error("sarcasm: one stack-alias register cannot be"
+							err.at(st, "one stack-alias register cannot be"
 								.. " materialized at two different buffer offsets ("
 								.. tostring(saveSt.x86StackBufLea.disp) .. " vs "
 								.. tostring(disp) .. "): " .. (st.raw or st.mnemonic))
@@ -6417,7 +6423,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					for _, o in (st.operands or {}) do
 						if o.kind == "mem" and o.base and o.base.kind == "reg"
 							and o.base.rc == "gpr" and s[o.base.num] then
-							error("sarcasm: memory access through %" .. o.base.name
+							err.at(st, "memory access through %" .. o.base.name
 								.. " holds the address of stack buffer '"
 								.. tostring(s[o.base.num]) .. "' (a buffer-interior"
 								.. " `leaq` computed it, and its value is an ordinary"
@@ -6599,7 +6605,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 									local m = string.lower(st.mnemonic)
 									local fpe = fpKnowledge.lookup(m)
 									if isFpInsn(fpe, st) then
-										return fpKnowledge.accessWidth(m, st.operands, st.raw)
+										return fpKnowledge.accessWidth(m, st.operands, st.raw, st)
 									end
 									return gprStackWidth(m, o)
 								end)
@@ -6659,7 +6665,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 							local ot = k + D0 - dd
 							local otLow = math.min(-128, D0 - dd - 128)
 							if ot < otLow or ot >= frameSize then
-								error("sarcasm: `leaq " .. k .. "(%rsp)` anchors outside the"
+								err.at(st, "`leaq " .. k .. "(%rsp)` anchors outside the"
 									.. " frame (normalized offset " .. ot .. ", window ["
 									.. otLow .. ", " .. frameSize .. ")) — taking the address"
 									.. " of the stack frame cannot be proven safe: "
@@ -6999,7 +7005,7 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					if namesSave(o, save) then hitOp = o break end
 				end
 				if hitOp then
-					error("sarcasm: stack access overlapping a pushed register's save slot inside"
+					err.at(sst, "stack access overlapping a pushed register's save slot inside"
 						.. " the transient prologue pad stores a different value while the pushed"
 						.. " register %" .. save.name .. " is still read or written before the"
 						.. " matching pop (the save-slot model serves the stored value for"
@@ -7037,7 +7043,7 @@ function x86_64_frame.rewrite(st, ctx)
 	-- `ret` would pop a wild address). Reject it — frame setup must be the canonical
 	-- push %rbp / mov %rsp,%rbp / sub $imm,%rsp form the prologue analysis recognizes.
 	if b == "enter" or b == "enterq" then
-		error("sarcasm: `enter` is not supported (cannot prove safety; use the canonical"
+		err.at(st, "`enter` is not supported (cannot prove safety; use the canonical"
 			.. " push %rbp / mov %rsp,%rbp / sub $imm,%rsp frame setup): " .. (st.raw or m))
 	end
 
@@ -7054,13 +7060,13 @@ function x86_64_frame.rewrite(st, ctx)
 		local d = st.x86_depth
 		if d == nil then return end  -- unreachable (dead code): drop like any dead statement
 		if isDynDepth(d) then
-			error("sarcasm: " .. m .. " while the stack pointer is perturbed or unknown"
+			err.at(st, "" .. m .. " while the stack pointer is perturbed or unknown"
 				.. " (the flags word's slot cannot be proven; cannot prove safety): "
 				.. (st.raw or m))
 		end
 		local off = D0 - (d + 8)
 		if not slotOffSafe(off) then
-			error("sarcasm: " .. m .. " frame area collides with the incoming"
+			err.at(st, "" .. m .. " frame area collides with the incoming"
 				.. " stack-argument slot band (cannot prove safety): " .. (st.raw or m))
 		end
 		-- The statement stays: the transform materializes RFLAGS into the flags
@@ -7076,7 +7082,7 @@ function x86_64_frame.rewrite(st, ctx)
 		local d = st.x86_depth
 		if d == nil then return end  -- unreachable (dead code): drop like any dead statement
 		if not st.x86_flagsPop then
-			error("sarcasm: " .. m .. " with no provable stack word on top of the stack"
+			err.at(st, "" .. m .. " with no provable stack word on top of the stack"
 				.. " (the word it loads must be an outstanding pushfq word or a"
 				.. " materialized spill push at the current depth on every path; popping"
 				.. " a dropped register save, an empty or divergent stack, or a word at"
@@ -7084,7 +7090,7 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		local off = D0 - d
 		if not slotOffSafe(off) then
-			error("sarcasm: " .. m .. " frame area collides with the incoming"
+			err.at(st, "" .. m .. " frame area collides with the incoming"
 				.. " stack-argument slot band (cannot prove safety): " .. (st.raw or m))
 		end
 		-- Reload the word into the flags web first (an ordinary slot load — the
@@ -7122,7 +7128,7 @@ function x86_64_frame.rewrite(st, ctx)
 				local t = string.gsub(string.lower(o.text or ""), "^%%", "")
 				t = string.gsub(string.gsub(t, "^%[", ""), "%]$", "")
 				if string.match(t, "^[re]?[sb]p%f[^%w]") then
-					error("sarcasm: writing the stack pointer through an operand that parsed"
+					err.at(st, "writing the stack pointer through an operand that parsed"
 						.. " as a symbol rather than a register (mixed AT&T/Intel operand"
 						.. " syntax) cannot be proven safe: " .. (st.raw or m))
 				end
@@ -7137,7 +7143,7 @@ function x86_64_frame.rewrite(st, ctx)
 	for _, o in ops do
 		if o.kind == "mem"
 			and ((o.base and o.base.rc == "xmm") or (o.index and o.index.rc == "xmm")) then
-			error("sarcasm: vector-indexed memory access (gather/scatter) is not supported"
+			err.at(st, "vector-indexed memory access (gather/scatter) is not supported"
 				.. " (cannot prove memory safety): " .. (st.raw or m))
 		end
 	end
@@ -7172,17 +7178,17 @@ function x86_64_frame.rewrite(st, ctx)
 			else
 				local isResult = (oi == 3)
 				if o.dispSym or o.index then
-					error("sarcasm: `.alloca` spill-slot operand must be a plain disp(%rsp)/disp(%rbp)"
+					err.at(st, "`.alloca` spill-slot operand must be a plain disp(%rsp)/disp(%rbp)"
 						.. " reference (no symbol, no index): " .. (st.raw or m))
 				end
 				local frameBase = (o.base and o.base.rc == "sp")
 				or (usesRbp and o.base and o.base.name == "rbp" and st.x86_fp == "est")
 				if not frameBase then
-					error("sarcasm: `.alloca` operand is not a register, immediate, or frame spill slot"
+					err.at(st, "`.alloca` operand is not a register, immediate, or frame spill slot"
 						.. " (a frame-relative disp(%rsp)/disp(%rbp) reference): " .. (st.raw or m))
 				end
 				if ad == nil or isDynDepth(ad) then
-					error("sarcasm: `.alloca` with spill-slot operands while the stack pointer"
+					err.at(st, "`.alloca` with spill-slot operands while the stack pointer"
 						.. " is perturbed or unknown (cannot prove which frame slot this is): " .. (st.raw or m))
 				end
 				local perturbed = false
@@ -7193,17 +7199,17 @@ function x86_64_frame.rewrite(st, ctx)
 				elseif perturbed then aoff = aoff + D0 - ad end
 				local lowB = -128
 				if perturbed then lowB = math.min(-128, D0 - ad - 128) end
-				ctx.checkBounds(aoff, 8, isResult, st.raw, lowB)
+				ctx.checkBounds(aoff, 8, isResult, st.raw, lowB, st)
 				if ctx.fpInfo and ctx.fpInfo.lookup(aoff, 8) then
-					error("sarcasm: `.alloca` spill-slot operand overlaps an FP-materialized stack range"
+					err.at(st, "`.alloca` spill-slot operand overlaps an FP-materialized stack range"
 						.. " (cannot share one home): " .. (st.raw or m))
 				end
 				if not slotOffSafe(aoff) then
-					error("sarcasm: `.alloca` spill-slot operand reaches the incoming stack-argument"
+					err.at(st, "`.alloca` spill-slot operand reaches the incoming stack-argument"
 						.. " slot band (cannot prove safety): " .. (st.raw or m))
 				end
 				if ctx.regionOf(aoff, false) then
-					error("sarcasm: `.alloca` spill-slot operand lands in a promoted GC region"
+					err.at(st, "`.alloca` spill-slot operand lands in a promoted GC region"
 						.. " (slots there do not virtualize): " .. (st.raw or m))
 				end
 				-- Push-save overlap: the slot holds a pushed register, not an ordinary spill.
@@ -7214,13 +7220,13 @@ function x86_64_frame.rewrite(st, ctx)
 							local sd = D0 - se.depth
 							if aoff < sd + 8 and aoff + 8 > sd then
 								if aoff ~= sd or isResult or se.redefined then
-									error("sarcasm: `.alloca` spill-slot operand overlaps a pushed register's"
+									err.at(st, "`.alloca` spill-slot operand overlaps a pushed register's"
 										.. " save slot (spill to an ordinary frame slot instead): " .. (st.raw or m))
 								else
 									-- Exact 8-byte read of a live save: name the pushed register itself.
 									local parsed = x86parse.classifyReg(se.name)
 									if not (parsed and parsed.rc == "gpr") then
-										error("sarcasm: `.alloca` spill-slot operand overlaps an unmodelable save"
+										err.at(st, "`.alloca` spill-slot operand overlaps an unmodelable save"
 											.. " slot: " .. (st.raw or m))
 									end
 									table.insert(anewops, { kind = "reg", rc = "gpr", num = parsed.num,
@@ -7246,7 +7252,7 @@ function x86_64_frame.rewrite(st, ctx)
 	if not st.x86_prologue then
 		if b == "leave" then
 			if not usesRbp then
-				error("sarcasm: `leave` without a frame pointer established in the prologue"
+				err.at(st, "`leave` without a frame pointer established in the prologue"
 					.. " cannot be proven safe: " .. (st.raw or m))
 			end
 			-- `leave` is an epilogue teardown only when the teardown analysis proved that
@@ -7260,7 +7266,7 @@ function x86_64_frame.rewrite(st, ctx)
 			-- miscompiled reads and writes. The plain recoveries touch only %rsp, which
 			-- is why they can be dropped anywhere.
 			if not (st.x86_teardownStart or st.x86_teardown) or st.x86_fp ~= "est" then
-				error("sarcasm: mid-function `leave` cannot be proven safe (a leave that does"
+				err.at(st, "mid-function `leave` cannot be proven safe (a leave that does"
 					.. " not lead directly to a ret may observe the caller's frame): "
 					.. (st.raw or m))
 			end
@@ -7271,7 +7277,7 @@ function x86_64_frame.rewrite(st, ctx)
 				and (st.x86_teardownStart or st.x86_midSp) then
 				return  -- verified epilogue teardown / proven mid-function adjustment: drop
 			end
-			error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
+			err.at(st, "mid-function stack-pointer adjustment cannot be proven safe"
 				.. " (frame teardown must be an epilogue `addq $imm, %rsp` leading to `ret`;"
 				.. " dynamic allocation must use the `.alloca` directive`): " .. (st.raw or m))
 		end
@@ -7280,13 +7286,13 @@ function x86_64_frame.rewrite(st, ctx)
 			-- statically known depth with dead flags): rounding for vector
 			-- alignment, dropped with the alignment recorded by the analysis.
 			if st.x86_midAnd then return end
-			error("sarcasm: mid-function `and` on the stack pointer cannot be proven safe"
+			err.at(st, "mid-function `and` on the stack pointer cannot be proven safe"
 				.. " (only `and $-N, %rsp` for a power of two N >= 16 at a known depth"
 				.. " with dead flags is supported; dynamic allocation must use the"
 				.. " `.alloca` directive`): " .. (st.raw or m))
 		end
 		if b == "mov" and ops[1] and ops[1].name == "rbp" and ops[2] and ops[2].rc == "sp" then
-			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
+			err.at(st, "establishing %rbp as a frame pointer outside the prologue cannot"
 				.. " be proven safe: " .. (st.raw or m))
 		end
 		if b == "lea" and ops[1] and ops[1].kind == "reg" and ops[1].name == "rbp"
@@ -7294,7 +7300,7 @@ function x86_64_frame.rewrite(st, ctx)
 			and not ops[2].index and not ops[2].dispSym and (ops[2].dispVal or 0) == 0 then
 			-- `leaq 0(%rsp), %rbp` mid-body: the lea spelling of the rejected
 			-- re-establishment (same proof failure as the mov form above).
-			error("sarcasm: establishing %rbp as a frame pointer outside the prologue cannot"
+			err.at(st, "establishing %rbp as a frame pointer outside the prologue cannot"
 				.. " be proven safe: " .. (st.raw or m))
 		end
 		if b == "mov" and ops[1] and ops[1].rc == "sp" then
@@ -7309,7 +7315,7 @@ function x86_64_frame.rewrite(st, ctx)
 				-- NOT the frame pointer it is an ordinary carrier register: the plain
 				-- saved-rsp recovery path below handles it.)
 				if st.x86_fp == "est" then return end
-				error("sarcasm: restoring %rsp from %rbp while the frame pointer is not"
+				err.at(st, "restoring %rsp from %rbp while the frame pointer is not"
 					.. " provably established cannot be proven safe: " .. (st.raw or m))
 			end
 			if st.x86_spRecover then
@@ -7320,7 +7326,7 @@ function x86_64_frame.rewrite(st, ctx)
 				return
 			end
 			local rn = (ops[2] and ops[2].name) and "%" .. ops[2].name or "a register"
-			error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+			err.at(st, "restoring %rsp from " .. rn .. " requires a prologue"
 				.. " `movq %rsp, " .. rn .. "` that has not been redefined (or recover it"
 				.. " from %rbp, or allocate with the `.alloca` directive): "
 				.. (st.raw or m))
@@ -7330,7 +7336,7 @@ function x86_64_frame.rewrite(st, ctx)
 			and not ops[2].index and not ops[2].dispSym then
 			-- Same proof as the movq form: a frame-pointer-relative rsp recovery, dropped.
 			if st.x86_fp == "est" then return end
-			error("sarcasm: restoring %rsp from %rbp via lea while the frame pointer is not"
+			err.at(st, "restoring %rsp from %rbp via lea while the frame pointer is not"
 				.. " provably established cannot be proven safe: " .. (st.raw or m))
 		end
 		if b == "lea" and ops[1] and ops[1].rc == "sp" and ops[2] and ops[2].kind == "mem"
@@ -7344,7 +7350,7 @@ function x86_64_frame.rewrite(st, ctx)
 				-- anything else is unprovable.
 				if (ops[2].dispVal or 0) >= 0 and st.x86_teardownStart then return end
 				if st.x86_midSp then return end
-				error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
+				err.at(st, "mid-function stack-pointer adjustment cannot be proven safe"
 					.. " (frame teardown must be an epilogue `addq $imm, %rsp` /"
 					.. " `leaq $imm(%rsp), %rsp` leading to `ret`; dynamic allocation must"
 					.. " use `alloca`): " .. (st.raw or m))
@@ -7355,7 +7361,7 @@ function x86_64_frame.rewrite(st, ctx)
 				-- proved the base register holds the save value); dropped with it.
 				if st.x86_spRecover then return end
 				local rn = "%" .. ops[2].base.name
-				error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+				err.at(st, "restoring %rsp from " .. rn .. " requires a prologue"
 					.. " `movq %rsp, " .. rn .. "` (or lea) save that has not been redefined"
 					.. " (or recover it from %rbp, or allocate with the `.alloca` directive): "
 					.. (st.raw or m))
@@ -7381,7 +7387,7 @@ function x86_64_frame.rewrite(st, ctx)
 				and d ~= nil and not isDynDepth(d) then
 				local off = D0 - (d + 8)
 				if not slotOffSafe(off) then
-					error("sarcasm: mid-function spill-push frame area collides with the"
+					err.at(st, "mid-function spill-push frame area collides with the"
 						.. " incoming stack-argument slot band (cannot prove safety): "
 						.. (st.raw or m))
 				end
@@ -7399,7 +7405,7 @@ function x86_64_frame.rewrite(st, ctx)
 				end
 				return
 			end
-			error("sarcasm: mid-function push of a non-callee-saved operand cannot be proven"
+			err.at(st, "mid-function push of a non-callee-saved operand cannot be proven"
 				.. " safe: " .. (st.raw or m))
 		end
 		if b == "pop" then
@@ -7414,7 +7420,7 @@ function x86_64_frame.rewrite(st, ctx)
 			if st.x86_spillPop then
 				local off = D0 - d
 				if not slotOffSafe(off) then
-					error("sarcasm: mid-function spill-pop frame area collides with the"
+					err.at(st, "mid-function spill-pop frame area collides with the"
 						.. " incoming stack-argument slot band (cannot prove safety): "
 						.. (st.raw or m))
 				end
@@ -7433,7 +7439,7 @@ function x86_64_frame.rewrite(st, ctx)
 				-- that is not the saved frame pointer (it can be another register's save
 				-- or the return address): reject.
 				if ops[1].name == "rbp" and usesRbp and not st.x86_teardown and st.x86_unpairedPop then
-					error("sarcasm: popping the frame pointer with no matching earlier save"
+					err.at(st, "popping the frame pointer with no matching earlier save"
 						.. " cannot be proven safe (it is not an epilogue restore): "
 						.. (st.raw or m))
 				end
@@ -7444,13 +7450,13 @@ function x86_64_frame.rewrite(st, ctx)
 				-- register's save (it can be the saved frame pointer or the return
 				-- address).
 				if st.x86_unpairedPop then
-					error("sarcasm: pop with no matching earlier push of the same register"
+					err.at(st, "pop with no matching earlier push of the same register"
 						.. " cannot be proven safe (dropping it would lose the load): "
 						.. (st.raw or m))
 				end
 				return
 			end
-			error("sarcasm: mid-function pop into a non-callee-saved register cannot be"
+			err.at(st, "mid-function pop into a non-callee-saved register cannot be"
 				.. " proven safe: " .. (st.raw or m))
 		end
 		-- d is nil for unreachable instructions (dead code: no depth checks — the drops and
@@ -7485,11 +7491,11 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		if b == "ret" and not st.localRet and not st.tailRet and not st.cloneRet and d ~= nil and d ~= 0
 			and not (isDynDepth(d) and st.x86_teardown) then
-			error("sarcasm: return with a perturbed or unknown stack pointer cannot be proven"
+			err.at(st, "return with a perturbed or unknown stack pointer cannot be proven"
 				.. " safe: " .. (st.raw or m))
 		end
 		if b == "jmp" and d ~= nil and d ~= 0 and not (ops[1] and ops[1].kind == "sym") then
-			error("sarcasm: indirect tail jump with a perturbed or unknown stack pointer"
+			err.at(st, "indirect tail jump with a perturbed or unknown stack pointer"
 				.. " cannot be proven safe: " .. (st.raw or m))
 		end
 	end
@@ -7514,7 +7520,7 @@ function x86_64_frame.rewrite(st, ctx)
 	-- so they too are always handled — and gated on the frame-pointer state — above.)
 	if b == "leave" then
 		if not (st.x86_teardownStart or st.x86_teardown) or st.x86_fp ~= "est" then
-			error("sarcasm: mid-function `leave` cannot be proven safe (a leave that does"
+			err.at(st, "mid-function `leave` cannot be proven safe (a leave that does"
 				.. " not lead directly to a ret may observe the caller's frame): "
 				.. (st.raw or m))
 		end
@@ -7530,7 +7536,7 @@ function x86_64_frame.rewrite(st, ctx)
 		and ops[2].base and ops[2].base.rc == "sp" and not ops[2].index and not ops[2].dispSym then
 		if st.x86_prologue then return end
 		if (ops[2].dispVal or 0) >= 0 and st.x86_teardownStart then return end
-		error("sarcasm: mid-function stack-pointer adjustment cannot be proven safe"
+		err.at(st, "mid-function stack-pointer adjustment cannot be proven safe"
 			.. " (frame teardown must be an epilogue `addq $imm, %rsp` / `leaq $imm(%rsp),"
 			.. " %rsp` leading to `ret`; dynamic allocation must use the `.alloca` directive`): "
 			.. (st.raw or m))
@@ -7548,7 +7554,7 @@ function x86_64_frame.rewrite(st, ctx)
 			return
 		end
 		local rn = (ops[2] and ops[2].name) and "%" .. ops[2].name or "a register"
-		error("sarcasm: restoring %rsp from " .. rn .. " requires a prologue"
+		err.at(st, "restoring %rsp from " .. rn .. " requires a prologue"
 			.. " `movq %rsp, " .. rn .. "` that has not been redefined (or recover it"
 			.. " from %rbp, or allocate with the `.alloca` directive): "
 			.. (st.raw or m))
@@ -7557,7 +7563,7 @@ function x86_64_frame.rewrite(st, ctx)
 		and ops[2].base and ops[2].base.name == "rbp" and usesRbp
 		and not ops[2].index and not ops[2].dispSym then
 		if st.x86_fp == "est" then return end
-		error("sarcasm: restoring %rsp from %rbp via lea while the frame pointer is not"
+		err.at(st, "restoring %rsp from %rbp via lea while the frame pointer is not"
 			.. " provably established cannot be proven safe: " .. (st.raw or m))
 	end
 
@@ -7590,7 +7596,7 @@ function x86_64_frame.rewrite(st, ctx)
 	-- unknown-at-compile-time target: it cannot be bounds-checked or virtualized, so reject
 	-- it cleanly (both the AT&T and Intel parsers set mem.dispSym on the memory operand).
 	if mem and isStackReg(mem.base, usesRbp) and mem.dispSym then
-		error("sarcasm: stack-relative memory access with a symbolic displacement cannot be"
+		err.at(st, "stack-relative memory access with a symbolic displacement cannot be"
 			.. " proven safe: " .. (st.raw or m))
 	end
 
@@ -7608,17 +7614,17 @@ function x86_64_frame.rewrite(st, ctx)
 		-- (the argument's capability comes from the entry unpack, not from any
 		-- annotated access), so no family member is honored here — reject it.
 		if st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
-			error("sarcasm: `" .. st.annotation .. "` on an incoming stack-argument read is not"
+			err.at(st, "`" .. st.annotation .. "` on an incoming stack-argument read is not"
 				.. " supported (the argument is redirected to a frame slot, not real memory): "
 				.. (st.raw or m))
 		end
 		if st.lockPrefix then
-			error("sarcasm: lock prefix on an incoming stack-argument read is not supported"
+			err.at(st, "lock prefix on an incoming stack-argument read is not supported"
 				.. " (the argument is redirected to a thread-confined frame slot): " .. (st.raw or m))
 		end
 		for _, o in ops do
 			if o.deco and string.match(o.deco, "{%%?k[0-7]}") then
-				error("sarcasm: AVX512 mask-register ({k}) incoming stack-argument reads are not"
+				err.at(st, "AVX512 mask-register ({k}) incoming stack-argument reads are not"
 					.. " supported (masked-off lanes may not touch memory; cannot prove memory"
 					.. " safety): " .. (st.raw or m))
 			end
@@ -7631,13 +7637,13 @@ function x86_64_frame.rewrite(st, ctx)
 			-- assigned yoloBase precisely because this read exists). The width is
 			-- the knowledge module's authoritative one (it rejects a contradicting
 			-- PTR annotation); aligned >16-byte forms are rejected like anywhere.
-			local wb, fa = fp.accessWidth(m, ops, st.raw)
+			local wb, fa = fp.accessWidth(m, ops, st.raw, st)
 			if not wb then
-				error("sarcasm: cannot determine the memory access width of '" .. m
+				err.at(st, "cannot determine the memory access width of '" .. m
 					.. "' (cannot prove memory safety): " .. (st.raw or m))
 			end
 			if fa and fa > 16 then
-				error("sarcasm: aligned 32/64-byte incoming stack-argument reads are not supported"
+				err.at(st, "aligned 32/64-byte incoming stack-argument reads are not supported"
 					.. " (the stack is only guaranteed 16-byte aligned); use the unaligned form: "
 					.. (st.raw or m))
 			end
@@ -7713,7 +7719,7 @@ function x86_64_frame.rewrite(st, ctx)
 			if b ~= "lea" and st.annotation and sig.PTR_ANNOTATIONS[st.annotation] then
 				emit(st); return
 			end
-			error("sarcasm: memory access through %" .. mem.base.name .. " cannot be proven safe"
+			err.at(st, "memory access through %" .. mem.base.name .. " cannot be proven safe"
 				.. " (control flow leaves it ambiguous whether the register holds stack+offset"
 				.. " or a heap/alloca/argument pointer): " .. (st.raw or m))
 		end
@@ -7739,12 +7745,12 @@ function x86_64_frame.rewrite(st, ctx)
 				-- memory-base use lands inside the frame and outside any
 				-- promoted region) and fall through to the ordinary slot path.
 			if aliasOff == nil then
-				error("sarcasm: memory access through the saved stack pointer that is not"
+				err.at(st, "memory access through the saved stack pointer that is not"
 					.. " an incoming stack-argument read or a saved-register restore cannot"
 					.. " be proven safe: " .. (st.raw or m))
 			end
 			if ctx.regionOf(aliasOff, false) then
-				error("sarcasm: stack access through stack+offset lands in a promoted GC region"
+				err.at(st, "stack access through stack+offset lands in a promoted GC region"
 					.. " (slots there do not virtualize; use the region pointer): " .. (st.raw or m))
 			end
 		end
@@ -7764,7 +7770,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- meaningless prefix on thread-confined memory. Reject it, mirroring the
 		-- classify rejection of `lock` on everything but the modeled heap mem-RMWs.
 		if st.lockPrefix then
-			error("sarcasm: lock prefix on a stack-frame access is not supported (frame"
+			err.at(st, "lock prefix on a stack-frame access is not supported (frame"
 				.. " slots are thread-confined — virtualized or materialized — so `lock`"
 				.. " there is meaningless; it is only allowed on the modeled"
 				.. " memory-destination RMWs on real memory): " .. (st.raw or m))
@@ -7794,7 +7800,7 @@ function x86_64_frame.rewrite(st, ctx)
 					and not mem.bcastN and not string.find(o.deco, "{1to", 1, true) then
 					maskedStackLower = o
 				else
-					error("sarcasm: AVX512 mask-register ({k}) stack-frame memory accesses are not"
+					err.at(st, "AVX512 mask-register ({k}) stack-frame memory accesses are not"
 						.. " supported for '" .. m .. "' (only the masked vector moves lower"
 						.. " here; masked-off lanes may not touch memory; cannot prove memory"
 						.. " safety): "
@@ -7918,9 +7924,9 @@ function x86_64_frame.rewrite(st, ctx)
 			-- runtime alignment trap that fires only when the GC payload happens to
 			-- be under-aligned). Ordinary regions are 16-aligned (the GC payload);
 			-- align=A regions (and the andq-anchored forms) provably cover A.
-			local _, fa = fp.accessWidth(m, ops, st.raw)
+			local _, fa = fp.accessWidth(m, ops, st.raw, st)
 			if fa and fa > (region.align or 16) then
-				error("sarcasm: aligned " .. fa .. "-byte access into a " .. (region.align or 16)
+				err.at(st, "aligned " .. fa .. "-byte access into a " .. (region.align or 16)
 					.. "-byte-aligned region cannot be proven safe (use the unaligned form): "
 					.. (st.raw or m))
 			end
@@ -7930,7 +7936,7 @@ function x86_64_frame.rewrite(st, ctx)
 			-- The gate above already rejected every non-lowerable masked form, but
 			-- a lowerable one must not silently lose its mask on the region path.
 			if maskedStackLower then
-				error("sarcasm: AVX512 mask-register ({k}) memory access into a promoted"
+				err.at(st, "AVX512 mask-register ({k}) memory access into a promoted"
 					.. " region is not supported (the region redirect cannot lower the"
 					.. " mask; use an unmasked form): " .. (st.raw or m))
 			end
@@ -7970,7 +7976,7 @@ function x86_64_frame.rewrite(st, ctx)
 			if not isDynDepth(d) and mem.base.rc == "sp" then
 				perturbedRsp = true
 			else
-				error("sarcasm: stack access while the stack pointer is perturbed or unknown"
+				err.at(st, "stack access while the stack pointer is perturbed or unknown"
 					.. " (cannot prove which frame slot this is): " .. (st.raw or m))
 			end
 		end
@@ -8053,7 +8059,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- reach an and and reachable from one executes on both sides of the
 		-- and — one key, two slack-dependent addresses — and stays rejected.
 		if st.x86_preAnd and st.x86_postAnd and aliasOff == nil and mem.base.rc == "sp" then
-			error("sarcasm: stack access both before and after a mid-function `and $-N, %rsp`"
+			err.at(st, "stack access both before and after a mid-function `and $-N, %rsp`"
 				.. " cannot be proven safe (the access executes on both sides of the and, and"
 				.. " the and shifts rsp by a dynamic slack, so one slot key names two"
 				.. " different real addresses; move the access wholly to one side, or address"
@@ -8079,7 +8085,7 @@ function x86_64_frame.rewrite(st, ctx)
 			return
 		end
 		-- lea of a stack address computes/escapes a pointer into the frame: reject.
-		if b == "lea" then ctx.rejectEscape(st.raw or m) end
+		if b == "lea" then ctx.rejectEscape(st.raw or m, st) end
 		-- ANNOTATED INDEXED stack-buffer access (`#! stack buffer (...)` on an
 		-- indexed stack-relative memory operand): the scan marked it with its
 		-- resolved range and access shape. Rewrite the operand in place to a
@@ -8094,7 +8100,7 @@ function x86_64_frame.rewrite(st, ctx)
 				if bi.lo >= gr.lo and bi.hi <= gr.hi then g = gr break end
 			end
 			if not g then
-				error("sarcasm: internal error: indexed buffer access range ["
+				err.at(st, "internal error: indexed buffer access range ["
 					.. tostring(bi.lo) .. ", " .. tostring(bi.hi)
 					.. ") has no lowered group: " .. (st.raw or m))
 			end
@@ -8135,7 +8141,7 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		-- only plain base+disp slots are virtualizable (no index register)
 		if mem.index then
-			error("sarcasm: indexed stack-relative access is not supported on x86"
+			err.at(st, "indexed stack-relative access is not supported on x86"
 				.. " (annotate it with `#! stack buffer (name, %rsp, %rsp + N)` to"
 				.. " lower it into a bounds-checked stack buffer): " .. (st.raw or m))
 		end
@@ -8146,9 +8152,9 @@ function x86_64_frame.rewrite(st, ctx)
 		-- because no stack-mem operand virtualizes first. Reject it here.
 		for _, o in ops do
 			if o ~= mem then
-				if isStackReg(o, usesRbp) then ctx.rejectEscape(st.raw or m) end
+				if isStackReg(o, usesRbp) then ctx.rejectEscape(st.raw or m, st) end
 				if o.kind == "mem" and (isStackReg(o.base, usesRbp) or isStackReg(o.index, usesRbp)) then
-					ctx.rejectEscape(st.raw or m)
+					ctx.rejectEscape(st.raw or m, st)
 				end
 			end
 		end
@@ -8175,36 +8181,36 @@ function x86_64_frame.rewrite(st, ctx)
 			if st.annotation == "store ptr" or st.annotation == "load ptr" then
 				slotPtrAnno = st.annotation
 				if st.lockPrefix then
-					error("sarcasm: `lock`-prefixed `" .. st.annotation .. "` on a stack-frame"
+					err.at(st, "`lock`-prefixed `" .. st.annotation .. "` on a stack-frame"
 						.. " access is not supported (the slot is virtualized, not real"
 						.. " memory — atomics need real memory): " .. (st.raw or m))
 				end
 				if isFpInsn(fpEntry, st) then
-					error("sarcasm: `" .. st.annotation .. "` on an FP/SIMD stack-frame access is"
+					err.at(st, "`" .. st.annotation .. "` on an FP/SIMD stack-frame access is"
 						.. " not supported (a capability is an 8-byte general-register value;"
 						.. " vector slots materialize into real memory and cannot hold one): "
 						.. (st.raw or m))
 				end
 				if b ~= "mov" then
-					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires a"
+					err.at(st, "`" .. st.annotation .. "` on a stack-frame access requires a"
 						.. " plain mov (the slot virtualizes into a register, so only a"
 						.. " register<->slot move can carry the capability): " .. (st.raw or m))
 				end
 				local w0 = gprStackWidth(m, mem)
 				if w0 ~= 8 then
-					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires an"
+					err.at(st, "`" .. st.annotation .. "` on a stack-frame access requires an"
 						.. " 8-byte (64-bit) move (a capability is an 8-byte GPR value); this"
 						.. " access is " .. tostring(w0) .. " bytes: " .. (st.raw or m))
 				end
 				local regOp = (ops[1] == mem) and ops[2] or ops[1]
 				if not (regOp and regOp.kind == "reg" and regOp.rc == "gpr"
 						and (regOp.width or 64) == 64) then
-					error("sarcasm: `" .. st.annotation .. "` on a stack-frame access requires the"
+					err.at(st, "`" .. st.annotation .. "` on a stack-frame access requires the"
 						.. " other operand to be a 64-bit general register (a capability is an"
 						.. " 8-byte GPR value): " .. (st.raw or m))
 				end
 			else
-				error("sarcasm: `" .. st.annotation .. "` on a stack-frame access is not supported"
+				err.at(st, "`" .. st.annotation .. "` on a stack-frame access is not supported"
 					.. " (only `store ptr` / `load ptr` on a plain 8-byte register<->slot move"
 					.. " hold a capability; frame slots are virtualized/materialized, not real"
 					.. " memory, so the atomic/invisicap forms have nothing to point at): "
@@ -8216,7 +8222,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- and GPR-only stack slots are never materialized. Reject cleanly instead
 		-- of mis-sizing the slot (the bare mnemonic has no width suffix).
 		if m == "cmpxchg8b" or m == "cmpxchg16b" then
-			error("sarcasm: " .. m .. " on a stack-frame access is not supported (frame slots"
+			err.at(st, "" .. m .. " on a stack-frame access is not supported (frame slots"
 				.. " are virtualized as registers and " .. m .. " has no register form): "
 				.. (st.raw or m))
 		end
@@ -8282,7 +8288,7 @@ function x86_64_frame.rewrite(st, ctx)
 					if s.spill then continue end  -- a spill slot is an ordinary slot
 					local sd = D0 - s.depth
 					if off < sd + 8 and off + w0 > sd then
-						error("sarcasm: stack access overlapping a pushed register's save slot"
+						err.at(st, "stack access overlapping a pushed register's save slot"
 							.. " inside the transient prologue pad by an instruction the"
 							.. " save-slot model cannot express (`" .. m .. "` is a pure-GPR"
 							.. " instruction the FP knowledge table claims for its exact"
@@ -8319,7 +8325,7 @@ function x86_64_frame.rewrite(st, ctx)
 		end
 		if aliasHit then
 			local function aliasReject(why)
-				error("sarcasm: stack access overlapping a pushed register's save slot inside"
+				err.at(st, "stack access overlapping a pushed register's save slot inside"
 					.. " the transient prologue pad " .. why .. " (the slot's content is the"
 					.. " pushed register's web; use a full 8-byte access or pop the pad"
 					.. " first): " .. (st.raw or m))
@@ -8346,7 +8352,7 @@ function x86_64_frame.rewrite(st, ctx)
 				-- x86_dropRestore walk found no later read of the destination): it
 				-- is dropped like the epilogue pops.
 				if st.x86_dropRestore then return end
-				error("sarcasm: stack access overlapping a pushed register's save slot inside"
+				err.at(st, "stack access overlapping a pushed register's save slot inside"
 					.. " the transient prologue pad whose register was redefined after the"
 					.. " push (the slot still holds the pre-redefinition value, so the"
 					.. " save-slot model cannot express this access; pop the pad first or"
@@ -8409,7 +8415,7 @@ function x86_64_frame.rewrite(st, ctx)
 		-- instructions keep the mem.size-first behavior.
 		local isFP = isFpInsn(fpEntry, st)
 		local alignReq = 1
-		local fw, fa = fp.accessWidth(m, ops, st.raw)
+		local fw, fa = fp.accessWidth(m, ops, st.raw, st)
 		local wb
 		if isFP then
 			wb = fw
@@ -8424,7 +8430,7 @@ function x86_64_frame.rewrite(st, ctx)
 			-- fall through to the default width: the lift's fp.classify
 			-- produces their more precise error.)
 			if isFP and not (fpEntry and fpEntry.reject) then
-				error("sarcasm: cannot determine the memory access width of '" .. m
+				err.at(st, "cannot determine the memory access width of '" .. m
 					.. "' (cannot prove memory safety): " .. (st.raw or m))
 			end
 			wb = gprStackWidth(m, mem)
@@ -8450,7 +8456,7 @@ function x86_64_frame.rewrite(st, ctx)
 		if aliasOff ~= nil and type(d) == "number" then
 			lowB = math.min(lowB, D0 - d - 128)
 		end
-		ctx.checkBounds(off, wb, ops[1] == mem, st.raw, lowB)
+		ctx.checkBounds(off, wb, ops[1] == mem, st.raw, lowB, st)
 		-- A STATIC stack access whose normalized byte range falls fully inside a
 		-- declared stack-buffer group is lowered into the buffer region: real
 		-- memory, no slot web, no capability (the scan rejected capabilities and
@@ -8465,7 +8471,7 @@ function x86_64_frame.rewrite(st, ctx)
 				if ba.off >= gr.lo and ba.off + ba.w <= gr.hi then g = gr break end
 			end
 			if not g then
-				error("sarcasm: internal error: buffer access at normalized offset "
+				err.at(st, "internal error: buffer access at normalized offset "
 					.. tostring(ba.off) .. " has no lowered group: " .. (st.raw or m))
 			end
 			local mat = { kind = "mem",
@@ -8492,7 +8498,7 @@ function x86_64_frame.rewrite(st, ctx)
 		if isFP and alignReq > 16 then
 			local alignedOff = ((off - (D0 - frameAndDepth)) % alignReq + alignReq) % alignReq == 0
 			if frameAlignReq < alignReq or not alignedOff then
-				error("sarcasm: aligned 32/64-byte stack accesses are not supported (the stack is only"
+				err.at(st, "aligned 32/64-byte stack accesses are not supported (the stack is only"
 					.. " guaranteed 16-byte aligned); use the unaligned form (e.g. vmovdqu/vmovups): "
 					.. (st.raw or m))
 			end
@@ -8516,7 +8522,7 @@ function x86_64_frame.rewrite(st, ctx)
 			if not isFP then
 				local regW = x86.gprAccessRegWidth(st)
 				if regW and mem.size and mem.size ~= regW then
-					error("sarcasm: PTR size annotation (" .. tostring(mem.size)
+					err.at(st, "PTR size annotation (" .. tostring(mem.size)
 						.. " bytes) contradicts the memory access width (" .. tostring(regW)
 						.. " bytes) of '" .. m .. "': " .. (st.raw or m))
 				end
@@ -8527,7 +8533,7 @@ function x86_64_frame.rewrite(st, ctx)
 			-- heap/region memory does). Move the pointer into a virtualized slot
 			-- (outside the FP-tainted ranges) or through a real pointer instead.
 			if slotPtrAnno then
-				error("sarcasm: `" .. slotPtrAnno .. "` on a stack-frame access that"
+				err.at(st, "`" .. slotPtrAnno .. "` on a stack-frame access that"
 					.. " materializes into real frame memory (an FP/vector scratch cluster)"
 					.. " is not supported: " .. (st.raw or m))
 			end
@@ -8559,7 +8565,7 @@ function x86_64_frame.rewrite(st, ctx)
 		local emitAnno = st.annotation
 		if slotPtrAnno then emitAnno = nil end
 		if not slotOffSafe(off) then
-			error("sarcasm: mid-function inner frame reaches the incoming stack-argument"
+			err.at(st, "mid-function inner frame reaches the incoming stack-argument"
 				.. " slot band (a frame slot there would alias an argument slot; cannot"
 				.. " prove safety): " .. (st.raw or m))
 		end
@@ -8649,7 +8655,7 @@ function x86_64_frame.rewrite(st, ctx)
 		local reg0 = ctx.regionOf(0, movDyn) or (movDyn and d.dynreg or nil)
 		if reg0 then
 			if not st.x86_prologue and d ~= nil and d ~= D0 and not movDyn then
-				error("sarcasm: reading the stack pointer while it is perturbed or unknown"
+				err.at(st, "reading the stack pointer while it is perturbed or unknown"
 					.. " cannot be proven safe: " .. (st.raw or m))
 			end
 			emit(st); return
@@ -8668,9 +8674,9 @@ function x86_64_frame.rewrite(st, ctx)
 	-- the parser accepts — or `movq (%rdi,%rbp,1), %rax` in an fp frame) escapes the same
 	-- way, so scan nested memory registers too.
 	for _, o in ops do
-		if isStackReg(o, usesRbp) then ctx.rejectEscape(st.raw or m) end
+		if isStackReg(o, usesRbp) then ctx.rejectEscape(st.raw or m, st) end
 		if o.kind == "mem" and (isStackReg(o.base, usesRbp) or isStackReg(o.index, usesRbp)) then
-			ctx.rejectEscape(st.raw or m)
+			ctx.rejectEscape(st.raw or m, st)
 		end
 	end
 

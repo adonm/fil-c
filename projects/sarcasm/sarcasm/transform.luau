@@ -19,6 +19,7 @@ local ptrflow = require("./ptrflow")
 local sig = require("./sig")
 local build = require("./build")
 local framePass = require("./frame")
+local err = require("./err")
 
 local prof = require("./prof")
 
@@ -40,7 +41,7 @@ local transform = {}
 -- copy the value through a mov first if the instruction already carries an
 -- annotation. Returns nil when `ann` carries no capability clause, else
 -- { save = <name|nil>, restore = <name|nil> }.
-local function parseCapAnnot(ann)
+local function parseCapAnnot(ann, st)
 	if not ann then return nil end
 	if not string.find(ann, "capability", 1, true) then return nil end
 	local clauses = {}
@@ -54,25 +55,25 @@ local function parseCapAnnot(ann)
 		end
 	end
 	if #clauses == 0 then
-		error("sarcasm: malformed capability annotation '" .. ann
+		err.at(st, "malformed capability annotation '" .. ann
 			.. "' (expected `save capability (name)` or `restore capability (name)`"
 			.. " as the whole annotation)")
 	end
 	local save, restore = nil, nil
 	for _, cl in clauses do
 		if not string.match(cl.name, "^[A-Za-z_][A-Za-z0-9_]*$") then
-			error("sarcasm: invalid variable name '" .. cl.name .. "' in `" .. cl.kind
+			err.at(st, "invalid variable name '" .. cl.name .. "' in `" .. cl.kind
 				.. " capability` annotation (a name starts with a letter or underscore"
 				.. " and contains only letters, digits and underscores): " .. ann)
 		end
 		if cl.kind == "save" then
 			if save then
-				error("sarcasm: multiple `save capability` clauses in one annotation: " .. ann)
+				err.at(st, "multiple `save capability` clauses in one annotation: " .. ann)
 			end
 			save = cl.name
 		else
 			if restore then
-				error("sarcasm: multiple `restore capability` clauses in one annotation: " .. ann)
+				err.at(st, "multiple `restore capability` clauses in one annotation: " .. ann)
 			end
 			restore = cl.name
 		end
@@ -84,7 +85,7 @@ local function parseCapAnnot(ann)
 		base = string.sub(base, 1, cl.s - 1) .. string.sub(base, cl.e + 1)
 	end
 	if string.match(base, "%S") then
-		error("sarcasm: `save/restore capability` cannot be combined with another annotation"
+		err.at(st, "`save/restore capability` cannot be combined with another annotation"
 			.. " ('" .. ann .. "'); put it on its own instruction (copy the value through"
 			.. " a mov first if the instruction already carries an annotation)")
 	end
@@ -176,13 +177,13 @@ end
 -- compile error (the caller surfaces it with the statement's raw text).
 --   { id = <name>, short = true }
 --   { id = <name>, short = false, base = <reg name without %>, lo = <bytes>, hi = <bytes> }
-function transform.parseStackBufAnno(ann)
+function transform.parseStackBufAnno(ann, st)
 	if not ann then return nil end
 	local rest = string.match(ann, "^%s*stack%s+buffer%s*(.*)$")
 	if not rest then return nil end
 	local body = string.match(rest, "^%((.*)%)%s*$")
 	if not body then
-		error("sarcasm: malformed `stack buffer` annotation (expected "
+		err.at(st, "malformed `stack buffer` annotation (expected "
 			.. "`stack buffer (name)` or `stack buffer (name, %reg + lo, %reg + hi)`)")
 	end
 	-- Split the top-level commas (the grammar has no nested parentheses, so a
@@ -193,14 +194,14 @@ function transform.parseStackBufAnno(ann)
 	end
 	local id = parts[1]
 	if id == nil or not string.match(id, "^[A-Za-z_][A-Za-z0-9_]*$") then
-		error("sarcasm: malformed `stack buffer` annotation (the buffer name must match"
+		err.at(st, "malformed `stack buffer` annotation (the buffer name must match"
 			.. " [A-Za-z_][A-Za-z0-9_]*): '" .. tostring(id or "") .. "'")
 	end
 	if #parts == 1 then
 		return { id = id, short = true }
 	end
 	if #parts ~= 3 then
-		error("sarcasm: malformed `stack buffer` annotation (expected 1 field for the"
+		err.at(st, "malformed `stack buffer` annotation (expected 1 field for the"
 			.. " short form or 3 fields `name, base, base` for the long form; got "
 			.. tostring(#parts) .. ")")
 	end
@@ -212,25 +213,25 @@ function transform.parseStackBufAnno(ann)
 		if reg then
 			local name = string.match(reg, "^%%([A-Za-z_][A-Za-z0-9_]*)$")
 			if not name then
-				error("sarcasm: malformed `stack buffer` annotation ('" .. reg
+				err.at(st, "malformed `stack buffer` annotation ('" .. reg
 					.. "' is not a register name)")
 			end
 			return string.lower(name), 0
 		end
 		local reg2, op, numText = string.match(text, REGPAT .. "%s*([+%-])%s*(%S+)$")
 		if not (reg2 and numText) then
-			error("sarcasm: malformed `stack buffer` annotation (the " .. which
+			err.at(st, "malformed `stack buffer` annotation (the " .. which
 				.. " bound must be `%reg`, `%reg + N` or `%reg - N`): '" .. text .. "'")
 		end
 		local value = tonumber(numText)
 		if value == nil then
-			error("sarcasm: malformed `stack buffer` annotation (the " .. which
+			err.at(st, "malformed `stack buffer` annotation (the " .. which
 				.. " offset '" .. numText .. "' is not an integer literal)")
 		end
 		if op == "-" then value = -value end
 		local name = string.match(reg2, "^%%([A-Za-z_][A-Za-z0-9_]*)$")
 		if not name then
-			error("sarcasm: malformed `stack buffer` annotation ('" .. reg2
+			err.at(st, "malformed `stack buffer` annotation ('" .. reg2
 				.. "' is not a register name)")
 		end
 		return string.lower(name), value
@@ -238,11 +239,11 @@ function transform.parseStackBufAnno(ann)
 	local baseLo, lo = parseBound(parts[2], "lower")
 	local baseHi, hi = parseBound(parts[3], "upper")
 	if baseLo ~= baseHi then
-		error("sarcasm: malformed `stack buffer` annotation (both bounds must use the"
+		err.at(st, "malformed `stack buffer` annotation (both bounds must use the"
 			.. " same base register: '%" .. baseLo .. "' vs '%" .. baseHi .. "')")
 	end
 	if hi < lo then
-		error("sarcasm: malformed `stack buffer` annotation (the upper bound "
+		err.at(st, "malformed `stack buffer` annotation (the upper bound "
 			.. tostring(hi) .. " is below the lower bound " .. tostring(lo) .. ")")
 	end
 	return { id = id, short = false, base = baseLo, lo = lo, hi = hi }
@@ -346,7 +347,7 @@ local function validateBody(body, cgm, funcName)
 			-- an annotation all alone on its line is a typo (the annotation belongs on
 			-- the instruction's own line) — silently dropping it could skip a barrier.
 			if st.annotation then
-				error("sarcasm: annotation '" .. st.annotation
+				err.at(st, "annotation '" .. st.annotation
 					.. "' on an otherwise-empty line (annotations go on the instruction's own line)")
 			end
 		elseif st.kind == "label" then
@@ -354,19 +355,19 @@ local function validateBody(body, cgm, funcName)
 			-- on any other label would be silently ignored (annotations are consumed from
 			-- instructions only), so reject it like the blank-line case.
 			if st.annotation and st ~= body[1] then
-				error("sarcasm: annotation '" .. st.annotation .. "' on a label ('" .. st.name
+				err.at(st, "annotation '" .. st.annotation .. "' on a label ('" .. st.name
 					.. "') inside a function body is not supported (only the function-entry label"
 					.. " carries the signature annotation; instruction annotations go on the instruction's"
 					.. " own line)")
 			end
 		elseif st.kind == "directive" then
 			if DATA_DIRECTIVES[st.name] then
-				error("sarcasm: data in a function body is not supported (literal pools,"
+				err.at(st, "data in a function body is not supported (literal pools,"
 					.. " jump tables and constants cannot be made memory-safe automatically): directive '"
 					.. st.name .. "'")
 			end
 			if st.annotation then
-				error("sarcasm: annotation '" .. st.annotation .. "' on a directive ('"
+				err.at(st, "annotation '" .. st.annotation .. "' on a directive ('"
 					.. st.name .. "') is not supported")
 			end
 		elseif st.kind == "insn" then
@@ -386,13 +387,13 @@ local function validateBody(body, cgm, funcName)
 				end
 			end
 			if hasPseudo and hasVec then
-				error("sarcasm: pseudoregister `" .. (pseudoName or "?")
+				err.at(st, "pseudoregister `" .. (pseudoName or "?")
 					.. "` may only be used as a 64-bit GPR (not with FP/vector registers): " .. raw)
 			end
 			if c.control == "call" then
 				if not ann then
 					local callee = st.operands and st.operands[1] and st.operands[1].text or "?"
-					error("sarcasm: call to '" .. callee .. "' has no signature annotation"
+					err.at(st, "call to '" .. callee .. "' has no signature annotation"
 						.. " (annotate the callsite, e.g. `" .. string.lower(st.mnemonic) .. " "
 						.. callee .. " ;! int(ptr)`): " .. raw)
 				end
@@ -403,7 +404,7 @@ local function validateBody(body, cgm, funcName)
 				-- register-indirect call with a signature annotation is supported,
 				-- and every other indirect call shape is rejected by the walk.
 			elseif c.control == "indirect" then
-				error("sarcasm: indirect branch through a raw register cannot be made memory-safe"
+				err.at(st, "indirect branch through a raw register cannot be made memory-safe"
 					.. " (computed goto / switch jump tables are not supported): " .. raw)
 			elseif (c.control == "branch" or c.control == "condbranch") and c.targets
 				and not (ann and string.find(ann, "%(")) then
@@ -417,7 +418,7 @@ local function validateBody(body, cgm, funcName)
 				-- SIGNATURE annotation (a tail call) is deferred to the annotation
 				-- walk below: it validates the shape and reports unresolved targets.
 				if #c.targets == 0 then
-					error("sarcasm: branch with a non-label target cannot be made memory-safe"
+					err.at(st, "branch with a non-label target cannot be made memory-safe"
 						.. " (computed goto / raw absolute branches are not supported): " .. raw)
 				end
 				for _, t in c.targets do
@@ -427,11 +428,11 @@ local function validateBody(body, cgm, funcName)
 						-- link time. Worse, if it did link, re-entering the prologue would
 						-- re-run the SOV check against a perturbed rsp and grow the frame
 						-- unboundedly. Reject at compile time instead.
-						error("sarcasm: branch to '" .. t .. "' re-enters this function's entry;"
+						err.at(st, "branch to '" .. t .. "' re-enters this function's entry;"
 							.. " re-executing the prologue cannot be proven safe: " .. raw)
 					end
 					if not localLabels[t] then
-						error("sarcasm: branch to '" .. t .. "' leaves the function"
+						err.at(st, "branch to '" .. t .. "' leaves the function"
 							.. " (a tail call); tail calls are not yet supported: " .. raw)
 					end
 				end
@@ -442,7 +443,7 @@ local function validateBody(body, cgm, funcName)
 				-- `.alloca` directive (rather than falling through to a confusing
 				-- "signature annotation" or "unrecognized annotation" diagnostic).
 				if string.match(ann, "^%s*alloca%s") then
-					error("sarcasm: the `alloca` annotations (`alloca size (x)`, `alloca result (x)`, "
+					err.at(st, "the `alloca` annotations (`alloca size (x)`, `alloca result (x)`, "
 						.. "`alloca result size=N`) were removed; allocate with the `.alloca size, "
 						.. "alignment, result` directive instead (see README.md): " .. raw)
 				end
@@ -453,16 +454,16 @@ local function validateBody(body, cgm, funcName)
 				-- the transform's annotation walk below may see it. Placement rules
 				-- that need frame analysis (which stack alias the base names, whether
 				-- the range fits the frame) are enforced by the frame pass.
-				local sb = transform.parseStackBufAnno(ann)
+				local sb = transform.parseStackBufAnno(ann, st)
 				if sb then
 					if not cgm.stackBuffers then
-						error("sarcasm: `stack buffer` annotations are not supported on this"
+						err.at(st, "`stack buffer` annotations are not supported on this"
 							.. " target: " .. raw)
 					end
 					local isRepString = c.rep ~= nil
 					local mem = cgm.memOperand(st)
 					if not isRepString and not (mem and mem.base and mem.base.kind == "reg") then
-						error("sarcasm: `stack buffer` annotation is only meaningful on an"
+						err.at(st, "`stack buffer` annotation is only meaningful on an"
 							.. " instruction with a stack-relative memory operand (base"
 							.. " %rsp/%rbp or a stack-alias register) or on a rep movs*/stos*"
 							.. " instruction: " .. raw)
@@ -475,7 +476,7 @@ local function validateBody(body, cgm, funcName)
 				end
 				local useNew = parseUseNewCapAnnot(ann)
 				local cap = nil
-				if not useNew then cap = parseCapAnnot(ann) end
+				if not useNew then cap = parseCapAnnot(ann, st) end
 				if useNew then
 					-- `use capability` (standalone only — enforced by the
 					-- full-match in parseUseNewCapAnnot; `new capability`
@@ -496,7 +497,7 @@ local function validateBody(body, cgm, funcName)
 						if isArith then
 							local occ = resolveCapRegUse(c, useNew.reg)
 							if not occ then
-								error("sarcasm: `use capability " .. useNew.reg .. "` names"
+								err.at(st, "`use capability " .. useNew.reg .. "` names"
 
 									.. " a register that is not a general-register use of this"
 
@@ -518,7 +519,7 @@ local function validateBody(body, cgm, funcName)
 								local isIndex = mem.index and mem.index.rc == occ.rc
 									and mem.index.num == occ.num
 								if not (isBase or isIndex) then
-									error("sarcasm: `use capability " .. useNew.reg .. "` must"
+									err.at(st, "`use capability " .. useNew.reg .. "` must"
 
 										.. " name the memory operand's base or index register"
 
@@ -532,7 +533,7 @@ local function validateBody(body, cgm, funcName)
 						else
 							local mem = cgm.memOperand(st)
 							if not mem then
-								error("sarcasm: `use capability` requires an address-arithmetic"
+								err.at(st, "`use capability` requires an address-arithmetic"
 
 									.. " instruction (add/sub/lea/and/or) or an instruction"
 
@@ -544,7 +545,7 @@ local function validateBody(body, cgm, funcName)
 							local isIndex = mem.index and occ and mem.index.rc == occ.rc
 								and mem.index.num == occ.num
 							if not (occ and (isBase or isIndex)) then
-								error("sarcasm: `use capability " .. useNew.reg .. "` must"
+								err.at(st, "`use capability " .. useNew.reg .. "` must"
 
 									.. " name the memory operand's base or index register: " .. raw)
 							end
@@ -560,7 +561,7 @@ local function validateBody(body, cgm, funcName)
 						if d.kind == "reg" and d.rc == "gpr" then hasDef = true break end
 					end
 					if not hasDef then
-						error("sarcasm: `save/restore capability` requires an instruction"
+						err.at(st, "`save/restore capability` requires an instruction"
 							.. " that produces a value into a register (this instruction"
 							.. " defines no general register): " .. raw)
 					end
@@ -582,7 +583,7 @@ local function validateBody(body, cgm, funcName)
 					-- resolves to a local subroutine (a mismatch errored there);
 					-- the mark must be present here.
 					if not st.localCall then
-						error("sarcasm: `local` annotation on an instruction that is not"
+						err.at(st, "`local` annotation on an instruction that is not"
 							.. " a call to a local subroutine: " .. raw)
 					end
 				elseif ann == "global ptr" and cgm.globalSupport then
@@ -594,7 +595,7 @@ local function validateBody(body, cgm, funcName)
 					local mem = cgm.memOperand(st)
 					if not (mem and mem.base and mem.base.rc == "rip" and mem.dispSym
 						and not mem.dispReloc and not mem.index) then
-						error("sarcasm: `global ptr` requires a rip-relative global reference"
+						err.at(st, "`global ptr` requires a rip-relative global reference"
 							.. " (a lea or memory operand of the form sym(%rip)): " .. raw)
 					end
 				elseif ann == "funcref" then
@@ -608,14 +609,14 @@ local function validateBody(body, cgm, funcName)
 					-- happens in the transform's annotation classification, which
 					-- has the driver's function/data maps.
 					if not cgm.globalSupport then
-						error("sarcasm: `funcref` is not yet supported on this target: " .. raw)
+						err.at(st, "`funcref` is not yet supported on this target: " .. raw)
 					end
 					local bm = cgm.baseMnemonic(string.lower(st.mnemonic))
 					local mem = cgm.memOperand(st)
 					if bm ~= "lea" or not (mem and mem.base and mem.base.rc == "rip"
 						and mem.dispSym and not mem.dispReloc and not mem.index
 						and (mem.dispVal or 0) == 0) then
-						error("sarcasm: `funcref` requires a rip-relative lea to a bare"
+						err.at(st, "`funcref` requires a rip-relative lea to a bare"
 							.. " function symbol (leaq sym(%rip), %reg): " .. raw)
 					end
 				elseif (c.control == "branch" or c.control == "condbranch")
@@ -628,15 +629,15 @@ local function validateBody(body, cgm, funcName)
 					-- malformed, unsupported on this target, or unresolved.
 					local op = st.operands and st.operands[1]
 					if not (op and op.kind == "sym") then
-						error("sarcasm: signature annotation '" .. ann .. "' on a jump requires"
+						err.at(st, "signature annotation '" .. ann .. "' on a jump requires"
 							.. " a direct jump to a bare symbol (a tail call): " .. raw)
 					end
-					sig.parseSignature(ann)
+					sig.parseSignature(ann, st)
 					if not cgm.crossFunctionJumps then
-						error("sarcasm: cross-function jumps are not yet supported on this"
+						err.at(st, "cross-function jumps are not yet supported on this"
 							.. " target (annotated jump to '" .. op.text .. "'): " .. raw)
 					end
-					error("sarcasm: jump to '" .. op.text .. "' with signature annotation '"
+					err.at(st, "jump to '" .. op.text .. "' with signature annotation '"
 						.. ann .. "' does not resolve to a function with a matching signature"
 						.. " (the target must be a signature-annotated function or alias entry"
 						.. " in this file, or an extern symbol): " .. raw)
@@ -644,14 +645,14 @@ local function validateBody(body, cgm, funcName)
 					-- callsite signature (direct or register-indirect call): parse now
 					-- to reject malformed sigs early (the transform re-parses via
 					-- callSigOf when marshalling).
-					sig.parseSignature(ann)
+					sig.parseSignature(ann, st)
 				elseif ann and string.find(ann, "%(") then
-					error("sarcasm: signature annotation '" .. ann
+					err.at(st, "signature annotation '" .. ann
 						.. "' on a non-call instruction is not supported: " .. raw)
 				elseif ann == "" then
-					error("sarcasm: empty annotation: " .. raw)
+					err.at(st, "empty annotation: " .. raw)
 				elseif ann then
-					error("sarcasm: unrecognized annotation '" .. ann
+					err.at(st, "unrecognized annotation '" .. ann
 						.. "' (expected 'load ptr', 'store ptr', or a callsite"
 						.. " signature like 'int(ptr)'): " .. raw)
 				end
@@ -725,7 +726,7 @@ local function validateBody(body, cgm, funcName)
 					-- rejection as falling off the whole body.
 					local nxt = body[i + 1]
 					if nxt and (nxt.localCloneEntry or nxt.crossJumpEntry) then
-						error("sarcasm: function '" .. funcName .. "' can fall off the end"
+						err.at(st, "function '" .. funcName .. "' can fall off the end"
 							.. " of its body; every control-flow path must end with a ret"
 							.. " instruction: " .. (st.raw or st.mnemonic or "?"))
 					end
@@ -739,7 +740,7 @@ local function validateBody(body, cgm, funcName)
 		local lastRaw = (last and (last.raw
 			or (last.kind == "label" and (last.name .. ":") or nil)
 			or last.text or last.mnemonic)) or "?"
-		error("sarcasm: function '" .. funcName .. "' can fall off the end of its body;"
+		err.at(last, "function '" .. funcName .. "' can fall off the end of its body;"
 			.. " every control-flow path must end with a ret instruction: " .. lastRaw)
 	end
 end
@@ -858,7 +859,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		end
 		for _, st in body do
 			if st.kind == "insn" and st.annotation and string.find(st.annotation, "%(") then
-				local ok, cs = pcall(sig.parseSignature, st.annotation)
+				local ok, cs = pcall(sig.parseSignature, st.annotation, st)
 				if ok and cs and sigUsesFp(cs) then
 					bodyUsesFp = true
 					break
@@ -1027,7 +1028,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					and type(st.x86_depth) == "number"
 					and fctx.callerDepth ~= nil
 					and cgm.baseMnemonic(string.lower(st.mnemonic)) == "call" then
-					local okcs, cs = pcall(sig.parseSignature, st.annotation)
+					local okcs, cs = pcall(sig.parseSignature, st.annotation, st)
 					if okcs and cs then
 						local intArgs = 0
 						for k = 1, cs.argWords do
@@ -1059,6 +1060,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	-- analysis and every rewrite — see the comment there.)
 
 	prof.mark("  [" .. name .. "] pre-preprocess")
+	-- The PRE-preprocess body: the frame pass's stack-buffer analysis ran on
+	-- THESE statements, so the layout's group `decls[i].declIdx` entries index
+	-- this table (`preprocess` reassigns `body` below to the rewritten one).
+	-- Rejections that name a group's declaring statement look it up here (the
+	-- x86_64 frame pass's own gDeclSt idiom).
+	local origBody = body
 	body = framePass.preprocess(body, allocaRegions, framePolicy, sigDesc)
 	prof.mark("  [" .. name .. "] framePass.preprocess")
 	-- `#! stack buffer (...)`: the frame pass's buffer scan produced the lowered
@@ -1076,7 +1083,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local ann = stmt.annotation
 		if not ann then return nil end
 		if callSigCache[stmt] == nil then
-			local cs = sig.parseSignature(ann)
+			local cs = sig.parseSignature(ann, stmt)
 			-- Per-arch callsite arity validation (the argument marshal has a finite
 			-- number of CC registers). Raises a clean sarcasm: error when over limit.
 			if cgm.checkCallsiteSig then
@@ -1084,7 +1091,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- has a register name instead of a symbol text.
 				local op1 = stmt.operands and stmt.operands[1]
 				local callee = (op1 and (op1.text or op1.name)) or "?"
-				cgm.checkCallsiteSig(cs, callee)
+				cgm.checkCallsiteSig(cs, callee, stmt)
 			end
 			callSigCache[stmt] = cs
 		end
@@ -1202,7 +1209,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if fctx.usesFp and e.name == "rbp" then continue end
 				if e.num ~= nil and fctx.callerDepth - e.depth == wo then
 					if e.redefined then
-						error("sarcasm: outgoing stack-argument word " .. tostring(wo)
+						err.at(stmt, "outgoing stack-argument word " .. tostring(wo)
 							.. " shares its slot with the outstanding save of %" .. e.name
 							.. ", and %" .. e.name .. " was redefined after the push (the"
 							.. " slot still holds the pushed value, which cannot be"
@@ -1419,13 +1426,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						if fnNames and fnNames[sym] then
 							funcrefNodes[node] = { fo = fnNames[sym] }
 						elseif desc then
-							error("sarcasm: `funcref` target '" .. sym .. "' is a data"
+							err.at(node.stmt, "`funcref` target '" .. sym .. "' is a data"
 								.. " object, not a function: " .. raw)
 						elseif bodyLocalLabels[sym] then
-							error("sarcasm: `funcref` target '" .. sym .. "' is a local"
+							err.at(node.stmt, "`funcref` target '" .. sym .. "' is a local"
 								.. " code label, not a function: " .. raw)
 						elseif subNames and subNames[sym] then
-							error("sarcasm: `funcref` target '" .. sym .. "' is a local"
+							err.at(node.stmt, "`funcref` target '" .. sym .. "' is a local"
 								.. " subroutine (it has no function object to point at): "
 								.. raw)
 						else
@@ -1439,12 +1446,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						end
 					elseif ann == "global ptr" then
 						if bodyLocalLabels[sym] then
-							error("sarcasm: `global ptr` target '" .. sym
+							err.at(node.stmt, "`global ptr` target '" .. sym
 								.. "' is a local code label, not a global: " .. raw)
 						end
 						globalGetterNodes[node] = sym
 					elseif bm == "lea" and not bodyLocalLabels[sym] then
-						error("sarcasm: rip-relative address of '" .. sym .. "' cannot be"
+						err.at(node.stmt, "rip-relative address of '" .. sym .. "' cannot be"
 							.. " materialized safely (if '" .. sym .. "' is a Fil-C global"
 							.. " defined in another module, annotate the instruction with"
 							.. " `#! global ptr`): " .. raw)
@@ -1461,7 +1468,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			end
 			local useNewClause = parseUseNewCapAnnot(ann)
 			local capClause = nil
-			if not useNewClause then capClause = parseCapAnnot(ann) end
+			if not useNewClause then capClause = parseCapAnnot(ann, node.stmt) end
 			if useNewClause then
 				-- `use capability` (standalone only — enforced by the
 				-- full-match; shape-validated by validateBody; `new capability`
@@ -1475,14 +1482,14 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- carries a capability.
 				local occ = resolveCapRegUse(node.c, useNewClause.reg)
 				if not occ then
-					error("sarcasm: `use capability "
+					err.at(node.stmt, "`use capability "
 						.. useNewClause.reg .. "` names a register that is not a"
 
 						.. " general-register use of this instruction: " .. raw)
 				end
 				local t = node.opTemp and node.opTemp[occ] or nil
 				if not t then
-					error("sarcasm: internal error: `use capability "
+					err.at(node.stmt, "internal error: `use capability "
 						.. useNewClause.reg .. "` has no lifted web temp: " .. raw)
 				end
 				node.useCapTemp = t
@@ -1495,14 +1502,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- here against the lifted webs).
 				local d = node.defTemps and node.defTemps[1]
 				if not d then
-					error("sarcasm: `save/restore capability` requires an instruction"
+					err.at(node.stmt, "`save/restore capability` requires an instruction"
 						.. " that produces a value into a register (this instruction"
 						.. " defines no register): " .. raw)
 				end
 				if capClause.save then
-					if capSaveVars[capClause.save] then
-						error("sarcasm: duplicate `save capability (" .. capClause.save .. ")`"
-							.. " (a name may only be saved once per function): " .. raw)
+					local firstNode = capSaveVars[capClause.save]
+					if firstNode then
+						local firstLoc = err.locStr(firstNode.stmt)
+						err.at(node.stmt, "duplicate `save capability (" .. capClause.save .. ")`"
+							.. " (a name may only be saved once per function)"
+							.. (firstLoc and (" (first saved at " .. firstLoc .. ")") or "") .. ": " .. raw)
 					end
 					capSaveVars[capClause.save] = node
 					capSaveNodes[node] = capClause.save
@@ -1516,17 +1526,17 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- forms, so they can never sneak through).
 				local bm = cgm.baseMnemonic(string.lower(node.stmt.mnemonic))
 				if bm == "cmpxchg8b" or bm == "cmpxchg16b" then
-					error("sarcasm: " .. bm .. " cannot operate on pointers: " .. raw)
+					err.at(node.stmt, bm .. " cannot operate on pointers: " .. raw)
 				end
 				if ann == "load ptr" or ann == "store ptr" then
 					local kind = cgm.ptrAccessKind and cgm.ptrAccessKind(node.stmt) or "other"
 					if kind == "rmw" then
-						error("sarcasm: `" .. ann .. "` on a read-modify-write instruction;"
+						err.at(node.stmt, "`" .. ann .. "` on a read-modify-write instruction;"
 							.. " pointer RMWs need `load store ptr` (or `atomic load store ptr`): " .. raw)
 					end
 					local want = (ann == "load ptr") and "load" or "store"
 					if kind ~= want then
-						error("sarcasm: `" .. ann .. "` requires a plain 8-byte GPR " .. want
+						err.at(node.stmt, "`" .. ann .. "` requires a plain 8-byte GPR " .. want
 							.. " instruction: " .. raw)
 					end
 					if ann == "load ptr" then loadPtrDefs[node] = true else storePtrNodes[node] = true end
@@ -1534,7 +1544,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					-- atomic/pointer-RMW annotations: the per-arch shape validator
 					-- returns the sequence kind (raising the shape errors).
 					if not cgm.ptrAtomicShape then
-						error("sarcasm: `" .. ann .. "` is not supported on this target: " .. raw)
+						err.at(node.stmt, "`" .. ann .. "` is not supported on this target: " .. raw)
 					end
 					local shape = cgm.ptrAtomicShape(ann, node.stmt)
 					if shape == "atomicload" then atomicLoadPtrDefs[node] = true
@@ -1542,7 +1552,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					elseif shape == "cas" then atomicCasPtrDefs[node] = true
 					elseif shape == "rmw" then loadStorePtrNodes[node] = true
 					elseif shape == "atomicrmw" then atomicRmwPtrNodes[node] = true
-					else error("sarcasm: internal error: bad ptr-atomic shape " .. tostring(shape)) end
+					else err.at(node.stmt, "internal error: bad ptr-atomic shape " .. tostring(shape)) end
 				end
 			elseif ann == "global ptr" and cgm.globalSupport then
 				-- shape-validated by validateBody; recorded above (globalGetterNodes)
@@ -1564,12 +1574,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- callee-is-a-function checks (and historically didn't even model
 				-- the caller-saved clobbers or the result redefinition).
 				if cgm.memOperand(node.stmt) then
-					error("sarcasm: indirect call through a memory operand cannot be made"
+					err.at(node.stmt, "indirect call through a memory operand cannot be made"
 						.. " memory-safe (load the function pointer into a register first,"
 						.. " e.g. with `load ptr`, then call the register): " .. raw)
 				end
 				if not ann then
-					error("sarcasm: indirect call has no signature annotation (annotate"
+					err.at(node.stmt, "indirect call has no signature annotation (annotate"
 						.. " the callsite with the callee's signature, e.g. `int(ptr)`): "
 						.. raw)
 				end
@@ -1578,10 +1588,10 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if cs and cs.retIsPtr then callPtrDefs[node] = true end
 			elseif ann then
 				if string.find(ann, "%(") then
-					error("sarcasm: signature annotation `" .. ann .. "` on a non-call"
+					err.at(node.stmt, "signature annotation `" .. ann .. "` on a non-call"
 						.. " instruction: " .. raw)
 				end
-				error("sarcasm: unrecognized annotation: " .. ann .. " (on: " .. raw .. ")")
+				err.at(node.stmt, "unrecognized annotation: " .. ann .. " (on: " .. raw .. ")")
 			end
 		end
 	end
@@ -1923,7 +1933,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if uv then
 					local t = node.useCapTemp
 					if not (t and pf.isPtr[t] and pf.lowerTemp[t]) then
-						error("sarcasm: `use capability " .. uv .. "` names a register"
+						err.at(node.stmt, "`use capability " .. uv .. "` names a register"
 
 							.. " that does not carry a capability (only a"
 
@@ -1951,13 +1961,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					local shot = pf.capShot and pf.capShot[sv] or nil
 					local slo = shot and shot.lo or nil
 					if not (shot and shot.web and slo and pf.isPtr[shot.web]) then
-						error("sarcasm: `save capability (" .. sv .. ")` is on an"
+						err.at(node.stmt, "`save capability (" .. sv .. ")` is on an"
 							.. " instruction that does not produce a pointer value (only"
 							.. " a pointer-carrying register can be saved): "
 							.. (node.stmt.raw or node.stmt.mnemonic or "?"))
 					end
 					if pf.dynamic and pf.dynamic[shot.web] then
-						error("sarcasm: `save capability (" .. sv .. ")` cannot save a"
+						err.at(node.stmt, "`save capability (" .. sv .. ")` cannot save a"
 							.. " dynamically-tracked capability (the saved register's"
 							.. " capability varies per execution — it merges pointers"
 							.. " from different origins): "
@@ -1972,12 +1982,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				if rv then
 					local snode = capSaveVars[rv]
 					if not snode then
-						error("sarcasm: `restore capability (" .. rv .. ")` has no matching"
+						err.at(node.stmt, "`restore capability (" .. rv .. ")` has no matching"
 							.. " `save capability (" .. rv .. ")` in this function: "
 							.. (node.stmt.raw or node.stmt.mnemonic or "?"))
 					end
 					if not stmtDominates(snode.stmt, node.stmt) then
-						error("sarcasm: `restore capability (" .. rv .. ")` is not dominated"
+						err.at(node.stmt, "`restore capability (" .. rv .. ")` is not dominated"
 							.. " by its `save capability (" .. rv .. ")` (every path from"
 							.. " function entry to the restore must execute the save); restore:"
 							.. " " .. (node.stmt.raw or "?") .. "; save: "
@@ -1985,7 +1995,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					end
 					local web = node.defTemps and node.defTemps[1]
 					if web and pf.dynamic and pf.dynamic[web] then
-						error("sarcasm: `restore capability (" .. rv .. ")` targets a"
+						err.at(node.stmt, "`restore capability (" .. rv .. ")` targets a"
 							.. " dynamically-tracked capability (the restored register"
 							.. " merges pointers from different origins, so no single"
 							.. " saved capability fits it): "
@@ -2650,13 +2660,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if not mem or not mem.writeback then return end
 		local baseT = node.opTemp[mem.base]
 		if not baseT then
-			error("sarcasm: writeback base of an annotated pointer access has no usable value: "
+			err.at(node.stmt, "writeback base of an annotated pointer access has no usable value: "
 				.. (node.stmt and node.stmt.raw or "?"))
 		end
 		local amt = (mem.index and mem.index.kind == "imm")
 			and (mem.index.value or tonumber(mem.index.text)) or nil
 		if not amt then
-			error("sarcasm: annotated pointer access with a non-immediate writeback index"
+			err.at(node.stmt, "annotated pointer access with a non-immediate writeback index"
 				.. " is not supported: " .. (node.stmt and node.stmt.raw or "?"))
 		end
 		if amt > 0 then cg.addImm(baseT, baseT, amt)
@@ -2835,7 +2845,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 	local function emitAtomicPtrLoad(node, mem, preEff, preLo)
 		local dstIv = node.defTemps[1]
 		if not dstIv then
-			error("sarcasm: `atomic load ptr` requires a modeled (GPR) destination"
+			err.at(node.stmt, "`atomic load ptr` requires a modeled (GPR) destination"
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local dstLo = pf.lowerTemp[dstIv]
@@ -2852,7 +2862,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local valOp = storeValueOperand(node.stmt, mem)
 		local valIv = valOp and node.opTemp[valOp] or nil
 		if not valIv then
-			error("sarcasm: `atomic store ptr` requires a modeled (GPR) value"
+			err.at(node.stmt, "`atomic store ptr` requires a modeled (GPR) value"
 				.. " register: " .. (node.stmt.raw or "?"))
 		end
 		local valLo = pf.lowerTemp[valIv]
@@ -2875,7 +2885,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local accUseT = (pin and pin.uses and pin.uses[1]) and node.opTemp[pin.uses[1]] or nil
 		local accDefT = (pin and pin.defs and pin.defs[1]) and node.opTemp[pin.defs[1]] or nil
 		if not (accUseT and accDefT) then
-			error("sarcasm: internal error: cmpxchg implicit accumulator has no temp: "
+			err.at(node.stmt, "internal error: cmpxchg implicit accumulator has no temp: "
 				.. (node.stmt.raw or "?"))
 		end
 		local accDefLo = pf.lowerTemp[accDefT]
@@ -2883,7 +2893,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local srcOp = node.stmt.operands[2]
 		local newIv = srcOp and node.opTemp[srcOp] or nil
 		if not newIv then
-			error("sarcasm: `atomic ptr` requires a modeled (GPR) new-value register: "
+			err.at(node.stmt, "`atomic ptr` requires a modeled (GPR) new-value register: "
 				.. (node.stmt.raw or "?"))
 		end
 		local newLo = pf.lowerTemp[newIv]
@@ -2922,7 +2932,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if so and so.kind == "reg" then
 			local t = node.opTemp[so]
 			if not t then
-				error("sarcasm: `" .. node.stmt.annotation .. "` source register has no"
+				err.at(node.stmt, "`" .. node.stmt.annotation .. "` source register has no"
 					.. " temp: " .. (node.stmt.raw or "?"))
 			end
 			return t, nil, false
@@ -3014,7 +3024,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local dstOp = (plan.kind == "st") and nil or ops[2]
 		local srcT = srcOp and node.opTemp[srcOp] or nil
 		if not srcT then
-			error("sarcasm: `atomic load store ptr` source register has no temp: "
+			err.at(node.stmt, "`atomic load store ptr` source register has no temp: "
 				.. (node.stmt.raw or "?"))
 		end
 		local dstT = dstOp and node.opTemp[dstOp] or nil
@@ -3227,7 +3237,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- defensively if one got here without them.
 		local hasFp = csHasFp(cs)
 		if hasFp and not cg.storeFpArg then
-			error("sarcasm: internal error: floating-point signature marshalling is"
+			err.at(node.stmt, "internal error: floating-point signature marshalling is"
 				.. " not implemented for this target (call to '" .. callee .. "')")
 		end
 		local argTemps = {}
@@ -3331,7 +3341,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- defensively if one got here without them.
 		local hasFp = csHasFp(cs)
 		if hasFp and not cg.storeFpArg then
-			error("sarcasm: internal error: floating-point signature marshalling is"
+			err.at(node.stmt, "internal error: floating-point signature marshalling is"
 				.. " not implemented for this target (indirect call): " .. raw)
 		end
 		local targetOp = node.stmt.operands and node.stmt.operands[1]
@@ -3341,7 +3351,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			-- The target register's web is not a known pointer value, so its
 			-- lower (capability) is unknowable and the callee-is-a-function
 			-- checks cannot be emitted.
-			error("sarcasm: indirect call target must be a function pointer value"
+			err.at(node.stmt, "indirect call target must be a function pointer value"
 				.. " (a pointer argument, or the result of `load ptr` /"
 				.. " a ptr-returning call): " .. raw)
 		end
@@ -3589,7 +3599,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local desc = dataGlobals[sym]
 		if desc and (desc.readonly or not forStore) then return nil, nil end
 		if not desc and bodyLocalLabels[sym] then
-			error("sarcasm: `" .. (node.stmt.annotation or "") .. "` pointer access to the"
+			err.at(node.stmt, "`" .. (node.stmt.annotation or "") .. "` pointer access to the"
 				.. " local code label '" .. sym .. "' is not a global access: "
 				.. (node.stmt.raw or "?"))
 		end
@@ -3650,12 +3660,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local raw = node.stmt.raw or node.stmt.mnemonic
 		local idxOp = mem and mem.index or nil
 		if not idxOp then
-			error("sarcasm: internal error: stack-buffer bounds check without an index"
+			err.at(node.stmt, "internal error: stack-buffer bounds check without an index"
 				.. " operand: " .. raw)
 		end
 		local idxT = node.opTemp[idxOp]
 		if not idxT then
-			error("sarcasm: internal error: indexed buffer access index has no web"
+			err.at(node.stmt, "internal error: indexed buffer access index has no web"
 				.. " temp: " .. raw)
 		end
 		-- A 32-bit index register contributes its LOW 32 bits (zero-extended) to
@@ -3673,7 +3683,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local idxMax = math.floor((bi.hi - bi.size - bi.dispEff) / s)
 		local count = idxMax - idxMin + 1
 		if count <= 0 then
-			error("sarcasm: internal error: empty index range for a buffer access: "
+			err.at(node.stmt, "internal error: empty index range for a buffer access: "
 				.. raw)
 		end
 		stackBufFailCounter += 1
@@ -3752,7 +3762,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local raw = node.stmt.raw or node.stmt.mnemonic
 		local baseT = node.opTemp and node.opTemp[mem.base] or nil
 		if not baseT then
-			error("sarcasm: internal error: by-address buffer access base has no web"
+			err.at(node.stmt, "internal error: by-address buffer access base has no web"
 				.. " temp: " .. raw)
 		end
 		local g = ba.group
@@ -3765,7 +3775,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- group's top byte is inside and must not trap).
 		local count = span - ba.w + 1
 		if count < 0 then
-			error("sarcasm: internal error: by-address buffer access wider than its"
+			err.at(node.stmt, "internal error: by-address buffer access wider than its"
 				.. " lowered group: " .. raw)
 		end
 		stackBufFailCounter += 1
@@ -3817,7 +3827,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local function repTemp(occ, what)
 			local t = occ and node.opTemp and node.opTemp[occ] or nil
 			if not t then
-				error("sarcasm: internal error: rep string " .. what .. " has no web temp: " .. raw)
+				err.at(node.stmt, "internal error: rep string " .. what .. " has no web temp: " .. raw)
 			end
 			return t
 		end
@@ -4097,11 +4107,11 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- web would be the shared entry-argument web — we refuse: the pin-out
 		-- would corrupt the argument value that shares the web.)
 		if rsiAlias and not rsiAlias.materialized then
-			error("sarcasm: internal error: rep stack-alias source was not"
+			err.at(node.stmt, "internal error: rep stack-alias source was not"
 				.. " materialized: " .. raw)
 		end
 		if rdiAlias and not rdiAlias.materialized then
-			error("sarcasm: internal error: rep stack-alias destination was not"
+			err.at(node.stmt, "internal error: rep stack-alias destination was not"
 				.. " materialized: " .. raw)
 		end
 		if rsiT then cg.move(pColored(6), rsiT) end
@@ -4139,13 +4149,13 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		local raw = node.stmt.raw or ".alloca"
 		local sizeOp, alignOp = ops[1], ops[2]
 		if not (sizeOp and alignOp and ops[3]) then
-			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. raw)
+			err.at(node.stmt, "`.alloca` takes exactly 3 operands (size, alignment, result): " .. raw)
 		end
 		local function operandTemp(op, what)
 			if op.kind == "imm" then return nil end
 			local t = node.opTemp and node.opTemp[op]
 			if not t then
-				error("sarcasm: `.alloca` " .. what .. " has no modeled value (must be an immediate, a register, or a spill slot): " .. raw)
+				err.at(node.stmt, "`.alloca` " .. what .. " has no modeled value (must be an immediate, a register, or a spill slot): " .. raw)
 			end
 			return t
 		end
@@ -4166,12 +4176,12 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		if not alignTemp then
 			alignImm = alignOp.value or tonumber(alignOp.text)
 			if not alignImm or alignImm < 1 or alignImm ~= math.floor(alignImm) then
-				error("sarcasm: `.alloca` alignment must be a positive power of two: " .. raw)
+				err.at(node.stmt, "`.alloca` alignment must be a positive power of two: " .. raw)
 			end
 			local p = 1
 			while p < alignImm do p = p * 2 end
 			if p ~= alignImm then
-				error("sarcasm: `.alloca` alignment must be a positive power of two: " .. raw)
+				err.at(node.stmt, "`.alloca` alignment must be a positive power of two: " .. raw)
 			end
 		end
 		-- Allocation size: the request, plus slack for aligning up (at most align-16
@@ -4195,11 +4205,11 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		counterGuardRestore(rcxSave)
 		local resultIv = node.defTemps and node.defTemps[1]
 		if not resultIv then
-			error("sarcasm: `.alloca` result has no modeled (GPR) destination: " .. raw)
+			err.at(node.stmt, "`.alloca` result has no modeled (GPR) destination: " .. raw)
 		end
 		local resultLo = pf.lowerTemp[resultIv]
 		if not resultLo then
-			error("sarcasm: internal error: `.alloca` result web has no capability lower: " .. raw)
+			err.at(node.stmt, "internal error: `.alloca` result web has no capability lower: " .. raw)
 		end
 		local ret = pColored(cc.rtRet)
 		local payload = allocTemp({ role = "dotalloca" })
@@ -4305,11 +4315,11 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			if o.kind == "reg" and o.isSlot then slotOp = slotOp or o end
 		end
 		if not slotOp then
-			error("sarcasm: internal error: partial slot access has no slot operand: " .. raw)
+			err.at(node.stmt, "internal error: partial slot access has no slot operand: " .. raw)
 		end
 		local webT = node.opTemp and node.opTemp[slotOp] or nil
 		if not webT then
-			error("sarcasm: internal error: partial slot access has no lifted web temp: " .. raw)
+			err.at(node.stmt, "internal error: partial slot access has no lifted web temp: " .. raw)
 		end
 		-- Capability safety (see the function comment).
 		if pf.isPtr[webT] then
@@ -4319,7 +4329,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- narrow-store capability kill. Emit via the ordinary walk path.
 				return false
 			end
-			error("sarcasm: narrow (" .. tostring(part.w)
+			err.at(node.stmt, "narrow (" .. tostring(part.w)
 				.. "-byte) access into a capability-carrying frame slot is not supported"
 				.. " (the slot's web holds a pointer; extracting or merging its bytes as"
 				.. " integer data would corrupt the capability — load the wide value and"
@@ -4342,7 +4352,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 		-- field extraction would sit between the consumed condition and its reader.
 		if readsFlags and ((not part.write and part.sub > 0)
 			or (part.write and isRmw and part.sub > 0)) then
-			error("sarcasm: narrow slot access on a flag-reading instruction at a"
+			err.at(node.stmt, "narrow slot access on a flag-reading instruction at a"
 				.. " non-zero granule offset is not supported (the field extraction"
 				.. " would clobber the condition the instruction consumes): " .. raw)
 		end
@@ -4350,7 +4360,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 			-- A store-path node is replaced by a fresh instruction; the implicit-
 			-- register pin moves (rax/rdx for div/mul/cmpxchg, rcx for %-cl shifts)
 			-- would be lost. Loads pass through the ordinary pinned emission.
-			error("sarcasm: narrow slot store on an implicit-register-pinned"
+			err.at(node.stmt, "narrow slot store on an implicit-register-pinned"
 				.. " instruction (div/mul/cmpxchg/shift-by-%cl/...) is not supported: " .. raw)
 		end
 		local sub8 = part.sub * 8
@@ -4437,7 +4447,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					elseif o.kind == "reg" then
 						local ut = node.opTemp and node.opTemp[o] or nil
 						if not ut then
-							error("sarcasm: internal error: partial slot RMW operand has no"
+							err.at(node.stmt, "internal error: partial slot RMW operand has no"
 								.. " lifted web temp: " .. raw)
 						end
 						table.insert(newops, build.rt(ut, o.width or 64))
@@ -4445,7 +4455,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					elseif o.kind == "imm" then
 						table.insert(newops, o)  -- renders verbatim ($text)
 					else
-						error("sarcasm: narrow slot access on '" .. (st.mnemonic or "?")
+						err.at(node.stmt, "narrow slot access on '" .. (st.mnemonic or "?")
 							.. "' with a " .. tostring(o.kind) .. " operand is not supported"
 							.. " (re-spell it through a register): " .. raw)
 					end
@@ -4471,7 +4481,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					if o ~= slotOp then srcOp = srcOp or o end
 				end
 				if not srcOp then
-					error("sarcasm: internal error: partial slot store has no value operand: " .. raw)
+					err.at(node.stmt, "internal error: partial slot store has no value operand: " .. raw)
 				end
 				if srcOp.kind == "imm" then
 					emit(build.insn("mov", { build.rt(t2, 32), srcOp },
@@ -4485,7 +4495,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				else
 					local srcT = node.opTemp and node.opTemp[srcOp] or nil
 					if srcOp.kind ~= "reg" or not srcT then
-						error("sarcasm: narrow slot store on '" .. (st.mnemonic or "?")
+						err.at(node.stmt, "narrow slot store on '" .. (st.mnemonic or "?")
 							.. "' with a " .. tostring(srcOp.kind) .. " value operand is not"
 							.. " supported (re-spell it through a register or immediate): " .. raw)
 					end
@@ -4624,7 +4634,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- stack word is never scanned by the GC.
 				local t = node.defTemps and node.defTemps[1]
 				if not t then
-					error("sarcasm: internal error: " .. string.lower(node.stmt.mnemonic)
+					err.at(node.stmt, "internal error: " .. string.lower(node.stmt.mnemonic)
 						.. " with no lifted flags web: " .. (node.stmt.raw or "?"))
 				end
 				emit(build.insn("pushfq", {}, {}))
@@ -4640,7 +4650,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 				-- injected check in between is bracketed with a save/restore.
 				local t = node.useTemps and node.useTemps[1]
 				if not t then
-					error("sarcasm: internal error: " .. string.lower(node.stmt.mnemonic)
+					err.at(node.stmt, "internal error: " .. string.lower(node.stmt.mnemonic)
 						.. " with no lifted flags web: " .. (node.stmt.raw or "?"))
 				end
 				emit(build.insn("push", { build.rt(t) }, { uses = { t } }))
@@ -4680,7 +4690,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					-- store (exactly like the global getters).
 					local dstIv = node.defTemps and node.defTemps[1]
 					if not dstIv then
-						error("sarcasm: `funcref` lea has no modeled (GPR) destination"
+						err.at(node.stmt, "`funcref` lea has no modeled (GPR) destination"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
@@ -4715,7 +4725,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					-- include pointer stores, which need registration).
 					local dstIv = node.defTemps and node.defTemps[1]
 					if not dstIv then
-						error("sarcasm: global lea has no modeled (GPR) destination"
+						err.at(node.stmt, "global lea has no modeled (GPR) destination"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
@@ -4736,7 +4746,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					-- Extern `#! global ptr` lea: the getter call defines (iv, lo).
 					local dstIv = node.defTemps and node.defTemps[1]
 					if not dstIv then
-						error("sarcasm: `global ptr` lea has no modeled (GPR) destination"
+						err.at(node.stmt, "`global ptr` lea has no modeled (GPR) destination"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
@@ -4837,7 +4847,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					-- an FP/vector (or otherwise unmodeled) destination has no temp:
 					-- reject cleanly instead of indexing the lower-temp table with nil.
 					if not dstIv then
-						error("sarcasm: `load ptr` requires a modeled (GPR) destination"
+						err.at(node.stmt, "`load ptr` requires a modeled (GPR) destination"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local dstLo = pf.lowerTemp[dstIv]
@@ -4853,7 +4863,7 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 					local valOp = storeValueOperand(node.stmt, mem)
 					local valIv = valOp and node.opTemp[valOp] or nil
 					if not valIv then
-						error("sarcasm: `store ptr` requires a modeled (GPR) value"
+						err.at(node.stmt, "`store ptr` requires a modeled (GPR) value"
 							.. " register: " .. (node.stmt.raw or "?"))
 					end
 					local valLo = pf.lowerTemp[valIv]
@@ -5132,10 +5142,22 @@ function transform.transformFunction(name, sigDesc, body, backend, extra)
 						if n ~= g.abs.mod
 							or ((g.abs.res - anchor.abs.res - (g.base - anchor.base))
 								% n + n) % n ~= 0 then
-							error("sarcasm: stack buffer groups with absolute"
+							-- A genuine TWO-construct conflict (an anchor group vs
+							-- this offending group): name BOTH declarations. The
+							-- offending group is the primary location; the anchor's
+							-- file:line rides in the message text (nil-safe: a group
+							-- without a recorded declaration omits the clause).
+							local anchorDeclSt = (anchor.decls and anchor.decls[1])
+								and origBody[anchor.decls[1].declIdx] or nil
+							local gDeclSt = (g.decls and g.decls[1])
+								and origBody[g.decls[1].declIdx] or nil
+							local anchorLoc = err.locStr(anchorDeclSt)
+							err.at(gDeclSt, "stack buffer groups with absolute"
 								.. " alignment identities cannot be placed together"
 								.. " (one region pad cannot satisfy both residue"
-								.. " stories)")
+								.. " stories)"
+								.. (anchorLoc and (" (the other group's declaration is at "
+									.. anchorLoc .. ")") or ""))
 						end
 					end
 				end

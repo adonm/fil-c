@@ -5,6 +5,7 @@
 
 local fp = require("./x86_64_fp")
 local sig = require("./sig")
+local err = require("./err")
 
 local x86 = {}
 
@@ -703,7 +704,7 @@ local function classifyHighByte(insn, m, ops)
 		if isHighByteOp(o) then hbOp = hbOp or o end
 	end
 	local generic = function()
-		error("sarcasm: high-byte register " .. hbSpelling(hbOp) .. " is not supported in '"
+		err.at(insn, "high-byte register " .. hbSpelling(hbOp) .. " is not supported in '"
 			.. rawMnem .. "' (supported: movb, movzbl/movzbw/movsbl/movsbw reads, byte"
 			.. " ALU/cmp/test/inc/dec/neg/not forms, setcc, xchgb; use a low-byte"
 			.. " sequence for anything else): " .. raw)
@@ -712,7 +713,7 @@ local function classifyHighByte(insn, m, ops)
 	-- immediate, and register partners must not require a REX prefix.
 	for _, o in ops do
 		if o.kind == "mem" then
-			error("sarcasm: high-byte register " .. hbSpelling(hbOp) .. " with a memory operand"
+			err.at(insn, "high-byte register " .. hbSpelling(hbOp) .. " with a memory operand"
 				.. " is not supported (the bounds-check rewrite addresses memory through an"
 				.. " allocated register that may require a REX prefix, which a high-byte"
 				.. " register cannot combine with; rewrite with a low-byte sequence): " .. raw)
@@ -723,20 +724,20 @@ local function classifyHighByte(insn, m, ops)
 		if isGpr(o) and not isHighByteOp(o) then
 			if o.width == 8 then
 				if o.num > 3 then
-					error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+					err.at(insn, "high-byte register " .. hbSpelling(hbOp)
 						.. " cannot be combined with " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
 						.. " (a byte register other than %al/%cl/%dl/%bl requires a REX"
 						.. " prefix, which a high-byte register cannot combine with): " .. raw)
 				end
 			elseif o.width == 16 or o.width == 32 then
 				if o.num > 7 then
-					error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+					err.at(insn, "high-byte register " .. hbSpelling(hbOp)
 						.. " cannot be combined with " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
 						.. " (a register numbered 8 or above requires a REX prefix, which a"
 						.. " high-byte register cannot combine with): " .. raw)
 				end
 			else
-				error("sarcasm: high-byte register " .. hbSpelling(hbOp)
+				err.at(insn, "high-byte register " .. hbSpelling(hbOp)
 					.. " cannot be combined with a 64-bit register operand (a REX.W prefix"
 					.. " is required, which a high-byte register cannot combine with): " .. raw)
 			end
@@ -792,19 +793,19 @@ local function classifyHighByte(insn, m, ops)
 		-- the SOURCE (a high-byte movzx destination is not an encoding), and only
 		-- the byte-source, sub-64-bit-destination forms are REX-free.
 		if isHighByteOp(ops[1]) then
-			error("sarcasm: a high-byte register cannot be the destination of movzx/movsx"
+			err.at(insn, "a high-byte register cannot be the destination of movzx/movsx"
 				.. " (the destination is a 16/32-bit register; that encoding does not"
 				.. " exist): " .. raw)
 		end
 		if not isHighByteOp(ops[2]) then generic() end
 		local srcLetter = string.match(rawMnem, "^mov[zs]([bw])")
 		if insn.syntax ~= "intel" and srcLetter ~= "b" then
-			error("sarcasm: " .. rawMnem .. " with a high-byte source is not encodable"
+			err.at(insn, rawMnem .. " with a high-byte source is not encodable"
 				.. " (only the byte-source, 16/32-bit-destination forms movzbl/movzbw/"
 				.. "movsbl/movsbw are; " .. rawMnem .. " requires a REX prefix): " .. raw)
 		end
 		if not isGpr(ops[1]) or (ops[1].width ~= 32 and ops[1].width ~= 16) then
-			error("sarcasm: " .. rawMnem .. " with a high-byte source requires a 16-bit"
+			err.at(insn, rawMnem .. " with a high-byte source requires a 16-bit"
 				.. " or 32-bit register destination (a 64-bit destination requires a"
 				.. " REX.W prefix): " .. raw)
 		end
@@ -816,7 +817,7 @@ local function classifyHighByte(insn, m, ops)
 		-- cmpb/testb: all register operands are uses. inc/dec/neg/not: the lone
 		-- register operand is an RMW. ALU forms: ops[1] RMW, ops[2] use.
 		if SHIFT_COUNT[m] and isGpr(ops[2]) then
-			error("sarcasm: a shift/rotate count can only come from %cl (the only"
+			err.at(insn, "a shift/rotate count can only come from %cl (the only"
 				.. " register-count encoding); a high-byte register cannot encode it: "
 				.. raw)
 		end
@@ -877,7 +878,7 @@ function x86.classifyStringOp(insn)
 	if kind then
 		if #ops > 0 then
 			local regs = (insn.syntax == "intel") and "rsi/rdi" or "%rsi/%rdi"
-			error("sarcasm: '" .. rawMnem .. "' takes no explicit operands (its"
+			err.at(insn, "'" .. rawMnem .. "' takes no explicit operands (its"
 				.. " source and destination are the implicit " .. regs .. " registers;"
 				.. " write the bare form): "
 				.. raw)
@@ -888,21 +889,21 @@ function x86.classifyStringOp(insn)
 		-- would otherwise die in `as` with a cryptic message).
 		if insn.syntax == "intel" then
 			if rawMnem == "movsl" or rawMnem == "stosl" then
-				error("sarcasm: '" .. rawMnem .. "' is not encodable in Intel syntax"
+				err.at(insn, "'" .. rawMnem .. "' is not encodable in Intel syntax"
 					.. " (use " .. string.gsub(rawMnem, "l$", "d") .. " for the dword"
 					.. " string move): " .. raw)
 			end
 		elseif rawMnem == "stosd" then
-			error("sarcasm: 'stosd' is not encodable in AT&T syntax"
+			err.at(insn, "'stosd' is not encodable in AT&T syntax"
 				.. " (use stosl for the dword string store): " .. raw)
 		end
 		if not elem then
-			error("sarcasm: cannot determine the element width of '" .. rawMnem
+			err.at(insn, "cannot determine the element width of '" .. rawMnem
 				.. "' (use an explicit size form: movsb/movsw/movsl/movsq or"
 				.. " stosb/stosw/stosl/stosq): " .. raw)
 		end
 		if rep == "repne" or rep == "repnz" then
-			error("sarcasm: `" .. rep .. "` prefix is not supported on '" .. rawMnem
+			err.at(insn, "`" .. rep .. "` prefix is not supported on '" .. rawMnem
 				.. "' (only `rep`/`repe`/`repz`, which repeat while %rcx != 0): " .. raw)
 		end
 		if insn.annotation
@@ -912,12 +913,12 @@ function x86.classifyStringOp(insn)
 			-- strips it from st.annotation, so the transform never sees a string op
 			-- carrying an annotation. Any OTHER annotation stays rejected here.
 			and not string.match(insn.annotation, "^%s*stack%s+buffer") then
-			error("sarcasm: annotation `" .. insn.annotation .. "` is not supported on '"
+			err.at(insn, "annotation `" .. insn.annotation .. "` is not supported on '"
 				.. rawMnem .. "' (string instructions need no annotation — their"
 				.. " accesses are capability-checked against %rsi/%rdi): " .. raw)
 		end
 		if insn.lockPrefix then
-			error("sarcasm: `lock` prefix is not supported on '" .. rawMnem
+			err.at(insn, "`lock` prefix is not supported on '" .. rawMnem
 				.. "' (lock requires a memory-destination read-modify-write"
 				.. " instruction sarcasm models exactly): " .. raw)
 		end
@@ -962,7 +963,7 @@ function x86.classifyStringOp(insn)
 	-- dropped (e.g. `rep addq` is NOT an add).
 	if rep then
 		if rawMnem == "ret" or rawMnem == "nop" then return nil end
-		error("sarcasm: `" .. rep .. "` prefix is not supported on '" .. rawMnem
+		err.at(insn, "`" .. rep .. "` prefix is not supported on '" .. rawMnem
 			.. "' (only rep movs* / rep stos* — including movsb/movsw/movsl/movsq"
 			.. " and stosb/stosw/stosl/stosq — plus `rep ret`): " .. raw)
 	end
@@ -990,7 +991,7 @@ function x86.classify(insn)
 		if rep then return rep end
 	end
 	local why = fp.unsafeReject(rawMnem, insn)
-	if why then error("sarcasm: " .. why .. ": " .. (insn.raw or rawMnem)) end
+	if why then err.at(insn, why .. ": " .. (insn.raw or rawMnem)) end
 
 	-- `lock` prefix (parsed as a prefix tag by x86_64_parse): allowed only on the
 	-- exactly-modeled memory-destination RMWs (lockAllows). The locked instruction
@@ -998,7 +999,7 @@ function x86.classify(insn)
 	-- including the not-readonly CanWrite test) with the prefix re-emitted by the
 	-- renderer. Anything else is rejected so the safety proof stays intact.
 	if insn.lockPrefix and not x86.lockAllows(insn) then
-		error("sarcasm: lock prefix not allowed on '" .. rawMnem .. "' (lock requires a"
+		err.at(insn, "lock prefix not allowed on '" .. rawMnem .. "' (lock requires a"
 			.. " memory-destination read-modify-write instruction sarcasm models exactly:"
 			.. " add/adc/and/or/sbb/sub/xor, inc/dec/neg/not, xadd, cmpxchg,"
 			.. " cmpxchg8b/cmpxchg16b): " .. (insn.raw or rawMnem))
@@ -1074,7 +1075,7 @@ function x86.classify(insn)
 	end
 	local function rejectHighByteAddr(o)
 		if isHighByteOp(o) then
-			error("sarcasm: high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+			err.at(insn, "high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
 				.. " cannot be a memory operand base/index (only 64-bit registers may"
 				.. " address memory): " .. (insn.raw or rawMnem))
 		end
@@ -1088,7 +1089,7 @@ function x86.classify(insn)
 			-- the spelling — `(%fs)' is not a valid base/index expression — and the
 			-- fs/gs BASES belong to the Fil-C runtime, see the wrfsbase rejection).
 			if o.base and o.base.rc == "seg" then
-				error("sarcasm: segment register cannot be a memory operand base"
+				err.at(insn, "segment register cannot be a memory operand base"
 					.. " (fs/gs-relative addressing cannot be bounds-checked): "
 					.. (insn.raw or rawMnem))
 			end
@@ -1098,7 +1099,7 @@ function x86.classify(insn)
 			-- moffs forms rejected below. (An index-only form — `(,%rax,8)` — is a
 			-- checked access through the index register and stays supported.)
 			if not o.base and not o.index then
-				error("sarcasm: memory access with an absolute address cannot be"
+				err.at(insn, "memory access with an absolute address cannot be"
 					.. " bounds-checked (a memory operand with no base register is a"
 					.. " displacement-only absolute address; global data access is not"
 					.. " yet supported): " .. (insn.raw or rawMnem))
@@ -1132,13 +1133,13 @@ function x86.classify(insn)
 					else seg = string.match(t, "^%%[cdefgs]s$") end
 				end
 				if not seg then
-					error("sarcasm: memory access with a symbolic address cannot be"
+					err.at(insn, "memory access with a symbolic address cannot be"
 						.. " bounds-checked (global data access is not yet supported): "
 						.. (insn.raw or rawMnem))
 				end
 			end
 			if o.kind == "imm" and o.absAddr then
-				error("sarcasm: memory access with an absolute address cannot be"
+				err.at(insn, "memory access with an absolute address cannot be"
 					.. " bounds-checked (global data access is not yet supported): "
 					.. (insn.raw or rawMnem))
 			end
@@ -1164,42 +1165,42 @@ function x86.classify(insn)
 	-- non-64-bit result widths) is a clean rejection.
 	if m == "alloca" then  -- the `.alloca` directive only (dotAlloca marker from the parser)
 		if not insn.dotAlloca then
-			error("sarcasm: `alloca` is only supported as the `.alloca size, alignment, result` directive: " .. (insn.raw or rawMnem))
+			err.at(insn, "`alloca` is only supported as the `.alloca size, alignment, result` directive: " .. (insn.raw or rawMnem))
 		end
 		if #ops ~= 3 then
-			error("sarcasm: `.alloca` takes exactly 3 operands (size, alignment, result): " .. (insn.raw or rawMnem))
+			err.at(insn, "`.alloca` takes exactly 3 operands (size, alignment, result): " .. (insn.raw or rawMnem))
 		end
 		local function allocaUse(o, what)
 			if o.indirect then
-				error("sarcasm: `.alloca` " .. what .. " has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
+				err.at(insn, "`.alloca` " .. what .. " has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
 			end
 			if o.kind == "imm" then return end
 			if isGpr(o) then
 				if o.width ~= 64 and o.width ~= 32 then
-					error("sarcasm: `.alloca` " .. what .. " must be a 32/64-bit register (narrow writes do not define the full value): " .. (insn.raw or rawMnem))
+					err.at(insn, "`.alloca` " .. what .. " must be a 32/64-bit register (narrow writes do not define the full value): " .. (insn.raw or rawMnem))
 				end
 				table.insert(uses, o)
 				return
 			end
 			if o.kind == "mem" and o.base and (o.base.rc == "sp" or o.base.name == "rbp") then return end
-			error("sarcasm: `.alloca` " .. what .. " must be an immediate, a GPR (including a pseudoregister), or a frame spill slot: " .. (insn.raw or rawMnem))
+			err.at(insn, "`.alloca` " .. what .. " must be an immediate, a GPR (including a pseudoregister), or a frame spill slot: " .. (insn.raw or rawMnem))
 		end
 		allocaUse(ops[1], "size")
 		allocaUse(ops[2], "alignment")
 		do
 			local o = ops[3]
 			if o.indirect then
-				error("sarcasm: `.alloca` result has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
+				err.at(insn, "`.alloca` result has an indirect (`*`) marker, which is not supported: " .. (insn.raw or rawMnem))
 			end
 			if isGpr(o) then
 				if o.width ~= 64 then
-					error("sarcasm: `.alloca` result must be a 64-bit register (a narrower destination would truncate the pointer): " .. (insn.raw or rawMnem))
+					err.at(insn, "`.alloca` result must be a 64-bit register (a narrower destination would truncate the pointer): " .. (insn.raw or rawMnem))
 				end
 				table.insert(defs, o)
 			elseif o.kind == "mem" and o.base and (o.base.rc == "sp" or o.base.name == "rbp") then
 			-- spill-slot result: converted by the frame rewrite; provisionally unmodeled.
 			else
-				error("sarcasm: `.alloca` result must be a 64-bit register, a pseudoregister, or a frame spill slot: " .. (insn.raw or rawMnem))
+				err.at(insn, "`.alloca` result must be a 64-bit register, a pseudoregister, or a frame spill slot: " .. (insn.raw or rawMnem))
 			end
 		end
 		return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true }
@@ -1273,7 +1274,7 @@ function x86.classify(insn)
 		-- memory-access checks clobber flags, so their pending condition could not be
 		-- honored. See also the jrcxz/jecxz use modeling in the jcc branch above.)
 		if m == "loopb" or m == "loopw" then
-			error("sarcasm: " .. rawMnem .. " is a 16-bit-counter form that is not"
+			err.at(insn, rawMnem .. " is a 16-bit-counter form that is not"
 				.. " encodable in 64-bit mode (use loop, loopq or loopl): "
 				.. (insn.raw or rawMnem))
 		end
@@ -1348,7 +1349,7 @@ function x86.classify(insn)
 			end
 		end
 		if not w then
-			error("sarcasm: cannot determine the memory access width of '" .. rawMnem
+			err.at(insn, "cannot determine the memory access width of '" .. rawMnem
 				.. "' (unsized memory operand is ambiguous; use a size suffix or PTR annotation): "
 				.. (insn.raw or rawMnem))
 		end
@@ -1441,7 +1442,7 @@ function x86.classify(insn)
 		-- and the pinned instruction's def/use temps keep any other web from
 		-- being colored into it across the pin).
 		if not (ops[1] and ops[1].kind == "mem") then
-			error("sarcasm: " .. rawMnem .. " requires a memory operand (it has no"
+			err.at(insn, rawMnem .. " requires a memory operand (it has no"
 				.. " register form): " .. (insn.raw or rawMnem))
 		end
 		memRegs(ops[1], uses)
@@ -1468,7 +1469,7 @@ function x86.classify(insn)
 		-- selects the addressed qword AROUND the operand), which cannot be
 		-- bounds-checked — reject it.
 		if ops[1] and ops[1].kind == "mem" then
-			error("sarcasm: " .. rawMnem .. " with a memory base is not supported"
+			err.at(insn, rawMnem .. " with a memory base is not supported"
 				.. " (a bit-string access of unbounded extent cannot be bounds-checked;"
 				.. " load the value into a register first): " .. (insn.raw or rawMnem))
 		end
@@ -1509,7 +1510,7 @@ function x86.classify(insn)
 		-- pairs an explicit operand with implicit ones in a way the signature
 		-- marshalling does not yet model.)
 		if #ops ~= 0 then
-			error("sarcasm: " .. rawMnem .. " takes no explicit operands (gas's"
+			err.at(insn, rawMnem .. " takes no explicit operands (gas's"
 				.. " operand decorations like `monitor %rax, %ecx, %edx` are not"
 				.. " supported; write the bare mnemonic): " .. (insn.raw or rawMnem))
 		end
@@ -1566,7 +1567,7 @@ function x86.classify(insn)
 		-- old rax web neither killed nor updated) and regalloc could rename rax
 		-- across the instruction.
 		if #ops ~= 0 then
-			error("sarcasm: " .. rawMnem .. " takes no explicit operands (its only"
+			err.at(insn, rawMnem .. " takes no explicit operands (its only"
 				.. " operand is the implicit %ah / flag byte): " .. (insn.raw or rawMnem))
 		end
 		-- fresh table per implicit occurrence (see the cqo comment above)
@@ -1597,7 +1598,7 @@ function x86.classify(insn)
 		-- instruction; the rendered count operand is the fixed %cl).
 		if SHIFT_COUNT[m] and isGpr(ops[2]) then
 			if ops[2].width ~= 8 or ops[2].num ~= 1 then
-				error("sarcasm: a shift/rotate count register must be %cl (the only"
+				err.at(insn, "a shift/rotate count register must be %cl (the only"
 					.. " register-count encoding in the ISA): " .. (insn.raw or rawMnem))
 			end
 			return { defs = defs, uses = uses, rmw = rmw, control = "none", fallsThrough = true,
@@ -1620,11 +1621,11 @@ function x86.classify(insn)
 		-- instead of letting the extra operand ride into a downstream assembler
 		-- error.
 		if #ops ~= 1 then
-			error("sarcasm: bswap takes exactly one register operand (it has no"
+			err.at(insn, "bswap takes exactly one register operand (it has no"
 				.. " two-operand form): " .. (insn.raw or rawMnem))
 		end
 		if not (ops[1] and ops[1].kind == "reg" and ops[1].rc == "gpr") then
-			error("sarcasm: bswap takes exactly one register operand (it has no memory"
+			err.at(insn, "bswap takes exactly one register operand (it has no memory"
 				.. " or immediate form): " .. (insn.raw or rawMnem))
 		end
 		-- bswap is r32/r64-ONLY: the 16-bit and 8-bit forms do not exist (the byte
@@ -1633,7 +1634,7 @@ function x86.classify(insn)
 		-- message naming the actual problem instead of letting the unencodable
 		-- spelling ride into that downstream assembler error from the temp file.
 		if ops[1].width ~= 32 and ops[1].width ~= 64 then
-			error("sarcasm: bswap requires a 32-bit or 64-bit register operand"
+			err.at(insn, "bswap requires a 32-bit or 64-bit register operand"
 				.. " (bswapw/bswapb are not encodable): " .. (insn.raw or rawMnem))
 		end
 		table.insert(defs, ops[1]); table.insert(uses, ops[1]); table.insert(rmw, ops[1].num)
@@ -1651,14 +1652,14 @@ function x86.classify(insn)
 		-- exist (a byte swap of one byte is a plain move; gas rejects movbeb with
 		-- "invalid instruction suffix"): reject both cleanly.
 		if #ops ~= 2 then
-			error("sarcasm: movbe takes exactly two operands (a byte-swapping move"
+			err.at(insn, "movbe takes exactly two operands (a byte-swapping move"
 				.. " between a register and memory): " .. (insn.raw or rawMnem))
 		end
 		local dst, src = ops[1], ops[2]
 		if dst.kind == "mem" and isGpr(src) then
 			-- store: byte-swap src, store to mem
 			if src.width == 8 then
-				error("sarcasm: movbeb is not encodable (movbe exists only in 16/32/64-bit"
+				err.at(insn, "movbeb is not encodable (movbe exists only in 16/32/64-bit"
 					.. " forms; an 8-bit byte swap is a plain movb): " .. (insn.raw or rawMnem))
 			end
 			memRegs(dst, uses)
@@ -1666,7 +1667,7 @@ function x86.classify(insn)
 		elseif isGpr(dst) and src.kind == "mem" then
 			-- load: load from mem, byte-swap into dst
 			if dst.width == 8 then
-				error("sarcasm: movbeb is not encodable (movbe exists only in 16/32/64-bit"
+				err.at(insn, "movbeb is not encodable (movbe exists only in 16/32/64-bit"
 					.. " forms; an 8-bit byte swap is a plain movb): " .. (insn.raw or rawMnem))
 			end
 			table.insert(defs, dst)
@@ -1676,7 +1677,7 @@ function x86.classify(insn)
 			end
 			memRegs(src, uses)
 		else
-			error("sarcasm: movbe requires a memory operand (the register-to-register"
+			err.at(insn, "movbe requires a memory operand (the register-to-register"
 				.. " spelling is not a baseline x86-64 encoding; use a mov plus bswap"
 				.. " sequence instead): " .. (insn.raw or rawMnem))
 		end
@@ -1689,7 +1690,7 @@ function x86.classify(insn)
 		-- an immediate or %cl — the only register-count encoding, pinned to
 		-- physical rcx exactly like the plain shift/rotate count (ALU2 branch).
 		if #ops ~= 3 then
-			error("sarcasm: " .. rawMnem .. " takes exactly three operands (destination,"
+			err.at(insn, rawMnem .. " takes exactly three operands (destination,"
 				.. " source, count): " .. (insn.raw or rawMnem))
 		end
 		if isGpr(ops[1]) then
@@ -1700,7 +1701,7 @@ function x86.classify(insn)
 		useOperand(ops[2])
 		if isGpr(ops[3]) then
 			if ops[3].width ~= 8 or ops[3].num ~= 1 then
-				error("sarcasm: a shift/rotate count register must be %cl (the only"
+				err.at(insn, "a shift/rotate count register must be %cl (the only"
 					.. " register-count encoding in the ISA): " .. (insn.raw or rawMnem))
 			end
 			table.insert(uses, ops[3])
@@ -1723,12 +1724,12 @@ function x86.classify(insn)
 		-- (the lock happens with or without a `lock` prefix) and is not one of the
 		-- exactly-modeled memory RMWs: reject.
 		if (ops[1] and ops[1].kind == "mem") or (ops[2] and ops[2].kind == "mem") then
-			error("sarcasm: xchg with a memory operand is an implicitly locked read-modify-write"
+			err.at(insn, "xchg with a memory operand is an implicitly locked read-modify-write"
 				.. " (the hardware locks it even without a `lock` prefix; it is not one of the"
 				.. " exactly-modeled memory RMWs; cannot prove memory safety): " .. (insn.raw or rawMnem))
 		end
 		if not (isGpr(ops[1]) and isGpr(ops[2])) then
-			error("sarcasm: xchg needs two general registers (stack-pointer and vector-register"
+			err.at(insn, "xchg needs two general registers (stack-pointer and vector-register"
 				.. " exchanges are not supported): " .. (insn.raw or rawMnem))
 		end
 		-- A high-byte operand (%ah/%ch/%dh/%bh) is modeled exactly by the pin
@@ -1746,7 +1747,7 @@ function x86.classify(insn)
 					or (partner.width == 32 and partner.num > 7)
 					or (partner.width ~= 8 and partner.width ~= 16 and partner.width ~= 32)
 				if bad then
-					error("sarcasm: high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
+					err.at(insn, "high-byte register " .. ((insn.syntax == "intel") and o.name or ("%" .. o.name))
 						.. " cannot be combined with " .. ((insn.syntax == "intel") and partner.name or ("%" .. partner.name))
 						.. " (the partner requires a REX prefix, which a high-byte register"
 						.. " cannot combine with): " .. (insn.raw or rawMnem))
@@ -1836,7 +1837,7 @@ function x86.classify(insn)
 		-- all-live conservative use; the precise model keeps that soundness
 		-- with fewer spurious saves.)
 		if #ops ~= 0 then
-			error("sarcasm: " .. rawMnem .. " takes no operands (it operates on the"
+			err.at(insn, rawMnem .. " takes no operands (it operates on the"
 				.. " implicit direction flag): " .. (insn.raw or rawMnem))
 		end
 	elseif FLAG_PUSH[rawMnem] then
@@ -1852,7 +1853,7 @@ function x86.classify(insn)
 		-- FLAG_ALL), so a flag write feeding it stays live and any injected
 		-- check in between is bracketed with a save/restore.
 		if #ops ~= 0 then
-			error("sarcasm: " .. rawMnem .. " takes no operands (it pushes the"
+			err.at(insn, rawMnem .. " takes no operands (it pushes the"
 				.. " implicit RFLAGS): " .. (insn.raw or rawMnem))
 		end
 		table.insert(defs, x86.flagsWordOperand())
@@ -1868,7 +1869,7 @@ function x86.classify(insn)
 		-- the transform's `push <web>; popfq` lowering (the cg.restoreFlags
 		-- round-trip).
 		if #ops ~= 0 then
-			error("sarcasm: " .. rawMnem .. " takes no operands (it pops the"
+			err.at(insn, rawMnem .. " takes no operands (it pops the"
 				.. " implicit RFLAGS): " .. (insn.raw or rawMnem))
 		end
 		table.insert(uses, x86.flagsWordOperand())
@@ -1882,7 +1883,7 @@ function x86.classify(insn)
 		-- the conservative first-reg-def model below.
 		for _, o in ops do
 			if o.kind == "mem" then
-				error("sarcasm: cannot determine the memory access width of '" .. rawMnem
+				err.at(insn, "cannot determine the memory access width of '" .. rawMnem
 					.. "' (cannot prove memory safety): " .. (insn.raw or rawMnem))
 			end
 		end

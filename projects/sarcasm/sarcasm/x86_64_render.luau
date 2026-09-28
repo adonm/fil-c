@@ -8,6 +8,7 @@
 local x86 = require("./x86_64_isa")
 local x86parse = require("./x86_64_parse")
 local fp = require("./x86_64_fp")
+local err = require("./err")
 
 local x86_64_render = {}
 
@@ -297,7 +298,7 @@ local function byteEmitMem(out, node, mem, regField, colorNum, raw)
 	local index = (mem.index and mem.index.kind == "reg")
 		and byteEmitNumOf(node, mem.index, colorNum) or nil
 	if not base then
-		error("sarcasm: internal error: cannot resolve the memory base register of '"
+		err.at(node.stmt, "internal error: cannot resolve the memory base register of '"
 			.. (raw or "?") .. "' for .byte emission")
 	end
 	local scale = mem.scale or 1
@@ -344,7 +345,7 @@ local function byteEmitInsn(node, colorNum, syntax, low)
 		dst, src1, src2 = ops[1], ops[2], ops[3]
 	end
 	if not (dst and dst.kind == "reg" and src2) or (not spec.twoOp and not src1) then
-		error("sarcasm: '" .. low .. "' requires register destination/source operands: "
+		err.at(node.stmt, "'" .. low .. "' requires register destination/source operands: "
 			.. raw)
 	end
 	local dstClass = string.sub(dst.name or "", 1, 3)
@@ -352,7 +353,7 @@ local function byteEmitInsn(node, colorNum, syntax, low)
 		local allowed = {}
 		for c in spec.classes do table.insert(allowed, c) end
 		table.sort(allowed)
-		error("sarcasm: '" .. low .. "' requires a " .. table.concat(allowed, "/")
+		err.at(node.stmt, "'" .. low .. "' requires a " .. table.concat(allowed, "/")
 			.. "0-15 destination register (a wider vector class is not encodable): " .. raw)
 	end
 	-- VEX.L follows the destination class (SM4 has both forms; every other
@@ -360,7 +361,7 @@ local function byteEmitInsn(node, colorNum, syntax, low)
 	local vexL = (dstClass == "ymm") and 1 or 0
 	if not spec.twoOp
 		and (string.sub(src1.name or "", 1, 3) ~= dstClass or src1.num > 15) then
-		error("sarcasm: '" .. low .. "' requires a " .. dstClass .. "0-15 source"
+		err.at(node.stmt, "'" .. low .. "' requires a " .. dstClass .. "0-15 source"
 			.. " register (its VEX encoding cannot name another class): " .. raw)
 	end
 	-- the rm source class: ymm/m256 for the sm4 ymm forms and vsha512msg2,
@@ -373,7 +374,7 @@ local function byteEmitInsn(node, colorNum, syntax, low)
 	local xExt = 64                                    -- X̅: set when index < 8/none
 	if src2.kind == "reg" then
 		if string.sub(src2.name or "", 1, 3) ~= src2Class or src2.num > 15 then
-			error("sarcasm: '" .. low .. "' requires a " .. src2Class .. "0-15"
+			err.at(node.stmt, "'" .. low .. "' requires a " .. src2Class .. "0-15"
 				.. " source register (its VEX encoding cannot name another class): " .. raw)
 		end
 		if src2.num >= 8 then bExt = 0 end
@@ -399,7 +400,7 @@ local function byteEmitInsn(node, colorNum, syntax, low)
 		local immOp = ops[4]
 		local v = immOp and immOp.kind == "imm" and (immOp.value or tonumber(immOp.text)) or nil
 		if not v then
-			error("sarcasm: '" .. low .. "' requires an immediate operand: " .. raw)
+			err.at(node.stmt, "'" .. low .. "' requires an immediate operand: " .. raw)
 		end
 		table.insert(bytes, v % 256)
 	end
@@ -490,7 +491,7 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 		for _, o in ops do
 			if o.kind == "mem" and o.base and o.base.fixedNum == 4 then
 				if o.index ~= nil then
-					error("sarcasm: inArgWord memory operand has an index register"
+					err.plain("inArgWord memory operand has an index register"
 						.. " (entry stack-argument loads address base + word"
 						.. " with no scale)")
 				end
@@ -515,7 +516,7 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 		-- (a clean `sarcasm:` compile failure, not a crash) rather than
 		-- silently mis-rendering, so any future provenance change fails closed.
 		if node.spillShift ~= nil then
-			error("sarcasm: inArgWord inside outgoing stack-arg window"
+			err.plain("inArgWord inside outgoing stack-arg window"
 				.. " (entry stack-argument load colliding with a call's"
 				.. " stack-argument area)")
 		end
@@ -540,7 +541,7 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 		-- loudly.
 		local dstW = dstOp.width or 64
 		if dstW ~= 64 then
-			error("sarcasm: inArgWord destination width "
+			err.plain("inArgWord destination width "
 				.. tostring(dstW) .. " (entry stack-argument loads are 64-bit)")
 		end
 		local dstStr = renderOperand(node, dstOp, colorNum, syntax)
@@ -653,7 +654,7 @@ function x86_64_render.renderInsn(node, colorNum, syntax, rc)
 			if memsz then
 				local f = sizedForm[memsz]
 				if not f then
-					error("sarcasm: " .. low .. " has no " .. tostring(memsz)
+					err.at(node.stmt, low .. " has no " .. tostring(memsz)
 						.. "-byte memory form: " .. (node.stmt and node.stmt.raw or mnem))
 				end
 				outMnem = f

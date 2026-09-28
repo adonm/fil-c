@@ -281,7 +281,10 @@ local MASKED_STACK_MOVE = {
 }
 
 -- Desired stack alignment (max over the prologue/mid-function `and $-N, %rsp`
--- notes, 16 when none was seen) and the rsp depth at the strongest note.
+-- notes, 16 when none was seen) and the rsp depth of the GOVERNING note — the
+-- strongest note's depth, or the most recent 16-byte note's depth when no
+-- stronger (>= 32) note has been seen (a 16-byte note still keys post-and
+-- traffic at its own base).
 -- `and $-N, %rsp` only rounds rsp DOWN by at most N-1, so dropping it keeps
 -- every normalized slot key consistent within a run (all post-and traffic
 -- keys off the same post-and numbering, and the prefix holds no slot traffic
@@ -291,6 +294,13 @@ local MASKED_STACK_MOVE = {
 local frameAlignReq = 16
 local frameAndDepth = 0
 local frameAndIdx = nil  -- the prologue `and $-N, %rsp` statement's index, if any
+-- Whether ANY `and $-N, %rsp` note was seen this run (prologue prefix or
+-- mid-function). frameAndDepth cannot play this role: it HOLDS the note's rsp
+-- depth, and a note at depth 0 (the `mov %rsp,%r11; and $-32,%rsp` prologue
+-- shape — the and is the first stack op of the prefix) collides with the
+-- historical "depth 0 = no note" sentinel, so the two states are distinguished
+-- explicitly. Reset per analyzeFrame run with the rest.
+local frameAndSeen = false
 
 -- Containing-granule map for PARTIAL (narrow) slot accesses (set by analyzeFrame;
 -- single-threaded discipline, like D0): maps a normalized frame offset with 8-byte
@@ -704,10 +714,13 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 		st.x86StackBufAddr = nil
 		st.x86StackBufLeaValue = nil
 		st.x86StackBufLeaValueComputed = nil
+		st.x86_alignKeyed = nil
+		st.x86_alignAndBase = nil
 	end
 	frameAlignReq = 16
 	frameAndDepth = 0
 	frameAndIdx = nil
+	frameAndSeen = false
 	slotGranules = {}
 	-- Record whether this run executes the cloneRet balance proof below
 	-- (regions ~= nil). The rewrite asserts the flag before consuming any
@@ -1047,8 +1060,22 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					-- is emitted N-aligned and aligned accesses keep proving.
 					local n = -immVal(ops[2])
 					if isStackAlign(n) then
+						frameAndSeen = true
+						-- A 16-byte note records its depth too: the post-`and` rsp is
+						-- N-aligned absolutely (the and clears the low bits), so an
+						-- areq-aligned access (areq <= N) satisfies off ≡ D0 - depth
+						-- (mod areq) — the note's own base. The SysV (D0 - 8) residue
+						-- coincides only when the note sits at depth ≡ 8 (mod 16) (the
+						-- aesni `pushq %rbp; subq $128; andq $-16` shape, depth 136);
+						-- a note at depth ≡ 0 (mod 16) needs the note's own base.
+						-- Recording the depth here is what makes the keying/placement
+						-- use the real base; stronger notes still win. frameAndSeen
+						-- stays the "a note exists" bit because frameAndDepth cannot
+						-- express a depth-0 note.
 						if n > frameAlignReq then
 							frameAlignReq = n; frameAndDepth = depth
+						elseif n == 16 and frameAlignReq == 16 then
+							frameAndDepth = depth
 						end
 						-- The and's own position: the carrier/alias keying below
 						-- decides "parked after the and" by prefix order when the
@@ -3656,8 +3683,22 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 					local an = -immVal(ops[2])
 					if isStackAlign(an) and flagsDeadAfter(i) then
 						st.x86_midAnd = true
+						frameAndSeen = true
+						-- A 16-byte note records its depth too: the post-`and` rsp is
+						-- N-aligned absolutely (the and clears the low bits), so an
+						-- areq-aligned access (areq <= N) satisfies off ≡ D0 - depth
+						-- (mod areq) — the note's own base, not the SysV (D0 - 8)
+						-- residue (which coincides only at depth ≡ 8 (mod 16): the
+						-- aesni `pushq %rbp; subq $128; andq $-16` shape, depth 136).
+						-- Recording the depth here is what makes the keying/placement
+						-- use the real base; stronger notes still win, and among
+						-- 16-byte notes the most recent one wins. frameAndSeen stays
+						-- the "a note exists" bit because frameAndDepth cannot express
+						-- a depth-0 note.
 						if an > frameAlignReq then
 							frameAlignReq = an; frameAndDepth = depthIn[i]
+						elseif an == 16 and frameAlignReq == 16 then
+							frameAndDepth = depthIn[i]
 						end
 					end
 				end
@@ -4427,7 +4468,11 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 	-- rides its own band extents, so nothing else shares them. Runs before the
 	-- stack-buffer scan so a buffer declared over post-and traffic is checked
 	-- against the covered extent.
-	if frameAndDepth ~= 0 then
+	-- (Gated on frameAndSeen, not `frameAndDepth ~= 0`: frameAndDepth HOLDS the
+	-- note's depth, and a depth-0 note — the `mov %rsp,%r11; and $-32,%rsp`
+	-- prologue shape — is a real note whose post-and traffic needs the extent
+	-- exactly like any other note's.)
+	if frameAndSeen then
 		for _, st in body do
 			if st.kind == "insn" and not st.x86_prologue and not st.localClone
 				and not st.b2clone and not st.x86_preAnd
@@ -4628,7 +4673,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 				-- traffic's own homes, not the caller's frame. With a non-empty
 				-- pad the old rule stands (a buffer crossing the frame base
 				-- would overlap the pad's save slots).
-				local andTop = (frameAndDepth ~= 0 and maxSaves == 0)
+				-- (frameAndSeen, not `frameAndDepth ~= 0`: a depth-0 note is a
+				-- real note — see the post-`and` frame extent gate above.)
+				local andTop = (frameAndSeen and maxSaves == 0)
 					and frameSize or nil
 				if not (andTop ~= nil and homeHi <= andTop) then
 					err.at(st, "stack buffer (" .. id .. ") extends to normalized"
@@ -5757,28 +5804,14 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 								.. " requirements that divide 64): "
 								.. (body[si].raw or body[si].mnemonic))
 						end
-						-- An aligned access needing more than the guaranteed
-						-- 16-byte stack alignment (a vmovdqa32/64-class access):
-						-- the frame must carry an `and $-N, %rsp` note with
-						-- N >= areq, and the input offset must itself be
-						-- aligned to (D0 - andDepth), the note's base.
-						if isFP and areq > 16 then
-							local alignedOff = ((off - (D0 - frameAndDepth)) % areq + areq) % areq == 0
-							if frameAlignReq < areq or not alignedOff then
-								err.at(st, "aligned " .. areq .. "-byte stack access cannot be proven safe"
-									.. " (the stack is only guaranteed 16-byte aligned;"
-									.. (frameAlignReq < areq
-										and " align the frame with `and $-" .. areq .. ", %rsp` in the prologue, or else"
-										or " use an aligned offset,")
-									.. " or use the unaligned form (e.g. vmovdqu/vmovups)): "
-									.. (body[si].raw or body[si].mnemonic))
-							end
-						end
+
 						-- Which alignment coordinate system the access keys off
 						-- (drives the cluster residue below). An rsp-relative
 						-- access in a frame WITH an `and $-N,%rsp` note executes
-						-- at the POST-AND rsp -- N-aligned (N >= 32 is what gets
-						-- recorded), so its alignment residue is `disp mod areq`,
+						-- at the POST-AND rsp -- N-aligned (the note's DEPTH is
+						-- what gets recorded for keying, for any N; frameAlignReq
+						-- itself only grows past 16 for N > 16 notes), so its
+						-- alignment residue is `disp mod areq`,
 						-- keyed at the note's base. Every other access keys at
 						-- the SysV base: rsp-relative without a note, normalized
 						-- rbp-relative (absolute -- rbp = entry_rsp - fpDepth),
@@ -5787,8 +5820,9 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						-- refuses to mix them (one cluster, one base).
 						local keyed
 						local andBase
-						if frameAndDepth == 0 then
-							-- no `and $-N,%rsp` note: every access keys at the SysV base
+						if not frameAndSeen then
+							-- no `and $-N,%rsp` note seen (prologue or mid-function):
+							-- every access keys at the SysV base
 							keyed = "d0"
 						-- A stack-alias carrier access (a GPR base holding a parked rsp+K
 						-- value): the access is and-keyed iff the SAVE executed after the
@@ -5862,6 +5896,35 @@ function x86_64_frame.analyzeFrame(body, sigDesc, regions)
 						else
 							keyed = "ambig"
 						end
+						-- An aligned access needing more than the guaranteed 16-byte stack
+						-- alignment (a vmovdqa32/64-class access): the frame must carry an
+						-- `and $-N, %rsp` note with N >= areq, and the access's offset must
+						-- be congruent to zero modulo areq in the access's own alignment
+						-- coordinates — the note's base for and-keyed accesses, the SysV
+						-- entry_rsp ≡ 8 (mod 16) base for everything else — exactly the base
+						-- the cluster placement below uses for the access's keying.
+						if isFP and areq > 16 then
+							if frameAlignReq < areq then
+								err.at(st, "stack alignment is only " .. frameAlignReq
+									.. " bytes but instruction requires " .. areq .. " byte alignment"
+									.. " (align the frame with `and $-" .. areq .. ", %rsp` in the"
+									.. " prologue, or use the unaligned form (e.g. vmovdqu/vmovups)): "
+									.. (body[si].raw or body[si].mnemonic))
+							end
+							local base = (keyed == "and") and (D0 - (andBase or frameAndDepth)) or (D0 - 8)
+							local phase = ((off - base) % areq + areq) % areq
+							if phase ~= 0 then
+								err.at(st, "instruction requires " .. areq .. " byte alignment, but"
+									.. " offset is out of phase by " .. phase .. " bytes"
+									.. " (use an aligned offset, or use the unaligned form"
+									.. " (e.g. vmovdqu/vmovups)): "
+									.. (body[si].raw or body[si].mnemonic))
+							end
+						end
+						-- Stash the keying for the rewrite's alignment backstop: it
+						-- re-derives this same base for the shapes the scan mirrors.
+						st.x86_alignKeyed = keyed
+						st.x86_alignAndBase = andBase
 						table.insert(intervals, { lo = off, hi = off + w, fp = isFP, areq = areq, si = si, keyed = keyed, andBase = andBase,
 						dropped = saveAliasOp or st.x86_dropRestore or nil,
 						pre = not saveAliasOp and not st.x86_dropRestore
@@ -7643,8 +7706,9 @@ function x86_64_frame.rewrite(st, ctx)
 					.. "' (cannot prove memory safety): " .. (st.raw or m))
 			end
 			if fa and fa > 16 then
-				err.at(st, "aligned 32/64-byte incoming stack-argument reads are not supported"
-					.. " (the stack is only guaranteed 16-byte aligned); use the unaligned form: "
+				err.at(st, "stack alignment is only 16 bytes but instruction requires "
+					.. math.min(fa, 64) .. " byte alignment (incoming stack arguments are"
+					.. " only 16-byte aligned; use the unaligned form): "
 					.. (st.raw or m))
 			end
 			local mat = { kind = "mem",
@@ -8491,15 +8555,35 @@ function x86_64_frame.rewrite(st, ctx)
 		-- Aligned >16-byte stack accesses cannot be materialized at their required
 		-- alignment: the synthesized frame guarantees 16-byte body-rsp alignment,
 		-- or the recorded `and $-N, %rsp` alignment when the analysis saw one.
-		-- The taint scan already proved coverage (an `and $-N, %rsp` note with
-			-- N >= alignReq plus an aligned input offset); this is the backstop
-			-- for shapes the scan mirrors. Reject cleanly; the unaligned forms
-			-- (vmovdqu/vmovups/...) encode no alignment promise and work fine.
+		-- The taint scan already proved coverage in the access's own keying
+		-- coordinates (the keyed/andBase decision the scan stashed on the
+		-- statement below); this is the backstop for shapes the scan mirrors.
+		-- Reject cleanly; the unaligned forms (vmovdqu/vmovups/...) encode no
+		-- alignment promise and work fine.
 		if isFP and alignReq > 16 then
-			local alignedOff = ((off - (D0 - frameAndDepth)) % alignReq + alignReq) % alignReq == 0
-			if frameAlignReq < alignReq or not alignedOff then
-				err.at(st, "aligned 32/64-byte stack accesses are not supported (the stack is only"
-					.. " guaranteed 16-byte aligned); use the unaligned form (e.g. vmovdqu/vmovups): "
+			if frameAlignReq < alignReq then
+				err.at(st, "stack alignment is only " .. frameAlignReq
+					.. " bytes but instruction requires " .. alignReq .. " byte alignment"
+					.. " (align the frame with `and $-" .. alignReq .. ", %rsp` in the"
+					.. " prologue, or use the unaligned form (e.g. vmovdqu/vmovups)): "
+					.. (st.raw or m))
+			end
+			local base
+			if st.x86_alignKeyed == "and" then
+				base = D0 - (st.x86_alignAndBase or frameAndDepth)
+			elseif st.x86_alignKeyed == nil then
+				-- statements the scan skipped never reach here; keep the
+				-- historical and-base formula as the defensive fallback
+				base = D0 - frameAndDepth
+			else
+				base = D0 - 8
+			end
+			local phase = ((off - base) % alignReq + alignReq) % alignReq
+			if phase ~= 0 then
+				err.at(st, "instruction requires " .. alignReq .. " byte alignment, but"
+					.. " offset is out of phase by " .. phase .. " bytes"
+					.. " (use an aligned offset, or use the unaligned form"
+					.. " (e.g. vmovdqu/vmovups)): "
 					.. (st.raw or m))
 			end
 		end

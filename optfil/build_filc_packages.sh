@@ -85,7 +85,8 @@ filc/projeny package \
     projects/blake3.projeny projects/blake3/pizlonated-blake3.tar.gz \
     projects/dash.projeny projects/dash/pizlonated-dash.tar.gz \
     projects/mg.projeny projects/mg/pizlonated-mg.tar.gz \
-    projects/Linux-PAM.projeny projects/Linux-PAM/pizlonated-pam.tar.gz
+    projects/Linux-PAM.projeny projects/Linux-PAM/pizlonated-pam.tar.gz \
+    projects/libuv.projeny projects/libuv/pizlonated-libuv.tar.gz
 
 ./package-source.sh projects/libxcrypt-4.5.2 pizlonated-libxcrypt
 ./package-source.sh projects/bash-5.3 pizlonated-bash
@@ -98,7 +99,6 @@ filc/projeny package \
 ./package-source.sh projects/libsepol-3.11 pizlonated-sepol
 ./package-source.sh projects/libselinux-3.11 pizlonated-selinux
 ./package-source.sh projects/sudo-1.9.17p2 pizlonated-sudo
-filc/projeny package projects/libuv.projeny projects/libuv/pizlonated-libuv.tar.gz
 ./package-source.sh projects/sed-4.10 pizlonated-sed
 ./package-source.sh projects/bison-3.8.2 pizlonated-bison
 ./package-source.sh projects/grep-3.12 pizlonated-grep

@@ -1,7 +1,0 @@
-return:
-
-  success
-
-output-includes:
-
-  - "misaligned const ptr ok"

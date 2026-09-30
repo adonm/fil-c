@@ -64,7 +64,7 @@ then
     exit 1
 fi
 
-build_name=filc-0.685-$OS-$ARCH
+build_name=filc-0.686-$OS-$ARCH
 
 rm -rf $build_name
 
